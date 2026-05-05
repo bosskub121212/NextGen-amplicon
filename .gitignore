@@ -1,0 +1,42 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/build/
+
+# App runtime
+backend/uploads/
+backend/results/
+logs/
+*.log
+
+# License / secrets
+.license_cache.json
+.dev_bypass
+.config/
+
+# Databases (ใหญ่เกินไป)
+backend/databases/
+databases/
+*.gz
+*.fasta.gz
+*.fa.gz
+*.tgz
+*.zip
+backend/databases/SILVA/
+backend/databases/UNITE/
+backend/databases/MIDORI2/
+backend/databases/NemaBase/
+backend/databases/*.fa.gz
+backend/databases/*.fasta.gz
+backend/databases/*.gz
+
+# OS
+.DS_Store
+Thumbs.db

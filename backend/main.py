@@ -1,0 +1,1001 @@
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse
+from pydantic import BaseModel
+from concurrent.futures import ThreadPoolExecutor
+import subprocess, os, uuid, json, threading, time, shutil
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+from pathlib import Path
+
+app = FastAPI(title="16S/12S Analysis API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ],
+    allow_origin_regex=r"http://localhost:\d+",   # allow any localhost port
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+)
+
+BASE_DIR      = Path(__file__).parent
+UPLOAD_DIR    = BASE_DIR / "uploads"
+RESULTS_DIR   = BASE_DIR / "results"
+R_SCRIPTS_DIR = BASE_DIR / "r_scripts"
+JOBS_FILE     = BASE_DIR / "jobs_history.json"   # ← persistent storage
+UPLOAD_DIR.mkdir(exist_ok=True)
+RESULTS_DIR.mkdir(exist_ok=True)
+
+# ── Job store + thread pool ───────────────────────────────────────────────────
+jobs: dict = {}
+jobs_lock = threading.Lock()
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
+executor    = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+# ── psutil Process cache (keeps objects alive between polls so cpu_percent works) ──
+_proc_cache: dict[int, "psutil.Process"] = {}  # pid → Process
+
+# ── Persist helpers ───────────────────────────────────────────────────────────
+def load_jobs():
+    """Load job history from disk on startup."""
+    global jobs
+    if JOBS_FILE.exists():
+        try:
+            with open(JOBS_FILE, "r") as f:
+                loaded = json.load(f)
+            # Mark any jobs that were running/queued when we crashed as error
+            for j in loaded.values():
+                if j.get("status") in ("running", "queued"):
+                    j["status"]     = "error"
+                    j["error"]      = "Server restarted while job was running"
+                    j["step_label"] = "Interrupted (server restart)"
+            jobs = loaded
+            print(f"[history] Loaded {len(jobs)} jobs from disk.")
+        except Exception as e:
+            print(f"[history] Could not load jobs: {e}")
+
+def save_jobs():
+    """Persist current jobs dict to disk."""
+    try:
+        snapshot = {}
+        for jid, j in jobs.items():
+            snapshot[jid] = {k: v for k, v in j.items() if k != "log_lines"}
+        with open(JOBS_FILE, "w") as f:
+            json.dump(snapshot, f, indent=2)
+    except Exception as e:
+        print(f"[history] Save failed: {e}")
+
+# Load on startup
+load_jobs()
+
+# ── Params schema ─────────────────────────────────────────────────────────────
+class MetaRow(BaseModel):
+    sampleId:    str = ""
+    group:       str = ""
+    description: str = ""
+    model_config = {"extra": "allow"}   # accept custom columns
+
+class RunParams(BaseModel):
+    job_name:      str   = ""
+    # --- Marker / pipeline type ---
+    # 16S, 12S   → dada2_pipeline.R
+    # ITS1, ITS2 → its_pipeline.R
+    # COX1       → cox1_pipeline.R
+    # 18S-nema   → dada2_pipeline.R with nema_db
+    # PacBio     → pacbio_pipeline.R
+    marker:        str   = "16S"
+    # --- 16S / 12S / nema params ---
+    truncLen_F:    int   = 240
+    truncLen_R:    int   = 200
+    maxEE_F:       float = 2.0
+    maxEE_R:       float = 2.0
+    trimLeft_F:    int   = 0
+    trimLeft_R:    int   = 0
+    nbases:        float = 1e8
+    pool:          str   = "FALSE"
+    chimeraMethod: str   = "consensus"
+    taxDatabase:   str   = "SILVA_138.2"
+    dbPath:        str   = ""
+    minBoot:       int   = 50
+    topN:          int   = 30
+    metadata:      list[MetaRow] = []
+    # --- ITS params ---
+    its_region:    str   = "ITS1"   # ITS1 or ITS2
+    primer_f:      str   = ""       # forward primer (blank = use defaults per marker)
+    primer_r:      str   = ""       # reverse primer
+    # --- COX1 params ---
+    truncLen_cox1_f: int   = 230
+    truncLen_cox1_r: int   = 200
+    codon_table:     int   = 5      # 5=invertebrate mt, 2=vertebrate mt
+    cox1_min_len:    int   = 300
+    cox1_max_len:    int   = 330
+    run_lulu:        bool  = True
+    # --- PacBio params ---
+    pb_min_len:    int   = 1000
+    pb_max_len:    int   = 1600
+    pb_maxEE:      float = 3.0
+    pb_region:     str   = "V1-V9"
+    # --- Functional prediction ---
+    run_tax4fun:   bool  = False
+    run_picrust2:  bool  = False
+    # --- Shared db paths override ---
+    db_paths_json: str   = ""
+
+class WorkerConfig(BaseModel):
+    max_workers: int = 2
+
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/")
+def root():
+    return {"message": "16S/12S Analysis API 🧬", "max_workers": MAX_WORKERS}
+
+# ── 1. Upload ─────────────────────────────────────────────────────────────────
+@app.post("/upload")
+async def upload_files(files: list[UploadFile] = File(...)):
+    job_id  = str(uuid.uuid4())[:8]
+    job_dir = UPLOAD_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for file in files:
+        path = job_dir / file.filename
+        with open(path, "wb") as f:
+            f.write(await file.read())
+        saved.append(file.filename)
+    with jobs_lock:
+        jobs[job_id] = {
+            "status": "uploaded", "files": saved,
+            "progress": 0, "log_lines": [], "step_label": "Waiting...",
+            "marker": "—", "database": "—",
+        }
+        save_jobs()
+    return {"job_id": job_id, "files": saved}
+
+# ── 2. Run (submit to thread pool) ────────────────────────────────────────────
+@app.post("/run/{job_id}")
+async def run_analysis(job_id: str, params: RunParams):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+
+    # ── License gate ──────────────────────────────────────────────────────────
+    try:
+        from license import LICENSE_ENABLED, check_license, is_pipeline_allowed
+        if LICENSE_ENABLED:
+            lic = check_license()
+            if lic["status"] not in ("active", "dev", "disabled"):
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "license_required", "details": lic}
+                )
+            if lic["status"] == "active" and not is_pipeline_allowed(params.marker):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "pipeline_not_licensed",
+                        "message": (
+                            f"Pipeline '{params.marker}' is not included in your license. "
+                            f"Allowed: {', '.join(lic.get('pipelines', []))}"
+                        ),
+                    }
+                )
+    except ImportError:
+        pass  # license module not available → allow all
+
+    running = sum(1 for j in jobs.values() if j["status"] == "running")
+    with jobs_lock:
+        jobs[job_id]["status"]     = "queued" if running >= MAX_WORKERS else "running"
+        jobs[job_id]["step_label"] = "Queued — waiting for a free slot..." if running >= MAX_WORKERS else "Starting..."
+        jobs[job_id]["marker"]     = params.marker
+        jobs[job_id]["database"]   = params.taxDatabase
+        jobs[job_id]["job_name"]   = params.job_name
+        save_jobs()
+
+    executor.submit(run_r_pipeline, job_id, params)
+    return {"job_id": job_id, "status": jobs[job_id]["status"]}
+
+def run_r_pipeline(job_id: str, params: RunParams):
+    with jobs_lock:
+        jobs[job_id]["status"]      = "running"
+        jobs[job_id]["step_label"]  = "Initializing pipeline..."
+        jobs[job_id]["started_at"]  = time.time()
+        jobs[job_id]["pid"]         = None
+        save_jobs()
+
+    input_dir  = str(UPLOAD_DIR / job_id)
+    output_dir = str(RESULTS_DIR / job_id)
+    os.makedirs(output_dir, exist_ok=True)
+    log_file = Path(output_dir) / "pipeline.log"
+
+    # Persist output_dir so replot endpoint can find it
+    with jobs_lock:
+        jobs[job_id]["output_dir"] = output_dir
+
+    # Write metadata.csv if provided
+    metadata_path = ""
+    if params.metadata:
+        import csv
+        meta_file = Path(output_dir) / "metadata.csv"
+        # Collect all column names (including custom ones)
+        all_keys = ["sampleId", "group", "description"]
+        for row in params.metadata:
+            for k in row.model_fields_set | set(row.model_extra or {}):
+                if k not in all_keys:
+                    all_keys.append(k)
+        with open(meta_file, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=all_keys, extrasaction="ignore")
+            writer.writeheader()
+            for row in params.metadata:
+                d = {"sampleId": row.sampleId, "group": row.group, "description": row.description}
+                if row.model_extra:
+                    d.update(row.model_extra)
+                writer.writerow(d)
+        metadata_path = str(meta_file)
+        with jobs_lock:
+            jobs[job_id]["metadata_path"] = metadata_path
+
+    # Auto-detect database path from databases/ folder if not specified
+    db_path = params.dbPath
+    if not db_path or not os.path.exists(db_path):
+        db_dir = BASE_DIR / "databases"
+        if db_dir.exists():
+            db_files = list(db_dir.glob("*.fa.gz")) + list(db_dir.glob("*.fasta.gz"))
+            # Priority 1: toGenus trainset (best for full taxonomy plots)
+            genus_files = [f for f in db_files if "togenus" in f.name.lower()
+                           and any(k in f.name.lower() for k in ("trainset", "train_set"))]
+            # Priority 2: any other trainset (toSpecies etc.)
+            other_train = [f for f in db_files if any(k in f.name.lower()
+                           for k in ("trainset", "train_set", "nr99"))
+                           and "togenus" not in f.name.lower()]
+            # Priority 3: anything that isn't assignSpecies
+            non_assign  = [f for f in db_files if "assignspecies" not in f.name.lower()]
+
+            if genus_files:
+                db_path = str(sorted(genus_files)[0])
+                print(f"[db] Auto-detected (toGenus): {sorted(genus_files)[0].name}")
+            elif other_train:
+                db_path = str(sorted(other_train)[0])
+                print(f"[db] Auto-detected (trainset): {sorted(other_train)[0].name}")
+            elif non_assign:
+                db_path = str(sorted(non_assign)[0])
+                print(f"[db] Auto-detected: {sorted(non_assign)[0].name}")
+            elif db_files:
+                db_path = str(sorted(db_files)[0])
+                print(f"[db] Fallback db: {sorted(db_files)[0].name}")
+
+    # ── Route to the correct pipeline script ────────────────────────────────
+    marker = params.marker.upper()
+
+    db_paths_json = params.db_paths_json or str(
+        Path.home() / "r16s-app" / "backend" / "databases" / "db_paths.json"
+    )
+
+    if marker in ("ITS1", "ITS2", "ITS"):
+        # ── ITS fungal pipeline ─────────────────────────────────────────────
+        region = "ITS1" if marker in ("ITS1", "ITS") else "ITS2"
+        cmd = [
+            "Rscript", str(R_SCRIPTS_DIR / "its_pipeline.R"),
+            "--input_dir",  input_dir,
+            "--output_dir", output_dir,
+            "--its_region", region,
+            "--maxEE_f",    str(params.maxEE_F),
+            "--maxEE_r",    str(params.maxEE_R),
+            "--threads",    str(4),
+            "--job_name",   params.job_name or job_id,
+            "--topN",       str(params.topN),
+        ]
+        if params.primer_f:
+            cmd += ["--primer_f", params.primer_f]
+        if params.primer_r:
+            cmd += ["--primer_r", params.primer_r]
+        if params.metadata:
+            cmd += ["--metadata", metadata_path]
+        if db_paths_json:
+            cmd += ["--db_paths", db_paths_json]
+
+    elif marker == "COX1":
+        # ── COX1 metabarcoding pipeline ────────────────────────────────────
+        cmd = [
+            "Rscript", str(R_SCRIPTS_DIR / "cox1_pipeline.R"),
+            "--input_dir",   input_dir,
+            "--output_dir",  output_dir,
+            "--truncLen_f",  str(params.truncLen_cox1_f),
+            "--truncLen_r",  str(params.truncLen_cox1_r),
+            "--maxEE_f",     str(params.maxEE_F),
+            "--maxEE_r",     str(params.maxEE_R),
+            "--codon_table", str(params.codon_table),
+            "--min_length",  str(params.cox1_min_len),
+            "--max_length",  str(params.cox1_max_len),
+            "--threads",     str(4),
+            "--job_name",    params.job_name or job_id,
+            "--topN",        str(params.topN),
+            "--lulu",        str(params.run_lulu).upper(),
+        ]
+        if params.primer_f:
+            cmd += ["--primer_f", params.primer_f]
+        if params.primer_r:
+            cmd += ["--primer_r", params.primer_r]
+        if params.metadata:
+            cmd += ["--metadata", metadata_path]
+        if db_paths_json:
+            cmd += ["--db_paths", db_paths_json]
+
+    elif marker == "PACBIO":
+        # ── PacBio CCS long-read 16S pipeline ──────────────────────────────
+        cmd = [
+            "Rscript", str(R_SCRIPTS_DIR / "pacbio_pipeline.R"),
+            "--input_dir",  input_dir,
+            "--output_dir", output_dir,
+            "--min_length", str(params.pb_min_len),
+            "--max_length", str(params.pb_max_len),
+            "--maxEE",      str(params.pb_maxEE),
+            "--threads",    str(4),
+            "--region",     params.pb_region,
+            "--job_name",   params.job_name or job_id,
+            "--pool",       params.pool,
+            "--dbPath",     db_path,
+            "--minBoot",    str(params.minBoot),
+            "--topN",       str(params.topN),
+        ]
+        if params.primer_f:
+            cmd += ["--primer_f", params.primer_f]
+        if params.primer_r:
+            cmd += ["--primer_r", params.primer_r]
+        if params.metadata:
+            cmd += ["--metadata", metadata_path]
+        if db_paths_json:
+            cmd += ["--db_paths_json", db_paths_json]
+
+    else:
+        # ── 16S / 12S / 18S-nema — standard DADA2 pipeline ─────────────────
+        cmd = [
+            "Rscript", str(R_SCRIPTS_DIR / "dada2_pipeline.R"),
+            "--input",         input_dir,      "--output",        output_dir,
+            "--marker",        params.marker,  "--truncLen_F",    str(params.truncLen_F),
+            "--truncLen_R",    str(params.truncLen_R),
+            "--maxEE_F",       str(params.maxEE_F),
+            "--maxEE_R",       str(params.maxEE_R),
+            "--trimLeft_F",    str(params.trimLeft_F),
+            "--trimLeft_R",    str(params.trimLeft_R),
+            "--nbases",        str(int(params.nbases)),
+            "--pool",          params.pool,
+            "--chimeraMethod", params.chimeraMethod,
+            "--taxDatabase",   params.taxDatabase,
+            "--dbPath",        db_path,
+            "--minBoot",       str(params.minBoot),
+            "--topN",          str(params.topN),
+            "--metadata",      metadata_path,
+            "--db_paths_json", db_paths_json,
+        ]
+        if params.run_tax4fun:
+            cmd += ["--tax4fun", "TRUE"]
+            if db_paths_json:
+                cmd += ["--tax4fun_ref", ""]  # will be auto-detected from db_paths.json
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        with jobs_lock:
+            jobs[job_id]["pid"] = proc.pid
+        log_lines: list[str] = []
+        save_counter = 0
+
+        # ── Step timing tracking ──────────────────────────────────────
+        step_history: list[dict] = []
+        cur_step_label: str | None = None
+        cur_step_start: float | None = None
+
+        with open(log_file, "w") as lf:
+            for raw in proc.stdout:  # type: ignore
+                line = raw.rstrip()
+                if not line:
+                    continue
+                lf.write(line + "\n"); lf.flush()
+
+                if line.startswith("CHECKPOINT:"):
+                    # R script hit a checkpoint — pause and show warning to user
+                    try:
+                        body = line[11:]  # "low_merge|{json}"
+                        chk_type, chk_json = body.split("|", 1) if "|" in body else (body, "{}")
+                        chk_data = json.loads(chk_json)
+                        with jobs_lock:
+                            jobs[job_id]["status"]          = "waiting_checkpoint"
+                            jobs[job_id]["step_label"]      = "⚠️  Low merge rate — waiting for user decision"
+                            jobs[job_id]["checkpoint_type"] = chk_type.strip()
+                            jobs[job_id]["checkpoint_data"] = chk_data
+                            log_lines.append(f"⚠️ Checkpoint: merged={chk_data.get('merged_pct',0):.1f}%, nonchim={chk_data.get('nonchim_pct',0):.1f}%")
+                            jobs[job_id]["log_lines"] = log_lines[-5:]
+                        save_jobs()
+                    except Exception as e:
+                        print(f"[checkpoint] parse error: {e}")
+
+                elif line.startswith("PROGRESS:"):
+                    try:
+                        body = line[9:]
+                        pct_str, label = body.split("|", 1) if "|" in body else (body, "")
+                        new_label = label.strip()
+
+                        # Detect step transition — new label = new step
+                        if new_label and new_label != cur_step_label:
+                            if cur_step_label is not None:
+                                step_history.append({
+                                    "label":      cur_step_label,
+                                    "started_at": cur_step_start,
+                                    "ended_at":   time.time(),
+                                    "status":     "completed",
+                                })
+                            cur_step_label = new_label
+                            cur_step_start = time.time()
+
+                        live_steps = step_history + (
+                            [{"label": cur_step_label, "started_at": cur_step_start,
+                              "ended_at": None, "status": "running"}]
+                            if cur_step_label else []
+                        )
+
+                        with jobs_lock:
+                            # Don't overwrite waiting_checkpoint status
+                            if jobs[job_id].get("status") != "waiting_checkpoint":
+                                jobs[job_id]["status"] = "running"
+                            jobs[job_id]["progress"]     = int(pct_str)
+                            jobs[job_id]["step_label"]   = new_label
+                            jobs[job_id]["step_history"] = live_steps
+                            if new_label:
+                                log_lines.append(new_label)
+                                jobs[job_id]["log_lines"] = log_lines[-5:]
+                    except Exception:
+                        pass
+                else:
+                    kws = ("Step ", "Done", "Found", "ASV", "read", "Filter",
+                           "Chimera", "Merge", "Learn", "Denois", "Taxonomy", "checkpoint")
+                    if any(k.lower() in line.lower() for k in kws):
+                        log_lines.append(line)
+                        with jobs_lock:
+                            jobs[job_id]["log_lines"] = log_lines[-5:]
+
+                # Save to disk every ~20 lines
+                save_counter += 1
+                if save_counter % 20 == 0:
+                    save_jobs()
+
+        proc.wait(timeout=7200)
+        now = time.time()
+
+        # Close the last step
+        if cur_step_label is not None:
+            step_history.append({
+                "label":      cur_step_label,
+                "started_at": cur_step_start,
+                "ended_at":   now,
+                "status":     "completed" if proc.returncode == 0 else "error",
+            })
+
+        # ── PICRUSt2 functional prediction (post-pipeline) ────────────────
+        if proc.returncode == 0 and params.run_picrust2:
+            try:
+                from picrust2_pipeline import run_picrust2
+                with jobs_lock:
+                    jobs[job_id]["step_label"] = "PICRUSt2 functional prediction..."
+                    jobs[job_id]["progress"]   = 95
+
+                asv_fasta = str(Path(output_dir) / "asvs.fasta")
+                asv_table = str(Path(output_dir) / "asv_table.csv")
+                pic_out   = str(Path(output_dir) / "PICRUSt2")
+
+                if Path(asv_fasta).exists() and Path(asv_table).exists():
+                    pic_result = run_picrust2(
+                        job_id          = job_id,
+                        asv_fasta       = asv_fasta,
+                        asv_table_csv   = asv_table,
+                        output_dir      = pic_out,
+                        threads         = 4,
+                    )
+                    with jobs_lock:
+                        jobs[job_id]["picrust2"] = pic_result
+                else:
+                    with jobs_lock:
+                        jobs[job_id]["picrust2"] = {
+                            "success": False,
+                            "message": "ASV FASTA or table not found — PICRUSt2 skipped"
+                        }
+            except Exception as e:
+                with jobs_lock:
+                    jobs[job_id]["picrust2"] = {"success": False, "message": str(e)}
+
+        with jobs_lock:
+            if proc.returncode == 0:
+                jobs[job_id]["status"]   = "completed"
+                jobs[job_id]["progress"] = 100
+            else:
+                jobs[job_id]["status"] = "error"
+                with open(log_file) as lf:
+                    jobs[job_id]["error"] = "".join(lf.readlines()[-30:])
+            jobs[job_id]["finished_at"]  = now
+            jobs[job_id]["step_history"] = step_history
+            save_jobs()
+
+    except subprocess.TimeoutExpired:
+        with jobs_lock:
+            jobs[job_id]["status"]      = "error"
+            jobs[job_id]["error"]       = "Timeout — exceeded 2 hours"
+            jobs[job_id]["finished_at"] = time.time()
+            save_jobs()
+    except Exception as e:
+        with jobs_lock:
+            jobs[job_id]["status"]      = "error"
+            jobs[job_id]["error"]       = str(e)
+            jobs[job_id]["finished_at"] = time.time()
+            save_jobs()
+
+# ── 3. Status ─────────────────────────────────────────────────────────────────
+@app.get("/status/{job_id}")
+def get_status(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    return jobs[job_id]
+
+# ── 4. Progress + logs ────────────────────────────────────────────────────────
+@app.get("/progress/{job_id}")
+def get_progress(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+
+    cpu_pct:     float | None = None
+    ram_mb:      float | None = None
+    ram_total_mb: float | None = None
+
+    if jobs[job_id].get("status") == "running" and HAS_PSUTIL:
+        try:
+            pid = jobs[job_id].get("pid")
+            if pid:
+                # Reuse cached Process so cpu_percent() has a prior baseline
+                if pid not in _proc_cache:
+                    _proc_cache[pid] = psutil.Process(pid)
+                    # First call establishes baseline — will read 0 this time,
+                    # accurate value on next poll (~2 s later)
+                    _proc_cache[pid].cpu_percent(interval=None)
+
+                p = _proc_cache[pid]
+                children = p.children(recursive=True)
+                all_procs = [p] + children
+
+                raw_cpu  = sum(
+                    pp.cpu_percent(interval=None)
+                    for pp in all_procs if pp.is_running()
+                )
+                ram_mb   = round(sum(
+                    pp.memory_info().rss
+                    for pp in all_procs if pp.is_running()
+                ) / 1024 / 1024, 1)
+
+                # Normalize CPU to 0-100 % of full machine capacity
+                # logical=True counts hyperthreads (e.g. 4-core/8-thread → 8)
+                n_logical = psutil.cpu_count(logical=True)  or 1
+                n_physical= psutil.cpu_count(logical=False) or 1
+                cpu_pct   = round(raw_cpu / n_logical, 1)
+
+            else:
+                # Fallback: system-wide (no PID yet)
+                n_logical  = psutil.cpu_count(logical=True)  or 1
+                n_physical = psutil.cpu_count(logical=False) or 1
+                cpu_pct    = round(psutil.cpu_percent(interval=None), 1)
+                vm         = psutil.virtual_memory()
+                ram_mb     = round(vm.used / 1024 / 1024, 1)
+
+            # Always report machine totals for the UI
+            vm_total    = psutil.virtual_memory()
+            ram_total_mb= round(vm_total.total / 1024 / 1024, 1)
+
+        except Exception:
+            # Process may have ended — clean up cache
+            if pid and pid in _proc_cache:
+                del _proc_cache[pid]
+
+    # Collect static machine info (available even when not running)
+    cpu_info: dict = {}
+    if HAS_PSUTIL:
+        try:
+            cpu_info = {
+                "logical":  psutil.cpu_count(logical=True)  or 1,
+                "physical": psutil.cpu_count(logical=False) or 1,
+                "ram_total_mb": round(
+                    psutil.virtual_memory().total / 1024 / 1024, 1),
+            }
+        except Exception:
+            pass
+
+    return {
+        "percent":      jobs[job_id].get("progress", 0),
+        "logs":         jobs[job_id].get("log_lines", []),
+        "step_label":   jobs[job_id].get("step_label", ""),
+        "cpu_pct":      cpu_pct,
+        "ram_mb":       ram_mb,
+        "ram_total_mb": ram_total_mb,
+        "started_at":   jobs[job_id].get("started_at"),
+        **cpu_info,
+    }
+
+# ── 5. Job detail (step breakdown) ───────────────────────────────────────────
+@app.get("/detail/{job_id}")
+def get_detail(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    j = jobs[job_id]
+    started  = j.get("started_at")
+    finished = j.get("finished_at")
+    total_secs = round(finished - started, 1) if started and finished else None
+    return {
+        "status":       j.get("status"),
+        "started_at":   started,
+        "finished_at":  finished,
+        "total_secs":   total_secs,
+        "step_history": j.get("step_history", []),
+        "error":        j.get("error", ""),
+    }
+
+# ── 5b. All jobs dashboard ────────────────────────────────────────────────────
+@app.get("/jobs")
+def list_jobs():
+    summary = []
+    for jid, j in jobs.items():
+        summary.append({
+            "job_id":     jid,
+            "job_name":   j.get("job_name", ""),
+            "status":     j.get("status"),
+            "progress":   j.get("progress", 0),
+            "marker":     j.get("marker", "—"),
+            "database":   j.get("database", "—"),
+            "files":      j.get("files", []),
+            "step_label": j.get("step_label", ""),
+            "error":      j.get("error", ""),
+            "started_at": j.get("started_at"),
+        })
+    return {"jobs": summary, "max_workers": MAX_WORKERS}
+
+# ── 6. Cancel job ─────────────────────────────────────────────────────────────
+@app.delete("/jobs/{job_id}")
+def cancel_job(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    with jobs_lock:
+        jobs[job_id]["status"]     = "cancelled"
+        jobs[job_id]["step_label"] = "Cancelled by user"
+        save_jobs()
+    return {"job_id": job_id, "status": "cancelled"}
+
+# ── 6b. Checkpoint continue/abort ─────────────────────────────────────────────
+@app.post("/jobs/{job_id}/checkpoint/continue")
+def checkpoint_continue(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    output_dir = jobs[job_id].get("output_dir", "")
+    if not output_dir:
+        return JSONResponse(status_code=400, content={"error": "No output dir"})
+    # Write signal file — R script is polling for this
+    signal_file = Path(output_dir) / "checkpoint_signal"
+    signal_file.write_text("continue")
+    with jobs_lock:
+        jobs[job_id]["status"]     = "running"
+        jobs[job_id]["step_label"] = "Continuing pipeline after checkpoint..."
+        jobs[job_id].pop("checkpoint_data", None)
+        jobs[job_id].pop("checkpoint_type", None)
+        save_jobs()
+    return {"ok": True, "message": "Pipeline continuing"}
+
+@app.post("/jobs/{job_id}/checkpoint/abort")
+def checkpoint_abort(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    output_dir = jobs[job_id].get("output_dir", "")
+    if output_dir:
+        signal_file = Path(output_dir) / "checkpoint_signal"
+        signal_file.write_text("abort")
+    with jobs_lock:
+        jobs[job_id]["status"]     = "cancelled"
+        jobs[job_id]["step_label"] = "Aborted at checkpoint — adjust settings and re-run"
+        jobs[job_id].pop("checkpoint_data", None)
+        jobs[job_id].pop("checkpoint_type", None)
+        save_jobs()
+    return {"ok": True, "message": "Pipeline aborted"}
+
+# ── 6c. Reset job to "uploaded" so it can be re-run with new params -----------
+@app.post("/jobs/{job_id}/reset")
+def reset_job(job_id: str):
+    """
+    Reset a paused/aborted/error job back to 'uploaded' so the user can
+    re-submit it with adjusted parameters without re-uploading files.
+    Clears results folder so the pipeline starts fresh.
+    """
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+
+    j = jobs[job_id]
+    allowed = ("waiting_checkpoint", "cancelled", "error", "completed")
+    if j.get("status") not in allowed:
+        return JSONResponse(status_code=400,
+                            content={"error": f"Cannot reset a job with status '{j.get('status')}'"})
+
+    # Write abort signal if pipeline is still waiting at checkpoint
+    output_dir = j.get("output_dir", "")
+    if output_dir:
+        signal_file = Path(output_dir) / "checkpoint_signal"
+        try:
+            signal_file.write_text("abort")
+        except Exception:
+            pass
+        # Remove results so R starts fresh
+        try:
+            shutil.rmtree(output_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    with jobs_lock:
+        jobs[job_id]["status"]          = "uploaded"
+        jobs[job_id]["progress"]        = 0
+        jobs[job_id]["step_label"]      = "Waiting to re-run..."
+        jobs[job_id]["step_history"]    = []
+        jobs[job_id]["log_lines"]       = []
+        jobs[job_id].pop("checkpoint_data", None)
+        jobs[job_id].pop("checkpoint_type", None)
+        jobs[job_id].pop("output_dir", None)
+        jobs[job_id].pop("error", None)
+        jobs[job_id].pop("pid", None)
+        save_jobs()
+
+    return {"ok": True, "job_id": job_id, "status": "uploaded"}
+
+# ── 6d. Get checkpoint data ────────────────────────────────────────────────────
+@app.get("/jobs/{job_id}/checkpoint")
+def get_checkpoint(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    j = jobs[job_id]
+    if j.get("status") != "waiting_checkpoint":
+        return JSONResponse(status_code=400, content={"error": "No active checkpoint"})
+    return {
+        "checkpoint_type": j.get("checkpoint_type"),
+        "checkpoint_data": j.get("checkpoint_data", {}),
+    }
+
+# ── 7. Replot with custom colours ─────────────────────────────────────────────
+class ReplotBody(BaseModel):
+    colors: dict   # {"Phylum": {"Bacillota": "#ff0000", ...}, "Class": {...}, ...}
+
+@app.post("/replot/{job_id}")
+def replot_job(job_id: str, body: ReplotBody):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    j = jobs[job_id]
+    if j.get("status") not in ("completed", "error"):
+        return JSONResponse(status_code=400, content={"error": "Job not completed yet"})
+
+    output_dir = j.get("output_dir", "")
+    if not output_dir or not os.path.isdir(output_dir):
+        return JSONResponse(status_code=400, content={"error": "Output directory not found"})
+
+    # Save colours to a JSON file the R script will read
+    colors_file = os.path.join(output_dir, "custom_colors.json")
+    with open(colors_file, "w") as f:
+        json.dump(body.colors, f)
+
+    # Also save a copy of the metadata file path so replot.R can load it
+    meta_path = j.get("metadata_path", "")
+
+    # Build replot.R command
+    replot_script = str(R_SCRIPTS_DIR / "replot.R")
+    cmd = [
+        "Rscript", replot_script,
+        "--output",     output_dir,
+        "--colorsFile", colors_file,
+    ]
+    if meta_path and os.path.isfile(meta_path):
+        import shutil
+        dest = os.path.join(output_dir, "metadata.csv")
+        # Only copy if the source and destination are different files
+        if os.path.abspath(meta_path) != os.path.abspath(dest):
+            shutil.copy(meta_path, dest)
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=300
+        )
+        if result.returncode != 0:
+            return JSONResponse(status_code=500, content={
+                "error": "Replot failed",
+                "detail": result.stderr[-2000:] if result.stderr else ""
+            })
+        return {"ok": True, "message": "Plots regenerated with custom colours"}
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": "Replot timed out (>5 min)"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+# ── helpers: delete files on disk for a job ──────────────────────────────────
+def _delete_job_files(job_id: str):
+    """Delete upload folder and results folder for a job (best-effort)."""
+    for folder in (UPLOAD_DIR / job_id, RESULTS_DIR / job_id):
+        if folder.exists():
+            try:
+                shutil.rmtree(folder)
+                print(f"[delete] Removed {folder}")
+            except Exception as e:
+                print(f"[delete] Could not remove {folder}: {e}")
+
+# ── 8. Delete single job from history ─────────────────────────────────────────
+@app.delete("/history/{job_id}")
+def delete_history(job_id: str):
+    """Remove a finished job from history and delete its files on disk."""
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    if jobs[job_id].get("status") == "running":
+        return JSONResponse(status_code=400, content={"error": "Cannot delete a running job"})
+    _delete_job_files(job_id)
+    with jobs_lock:
+        del jobs[job_id]
+        save_jobs()
+    return {"deleted": job_id}
+
+# -- 9a. Clear all finished history ------------------------------------------
+@app.delete("/history")
+def clear_history():
+    with jobs_lock:
+        to_del = [jid for jid, j in jobs.items()
+                  if j.get("status") in ("completed", "cancelled", "error")]
+        for jid in to_del:
+            _delete_job_files(jid)
+            del jobs[jid]
+        save_jobs()
+    return {"cleared": len(to_del)}
+
+# -- 9b. Worker config --------------------------------------------------------
+@app.get("/config")
+def get_config():
+    return {"max_workers": MAX_WORKERS}
+
+@app.post("/config")
+def set_config(cfg: WorkerConfig):
+    global MAX_WORKERS, executor
+    MAX_WORKERS = max(1, min(cfg.max_workers, 16))
+    executor.shutdown(wait=False)
+    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+    return {"max_workers": MAX_WORKERS}
+
+# -- 10. Download ZIP ---------------------------------------------------------
+@app.get("/download/{job_id}")
+def download_zip(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    output_dir = jobs[job_id].get("output_dir", str(RESULTS_DIR / job_id))
+    if not Path(output_dir).exists():
+        return JSONResponse(status_code=404, content={"error": "Results not found"})
+    import zipfile, io
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fpath in Path(output_dir).rglob("*"):
+            if fpath.is_file():
+                zf.write(fpath, fpath.relative_to(output_dir))
+    buf.seek(0)
+    from fastapi.responses import StreamingResponse
+    marker = jobs[job_id].get("marker", "")
+    safe_name = (jobs[job_id].get("job_name") or job_id).replace(" ", "_")
+    filename = f"{safe_name}_{marker}_results.zip"
+    return StreamingResponse(buf, media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+# -- 11. Replot ---------------------------------------------------------------
+@app.post("/replot/{job_id}")
+def replot(job_id: str):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    output_dir = jobs[job_id].get("output_dir", str(RESULTS_DIR / job_id))
+    if not Path(output_dir).exists():
+        return JSONResponse(status_code=404, content={"error": "Results not found"})
+    replot_script = R_SCRIPTS_DIR / "replot.R"
+    if not replot_script.exists():
+        return JSONResponse(status_code=404, content={"error": "replot.R not found"})
+    cmd = ["Rscript", str(replot_script), "--output", output_dir]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    out, _ = proc.communicate(timeout=300)
+    return {"status": "ok" if proc.returncode == 0 else "error",
+            "log": out[-2000:] if out else ""}
+
+# -- 12. Taxonomy for colour picker -------------------------------------------
+@app.get("/taxonomy/{job_id}")
+def get_taxonomy(job_id: str, level: str = "Phylum"):
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    output_dir = jobs[job_id].get("output_dir", "")
+    tax_file = Path(output_dir) / "taxonomy_table.csv" if output_dir else None
+    if not tax_file or not tax_file.exists():
+        tax_file = RESULTS_DIR / job_id / "taxonomy_table.csv"
+    if not tax_file or not tax_file.exists():
+        return JSONResponse(status_code=404, content={"error": "taxonomy_table.csv not found"})
+    import csv
+    taxa = set()
+    with open(tax_file) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            val = row.get(level, "").strip()
+            if val and val not in ("NA", ""):
+                # Strip SILVA/UNITE prefixes like p__, c__, etc.
+                val = val.lstrip("dpcofgs").lstrip("_").strip()
+                if val:
+                    taxa.add(val)
+    return {"level": level, "taxa": sorted(taxa)}
+
+# -- 13. System stats ---------------------------------------------------------
+@app.get("/system-stats")
+def system_stats():
+    stats: dict = {}
+    if HAS_PSUTIL:
+        vm = psutil.virtual_memory()
+        stats["cpu_pct"]    = psutil.cpu_percent(interval=0.2)
+        stats["ram_used_mb"]  = round(vm.used / 1024**2)
+        stats["ram_total_mb"] = round(vm.total / 1024**2)
+        stats["ram_pct"]      = vm.percent
+    stats["active_jobs"] = sum(1 for j in jobs.values() if j.get("status") == "running")
+    stats["queued_jobs"] = sum(1 for j in jobs.values() if j.get("status") == "queued")
+    return stats
+
+# -- 14. Update endpoints -----------------------------------------------------
+try:
+    from updater import check_update, apply_update, save_token, get_token
+
+    @app.get("/update/check")
+    def update_check():
+        return check_update()
+
+    @app.post("/update/apply")
+    def update_apply():
+        return apply_update()
+
+    @app.post("/update/save-token")
+    def update_save_token(body: dict):
+        token = body.get("token", "")
+        if not token:
+            return JSONResponse(status_code=400, content={"error": "token required"})
+        save_token(token)
+        return {"ok": True}
+
+    @app.get("/update/token-status")
+    def update_token_status():
+        tok = get_token()
+        return {"has_token": bool(tok), "configured": bool(tok)}
+
+except ImportError:
+    pass
+
+# -- 15. License endpoints ----------------------------------------------------
+try:
+    from license import check_license, activate_license, deactivate_license
+
+    @app.get("/license/status")
+    def license_status():
+        return check_license()
+
+    @app.post("/license/activate")
+    def license_activate(body: dict):
+        key = body.get("license_key", "")
+        return activate_license(key)
+
+    @app.delete("/license/deactivate")
+    def license_deactivate():
+        return deactivate_license()
+
+    @app.post("/license/deactivate")
+    def license_deactivate_post():
+        return deactivate_license()
+
+    from license import get_machine_id as _get_mid
+    @app.get("/license/machine-id")
+    def license_machine_id():
+        return {"machine_id": _get_mid()}
+
+except ImportError:
+    pass

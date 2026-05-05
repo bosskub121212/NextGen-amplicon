@@ -1,0 +1,1509 @@
+# ============================================================
+#  DADA2 Pipeline — 16S / 12S Amplicon Analysis
+# ============================================================
+
+# ── Fix R library path (works for any user / machine) ────────
+tryCatch({
+  # 1. Add R_LIBS_USER if set (handles non-sudo installs)
+  r_libs_user <- Sys.getenv("R_LIBS_USER", unset="")
+  if (nchar(r_libs_user) > 0 && dir.exists(r_libs_user))
+    .libPaths(unique(c(r_libs_user, .libPaths())))
+
+  # 2. Scan ~/R/ for any versioned library directories
+  home_dir <- Sys.getenv("HOME", unset=path.expand("~"))
+  r_root   <- file.path(home_dir, "R")
+  if (dir.exists(r_root)) {
+    all_ver_dirs <- list.dirs(r_root, recursive=TRUE, full.names=TRUE)
+    all_ver_dirs <- all_ver_dirs[grepl("/\\d+\\.\\d+$", all_ver_dirs)]
+    if (length(all_ver_dirs) > 0)
+      .libPaths(unique(c(all_ver_dirs, .libPaths())))
+  }
+
+  # 3. Also add ~/R/library as a fallback (simple user lib)
+  simple_lib <- file.path(home_dir, "R", "library")
+  if (dir.exists(simple_lib))
+    .libPaths(unique(c(simple_lib, .libPaths())))
+
+}, error=function(e) NULL)
+
+cat("=== R Library Paths ===\n")
+cat(paste(.libPaths(), collapse = "\n"), "\n\n")
+
+suppressPackageStartupMessages({
+  library(optparse)
+  library(dada2)
+  library(jsonlite)
+})
+
+# ── Arguments ────────────────────────────────────────────────
+option_list <- list(
+  make_option("--input",         type="character"),
+  make_option("--output",        type="character"),
+  make_option("--marker",        type="character", default="16S"),
+  make_option("--truncLen_F",    type="integer",   default=240),
+  make_option("--truncLen_R",    type="integer",   default=200),
+  make_option("--maxEE_F",       type="double",    default=2),
+  make_option("--maxEE_R",       type="double",    default=2),
+  make_option("--trimLeft_F",    type="integer",   default=0),
+  make_option("--trimLeft_R",    type="integer",   default=0),
+  make_option("--nbases",        type="integer",   default=100000000),
+  make_option("--pool",          type="character", default="FALSE"),
+  make_option("--chimeraMethod", type="character", default="consensus"),
+  make_option("--taxDatabase",   type="character", default="SILVA_138"),
+  make_option("--dbPath",        type="character", default=""),
+  make_option("--minBoot",       type="integer",   default=50),
+  make_option("--topN",          type="integer",   default=30),
+  make_option("--metadata",      type="character", default=""),
+  make_option("--tax4fun",       type="logical",   default=FALSE,
+              help="Run Tax4Fun2 functional prediction (16S only)"),
+  make_option("--tax4fun_ref",   type="character", default="",
+              help="Path to Tax4Fun2_ReferenceData_v2 directory"),
+  make_option("--nema_db",       type="character", default="",
+              help="Path to 18S-NemaBase FASTA for nematode 18S mode"),
+  make_option("--db_paths_json", type="character", default="",
+              help="Path to db_paths.json for auto-detecting databases")
+)
+opt <- parse_args(OptionParser(option_list=option_list))
+
+cat("=== DADA2 Pipeline Starting ===\n")
+cat("Marker   :", opt$marker, "\n")
+cat("Database :", opt$taxDatabase, "\n\n")
+
+dir.create(opt$output, showWarnings=FALSE, recursive=TRUE)
+
+# Helper: write progress for the frontend to read
+prog <- function(pct, label) {
+  cat(sprintf("PROGRESS:%d|%s\n", pct, label))
+  flush.console()
+}
+
+prog(2, "Pipeline initialized — loading libraries")
+
+# ── Step 1: Find FASTQ files ─────────────────────────────────
+patterns <- list(
+  R1 = c("_R1.*\\.fastq$", "_R1.*\\.fastq\\.gz$", "_1\\.f(q|astq)(\\.gz)?$"),
+  R2 = c("_R2.*\\.fastq$", "_R2.*\\.fastq\\.gz$", "_2\\.f(q|astq)(\\.gz)?$")
+)
+findFASTQ <- function(dir, pats) {
+  for (p in pats) {
+    f <- sort(list.files(dir, pattern=p, full.names=TRUE))
+    if (length(f) > 0) return(f)
+  }
+  return(character(0))
+}
+fnFs <- findFASTQ(opt$input, patterns$R1)
+fnRs <- findFASTQ(opt$input, patterns$R2)
+if (length(fnFs) == 0) stop("No FASTQ files found in: ", opt$input)
+cat("Found R1:", length(fnFs), "files\n")
+cat("Found R2:", length(fnRs), "files\n\n")
+sample_names <- sub("_R1.*|_1\\.(fq|fastq).*", "", basename(fnFs))
+prog(8, sprintf("Found %d sample(s) — ready to process", length(fnFs)))
+
+# ── Step 2: Filter & Trim ─────────────────────────────────────
+prog(12, "Step 1/5 — Filtering and trimming reads")
+cat("Step 1/5: Filter & Trim...\n")
+filtFs <- file.path(opt$output, "filtered", paste0(sample_names, "_F_filt.fastq.gz"))
+filtRs <- file.path(opt$output, "filtered", paste0(sample_names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample_names
+names(filtRs) <- sample_names
+
+out <- filterAndTrim(
+  fnFs, filtFs, fnRs, filtRs,
+  truncLen   = c(opt$truncLen_F, opt$truncLen_R),
+  trimLeft   = c(opt$trimLeft_F, opt$trimLeft_R),
+  maxN=0, maxEE=c(opt$maxEE_F, opt$maxEE_R),
+  truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=TRUE
+)
+cat("  Done. Reads passing filter:", sum(out[,2]), "\n\n")
+prog(28, sprintf("Filter & Trim done — %d reads passed", sum(out[,2])))
+
+# ── Save trimmed FastQ files → output_dir/Trim_seq/ ───────────
+tryCatch({
+  trim_dir <- file.path(opt$output, "Trim_seq")
+  dir.create(trim_dir, showWarnings=FALSE, recursive=TRUE)
+  for (i in seq_along(filtFs)) {
+    if (file.exists(filtFs[i])) {
+      dst_f <- file.path(trim_dir, paste0(sample_names[i], "_R1.trim.fastq.gz"))
+      file.copy(filtFs[i], dst_f, overwrite=TRUE)
+    }
+    if (file.exists(filtRs[i])) {
+      dst_r <- file.path(trim_dir, paste0(sample_names[i], "_R2.trim.fastq.gz"))
+      file.copy(filtRs[i], dst_r, overwrite=TRUE)
+    }
+  }
+  cat("  Trimmed FastQ saved to Trim_seq/\n")
+}, error=function(e) cat("  [skip] Trim_seq copy:", e$message, "\n"))
+
+# ── Step 3: Learn Error Rates ─────────────────────────────────
+prog(32, "Step 2/5 — Learning error rates (this takes a while...)")
+cat("Step 2/5: Learning Error Rates...\n")
+errF <- learnErrors(filtFs, nbases=opt$nbases, multithread=TRUE)
+errR <- learnErrors(filtRs, nbases=opt$nbases, multithread=TRUE)
+cat("  Done.\n\n")
+
+# ── Save Error Model plots → output_dir/Dada2/ ────────────────
+tryCatch({
+  dada2_dir <- file.path(opt$output, "Dada2")
+  dir.create(dada2_dir, showWarnings=FALSE, recursive=TRUE)
+  if (has_ggplot2) {
+    p_errF <- dada2::plotErrors(errF, nominalQ=TRUE)
+    ggplot2::ggsave(file.path(dada2_dir, "ErrorModel_R1.pdf"),
+                    p_errF, width=10, height=8, device="pdf")
+    p_errR <- dada2::plotErrors(errR, nominalQ=TRUE)
+    ggplot2::ggsave(file.path(dada2_dir, "ErrorModel_R2.pdf"),
+                    p_errR, width=10, height=8, device="pdf")
+    cat("  ErrorModel_R1.pdf + ErrorModel_R2.pdf saved to Dada2/\n")
+  }
+}, error=function(e) cat("  [skip] Error model plots:", e$message, "\n"))
+
+# ── Step 4: Denoise ───────────────────────────────────────────
+prog(48, "Step 3/5 — Denoising & ASV inference")
+cat("Step 3/5: Denoising (DADA2 Inference)...\n")
+pool_val <- if (opt$pool == "TRUE") TRUE else if (opt$pool == "FALSE") FALSE else "pseudo"
+derepFs  <- derepFastq(filtFs)
+derepRs  <- derepFastq(filtRs)
+if (!is.list(derepFs)) derepFs <- setNames(list(derepFs), sample_names)
+if (!is.list(derepRs)) derepRs <- setNames(list(derepRs), sample_names)
+names(derepFs) <- sample_names
+names(derepRs) <- sample_names
+dadaFs <- dada(derepFs, err=errF, pool=pool_val, multithread=TRUE)
+dadaRs <- dada(derepRs, err=errR, pool=pool_val, multithread=TRUE)
+if (inherits(dadaFs, "dada")) dadaFs <- setNames(list(dadaFs), sample_names)
+if (inherits(dadaRs, "dada")) dadaRs <- setNames(list(dadaRs), sample_names)
+cat("  Done.\n\n")
+
+# ── Step 5: Sequence Table & Chimera ─────────────────────────
+prog(65, "Step 4/5 — Building sequence table & removing chimeras")
+cat("Step 4/5: Sequence Table & Chimera Removal...\n")
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=FALSE)
+if (is.data.frame(mergers)) mergers <- setNames(list(mergers), sample_names)
+seqtab       <- makeSequenceTable(mergers)
+seqtab_nochim <- removeBimeraDenovo(seqtab, method=opt$chimeraMethod, multithread=TRUE)
+cat("  ASVs after chimera removal:", ncol(seqtab_nochim), "\n\n")
+
+# ── Read tracking (early) for checkpoint evaluation ───────────
+track_early <- cbind(
+  out,
+  sapply(dadaFs, function(d) sum(d$denoised)),
+  sapply(dadaRs, function(d) sum(d$denoised)),
+  sapply(mergers, function(m) sum(m$accept)),
+  rowSums(seqtab_nochim)
+)
+colnames(track_early) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")
+rownames(track_early) <- sample_names
+
+# ── CHECKPOINT: warn if merged/nonchim reads are very low ─────
+merged_pct  <- mean(track_early[,"merged"]  / pmax(track_early[,"input"], 1) * 100)
+nonchim_pct <- mean(track_early[,"nonchim"] / pmax(track_early[,"input"], 1) * 100)
+
+if (merged_pct < 10 || nonchim_pct < 10) {
+  track_list <- lapply(seq_len(nrow(track_early)), function(i) {
+    as.list(track_early[i,])
+  })
+  names(track_list) <- rownames(track_early)
+  checkpoint_data <- list(
+    type        = "low_merge_rate",
+    merged_pct  = round(merged_pct,  2),
+    nonchim_pct = round(nonchim_pct, 2),
+    n_samples   = nrow(track_early),
+    track       = track_list
+  )
+  cat(sprintf("CHECKPOINT:low_merge|%s\n",
+      toJSON(checkpoint_data, auto_unbox=TRUE)))
+  flush.console()
+
+  # Write checkpoint file for reference
+  write(toJSON(checkpoint_data, auto_unbox=TRUE),
+        file.path(opt$output, "checkpoint.json"))
+
+  # Wait for signal file (up to 2 hours)
+  signal_file <- file.path(opt$output, "checkpoint_signal")
+  cat("  [checkpoint] Waiting for user decision (merged: ",
+      round(merged_pct,1), "%, nonchim: ", round(nonchim_pct,1), "%)...\n", sep="")
+  flush.console()
+  waited <- 0
+  while (!file.exists(signal_file) && waited < 7200) {
+    Sys.sleep(2); waited <- waited + 2
+  }
+  if (!file.exists(signal_file)) {
+    stop("Checkpoint timed out — no user response after 2 hours")
+  }
+  signal <- trimws(readLines(signal_file, warn=FALSE)[1])
+  if (signal == "abort") {
+    stop("User chose to abort and adjust settings")
+  }
+  cat("  [checkpoint] User chose to continue. Proceeding...\n")
+  flush.console()
+}
+
+# ── Step 6: Taxonomy ──────────────────────────────────────────
+prog(78, sprintf("Step 5/5 — Taxonomic assignment (%d ASVs)", ncol(seqtab_nochim)))
+cat("Step 5/5: Taxonomic Assignment...\n")
+tax <- NULL
+
+db_path <- opt$dbPath
+cat("  dbPath received:", if (nchar(db_path) > 0) db_path else "(empty)", "\n")
+
+if (db_path == "" || !file.exists(db_path)) {
+  cat("  Searching for database in script directory...\n")
+  args      <- commandArgs(trailingOnly=FALSE)
+  file_arg  <- args[grepl("^--file=", args)]
+  script_dir <- if (length(file_arg) > 0)
+    dirname(sub("^--file=", "", file_arg[1]))
+  else
+    dirname(normalizePath(sys.frame(1)$ofile, mustWork=FALSE))
+  db_dir <- file.path(dirname(script_dir), "databases")
+  cat("  Looking in:", db_dir, "\n")
+
+  db_files <- list.files(db_dir, pattern="\\.fa(\\.gz)?$|\\.fasta(\\.gz)?$",
+                         full.names=TRUE, ignore.case=TRUE)
+  cat("  Found", length(db_files), "database file(s)\n")
+
+  togenus_files <- db_files[grepl("togenus|toGenus|train_set|trainset", basename(db_files), ignore.case=TRUE) &
+                             !grepl("toSpecies|tospecies|assignSpecies", basename(db_files), ignore.case=TRUE)]
+  train_files   <- db_files[grepl("train_set|trainset|nr99", basename(db_files), ignore.case=TRUE) &
+                             !grepl("toSpecies|tospecies|assignSpecies", basename(db_files), ignore.case=TRUE)]
+  other_files   <- db_files[!grepl("species|Species", basename(db_files), ignore.case=TRUE)]
+
+  if (length(togenus_files) > 0) {
+    db_path <- togenus_files[1]
+    cat("  Selected toGenus trainset:", basename(db_path), "\n")
+  } else if (length(train_files) > 0) {
+    db_path <- train_files[1]
+    cat("  Selected trainset:", basename(db_path), "\n")
+  } else if (length(other_files) > 0) {
+    db_path <- other_files[1]
+    cat("  Selected fallback:", basename(db_path), "\n")
+  } else if (length(db_files) > 0) {
+    db_path <- db_files[1]
+    cat("  Warning: using first available file:", basename(db_path), "\n")
+  }
+}
+
+cat("  Using database:", basename(db_path), "\n")
+is_species_file <- grepl("assignSpecies|toSpecies", basename(db_path), ignore.case=TRUE)
+
+if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
+  if (is_species_file) {
+    cat("  Note: '", basename(db_path), "' is an assignSpecies file.\n", sep="")
+    cat("  Skipping genus-level taxonomy (need silva_nr99_v138.2_train_set.fa.gz).\n")
+    cat("  ASV table will be saved without taxonomy.\n\n")
+  } else {
+    gc(verbose=FALSE)
+    cat("  Memory freed — starting taxonomy assignment...\n")
+
+    mem_free_gb <- tryCatch({
+      as.numeric(system("awk '/MemAvailable/ {printf \"%.1f\", $2/1048576}' /proc/meminfo",
+                        intern=TRUE))
+    }, error=function(e) NA)
+    use_threads <- if (!is.na(mem_free_gb) && mem_free_gb < 8) {
+      cat(sprintf("  Available RAM: %.1f GB — using single thread to reduce peak memory.\n",
+                  mem_free_gb))
+      FALSE
+    } else {
+      cat(sprintf("  Available RAM: %.1f GB — using multi-thread.\n",
+                  if (is.na(mem_free_gb)) 99 else mem_free_gb))
+      TRUE
+    }
+
+    tryCatch({
+      tax <- assignTaxonomy(seqtab_nochim, db_path, minBoot=opt$minBoot,
+                            multithread=use_threads, verbose=FALSE)
+      cat("  Taxonomy assigned successfully.\n\n")
+      db_dir2       <- dirname(db_path)
+      sp_candidates <- list.files(db_dir2,
+                                  pattern="(?i)assignspecies.*\\.fa(\\.gz)?$",
+                                  full.names=TRUE, perl=TRUE)
+      if (length(sp_candidates) > 0) {
+        tryCatch({
+          gc(verbose=FALSE)
+          tax <- addSpecies(tax, sp_candidates[1])
+          cat("  Species added from:", basename(sp_candidates[1]), "\n\n")
+        }, error=function(e) cat("  Species assignment skipped:", e$message, "\n\n"))
+      }
+    }, error=function(e) {
+      msg <- e$message
+      if (grepl("cannot allocate|out of memory|memory exhausted", msg, ignore.case=TRUE)) {
+        cat("  [MEMORY ERROR] Not enough RAM to load the taxonomy database.\n")
+        cat("  Try: sudo fallocate -l 16G /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile\n")
+        cat("  Error detail:", msg, "\n\n")
+      } else {
+        cat("  Taxonomy warning:", msg, "\n\n")
+      }
+    })
+  }
+} else if (opt$marker %in% c("18S","18S-nema","nematode")) {
+  # ── Nematode 18S: auto-detect NemaBase / PR2 database ────────
+  cat("  Marker is 18S/nematode — searching NemaBase / PR2...\n")
+  nema_db <- opt$nema_db
+  if (nchar(nema_db) == 0 || !file.exists(nema_db)) {
+    json_path <- opt$db_paths_json
+    if (nchar(json_path) == 0)
+      json_path <- path.expand("~/r16s-app/backend/databases/db_paths.json")
+    if (file.exists(json_path)) {
+      db_json <- tryCatch(jsonlite::fromJSON(json_path), error=function(e) list())
+      if (!is.null(db_json$NemaBase_18S) && file.exists(db_json$NemaBase_18S))
+        nema_db <- db_json$NemaBase_18S
+      else if (!is.null(db_json$PR2_18S) && file.exists(db_json$PR2_18S))
+        nema_db <- db_json$PR2_18S
+    }
+  }
+  if (nchar(nema_db) > 0 && file.exists(nema_db)) {
+    cat("  Using 18S database:", nema_db, "\n")
+    tryCatch({
+      tax <- assignTaxonomy(seqtab_nochim, nema_db, minBoot=opt$minBoot,
+                            multithread=TRUE, verbose=FALSE)
+      cat("  18S taxonomy assigned.\n\n")
+    }, error=function(e) cat("  18S taxonomy error:", e$message, "\n"))
+  } else {
+    cat("  No NemaBase/PR2 database found. Run download_databases.sh\n\n")
+  }
+} else {
+  cat("  No database file found — skipping taxonomy assignment.\n\n")
+}
+
+# ── Save Results ──────────────────────────────────────────────
+prog(90, "Saving results to output files...")
+cat("Saving results...\n")
+
+# ASV table
+asv_df          <- as.data.frame(t(seqtab_nochim))
+asv_df$sequence <- rownames(asv_df)
+write.csv(asv_df, file.path(opt$output, "asv_table.csv"), row.names=FALSE)
+
+# Read tracking
+track <- cbind(
+  out,
+  sapply(dadaFs, function(d) sum(d$denoised)),
+  sapply(dadaRs, function(d) sum(d$denoised)),
+  sapply(mergers, function(m) sum(m$accept)),
+  rowSums(seqtab_nochim)
+)
+colnames(track) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")
+rownames(track) <- sample_names
+write.csv(as.data.frame(track), file.path(opt$output, "read_tracking.csv"))
+
+# Taxonomy table + summary JSON
+tax_summary_list <- list()
+if (!is.null(tax)) {
+  write.csv(as.data.frame(tax), file.path(opt$output, "taxonomy_table.csv"))
+  # colSums(seqtab_nochim) = reads per ASV — matches tax rows (ASVs)
+  asv_counts <- colSums(seqtab_nochim)
+  for (lvl in c("Phylum","Class","Order","Family","Genus")) {
+    col_idx <- which(colnames(tax) == lvl)
+    if (length(col_idx) > 0) {
+      taxon_vec <- tax[, col_idx]
+      not_na    <- !is.na(taxon_vec) & taxon_vec != ""
+      if (sum(not_na) == 0) next
+      tbl   <- sort(tapply(asv_counts[not_na], taxon_vec[not_na], sum), decreasing=TRUE)
+      total <- sum(tbl)
+      tax_summary_list[[lvl]] <- lapply(names(tbl), function(n) {
+        list(name=n, abundance=round(as.numeric(tbl[n])/total*100, 2))
+      })
+    }
+  }
+  write(toJSON(tax_summary_list, auto_unbox=TRUE),
+        file.path(opt$output, "taxonomy_summary.json"))
+}
+
+# Summary JSON
+summary_data <- list(
+  marker       = opt$marker,
+  database     = opt$taxDatabase,
+  n_samples    = nrow(seqtab_nochim),
+  n_asvs       = ncol(seqtab_nochim),
+  total_reads  = sum(seqtab_nochim),
+  has_taxonomy = !is.null(tax),
+  output_files = list.files(opt$output, full.names=FALSE),
+  status       = "completed"
+)
+write(toJSON(summary_data, auto_unbox=TRUE), file.path(opt$output, "summary.json"))
+
+prog(92, "Generating comprehensive report plots...")
+cat("Generating plots...\n")
+
+# ── Load optional visualization packages ───────────────────────
+has_ggplot2  <- requireNamespace("ggplot2",  quietly=TRUE)
+has_reshape2 <- requireNamespace("reshape2", quietly=TRUE)
+has_vegan    <- requireNamespace("vegan",    quietly=TRUE)
+has_ape      <- requireNamespace("ape",      quietly=TRUE)
+has_pheatmap <- requireNamespace("pheatmap", quietly=TRUE)
+has_scales   <- requireNamespace("scales",   quietly=TRUE)
+if (has_ggplot2)  suppressPackageStartupMessages(library(ggplot2))
+if (has_reshape2) suppressPackageStartupMessages(library(reshape2))
+if (has_vegan)    suppressPackageStartupMessages(library(vegan))
+if (has_ape)      suppressPackageStartupMessages(library(ape))
+if (has_pheatmap) suppressPackageStartupMessages(library(pheatmap))
+
+# ── Palette helpers ────────────────────────────────────────────
+palette20 <- c("#e74c3c","#e67e22","#f1c40f","#2ecc71","#1abc9c",
+               "#3498db","#9b59b6","#e91e63","#00bcd4","#8bc34a",
+               "#ff5722","#607d8b","#795548","#ffc107","#03a9f4",
+               "#4caf50","#673ab7","#ff9800","#009688","#9e9e9e")
+
+# Extended palette for large taxon sets (top 50)
+make_pal <- function(n) {
+  base <- c(palette20,
+            "#a52a2a","#5f9ea0","#d2691e","#6495ed","#dc143c",
+            "#00ced1","#ff8c00","#9400d3","#32cd32","#ff1493",
+            "#1e90ff","#ffd700","#adff2f","#ff6347","#40e0d0",
+            "#ee82ee","#f5deb3","#00ff7f","#87ceeb","#dda0dd",
+            "#b0c4de","#ffb6c1","#7b68ee","#20b2aa","#f08080",
+            "#e0ffff","#fafad2","#d3d3d3","#90ee90","#ffb347")
+  pal <- rep(base, length.out=n)
+  pal[seq_len(n)]
+}
+
+n_samp    <- nrow(seqtab_nochim)
+samp_cols <- setNames(make_pal(n_samp), sample_names)
+
+# ── Load metadata (if provided) ────────────────────────────────
+meta_df   <- NULL
+group_vec <- NULL   # named char vector: sample → primary group value
+group_pal <- NULL   # named colour vector: primary group → colour
+grp_col   <- NULL   # column name of primary group
+
+if (!is.null(opt$metadata) && nchar(opt$metadata) > 0 && file.exists(opt$metadata)) {
+  tryCatch({
+    meta_df <- read.csv(opt$metadata, stringsAsFactors=FALSE)
+    sid_col <- names(meta_df)[tolower(names(meta_df)) %in% c("sampleid","sample_id","sample","#sampleid")][1]
+    if (!is.na(sid_col)) {
+      rownames(meta_df) <- trimws(as.character(meta_df[[sid_col]]))
+      meta_df <- meta_df[sample_names, , drop=FALSE]
+    } else {
+      rownames(meta_df) <- sample_names
+    }
+    grp_col <- names(meta_df)[tolower(names(meta_df)) %in% c("group","treatment","grp")][1]
+    if (!is.na(grp_col)) {
+      grp_vals <- trimws(as.character(meta_df[[grp_col]]))
+      grp_vals[is.na(grp_vals)] <- ""
+      if (any(nchar(grp_vals) > 0)) {
+        group_vec <- setNames(grp_vals, sample_names)
+        groups    <- unique(group_vec[nchar(group_vec) > 0])
+        group_pal <- setNames(palette20[seq_along(groups)], groups)
+        cat("  Metadata loaded:", nrow(meta_df), "samples,",
+            length(groups), "group(s):", paste(groups, collapse=", "), "\n")
+      } else {
+        cat("  Metadata loaded but no Group values — using sample colours.\n")
+      }
+    } else {
+      cat("  Metadata loaded but no Group column — using sample colours.\n")
+    }
+  }, error=function(e) cat("  [metadata] Could not load:", e$message, "\n"))
+} else {
+  cat("  No metadata provided — all samples treated as one group.\n")
+}
+
+# ── Detect ALL categorical metadata columns ────────────────────
+# meta_cols: named list col_name → named char vector (sample → value)
+# meta_pals: named list col_name → named colour vector (group → colour)
+meta_cols <- list()
+meta_pals <- list()
+
+if (!is.null(meta_df)) {
+  skip_pat <- c("sampleid","sample_id","sample","#sampleid")
+  for (i in seq_along(names(meta_df))) {
+    col <- names(meta_df)[i]
+    if (tolower(col) %in% skip_pat) next
+    vals <- trimws(as.character(meta_df[[col]]))
+    vals[vals == "NA" | is.na(vals)] <- ""
+    n_uniq <- length(unique(vals[nchar(vals) > 0]))
+    # Keep as grouping if 2–20 unique values and not all unique (i.e., not a row-ID)
+    if (n_uniq >= 2 && n_uniq <= 20 && n_uniq < n_samp) {
+      gv  <- setNames(vals, sample_names)
+      lvs <- unique(gv[nchar(gv) > 0])
+      # Offset colours so each column gets a visually distinct palette
+      offset <- (length(meta_cols) * 7) %% length(palette20)
+      gp <- setNames(palette20[(seq_along(lvs) + offset - 1) %% length(palette20) + 1], lvs)
+      meta_cols[[col]] <- gv
+      meta_pals[[col]] <- gp
+      cat("  Grouping column detected:", col, "(", n_uniq, "levels:", paste(lvs, collapse=", "), ")\n")
+    }
+  }
+  cat("  Total grouping columns:", length(meta_cols), "\n")
+}
+
+# Helper: colour per sample (by primary group if available, else by sample)
+point_col <- if (!is.null(group_vec) && !is.null(group_pal)) {
+  gv_clean <- group_vec
+  gv_clean[!gv_clean %in% names(group_pal)] <- names(group_pal)[1]
+  setNames(group_pal[gv_clean], sample_names)
+} else {
+  samp_cols
+}
+
+# ═══════════════════════════════════════════════════════════════
+#  HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+
+# Build sample × taxon relative-abundance matrix (%) — top_n taxa
+make_tax_mat <- function(level, top_n=50) {
+  if (is.null(tax)) return(NULL)
+  col_idx <- which(colnames(tax) == level)
+  if (length(col_idx) == 0) return(NULL)
+  taxa_vec <- tax[, col_idx]
+  taxa_vec[is.na(taxa_vec) | taxa_vec == ""] <- "Unclassified"
+  taxa_vec <- sub("^[a-z]__", "", taxa_vec)
+  taxa_uniq <- unique(taxa_vec)
+  mat <- sapply(taxa_uniq, function(t)
+    rowSums(seqtab_nochim[, taxa_vec == t, drop=FALSE]))
+  if (is.null(dim(mat))) mat <- matrix(mat, nrow=1, dimnames=list(sample_names, taxa_uniq))
+  mat <- mat[, order(colSums(mat), decreasing=TRUE), drop=FALSE]
+  if (ncol(mat) > top_n) {
+    other <- rowSums(mat[, (top_n+1):ncol(mat), drop=FALSE])
+    mat   <- cbind(mat[, 1:top_n, drop=FALSE], Other=other)
+  }
+  pct <- sweep(mat, 1, rowSums(mat), "/") * 100
+  pct[is.nan(pct)] <- 0
+  pct
+}
+
+# Stacked bar plot (ggplot2 or base-R fallback)
+tax_stacked_bar <- function(pct_mat, title_str, outfile,
+                             x_labels=NULL, x_title="Sample") {
+  if (is.null(pct_mat)) return(invisible(NULL))
+  n_taxa <- ncol(pct_mat)
+  n_x    <- nrow(pct_mat)
+  cols_t <- make_pal(n_taxa)
+  if (is.null(x_labels)) x_labels <- rownames(pct_mat)
+
+  if (has_ggplot2 && has_reshape2) {
+    df <- as.data.frame(pct_mat)
+    df[[x_title]] <- factor(x_labels, levels=x_labels)
+    long <- reshape2::melt(df, id.vars=x_title, variable.name="Taxon", value.name="Pct")
+    long$Taxon <- factor(long$Taxon, levels=colnames(pct_mat))
+    p <- ggplot2::ggplot(long, ggplot2::aes(x=.data[[x_title]], y=Pct, fill=Taxon)) +
+      ggplot2::geom_bar(stat="identity") +
+      ggplot2::scale_fill_manual(values=setNames(cols_t, colnames(pct_mat))) +
+      ggplot2::labs(title=title_str, x=x_title, y="Relative Abundance (%)") +
+      ggplot2::theme_bw(base_size=11) +
+      ggplot2::theme(axis.text.x=ggplot2::element_text(angle=45, hjust=1),
+                     legend.text=ggplot2::element_text(size=7),
+                     legend.key.size=ggplot2::unit(0.35,"cm"),
+                     legend.title=ggplot2::element_text(size=9))
+    w <- max(7, n_x * 1.1 + 4)
+    h <- max(6, ceiling(n_taxa / 4) * 0.4 + 5)
+    ggplot2::ggsave(outfile, p, width=w, height=h, device="pdf", limitsize=FALSE)
+  } else {
+    w <- max(9, n_x * 1.1 + 4)
+    pdf(outfile, width=w, height=6)
+    par(mar=c(8, 5, 3, max(8, max(nchar(colnames(pct_mat))) * 0.5)), xpd=TRUE)
+    barplot(t(pct_mat), beside=FALSE, col=cols_t, border=NA,
+            main=title_str, ylab="Relative Abundance (%)",
+            names.arg=x_labels, las=2, cex.names=0.8, ylim=c(0,100))
+    legend(par("usr")[2]*1.02, par("usr")[4], legend=colnames(pct_mat),
+           fill=cols_t, bty="n", cex=0.65, xpd=TRUE)
+    dev.off()
+  }
+  cat("  ", basename(outfile), "\n", sep="")
+}
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 1 — READ TRACKING LINE PLOT
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  track_df   <- as.data.frame(track)
+  step_names <- colnames(track_df)
+
+  if (has_ggplot2 && has_reshape2) {
+    df <- track_df; df$Sample <- rownames(df)
+    long <- reshape2::melt(df, id.vars="Sample", variable.name="Step", value.name="Reads")
+    long$Step <- factor(long$Step, levels=step_names)
+    p <- ggplot2::ggplot(long, ggplot2::aes(x=Step, y=Reads, group=Sample, colour=Sample)) +
+      ggplot2::geom_line(linewidth=1) +
+      ggplot2::geom_point(size=3) +
+      ggplot2::scale_colour_manual(values=samp_cols) +
+      ggplot2::labs(title="Read Counts Through Pipeline Steps",
+                    x="Pipeline Step", y="Number of Reads") +
+      ggplot2::theme_bw(base_size=11) +
+      ggplot2::theme(axis.text.x=ggplot2::element_text(angle=30, hjust=1))
+    ggplot2::ggsave(file.path(opt$output, "read_tracking_plot.pdf"),
+                    p, width=9, height=5, device="pdf")
+  } else {
+    pdf(file.path(opt$output, "read_tracking_plot.pdf"), width=9, height=5)
+    par(mar=c(7,5,3,2))
+    matplot(t(track_df), type="b", lty=1, pch=16, lwd=2, col=samp_cols, xaxt="n",
+            main="Read Counts Through Pipeline Steps",
+            ylab="Number of Reads", xlab="")
+    axis(1, at=seq_along(step_names), labels=step_names, las=2, cex.axis=0.85)
+    if (n_samp > 1) legend("topright", legend=sample_names,
+                            col=samp_cols, lty=1, lwd=2, pch=16, bty="n", cex=0.8)
+    dev.off()
+  }
+  cat("  read_tracking_plot.pdf\n")
+}, error=function(e) cat("  [skip] read_tracking plot:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 2 — QC READ-COUNT BOXPLOT
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  if (n_samp >= 3) {
+    track_df2 <- as.data.frame(track)
+    if (has_ggplot2 && has_reshape2) {
+      df <- track_df2; df$Sample <- rownames(df)
+      long <- reshape2::melt(df, id.vars="Sample", variable.name="Step", value.name="Reads")
+      long$Step <- factor(long$Step, levels=colnames(track_df2))
+      long$SampleCol <- samp_cols[long$Sample]
+      p <- ggplot2::ggplot(long, ggplot2::aes(x=Step, y=Reads)) +
+        ggplot2::geom_boxplot(fill="#3b82f620", outlier.shape=NA) +
+        ggplot2::geom_jitter(ggplot2::aes(colour=Sample), width=0.15, size=2.5) +
+        ggplot2::scale_colour_manual(values=samp_cols) +
+        ggplot2::scale_y_continuous(
+          labels = if (has_scales) scales::label_comma() else function(x) format(x, big.mark=",", scientific=FALSE)
+        ) +
+        ggplot2::labs(title="Read Count Distribution Per Pipeline Step",
+                      x="Pipeline Step", y="Read Count") +
+        ggplot2::theme_bw(base_size=11) +
+        ggplot2::theme(axis.text.x=ggplot2::element_text(angle=30, hjust=1))
+      ggplot2::ggsave(file.path(opt$output, "qc_readcount_boxplot.pdf"),
+                      p, width=9, height=5, device="pdf")
+      cat("  qc_readcount_boxplot.pdf\n")
+    }
+  }
+}, error=function(e) cat("  [skip] QC boxplot:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 3 — ASV LENGTH DISTRIBUTION
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  seq_lens <- nchar(colnames(seqtab_nochim))
+  med_len  <- median(seq_lens)
+
+  if (has_ggplot2) {
+    df <- data.frame(Length=seq_lens)
+    p  <- ggplot2::ggplot(df, ggplot2::aes(x=Length)) +
+      ggplot2::geom_histogram(bins=50, fill="#3b82f6", colour="white", linewidth=0.3) +
+      ggplot2::geom_vline(xintercept=med_len, colour="#ef4444", linetype="dashed", linewidth=1) +
+      ggplot2::annotate("text", x=med_len+2, y=Inf,
+                        label=paste("Median:", med_len, "bp"),
+                        colour="#ef4444", vjust=2, hjust=0, size=3.5) +
+      ggplot2::labs(title="ASV Length Distribution",
+                    x="Sequence Length (bp)", y="Number of ASVs") +
+      ggplot2::theme_bw(base_size=11)
+    ggplot2::ggsave(file.path(opt$output, "asv_length_distribution.pdf"),
+                    p, width=7, height=4, device="pdf")
+  } else {
+    pdf(file.path(opt$output, "asv_length_distribution.pdf"), width=7, height=4)
+    par(mar=c(4,4,3,1))
+    hist(seq_lens, breaks=50, main="ASV Length Distribution",
+         xlab="Sequence Length (bp)", ylab="Number of ASVs",
+         col="#3b82f6", border="white", las=1)
+    abline(v=med_len, col="#ef4444", lwd=2, lty=2)
+    legend("topright", legend=paste("Median:", med_len, "bp"),
+           col="#ef4444", lty=2, lwd=2, bty="n")
+    dev.off()
+  }
+  cat("  asv_length_distribution.pdf\n")
+}, error=function(e) cat("  [skip] ASV length:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 4 — ALPHA DIVERSITY
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  chao1 <- apply(seqtab_nochim, 1, function(x) {
+    s <- sum(x > 0); f1 <- sum(x == 1); f2 <- sum(x == 2)
+    if (f2 > 0) s + f1^2/(2*f2) else s + f1*(f1-1)/2
+  })
+  shannon <- apply(seqtab_nochim, 1, function(x) {
+    p <- x[x > 0] / sum(x); -sum(p * log(p))
+  })
+  simpson <- 1 - apply(seqtab_nochim, 1, function(x) {
+    p <- x / sum(x); sum(p^2)
+  })
+  alpha_df <- data.frame(
+    Sample     = sample_names,
+    TotalReads = as.integer(rowSums(seqtab_nochim)),
+    Observed   = as.integer(rowSums(seqtab_nochim > 0)),
+    Chao1      = round(chao1, 2),
+    Shannon    = round(shannon, 4),
+    Simpson    = round(simpson, 4),
+    stringsAsFactors = FALSE
+  )
+  write.csv(alpha_df, file.path(opt$output, "alpha_diversity.csv"), row.names=FALSE)
+
+  if (has_ggplot2 && has_reshape2) {
+    long <- reshape2::melt(alpha_df[, c("Sample","Observed","Chao1","Shannon","Simpson")],
+                           id.vars="Sample", variable.name="Metric", value.name="Value")
+    long$Sample <- factor(long$Sample, levels=sample_names)
+
+    # Use boxplot if metadata groups exist, else per-sample bar chart
+    if (!is.null(group_vec) && !is.null(group_pal)) {
+      long$Group <- factor(group_vec[as.character(long$Sample)], levels=names(group_pal))
+      p <- ggplot2::ggplot(long, ggplot2::aes(x=Group, y=Value, fill=Group)) +
+        ggplot2::geom_boxplot(alpha=0.7, outlier.shape=NA) +
+        ggplot2::geom_jitter(ggplot2::aes(colour=Group), width=0.18, size=2.5, alpha=0.85) +
+        ggplot2::scale_fill_manual(values=group_pal) +
+        ggplot2::scale_colour_manual(values=group_pal) +
+        ggplot2::facet_wrap(~Metric, scales="free_y", ncol=2) +
+        ggplot2::labs(title=sprintf("Alpha Diversity by %s", grp_col),
+                      x=grp_col, y="Value") +
+        ggplot2::theme_bw(base_size=11) +
+        ggplot2::theme(axis.text.x=ggplot2::element_text(angle=30, hjust=1),
+                       legend.position="none")
+    } else {
+      p <- ggplot2::ggplot(long, ggplot2::aes(x=Sample, y=Value, fill=Sample)) +
+        ggplot2::geom_bar(stat="identity") +
+        ggplot2::scale_fill_manual(values=samp_cols) +
+        ggplot2::facet_wrap(~Metric, scales="free_y", ncol=2) +
+        ggplot2::labs(title="Alpha Diversity Metrics", x="Sample", y="Value") +
+        ggplot2::theme_bw(base_size=11) +
+        ggplot2::theme(axis.text.x=ggplot2::element_text(angle=45, hjust=1),
+                       legend.position="none")
+    }
+    ggplot2::ggsave(file.path(opt$output, "alpha_diversity.pdf"),
+                    p, width=9, height=7, device="pdf")
+  } else {
+    pdf(file.path(opt$output, "alpha_diversity.pdf"), width=11, height=6)
+    par(mfrow=c(1,4), mar=c(7,4,3,1))
+    for (metric in c("Observed","Chao1","Shannon","Simpson")) {
+      barplot(alpha_df[[metric]], names.arg=alpha_df$Sample,
+              col=samp_cols, border=NA, main=metric, ylab=metric, las=2, cex.names=0.8)
+    }
+    dev.off()
+  }
+  cat("  alpha_diversity.pdf + alpha_diversity.csv\n")
+}, error=function(e) cat("  [skip] alpha diversity:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 5 — RAREFACTION CURVES (overall, coloured by sample)
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  if (has_vegan && n_samp >= 2) {
+    min_reads <- min(rowSums(seqtab_nochim))
+    step_size <- max(1, floor(min_reads / 100))
+
+    pdf(file.path(opt$output, "rarefaction_curves.pdf"), width=9, height=6)
+    vegan::rarecurve(seqtab_nochim, step=step_size, col=point_col,
+                     lwd=2, label=(n_samp <= 12),
+                     main="Rarefaction Curves", xlab="Reads Sampled", ylab="Observed ASVs")
+    abline(v=min_reads, lty=2, col="gray50")
+    legend("bottomright", paste("Min depth:", min_reads),
+           lty=2, col="gray50", bty="n", cex=0.9)
+    dev.off()
+    cat("  rarefaction_curves.pdf\n")
+  }
+}, error=function(e) cat("  [skip] rarefaction:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 6 — TAXONOMY STACKED BARS (top N per-sample + per-group)
+# ═══════════════════════════════════════════════════════════════
+top_n_taxa <- as.integer(opt$topN)   # 30 / 50 / 100 from UI
+if (!is.null(tax)) {
+  for (lvl in c("Phylum","Class","Order","Family","Genus","Species")) {
+    tryCatch({
+      m <- make_tax_mat(lvl, top_n=top_n_taxa)
+      if (is.null(m)) next
+      out_f <- file.path(opt$output, paste0("taxonomy_", tolower(lvl), ".pdf"))
+      tax_stacked_bar(m,
+                      title_str = sprintf("Relative Abundance — Top %d %s (per sample)", top_n_taxa, lvl),
+                      outfile   = out_f)
+      write.csv(as.data.frame(m),
+                file.path(opt$output, paste0("taxonomy_", tolower(lvl), ".csv")))
+    }, error=function(e) cat("  [skip] taxonomy", lvl, ":", e$message, "\n"))
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 7 — BETA DIVERSITY (PCoA / UPGMA / Heatmap / PERMANOVA)
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  if (n_samp >= 3 && has_vegan) {
+    rel_ab  <- seqtab_nochim / rowSums(seqtab_nochim)
+    bc_dist <- vegan::vegdist(rel_ab, method="bray")
+
+    # ── 7a. PCoA — coloured by each metadata column ─────────────
+    if (has_ape) {
+      pcoa_res <- ape::pcoa(bc_dist)
+      ax1    <- pcoa_res$values$Relative_eig[1] * 100
+      ax2    <- pcoa_res$values$Relative_eig[2] * 100
+      scores <- pcoa_res$vectors[, 1:min(2, ncol(pcoa_res$vectors)), drop=FALSE]
+
+      # Default PCoA (by sample or primary group)
+      pcoa_colour <- if (!is.null(group_vec)) group_vec else sample_names
+      pcoa_pal    <- if (!is.null(group_pal)) group_pal else samp_cols
+
+      if (has_ggplot2) {
+        df_pc <- data.frame(PC1=scores[,1], PC2=scores[,2],
+                            Sample=sample_names,
+                            Group=factor(pcoa_colour))
+        p <- ggplot2::ggplot(df_pc, ggplot2::aes(x=PC1, y=PC2, colour=Group, label=Sample)) +
+          ggplot2::geom_point(size=4) +
+          ggplot2::geom_text(vjust=-0.8, size=3) +
+          ggplot2::scale_colour_manual(values=pcoa_pal) +
+          ggplot2::labs(title="PCoA — Bray-Curtis Distance",
+                        x=sprintf("PC1 (%.1f%%)", ax1),
+                        y=sprintf("PC2 (%.1f%%)", ax2),
+                        colour=if (!is.null(group_vec)) "Group" else "Sample") +
+          ggplot2::theme_bw(base_size=11)
+        ggplot2::ggsave(file.path(opt$output, "beta_pcoa.pdf"),
+                        p, width=7, height=6, device="pdf")
+      } else {
+        pdf(file.path(opt$output, "beta_pcoa.pdf"), width=7, height=6)
+        par(mar=c(5,5,3,7))
+        plot(scores[,1], scores[,2], col=pcoa_pal[pcoa_colour], pch=16, cex=2,
+             main="PCoA — Bray-Curtis Distance",
+             xlab=sprintf("PC1 (%.1f%%)", ax1), ylab=sprintf("PC2 (%.1f%%)", ax2))
+        text(scores[,1], scores[,2], labels=sample_names, pos=3, cex=0.8)
+        if (!is.null(group_pal)) legend("topright", legend=names(pcoa_pal), fill=pcoa_pal, bty="n")
+        dev.off()
+      }
+      cat("  beta_pcoa.pdf\n")
+
+      # Additional PCoA per extra metadata column
+      if (has_ggplot2 && length(meta_cols) > 0) {
+        for (col_name in names(meta_cols)) {
+          tryCatch({
+            gv  <- meta_cols[[col_name]]
+            gp  <- meta_pals[[col_name]]
+            grps <- unique(gv[nchar(gv) > 0])
+            grp_factor <- factor(gv[sample_names], levels=grps)
+            df_pc2 <- data.frame(PC1=scores[,1], PC2=scores[,2],
+                                 Sample=sample_names, Group=grp_factor)
+            p2 <- ggplot2::ggplot(df_pc2, ggplot2::aes(x=PC1, y=PC2, colour=Group, label=Sample)) +
+              ggplot2::geom_point(size=4) +
+              ggplot2::geom_text(vjust=-0.8, size=3) +
+              ggplot2::scale_colour_manual(values=gp) +
+              ggplot2::labs(title=sprintf("PCoA — Bray-Curtis (coloured by %s)", col_name),
+                            x=sprintf("PC1 (%.1f%%)", ax1),
+                            y=sprintf("PC2 (%.1f%%)", ax2), colour=col_name) +
+              ggplot2::theme_bw(base_size=11)
+            safe_col <- gsub("[^a-zA-Z0-9]", "_", col_name)
+            ggplot2::ggsave(file.path(opt$output, sprintf("beta_pcoa_%s.pdf", safe_col)),
+                            p2, width=7, height=6, device="pdf")
+            cat("  beta_pcoa_", safe_col, ".pdf\n", sep="")
+          }, error=function(e) cat("  [skip] PCoA", col_name, ":", e$message, "\n"))
+        }
+      }
+    }
+
+    # ── 7b. UPGMA Dendrogram (colored by each metadata group) ────
+    hc <- hclust(bc_dist, method="average")
+
+    # Export distance matrix CSV
+    dist_csv_path <- file.path(opt$output, "bray_curtis_distance_matrix.csv")
+    write.csv(as.matrix(bc_dist), dist_csv_path)
+    cat("  bray_curtis_distance_matrix.csv\n")
+
+    # Default UPGMA (colored by primary group or all-black)
+    upgma_dir <- file.path(opt$output, "UPGMA")
+    dir.create(upgma_dir, showWarnings=FALSE, recursive=TRUE)
+
+    if (has_ggplot2 && has_ape) {
+      make_upgma_tree <- function(hc_obj, tip_colors, group_vec_col, col_name, out_prefix) {
+        tryCatch({
+          phylo_obj <- ape::as.phylo(hc_obj)
+          tip_order <- phylo_obj$tip.label
+          tip_col_vec <- tip_colors[tip_order]
+          tip_col_vec[is.na(tip_col_vec)] <- "#444444"
+
+          grp_vals <- group_vec_col[tip_order]
+          uniq_grps <- unique(grp_vals[nchar(grp_vals) > 0])
+          grp_pal_local <- tip_colors[uniq_grps]
+          grp_pal_local <- grp_pal_local[!is.na(grp_pal_local)]
+
+          w <- max(7, length(tip_order) * 0.22 + 4)
+          h <- max(6, length(tip_order) * 0.28 + 2)
+
+          # PDF
+          pdf(file.path(upgma_dir, paste0(out_prefix, ".pdf")), width=w, height=h)
+          par(mar=c(4, 2, 4, 8))
+          plot(phylo_obj, type="phylogram", tip.color=tip_col_vec,
+               cex=0.8, label.offset=0.002,
+               main=sprintf("UPGMA tree colored by %s", col_name))
+          if (length(grp_pal_local) > 0) {
+            legend("bottomright", legend=names(grp_pal_local),
+                   col=grp_pal_local, pch=19, bty="n", cex=0.8,
+                   title=col_name, xpd=TRUE)
+          }
+          dev.off()
+          cat("  UPGMA/", out_prefix, ".pdf\n", sep="")
+
+          # Save tip colors CSV
+          tc_df <- data.frame(Sample=tip_order, Group=grp_vals[tip_order],
+                              Color=tip_col_vec, stringsAsFactors=FALSE)
+          write.csv(tc_df, file.path(upgma_dir, paste0("tip_colors_", out_prefix, ".csv")),
+                    row.names=FALSE)
+        }, error=function(e) cat("  [skip] UPGMA", col_name, ":", e$message, "\n"))
+      }
+
+      if (length(meta_cols) > 0) {
+        for (col_name in names(meta_cols)) {
+          gv <- meta_cols[[col_name]]
+          gp <- meta_pals[[col_name]]
+          tip_cols_mc <- setNames(sapply(sample_names, function(s) {
+            g <- gv[s]
+            if (!is.na(g) && nchar(g) > 0 && g %in% names(gp)) gp[[g]] else "#888888"
+          }), sample_names)
+          safe_col <- gsub("[^a-zA-Z0-9]", "_", col_name)
+          make_upgma_tree(hc, tip_cols_mc, gv, col_name, safe_col)
+        }
+      } else {
+        # No metadata — plain dendrogram
+        tryCatch({
+          phylo_obj <- ape::as.phylo(hc)
+          pdf(file.path(upgma_dir, "UPGMA_all_samples.pdf"),
+              width=max(7, n_samp*0.22+4), height=max(6, n_samp*0.28+2))
+          par(mar=c(4,2,4,2))
+          plot(phylo_obj, type="phylogram", cex=0.8, label.offset=0.002,
+               main="UPGMA Dendrogram — Bray-Curtis")
+          dev.off()
+          cat("  UPGMA/UPGMA_all_samples.pdf\n")
+        }, error=function(e) cat("  [skip] UPGMA plain:", e$message, "\n"))
+      }
+    } else {
+      # Fallback: base R dendrogram
+      pdf(file.path(upgma_dir, "UPGMA_dendrogram.pdf"),
+          width=max(7, n_samp*0.8+2), height=5)
+      par(mar=c(5, 4, 3, 1))
+      plot(as.dendrogram(hc), main="UPGMA Dendrogram — Bray-Curtis",
+           ylab="Distance", hang=-1, las=2)
+      dev.off()
+      cat("  UPGMA/UPGMA_dendrogram.pdf\n")
+    }
+    # Also keep a top-level file for backward compat
+    file.copy(if (length(meta_cols) > 0)
+      file.path(upgma_dir, paste0(gsub("[^a-zA-Z0-9]","_",names(meta_cols)[1]), ".pdf"))
+      else file.path(upgma_dir, "UPGMA_all_samples.pdf"),
+      file.path(opt$output, "beta_upgma.pdf"), overwrite=TRUE)
+
+    # ── 7c. Beta-diversity distance heatmap ──────────────────────
+    dist_mat <- as.matrix(bc_dist)
+    if (has_pheatmap && length(meta_cols) > 0) {
+      ann_col <- do.call(data.frame, c(
+        lapply(meta_cols, function(gv) factor(gv[sample_names])),
+        list(stringsAsFactors=FALSE, row.names=sample_names)
+      ))
+      names(ann_col) <- names(meta_cols)
+      ann_colors <- setNames(lapply(names(meta_cols), function(cn) {
+        gp <- meta_pals[[cn]]
+        gp[names(gp) %in% unique(ann_col[[cn]])]
+      }), names(meta_cols))
+      pheatmap::pheatmap(
+        dist_mat,
+        annotation_col    = ann_col,
+        annotation_row    = ann_col,
+        annotation_colors = ann_colors,
+        color             = colorRampPalette(c("#ffffff","#3b82f6","#1e3a8a"))(50),
+        main              = "Bray-Curtis Distance Heatmap",
+        fontsize          = 8,
+        filename          = file.path(opt$output, "beta_heatmap.pdf"),
+        width             = max(5, n_samp*0.6+4),
+        height            = max(5, n_samp*0.6+4)
+      )
+    } else if (has_pheatmap) {
+      pheatmap::pheatmap(
+        dist_mat,
+        color    = colorRampPalette(c("#ffffff","#3b82f6","#1e3a8a"))(50),
+        main     = "Bray-Curtis Distance Heatmap",
+        fontsize = 8,
+        filename = file.path(opt$output, "beta_heatmap.pdf"),
+        width    = max(5, n_samp*0.6+2),
+        height   = max(5, n_samp*0.6+2)
+      )
+    } else {
+      pdf(file.path(opt$output, "beta_heatmap.pdf"),
+          width=max(5, n_samp*0.6+2), height=max(5, n_samp*0.6+2))
+      image(dist_mat, main="Bray-Curtis Distance Heatmap",
+            col=colorRampPalette(c("white","#3b82f6","#1e3a8a"))(50), axes=FALSE)
+      axis(1, at=seq(0,1,len=n_samp), labels=rownames(dist_mat), las=2, cex.axis=0.8)
+      axis(2, at=seq(0,1,len=n_samp), labels=rownames(dist_mat), las=2, cex.axis=0.8)
+      dev.off()
+    }
+    cat("  beta_heatmap.pdf\n")
+
+    # ── 7d. PERMANOVA + beta dispersion ──────────────────────────
+    tryCatch({
+      sink(file.path(opt$output, "beta_stats.txt"))
+      cat("=== Beta Diversity Statistics ===\n\n")
+      cat("Bray-Curtis distance matrix:\n")
+      print(round(dist_mat, 4))
+      if (length(meta_cols) > 0) {
+        for (col_name in names(meta_cols)) {
+          gv <- meta_cols[[col_name]]
+          grps <- unique(gv[nchar(gv) > 0])
+          if (length(grps) >= 2) {
+            grp_factor <- factor(gv)
+            cat(sprintf("\n\n=== PERMANOVA — %s effect ===\n", col_name))
+            perm_res <- vegan::adonis2(bc_dist ~ grp_factor, permutations=999)
+            print(perm_res)
+            cat(sprintf("\n=== Beta Dispersion — %s ===\n", col_name))
+            disp_res <- vegan::betadisper(bc_dist, grp_factor)
+            print(vegan::permutest(disp_res, permutations=999))
+          }
+        }
+      } else if (!is.null(group_vec) && length(unique(group_vec)) >= 2) {
+        grp_factor <- factor(group_vec)
+        cat("\n=== PERMANOVA (vegan::adonis2) — Group effect ===\n")
+        perm_res <- vegan::adonis2(bc_dist ~ grp_factor, permutations=999)
+        print(perm_res)
+        cat("\n=== Beta Dispersion (vegan::betadisper) ===\n")
+        disp_res <- vegan::betadisper(bc_dist, grp_factor)
+        print(vegan::permutest(disp_res, permutations=999))
+      } else {
+        cat("\n(Skipping PERMANOVA — need ≥2 groups with metadata)\n")
+      }
+      sink()
+      cat("  beta_stats.txt\n")
+    }, error=function(e) { if (sink.number() > 0) sink(); cat("  [skip] PERMANOVA:", e$message, "\n") })
+  }
+}, error=function(e) cat("  [skip] beta diversity:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 8 — PREVALENCE vs MEAN ABUNDANCE (Genus, all samples)
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  if (!is.null(tax) && n_samp >= 2) {
+    col_idx <- which(colnames(tax) == "Genus")
+    if (length(col_idx) > 0) {
+      taxa_vec  <- sub("^[a-z]__", "", tax[, col_idx])
+      taxa_vec[is.na(taxa_vec) | taxa_vec == ""] <- "Unclassified"
+      rel_ab    <- sweep(seqtab_nochim, 1, rowSums(seqtab_nochim), "/")
+      taxa_uniq <- unique(taxa_vec)
+      mat_genus <- sapply(taxa_uniq, function(t)
+        rowSums(rel_ab[, taxa_vec == t, drop=FALSE]))
+      if (is.null(dim(mat_genus)))
+        mat_genus <- matrix(mat_genus, nrow=1, dimnames=list(sample_names, taxa_uniq))
+
+      prev    <- colMeans(mat_genus > 0) * 100
+      mean_ab <- colMeans(mat_genus) * 100
+      pv_df   <- data.frame(Genus=taxa_uniq, Prevalence=prev,
+                             MeanRelAbundance=mean_ab, stringsAsFactors=FALSE)
+
+      if (has_ggplot2) {
+        top_label <- head(taxa_uniq[order(mean_ab, decreasing=TRUE)], 10)
+        pv_df$Label <- ifelse(pv_df$Genus %in% top_label, pv_df$Genus, "")
+        p <- ggplot2::ggplot(pv_df[pv_df$MeanRelAbundance > 0, ],
+                             ggplot2::aes(x=MeanRelAbundance, y=Prevalence, label=Label)) +
+          ggplot2::geom_point(alpha=0.6, colour="#3b82f6", size=2.5) +
+          ggplot2::geom_text(size=2.8, vjust=-0.6, colour="#1e293b") +
+          ggplot2::scale_x_log10() +
+          ggplot2::labs(title="Prevalence vs Mean Relative Abundance (Genus)",
+                        x="Mean Relative Abundance (%, log scale)",
+                        y="Prevalence (% samples)") +
+          ggplot2::theme_bw(base_size=11)
+        ggplot2::ggsave(file.path(opt$output, "prevalence_abundance.pdf"),
+                        p, width=8, height=6, device="pdf")
+      } else {
+        pdf(file.path(opt$output, "prevalence_abundance.pdf"), width=8, height=6)
+        par(mar=c(5,5,3,2))
+        plot(mean_ab, prev, log="x", pch=16, col="#3b82f680", cex=1.5,
+             main="Prevalence vs Mean Relative Abundance (Genus)",
+             xlab="Mean Relative Abundance (%, log scale)",
+             ylab="Prevalence (% samples)")
+        top10 <- order(mean_ab, decreasing=TRUE)[1:min(10, length(mean_ab))]
+        text(mean_ab[top10], prev[top10], labels=taxa_uniq[top10], pos=3, cex=0.7)
+        dev.off()
+      }
+      cat("  prevalence_abundance.pdf\n")
+    }
+  }
+}, error=function(e) cat("  [skip] prevalence plot:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 9 — OBSERVED ASVs PER SAMPLE
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  obs <- rowSums(seqtab_nochim > 0)
+  if (has_ggplot2) {
+    df <- data.frame(Sample=factor(sample_names, levels=sample_names),
+                     ASVs=as.integer(obs))
+    p  <- ggplot2::ggplot(df, ggplot2::aes(x=Sample, y=ASVs, fill=Sample)) +
+      ggplot2::geom_bar(stat="identity") +
+      ggplot2::scale_fill_manual(values=point_col) +
+      ggplot2::labs(title="Observed ASVs per Sample", x="Sample", y="Observed ASVs") +
+      ggplot2::theme_bw(base_size=11) +
+      ggplot2::theme(axis.text.x=ggplot2::element_text(angle=45, hjust=1),
+                     legend.position="none")
+    ggplot2::ggsave(file.path(opt$output, "observed_asvs.pdf"),
+                    p, width=max(5, n_samp*0.8+2), height=5, device="pdf")
+  } else {
+    pdf(file.path(opt$output, "observed_asvs.pdf"), width=max(5, n_samp*0.8+2), height=5)
+    par(mar=c(7,5,3,2))
+    barplot(obs, names.arg=sample_names, col=point_col, border=NA,
+            main="Observed ASVs per Sample", ylab="Observed ASVs", las=2, cex.names=0.85)
+    dev.off()
+  }
+  cat("  observed_asvs.pdf\n")
+}, error=function(e) cat("  [skip] observed ASVs:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 10 — GROUP MEAN STACKED BARS (per metadata col × level)
+# ═══════════════════════════════════════════════════════════════
+if (length(meta_cols) > 0 && !is.null(tax)) {
+  cat("Generating group mean stacked bars...\n")
+  for (col_name in names(meta_cols)) {
+    gv   <- meta_cols[[col_name]]
+    grps <- unique(gv[nchar(gv) > 0])
+    if (length(grps) < 2) next
+    safe_col <- gsub("[^a-zA-Z0-9]", "_", col_name)
+
+    for (lvl in c("Phylum","Class","Order","Family","Genus")) {
+      tryCatch({
+        col_idx <- which(colnames(tax) == lvl)
+        if (length(col_idx) == 0) next
+
+        taxa_vec  <- sub("^[a-z]__", "", tax[, col_idx])
+        taxa_vec[is.na(taxa_vec) | taxa_vec == ""] <- "Unclassified"
+        rel_ab    <- sweep(seqtab_nochim, 1, rowSums(seqtab_nochim), "/") * 100
+        taxa_uniq <- unique(taxa_vec)
+
+        mat <- sapply(taxa_uniq, function(t)
+          rowSums(rel_ab[, taxa_vec == t, drop=FALSE]))
+        if (is.null(dim(mat)))
+          mat <- matrix(mat, nrow=1, dimnames=list(sample_names, taxa_uniq))
+
+        # Mean abundance per group
+        grp_mat <- do.call(rbind, lapply(grps, function(g) {
+          idx <- which(gv == g)
+          if (length(idx) == 0) return(rep(0, ncol(mat)))
+          if (length(idx) == 1) return(mat[idx, ])
+          colMeans(mat[idx, , drop=FALSE])
+        }))
+        rownames(grp_mat) <- grps
+
+        # Top N by overall mean (uses opt$topN from UI)
+        top_n  <- min(top_n_taxa, ncol(grp_mat))
+        ord    <- order(colMeans(grp_mat), decreasing=TRUE)
+        if (ncol(grp_mat) > top_n) {
+          other  <- rowSums(grp_mat[, ord[(top_n+1):ncol(grp_mat)], drop=FALSE])
+          grp_mat <- cbind(grp_mat[, ord[1:top_n], drop=FALSE], Other=other)
+        } else {
+          grp_mat <- grp_mat[, ord, drop=FALSE]
+        }
+
+        out_f <- file.path(opt$output,
+                           sprintf("group_mean_%s_%s.pdf", safe_col, tolower(lvl)))
+        tax_stacked_bar(
+          grp_mat,
+          title_str = sprintf("Mean Relative Abundance by %s — Top %d %s",
+                               col_name, top_n_taxa, lvl),
+          outfile   = out_f,
+          x_title   = col_name
+        )
+      }, error=function(e) cat("  [skip] group mean", col_name, lvl, ":", e$message, "\n"))
+    }
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 11 — TAXONOMY HEATMAPS WITH METADATA ANNOTATION
+# ═══════════════════════════════════════════════════════════════
+if (!is.null(tax) && has_pheatmap) {
+  cat("Generating taxonomy heatmaps...\n")
+
+  # Build annotation dataframe from all metadata columns
+  ann_col_hm    <- NULL
+  ann_colors_hm <- list()
+  if (length(meta_cols) > 0) {
+    ann_col_hm <- data.frame(
+      lapply(meta_cols, function(gv) factor(gv[sample_names])),
+      row.names = sample_names, stringsAsFactors = FALSE
+    )
+    names(ann_col_hm) <- names(meta_cols)
+    for (cn in names(meta_cols)) {
+      gp <- meta_pals[[cn]]
+      lvs <- levels(ann_col_hm[[cn]])
+      ann_colors_hm[[cn]] <- gp[lvs[lvs %in% names(gp)]]
+    }
+  }
+
+  for (hm_lvl in c("Genus","Family","Phylum")) {
+    tryCatch({
+      col_idx_hm <- which(colnames(tax) == hm_lvl)
+      if (length(col_idx_hm) == 0) next
+
+      tv <- sub("^[a-z]__", "", tax[, col_idx_hm])
+      tv[is.na(tv) | tv == ""] <- "Unclassified"
+      rel_hm <- sweep(seqtab_nochim, 1, rowSums(seqtab_nochim), "/") * 100
+      tu <- unique(tv)
+      mat_hm <- sapply(tu, function(t) rowSums(rel_hm[, tv == t, drop=FALSE]))
+      if (is.null(dim(mat_hm)))
+        mat_hm <- matrix(mat_hm, nrow=1, dimnames=list(sample_names, tu))
+
+      top_n_hm <- if (hm_lvl == "Phylum") min(top_n_taxa, ncol(mat_hm)) else min(top_n_taxa, ncol(mat_hm))
+      top_taxa_hm <- names(sort(colMeans(mat_hm), decreasing=TRUE))[1:top_n_hm]
+      heat_mat_hm <- t(mat_hm[, top_taxa_hm, drop=FALSE])   # taxa × samples
+
+      hm_colors <- switch(hm_lvl,
+        Genus   = colorRampPalette(c("#f0f4ff","#3b82f6","#1e1b4b"))(100),
+        Family  = colorRampPalette(c("#fff7ed","#f97316","#431407"))(100),
+        Phylum  = colorRampPalette(c("#f0fff4","#22c55e","#14532d"))(100)
+      )
+      hm_title <- sprintf("Top %d %s — Relative Abundance Heatmap", top_n_hm, hm_lvl)
+      hm_file  <- file.path(opt$output, sprintf("taxonomy_heatmap_%s.pdf", tolower(hm_lvl)))
+      hm_w     <- max(8, n_samp * 0.6 + 4 + length(meta_cols) * 0.8)
+      hm_h     <- max(8, top_n_hm * 0.35 + 3)
+
+      pheatmap::pheatmap(
+        heat_mat_hm,
+        annotation_col    = ann_col_hm,
+        annotation_colors = if (length(ann_colors_hm) > 0) ann_colors_hm else NULL,
+        color             = hm_colors,
+        scale             = "row",
+        clustering_distance_rows = "euclidean",
+        clustering_distance_cols = "euclidean",
+        main              = hm_title,
+        fontsize_row      = max(5, min(9, 200/top_n_hm)),
+        fontsize_col      = 8,
+        filename          = hm_file,
+        width             = hm_w,
+        height            = hm_h
+      )
+      cat("  ", basename(hm_file), "\n", sep="")
+    }, error=function(e) cat("  [skip] heatmap", hm_lvl, ":", e$message, "\n"))
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 12 — GROUPED ALPHA DIVERSITY BOXPLOTS
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  if (length(meta_cols) > 0 && has_ggplot2 && has_reshape2 &&
+      file.exists(file.path(opt$output, "alpha_diversity.csv"))) {
+    cat("Generating grouped alpha boxplots...\n")
+    alpha_df2 <- read.csv(file.path(opt$output, "alpha_diversity.csv"),
+                          stringsAsFactors=FALSE)
+
+    for (col_name in names(meta_cols)) {
+      gv <- meta_cols[[col_name]]
+      gp <- meta_pals[[col_name]]
+      grps <- unique(gv[nchar(gv) > 0])
+      if (length(grps) < 2) next
+
+      alpha_df2[["Group_"]] <- gv[alpha_df2$Sample]
+      alpha_df2[["Group_"]][is.na(alpha_df2[["Group_"]])] <- ""
+      sub_df <- alpha_df2[nchar(alpha_df2[["Group_"]]) > 0, ]
+      sub_df[["Group_"]] <- factor(sub_df[["Group_"]], levels=grps)
+
+      long <- reshape2::melt(
+        sub_df[, c("Sample","Group_","Observed","Chao1","Shannon","Simpson")],
+        id.vars = c("Sample","Group_"),
+        variable.name = "Metric", value.name = "Value"
+      )
+
+      safe_col <- gsub("[^a-zA-Z0-9]", "_", col_name)
+      out_f    <- file.path(opt$output, sprintf("alpha_boxplot_%s.pdf", safe_col))
+
+      p <- ggplot2::ggplot(long, ggplot2::aes(x=Group_, y=Value, fill=Group_)) +
+        ggplot2::geom_boxplot(alpha=0.7, outlier.shape=NA) +
+        ggplot2::geom_jitter(ggplot2::aes(colour=Group_), width=0.18, size=2.5, alpha=0.85) +
+        ggplot2::scale_fill_manual(values=gp) +
+        ggplot2::scale_colour_manual(values=gp) +
+        ggplot2::facet_wrap(~Metric, scales="free_y", ncol=2) +
+        ggplot2::labs(title=sprintf("Alpha Diversity by %s", col_name),
+                      x=col_name, y="Value") +
+        ggplot2::theme_bw(base_size=11) +
+        ggplot2::theme(axis.text.x=ggplot2::element_text(angle=30, hjust=1),
+                       legend.position="none")
+      ggplot2::ggsave(out_f, p,
+                      width=max(8, length(grps)*1.8+3), height=8, device="pdf")
+      cat("  ", basename(out_f), "\n", sep="")
+    }
+  }
+}, error=function(e) cat("  [skip] grouped alpha boxplots:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 13 — GROUPED RAREFACTION CURVES (coloured by group)
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  if (has_vegan && length(meta_cols) > 0 && n_samp >= 2) {
+    cat("Generating grouped rarefaction curves...\n")
+    min_reads <- min(rowSums(seqtab_nochim))
+    step_size <- max(1, floor(min_reads / 100))
+
+    for (col_name in names(meta_cols)) {
+      gv   <- meta_cols[[col_name]]
+      gp   <- meta_pals[[col_name]]
+      grps <- unique(gv[nchar(gv) > 0])
+      if (length(grps) < 2) next
+
+      cols_samp <- setNames(sapply(sample_names, function(s) {
+        g <- gv[s]
+        if (nchar(g) > 0 && g %in% names(gp)) gp[[g]] else "#aaaaaa"
+      }), sample_names)
+
+      safe_col <- gsub("[^a-zA-Z0-9]", "_", col_name)
+      out_f    <- file.path(opt$output, sprintf("rarefaction_%s.pdf", safe_col))
+
+      pdf(out_f, width=9, height=6)
+      vegan::rarecurve(seqtab_nochim, step=step_size, col=cols_samp, lwd=2,
+                       label=(n_samp <= 12),
+                       main=sprintf("Rarefaction Curves — coloured by %s", col_name),
+                       xlab="Reads Sampled", ylab="Observed ASVs")
+      abline(v=min_reads, lty=2, col="gray50")
+      legend("bottomright", legend=grps, col=gp[grps], lty=1, lwd=2,
+             bty="n", cex=0.9, title=col_name)
+      dev.off()
+      cat("  ", basename(out_f), "\n", sep="")
+    }
+  }
+}, error=function(e) cat("  [skip] grouped rarefaction:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 14 — PREVALENCE BY GROUP (faceted per metadata col)
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  if (!is.null(tax) && n_samp >= 2 && has_ggplot2 && length(meta_cols) > 0) {
+    cat("Generating prevalence by group plots...\n")
+    col_idx_pv <- which(colnames(tax) == "Genus")
+    if (length(col_idx_pv) > 0) {
+      tv_pv  <- sub("^[a-z]__", "", tax[, col_idx_pv])
+      tv_pv[is.na(tv_pv) | tv_pv == ""] <- "Unclassified"
+      rel_pv <- sweep(seqtab_nochim, 1, rowSums(seqtab_nochim), "/")
+      tu_pv  <- unique(tv_pv)
+      mat_pv <- sapply(tu_pv, function(t) rowSums(rel_pv[, tv_pv == t, drop=FALSE]))
+      if (is.null(dim(mat_pv)))
+        mat_pv <- matrix(mat_pv, nrow=1, dimnames=list(sample_names, tu_pv))
+
+      for (col_name in names(meta_cols)) {
+        tryCatch({
+          gv   <- meta_cols[[col_name]]
+          gp   <- meta_pals[[col_name]]
+          grps <- unique(gv[nchar(gv) > 0])
+          if (length(grps) < 2) next
+
+          prev_list <- lapply(grps, function(g) {
+            idx <- which(gv == g)
+            if (length(idx) == 0) return(NULL)
+            sub_mat <- mat_pv[idx, , drop=FALSE]
+            if (is.null(dim(sub_mat))) sub_mat <- matrix(sub_mat, nrow=1)
+            data.frame(
+              Genus            = tu_pv,
+              Prevalence       = colMeans(sub_mat > 0) * 100,
+              MeanRelAbundance = colMeans(sub_mat) * 100,
+              Group            = g, stringsAsFactors = FALSE
+            )
+          })
+          prev_df <- do.call(rbind, Filter(Negate(is.null), prev_list))
+          prev_df$Group <- factor(prev_df$Group, levels=grps)
+
+          # Label top 8 per group by mean abundance
+          prev_df$Label <- ""
+          for (g in grps) {
+            idx2 <- which(prev_df$Group == g & prev_df$MeanRelAbundance > 0)
+            if (length(idx2) == 0) next
+            top8 <- idx2[order(prev_df$MeanRelAbundance[idx2], decreasing=TRUE)[1:min(8, length(idx2))]]
+            prev_df$Label[top8] <- prev_df$Genus[top8]
+          }
+
+          safe_col <- gsub("[^a-zA-Z0-9]", "_", col_name)
+          out_f    <- file.path(opt$output, sprintf("prevalence_by_%s.pdf", safe_col))
+          n_cols_facet <- min(3, length(grps))
+
+          p <- ggplot2::ggplot(prev_df[prev_df$MeanRelAbundance > 0, ],
+                               ggplot2::aes(x=MeanRelAbundance, y=Prevalence,
+                                            colour=Group, label=Label)) +
+            ggplot2::geom_point(alpha=0.7, size=2) +
+            ggplot2::geom_text(size=2.4, vjust=-0.6, show.legend=FALSE) +
+            ggplot2::scale_x_log10() +
+            ggplot2::scale_colour_manual(values=gp) +
+            ggplot2::facet_wrap(~Group, ncol=n_cols_facet) +
+            ggplot2::labs(
+              title = sprintf("Prevalence vs Mean Rel. Abundance by %s (Genus)", col_name),
+              x     = "Mean Relative Abundance (%, log scale)",
+              y     = "Prevalence (% samples)"
+            ) +
+            ggplot2::theme_bw(base_size=10) +
+            ggplot2::theme(legend.position="none")
+          ggplot2::ggsave(out_f, p,
+                          width  = max(8, n_cols_facet * 3.5 + 1),
+                          height = max(5, ceiling(length(grps)/n_cols_facet) * 3.5),
+                          device = "pdf", limitsize=FALSE)
+          cat("  ", basename(out_f), "\n", sep="")
+        }, error=function(e) cat("  [skip] prevalence by", col_name, ":", e$message, "\n"))
+      }
+    }
+  }
+}, error=function(e) cat("  [skip] prevalence by group:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 15 — ASV RICHNESS BOXPLOT BY GROUP
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  if (length(meta_cols) > 0 && has_ggplot2) {
+    cat("Generating ASV richness by group...\n")
+    obs_df <- data.frame(Sample=sample_names,
+                         ObservedASVs=as.integer(rowSums(seqtab_nochim > 0)),
+                         stringsAsFactors=FALSE)
+    # Merge metadata
+    if (nrow(metadata_df) > 0) {
+      obs_df <- merge(obs_df, metadata_df, by.x="Sample", by.y="SampleID", all.x=TRUE)
+    }
+    for (col_name in meta_cols) {
+      tryCatch({
+        out_f <- file.path(plots_dir, paste0("ASV_richness_by_", col_name, ".pdf"))
+        obs_df[[col_name]] <- factor(obs_df[[col_name]])
+        p <- ggplot2::ggplot(obs_df, ggplot2::aes_string(x=col_name, y="ObservedASVs", fill=col_name)) +
+          ggplot2::geom_boxplot(outlier.size=1.5, alpha=0.85) +
+          ggplot2::geom_jitter(width=0.15, size=1.2, alpha=0.6) +
+          ggplot2::labs(title=paste("ASV Richness by", col_name),
+                        x=col_name, y="Observed ASVs") +
+          ggplot2::theme_bw(base_size=13) +
+          ggplot2::theme(legend.position="none")
+        ggplot2::ggsave(out_f, p, width=7, height=5, device="pdf")
+        cat("  ", basename(out_f), "\n", sep="")
+      }, error=function(e) cat("  [skip] ASV richness by", col_name, ":", e$message, "\n"))
+    }
+  }
+}, error=function(e) cat("  [skip] ASV richness by group:", e$message, "\n"))
+
+# =============================================================
+#  SECTION -- TAX4FUN2 FUNCTIONAL PREDICTION (optional)
+# =============================================================
+if (isTRUE(opt$tax4fun)) {
+  cat("\n--- Tax4Fun2 Functional Prediction ---\n")
+  tryCatch({
+    if (!requireNamespace("Tax4Fun2", quietly=TRUE)) {
+      cat("  [skip] Tax4Fun2 package not installed.\n")
+      cat("  Install: Rscript -e \"install.packages('Tax4Fun2',\n")
+      cat("    repos=c('https://bwemheu.r-universe.dev','https://cloud.r-project.org'))\"\n")
+    } else {
+      tf2_dir <- file.path(opt$output_dir, "Tax4Fun2")
+      dir.create(tf2_dir, recursive=TRUE, showWarnings=FALSE)
+
+      # Export ASV sequences as FASTA
+      asv_seqs <- colnames(seqtab_nochim)
+      asv_ids  <- paste0("ASV", seq_along(asv_seqs))
+      fasta_lines <- c(rbind(paste0(">", asv_ids), asv_seqs))
+      asv_fasta <- file.path(tf2_dir, "ASVs.fasta")
+      writeLines(fasta_lines, asv_fasta)
+      cat("  ASV FASTA exported\n")
+
+      # Export abundance table
+      abund_df <- data.frame(SampleID=rownames(seqtab_nochim),
+                             as.data.frame(seqtab_nochim),
+                             stringsAsFactors=FALSE)
+      colnames(abund_df)[-1] <- asv_ids
+      abund_csv <- file.path(tf2_dir, "ASV_table.csv")
+      write.csv(abund_df, abund_csv, row.names=FALSE)
+      cat("  ASV table exported\n")
+
+      # Reference data path
+      ref_dir <- if (nchar(opt$tax4fun_ref) > 0) opt$tax4fun_ref else
+        file.path(path.expand("~"), "r16s-app", "databases",
+                  "Tax4Fun2_ReferenceData_v2")
+
+      if (!dir.exists(ref_dir)) {
+        cat("  [skip] Tax4Fun2 reference data not found at:", ref_dir, "\n")
+        cat("  Download: https://zenodo.org/record/6327578\n")
+      } else {
+        cat("  Running Tax4Fun2...\n")
+        Tax4Fun2::Tax4Fun2(
+          file_path_otu_table = abund_csv,
+          file_path_ref_data  = ref_dir,
+          path_to_working_dir = tf2_dir,
+          use_parallel        = FALSE
+        )
+        cat("  Tax4Fun2 complete. Results in:", tf2_dir, "\n")
+      }
+    }
+  }, error=function(e) cat("  [skip] Tax4Fun2:", e$message, "\n"))
+}
+
+# =============================================================
+#  DONE
+# =============================================================
+cat("\n========================================\n")
+cat("  dada2_pipeline.R completed successfully\n")
+cat("========================================\n")
+cat("Output directory:", opt$output_dir, "\n")

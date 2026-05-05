@@ -1,0 +1,128 @@
+{
+  "a3a5bb0c": {
+    "status": "uploaded",
+    "files": [
+      "Angie_1.fq",
+      "Angie_2.fq"
+    ],
+    "progress": 0,
+    "step_label": "Waiting...",
+    "marker": "\u2014",
+    "database": "\u2014"
+  },
+  "e705d48a": {
+    "status": "uploaded",
+    "files": [
+      "Angie_1.fq",
+      "Angie_2.fq"
+    ],
+    "progress": 0,
+    "step_label": "Waiting...",
+    "marker": "\u2014",
+    "database": "\u2014"
+  },
+  "25f0ce8a": {
+    "status": "error",
+    "files": [
+      "Angie_1.fq",
+      "Angie_2.fq"
+    ],
+    "progress": 65,
+    "step_label": "Aborted at checkpoint \u2014 adjust settings and re-run",
+    "marker": "12S",
+    "database": "SILVA_138.2_toGenus",
+    "job_name": "test3",
+    "started_at": 1777973132.0708008,
+    "pid": 1555,
+    "output_dir": "/home/boss/r16s-app/backend/results/25f0ce8a",
+    "metadata_path": "/home/boss/r16s-app/backend/results/25f0ce8a/metadata.csv",
+    "step_history": [
+      {
+        "label": "Pipeline initialized \u2014 loading libraries",
+        "started_at": 1777973141.636154,
+        "ended_at": 1777973141.6520593,
+        "status": "completed"
+      },
+      {
+        "label": "Found 1 sample(s) \u2014 ready to process",
+        "started_at": 1777973141.6520615,
+        "ended_at": 1777973141.6520863,
+        "status": "completed"
+      },
+      {
+        "label": "Step 1/5 \u2014 Filtering and trimming reads",
+        "started_at": 1777973141.652087,
+        "ended_at": 1777973158.2956524,
+        "status": "completed"
+      },
+      {
+        "label": "Filter & Trim done \u2014 90716 reads passed",
+        "started_at": 1777973158.2956543,
+        "ended_at": 1777973158.3167117,
+        "status": "completed"
+      },
+      {
+        "label": "Step 2/5 \u2014 Learning error rates (this takes a while...)",
+        "started_at": 1777973158.3167126,
+        "ended_at": 1777974133.3300745,
+        "status": "completed"
+      },
+      {
+        "label": "Step 3/5 \u2014 Denoising & ASV inference",
+        "started_at": 1777974133.3305423,
+        "ended_at": 1777974282.1607025,
+        "status": "completed"
+      },
+      {
+        "label": "Step 4/5 \u2014 Building sequence table & removing chimeras",
+        "started_at": 1777974282.1607046,
+        "ended_at": 1777975074.4154701,
+        "status": "error"
+      }
+    ],
+    "error": "PROGRESS:12|Step 1/5 \u2014 Filtering and trimming reads\nStep 1/5: Filter & Trim...\nCreating output directory: /home/boss/r16s-app/backend/results/25f0ce8a/filtered\n  Done. Reads passing filter: 90716\nPROGRESS:28|Filter & Trim done \u2014 90716 reads passed\n  Trimmed FastQ saved to Trim_seq/\nPROGRESS:32|Step 2/5 \u2014 Learning error rates (this takes a while...)\nStep 2/5: Learning Error Rates...\n21771840 total bases in 90716 reads from 1 samples will be used for learning the error rates.\n18143200 total bases in 90716 reads from 1 samples will be used for learning the error rates.\n  Done.\n  [skip] Error model plots: object 'has_ggplot2' not found\nPROGRESS:48|Step 3/5 \u2014 Denoising & ASV inference\nStep 3/5: Denoising (DADA2 Inference)...\nWarning message:\nIn `names<-`(`*tmp*`, value = \"Angie\") :\n  derep-class objects cannot be renamed.\nWarning message:\nIn `names<-`(`*tmp*`, value = \"Angie\") :\n  derep-class objects cannot be renamed.\nSample 1 - 90716 reads in 47187 unique sequences.\nSample 1 - 90716 reads in 26553 unique sequences.\n  Done.\nPROGRESS:65|Step 4/5 \u2014 Building sequence table & removing chimeras\nStep 4/5: Sequence Table & Chimera Removal...\n  ASVs after chimera removal: 173\nCHECKPOINT:low_merge|{\"type\":\"low_merge_rate\",\"merged_pct\":0.46,\"nonchim_pct\":0.65,\"n_samples\":1,\"track\":{\"Angie\":{\"input\":98578,\"filtered\":90716,\"denoisedF\":87820,\"denoisedR\":85730,\"merged\":458,\"nonchim\":645}}}\n  [checkpoint] Waiting for user decision (merged: 0.5%, nonchim: 0.7%)...\nError: User chose to abort and adjust settings\nExecution halted\n",
+    "finished_at": 1777975074.4154701
+  },
+  "0f4cde98": {
+    "status": "running",
+    "files": [
+      "Angie_1.fq",
+      "Angie_2.fq"
+    ],
+    "progress": 28,
+    "step_label": "Filter & Trim done \u2014 90716 reads passed",
+    "marker": "12S",
+    "database": "SILVA_138.2_toGenus",
+    "job_name": "test4",
+    "started_at": 1777975127.7985644,
+    "pid": 1849,
+    "output_dir": "/home/boss/r16s-app/backend/results/0f4cde98",
+    "metadata_path": "/home/boss/r16s-app/backend/results/0f4cde98/metadata.csv",
+    "step_history": [
+      {
+        "label": "Pipeline initialized \u2014 loading libraries",
+        "started_at": 1777975138.673891,
+        "ended_at": 1777975138.688771,
+        "status": "completed"
+      },
+      {
+        "label": "Found 1 sample(s) \u2014 ready to process",
+        "started_at": 1777975138.6887782,
+        "ended_at": 1777975138.6889677,
+        "status": "completed"
+      },
+      {
+        "label": "Step 1/5 \u2014 Filtering and trimming reads",
+        "started_at": 1777975138.688971,
+        "ended_at": 1777975155.424821,
+        "status": "completed"
+      },
+      {
+        "label": "Filter & Trim done \u2014 90716 reads passed",
+        "started_at": 1777975155.4248233,
+        "ended_at": null,
+        "status": "running"
+      }
+    ]
+  }
+}
