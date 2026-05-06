@@ -190,5 +190,97 @@
     "output_dir": "/home/boss/r16s-app/backend/results/3f9b7030",
     "error": "=== R Library Paths ===\n/home/boss/R/x86_64-pc-linux-gnu-library/4.6\n/home/boss/R/x86_64-pc-linux-gnu-library/4.6/Biobase/unitTests/VersionedClass_data/1.8\n/home/boss/R/x86_64-pc-linux-gnu-library/4.6/Biobase/unitTests/VersionedClass_data/2.0\n/usr/local/lib/R/site-library\n/usr/lib/R/site-library\n/usr/lib/R/library\n=== DADA2 Pipeline Starting ===\nMarker   : 16S\nDatabase : SILVA_138.2_toGenus\nPROGRESS:2|Pipeline initialized \u2014 loading libraries\nFound R1: 1 files\nFound R2: 1 files\nPROGRESS:8|Found 1 sample(s) \u2014 ready to process\nPROGRESS:12|Step 1/5 \u2014 Filtering and trimming reads\nStep 1/5: Filter & Trim...\nCreating output directory: /home/boss/r16s-app/backend/results/3f9b7030/filtered\nThe filter removed all reads: /home/boss/r16s-app/backend/results/3f9b7030/filtered/Angie_F_filt.fastq.gz and /home/boss/r16s-app/backend/results/3f9b7030/filtered/Angie_R_filt.fastq.gz not written.\nWarning message:\nIn filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = c(opt$truncLen_F,  :\n  No reads passed the filter. Please revisit your filtering parameters.\n  Done. Reads passing filter: 0\nPROGRESS:28|Filter & Trim done \u2014 0 reads passed\n  Trimmed FastQ saved to Trim_seq/\nPROGRESS:32|Step 2/5 \u2014 Learning error rates (this takes a while...)\nStep 2/5: Learning Error Rates...\nError in derepFastq(fls[[i]], qualityType = qualityType) :\n  Not all provided files exist.\nCalls: learnErrors -> derepFastq\nExecution halted\n",
     "finished_at": 1778036779.7387822
+  },
+  "9c09bd31": {
+    "status": "error",
+    "files": [
+      "Angie_1.fq",
+      "Angie_2.fq"
+    ],
+    "progress": 32,
+    "step_label": "Step 2/5 \u2014 Learning error rates (this takes a while...)",
+    "marker": "16S",
+    "database": "SILVA_138.2_toGenus",
+    "job_name": "test6",
+    "started_at": 1778038724.8553498,
+    "pid": 3949,
+    "output_dir": "/home/boss/r16s-app/backend/results/9c09bd31",
+    "metadata_path": "/home/boss/r16s-app/backend/results/9c09bd31/metadata.csv",
+    "step_history": [
+      {
+        "label": "Pipeline initialized \u2014 loading libraries",
+        "started_at": 1778038736.445111,
+        "ended_at": 1778038736.4577217,
+        "status": "completed"
+      },
+      {
+        "label": "Found 1 sample(s) \u2014 ready to process",
+        "started_at": 1778038736.4577239,
+        "ended_at": 1778038736.4577498,
+        "status": "completed"
+      },
+      {
+        "label": "Step 1/5 \u2014 Filtering and trimming reads",
+        "started_at": 1778038736.4577503,
+        "ended_at": 1778038739.738726,
+        "status": "completed"
+      },
+      {
+        "label": "Filter & Trim done \u2014 0 reads passed",
+        "started_at": 1778038739.738727,
+        "ended_at": 1778038739.7473004,
+        "status": "completed"
+      },
+      {
+        "label": "Step 2/5 \u2014 Learning error rates (this takes a while...)",
+        "started_at": 1778038739.747302,
+        "ended_at": 1778038739.8195398,
+        "status": "error"
+      }
+    ],
+    "error": "=== R Library Paths ===\n/home/boss/R/x86_64-pc-linux-gnu-library/4.6\n/home/boss/R/x86_64-pc-linux-gnu-library/4.6/Biobase/unitTests/VersionedClass_data/1.8\n/home/boss/R/x86_64-pc-linux-gnu-library/4.6/Biobase/unitTests/VersionedClass_data/2.0\n/usr/local/lib/R/site-library\n/usr/lib/R/site-library\n/usr/lib/R/library\n=== DADA2 Pipeline Starting ===\nMarker   : 16S\nDatabase : SILVA_138.2_toGenus\nPROGRESS:2|Pipeline initialized \u2014 loading libraries\nFound R1: 1 files\nFound R2: 1 files\nPROGRESS:8|Found 1 sample(s) \u2014 ready to process\nPROGRESS:12|Step 1/5 \u2014 Filtering and trimming reads\nStep 1/5: Filter & Trim...\nCreating output directory: /home/boss/r16s-app/backend/results/9c09bd31/filtered\nThe filter removed all reads: /home/boss/r16s-app/backend/results/9c09bd31/filtered/Angie_F_filt.fastq.gz and /home/boss/r16s-app/backend/results/9c09bd31/filtered/Angie_R_filt.fastq.gz not written.\nWarning message:\nIn filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = c(opt$truncLen_F,  :\n  No reads passed the filter. Please revisit your filtering parameters.\n  Done. Reads passing filter: 0\nPROGRESS:28|Filter & Trim done \u2014 0 reads passed\n  Trimmed FastQ saved to Trim_seq/\nPROGRESS:32|Step 2/5 \u2014 Learning error rates (this takes a while...)\nStep 2/5: Learning Error Rates...\nError in derepFastq(fls[[i]], qualityType = qualityType) :\n  Not all provided files exist.\nCalls: learnErrors -> derepFastq\nExecution halted\n",
+    "finished_at": 1778038739.8195398
+  },
+  "5a4b1ef1": {
+    "status": "running",
+    "files": [
+      "Angie_1.fq",
+      "Angie_2.fq"
+    ],
+    "progress": 28,
+    "step_label": "Filter & Trim done \u2014 90716 reads passed",
+    "marker": "18S-nema",
+    "database": "SILVA_138.2_toGenus",
+    "job_name": "test18s",
+    "started_at": 1778057869.214106,
+    "pid": 1108,
+    "output_dir": "/home/boss/r16s-app/backend/results/5a4b1ef1",
+    "metadata_path": "/home/boss/r16s-app/backend/results/5a4b1ef1/metadata.csv",
+    "step_history": [
+      {
+        "label": "Pipeline initialized \u2014 loading libraries",
+        "started_at": 1778057881.080849,
+        "ended_at": 1778057881.1008887,
+        "status": "completed"
+      },
+      {
+        "label": "Found 1 sample(s) \u2014 ready to process",
+        "started_at": 1778057881.1008918,
+        "ended_at": 1778057881.1009185,
+        "status": "completed"
+      },
+      {
+        "label": "Step 1/5 \u2014 Filtering and trimming reads",
+        "started_at": 1778057881.100919,
+        "ended_at": 1778057898.3263266,
+        "status": "completed"
+      },
+      {
+        "label": "Filter & Trim done \u2014 90716 reads passed",
+        "started_at": 1778057898.326328,
+        "ended_at": null,
+        "status": "running"
+      }
+    ]
   }
 }

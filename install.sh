@@ -63,35 +63,9 @@ fi
 
 ok "Running as user: $(whoami)"
 
-# ── GitHub PAT ────────────────────────────────────────────────────────────────
-step "GitHub access token"
-
-TOKEN_FILE="$HOME/.config/amplicon/github_token"
-mkdir -p "$(dirname "$TOKEN_FILE")"
-
-if [[ -f "$TOKEN_FILE" ]] && [[ -n "$(cat "$TOKEN_FILE" 2>/dev/null)" ]]; then
-  GITHUB_TOKEN="$(cat "$TOKEN_FILE")"
-  ok "Existing token loaded from $TOKEN_FILE"
-else
-  echo -e "  ${YELLOW}A GitHub Personal Access Token (PAT) is needed to:"
-  echo "    - Clone the private NextGen-Amplicon repository"
-  echo "    - Receive automatic updates in the future"
-  echo ""
-  echo -e "  Create one at: https://github.com/settings/tokens${NC}"
-  echo "  Required scope: repo (read access)"
-  echo ""
-  read -rsp "  Paste your GitHub PAT (input hidden): " GITHUB_TOKEN
-  echo ""
-  if [[ -z "$GITHUB_TOKEN" ]]; then
-    die "GitHub token is required."
-  fi
-  echo "$GITHUB_TOKEN" > "$TOKEN_FILE"
-  chmod 600 "$TOKEN_FILE"
-  ok "Token saved to $TOKEN_FILE"
-fi
-
-# Embed token in repo URL for authentication
-REPO_AUTH_URL="https://${GITHUB_TOKEN}@github.com/bosskub121212/NextGen-amplicon.git"
+# ── Repo URL (public — no token required) ────────────────────────────────────
+REPO_AUTH_URL="$REPO_URL"
+ok "Repository is public — no GitHub token required"
 
 # ── System packages ───────────────────────────────────────────────────────────
 step "System packages (apt)"
@@ -176,11 +150,6 @@ else
 fi
 
 cd "$INSTALL_DIR"
-
-# Persist token for future updates
-mkdir -p "$INSTALL_DIR/backend"
-echo "$GITHUB_TOKEN" > "$TOKEN_FILE"
-chmod 600 "$TOKEN_FILE"
 
 # ── Python venv + packages ─────────────────────────────────────────────────────
 step "Python environment"
