@@ -15,6 +15,7 @@ suppressPackageStartupMessages({
   library(optparse)
   library(dada2)
   library(Biostrings)
+  library(ShortRead)
   library(ggplot2)
   library(jsonlite)
 })
@@ -203,6 +204,22 @@ dir.create(filt_dir, recursive=TRUE, showWarnings=FALSE)
 fq_filt <- file.path(filt_dir, paste0(sample_names, "_filt.fastq.gz"))
 names(fq_filt) <- sample_names
 
+# ── Diagnostic: sample read lengths before filtering ─────────────
+tryCatch({
+  srec <- readFastq(fq_use[1])
+  rlens <- width(srec)
+  cat(sprintf("Read length diagnostic (first file, n=%d reads sampled):\n", min(length(rlens),500)))
+  cat(sprintf("  Min: %d bp  Median: %d bp  Max: %d bp\n",
+              min(rlens), as.integer(median(rlens)), max(rlens)))
+  cat(sprintf("  Expected range: %d-%d bp\n", opt$min_length, opt$max_length))
+  pct_in_range <- mean(rlens >= opt$min_length & rlens <= opt$max_length) * 100
+  cat(sprintf("  Reads within range: %.1f%%\n\n", pct_in_range))
+  if (pct_in_range < 5) {
+    cat("WARNING: <5%% of reads fall within the expected length range.\n")
+    cat("This may not be PacBio CCS data, or the length parameters need adjustment.\n\n")
+  }
+}, error=function(e) cat("Length diagnostic skipped:", e$message, "\n"))
+
 # PacBio CCS: filterAndTrim single-end, no truncLen, use minLen/maxLen
 out <- filterAndTrim(
   fq_use, fq_filt,
@@ -222,7 +239,14 @@ exists_filt <- file.exists(fq_filt) & file.info(fq_filt)$size > 100
 fq_filt_ok   <- fq_filt[exists_filt]
 snames_ok    <- sample_names[exists_filt]
 
-if (length(fq_filt_ok) == 0) stop("No samples passed quality filtering.")
+if (length(fq_filt_ok) == 0) {
+  stop(paste0(
+    "No samples passed quality filtering.\n",
+    "Check: (1) Is this PacBio CCS data? (2) Are length params correct? ",
+    "Current: minLen=", opt$min_length, " maxLen=", opt$max_length,
+    ", maxEE=", opt$maxEE, ", minQ=", opt$minQ
+  ))
+}
 cat(sprintf("%d/%d samples passed quality filter.\n\n",
             length(fq_filt_ok), length(sample_names)))
 
