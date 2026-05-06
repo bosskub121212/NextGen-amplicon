@@ -296,16 +296,14 @@ mergers <- mergePairs(dadaF, derepF, dadaR, derepR,
                       maxMismatch=0,
                       verbose=FALSE)
 
-# When there is only 1 sample, dada() and mergePairs() return plain objects
-# (not named lists). Wrap them NOW — after merge — so downstream
-# [[sample_name]] indexing in read-tracking works correctly.
+# When there is only 1 sample, dada() returns a dada-class object (which IS
+# a named list internally) rather than a list-of-dada. We detect this with
+# inherits(), not is.list(), because dada objects pass is.list() checks.
+# Wrap them NOW — after merge — so downstream [[sample_name]] indexing works.
 if (length(snames_ok) == 1) {
-  if (!is.list(dadaF) || is.null(names(dadaF)))
-    dadaF <- setNames(list(dadaF), snames_ok)
-  if (!is.list(dadaR) || is.null(names(dadaR)))
-    dadaR <- setNames(list(dadaR), snames_ok)
-  if (is.data.frame(mergers))
-    mergers <- setNames(list(mergers), snames_ok)
+  if (inherits(dadaF, "dada"))     dadaF   <- setNames(list(dadaF),   snames_ok)
+  if (inherits(dadaR, "dada"))     dadaR   <- setNames(list(dadaR),   snames_ok)
+  if (is.data.frame(mergers))      mergers <- setNames(list(mergers), snames_ok)
 }
 
 # ------------------------------------------------------------------
