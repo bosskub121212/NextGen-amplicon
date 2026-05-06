@@ -81,8 +81,16 @@ cat("\n")
 
 # ── Find FASTQ files ──────────────────────────────────────────
 prog(2, "Step 1/6 — Finding FASTQ files")
-fnFs_raw <- sort(list.files(input_dir, pattern="_R1.*\\.fastq(\\.gz)?$", full.names=TRUE))
-fnRs_raw <- sort(list.files(input_dir, pattern="_R2.*\\.fastq(\\.gz)?$", full.names=TRUE))
+
+# Accept both .fastq/.fastq.gz and .fq/.fq.gz, and both _R1/_R2 and _1/_2 naming
+fq_all  <- list.files(input_dir,
+                      pattern="\\.(fastq|fq)(\\.gz)?$",
+                      full.names=TRUE, recursive=FALSE)
+fnFs_raw <- sort(fq_all[grepl("_R1|_1\\.(fq|fastq)", fq_all)])
+fnRs_raw <- sort(fq_all[grepl("_R2|_2\\.(fq|fastq)", fq_all)])
+
+cat("Files found:", length(fq_all), "total,",
+    length(fnFs_raw), "R1,", length(fnRs_raw), "R2\n")
 
 if (length(fnFs_raw) == 0) stop("No R1 FASTQ files found in: ", input_dir)
 if (length(fnRs_raw) == 0) stop("No R2 FASTQ files found in: ", input_dir)
