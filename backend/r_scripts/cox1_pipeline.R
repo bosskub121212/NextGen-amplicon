@@ -95,7 +95,10 @@ write_checkpoint <- function(step, pct, msg="") {
     cp <- list(step=step, pct=pct, msg=msg, ts=format(Sys.time()))
     write(toJSON(cp, auto_unbox=TRUE), opt$checkpoint_file)
   }
-  cat(sprintf("[CHECKPOINT] %s (%.0f%%) %s\n", step, pct, msg))
+  # PROGRESS: format is parsed by the backend progress poller
+  label <- if (nchar(msg) > 0) paste0(step, ": ", msg) else step
+  cat(sprintf("PROGRESS:%.0f|%s\n", pct, label))
+  flush.console()
 }
 
 write_checkpoint("init", 2, "COX1 pipeline starting")

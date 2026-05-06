@@ -1,5 +1,5 @@
 {
   "version": "1.0.2",
   "release_date": "2026-05-06",
-  "changelog": "Fix: COX1 taxonomy crash (MIDORI2 taxLevels mismatch), ITS1/ITS2 pipeline flags mismatch with backend"
+  "changelog": "Fix: COX1 taxonomy crash (MIDORI2 taxLevels), ITS1/ITS2 flag mismatch, COX1/PacBio progress display (PROGRESS format)"
 }
