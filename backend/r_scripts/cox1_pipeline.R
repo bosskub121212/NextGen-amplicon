@@ -139,7 +139,7 @@ find_midori2_db <- function(db_paths_file=NULL) {
 
 dbs <- find_midori2_db(opt$db_paths)
 cat("MIDORI2 genus DB :", ifelse(is.null(dbs$genus), "NOT FOUND", dbs$genus), "\n")
-cat("MIDORI2 species DB:", ifelse(is.null(dbs$sp),   "NOT FOUND (addSpecies step will be skipped)"), "\n\n")
+cat("MIDORI2 species DB:", ifelse(is.null(dbs$sp),   "NOT FOUND (addSpecies step will be skipped)", dbs$sp), "\n\n")
 
 # ------------------------------------------------------------------
 # Step 1: Detect FASTQ files
@@ -450,13 +450,41 @@ write_checkpoint("taxonomy", 82, "Assigning taxonomy with MIDORI2")
 
 if (!is.null(dbs$genus) && file.exists(dbs$genus)) {
   cat("Assigning taxonomy with MIDORI2 (genus level)...\n")
-  tax <- assignTaxonomy(seqtab_final, dbs$genus, multithread=opt$threads,
-                        taxLevels=c("Kingdom","Phylum","Class","Order","Family","Genus"),
-                        minBoot=50)
+  # Note: taxLevels is omitted so DADA2 auto-detects levels from the MIDORI2
+  # FASTA headers (which contain 7 levels: Kingdom→Species). Supplying an
+  # explicit 6-level taxLevels vector causes an internal "subscript out of
+  # bounds" error in older DADA2 versions when the DB has a different count.
+  tax <- tryCatch({
+    assignTaxonomy(seqtab_final, dbs$genus,
+                   multithread = opt$threads,
+                   minBoot     = 50,
+                   verbose     = FALSE)
+  }, error = function(e) {
+    cat("WARNING: assignTaxonomy error:", e$message, "\n")
+    cat("Retrying without minBoot...\n")
+    tryCatch({
+      assignTaxonomy(seqtab_final, dbs$genus,
+                     multithread = opt$threads,
+                     verbose     = FALSE)
+    }, error = function(e2) {
+      cat("ERROR: assignTaxonomy failed completely:", e2$message, "\n")
+      cat("Creating empty taxonomy table and continuing.\n")
+      matrix(NA_character_,
+             nrow = ncol(seqtab_final), ncol = 7,
+             dimnames = list(
+               paste0("ASV", seq_len(ncol(seqtab_final))),
+               c("Kingdom","Phylum","Class","Order","Family","Genus","Species")
+             ))
+    })
+  })
 
   if (!is.null(dbs$species) && file.exists(dbs$species)) {
     cat("Adding species-level assignments...\n")
-    tax <- addSpecies(tax, dbs$species, allowMultiple=FALSE)
+    tryCatch({
+      tax <- addSpecies(tax, dbs$species, allowMultiple=FALSE)
+    }, error = function(e) {
+      cat("WARNING: addSpecies failed:", e$message, "— skipping\n")
+    })
   }
 
   rownames(tax) <- paste0("ASV", seq_len(nrow(tax)))

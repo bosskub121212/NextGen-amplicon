@@ -28,31 +28,37 @@ suppressPackageStartupMessages({
 })
 
 option_list <- list(
-  make_option("--input",       type="character", help="Input directory with FASTQ files"),
-  make_option("--output",      type="character", help="Output directory"),
-  make_option("--region",      type="character", default="ITS2",
+  # ── Names match what backend/main.py passes ──────────────────────────────
+  make_option("--input_dir",   type="character", help="Input directory with FASTQ files"),
+  make_option("--output_dir",  type="character", help="Output directory"),
+  make_option("--its_region",  type="character", default="ITS2",
               help="ITS region: ITS1 or ITS2 [default: ITS2]"),
-  make_option("--taxDatabase", type="character", default="UNITE",
-              help="Database name or path to UNITE .fasta"),
-  make_option("--dbPath",      type="character", default="",
-              help="Full path to UNITE fasta (overrides taxDatabase)"),
-  make_option("--maxEE_F",     type="double",   default=2.0),
-  make_option("--maxEE_R",     type="double",   default=2.0),
-  make_option("--minLen",      type="integer",  default=50,
-              help="Minimum read length after trimming [default: 50]"),
+  make_option("--db_paths",    type="character", default="",
+              help="Path to db_paths.json (auto-detected if absent)"),
+  make_option("--maxEE_f",     type="double",   default=2.0),
+  make_option("--maxEE_r",     type="double",   default=2.0),
+  make_option("--threads",     type="integer",  default=4),
+  make_option("--job_name",    type="character", default="ITS_job"),
+  make_option("--primer_f",    type="character", default="",
+              help="Forward primer (accepted but trimming handled by ITSxpress)"),
+  make_option("--primer_r",    type="character", default="",
+              help="Reverse primer (accepted but trimming handled by ITSxpress)"),
+  # ── Kept for backwards-compat / direct CLI use ───────────────────────────
+  make_option("--taxDatabase", type="character", default="UNITE"),
+  make_option("--dbPath",      type="character", default=""),
+  make_option("--minLen",      type="integer",  default=50),
   make_option("--minBoot",     type="integer",  default=50),
   make_option("--topN",        type="integer",  default=30),
-  make_option("--metadata",    type="character", default="",
-              help="Path to metadata CSV"),
+  make_option("--metadata",    type="character", default=""),
   make_option("--marker",      type="character", default="ITS2"),
   make_option("--nbases",      type="double",   default=1e8),
   make_option("--pool",        type="character", default="FALSE")
 )
 opt <- parse_args(OptionParser(option_list=option_list))
 
-input_dir  <- opt$input
-output_dir <- opt$output
-region     <- toupper(opt$region)
+input_dir  <- opt$input_dir
+output_dir <- opt$output_dir
+region     <- toupper(opt$its_region)
 if (!region %in% c("ITS1","ITS2")) region <- "ITS2"
 
 dir.create(output_dir, recursive=TRUE, showWarnings=FALSE)
@@ -99,7 +105,7 @@ names(filtRs) <- sample_names
 # ITS: NO truncLen; use minLen to remove tiny fragments
 out <- filterAndTrim(
   fnFs_raw, filtFs, fnRs_raw, filtRs,
-  maxN=0, maxEE=c(opt$maxEE_F, opt$maxEE_R),
+  maxN=0, maxEE=c(opt$maxEE_f, opt$maxEE_r),
   truncQ=2, rm.phix=TRUE,
   minLen=opt$minLen,        # key ITS setting — remove fragments < 50 bp
   compress=TRUE, multithread=TRUE
@@ -183,14 +189,25 @@ prog(70, "Step 6/6 — Taxonomy (UNITE)")
 cat("Step 6/6: Taxonomic Assignment (UNITE)...\n")
 
 # Find UNITE database
-db_paths_file <- file.path(dirname(dirname(input_dir)), "databases", "db_paths.json")
-unite_db <- opt$dbPath
+# Prefer --db_paths JSON (passed by main.py), fall back to --dbPath or auto-detect
+unite_db <- if (nchar(opt$dbPath) > 0) opt$dbPath else ""
 
 if (nchar(unite_db)==0 || !file.exists(unite_db)) {
-  if (file.exists(db_paths_file)) {
-    db_paths <- fromJSON(db_paths_file)
-    key <- if (region=="ITS1") "UNITE_ITS1" else "UNITE_ITS2"
-    unite_db <- db_paths[[key]]
+  # Try db_paths JSON — accept both --db_paths (new) and auto-location (old)
+  db_paths_candidates <- c(
+    opt$db_paths,
+    file.path(dirname(dirname(input_dir)), "databases", "db_paths.json")
+  )
+  for (db_paths_file in db_paths_candidates) {
+    if (nchar(db_paths_file) > 0 && file.exists(db_paths_file)) {
+      db_paths <- fromJSON(db_paths_file)
+      key <- if (region=="ITS1") "UNITE_ITS1" else "UNITE_ITS2"
+      candidate <- db_paths[[key]]
+      if (!is.null(candidate) && nchar(candidate) > 0 && file.exists(candidate)) {
+        unite_db <- candidate
+        break
+      }
+    }
   }
 }
 if (nchar(unite_db)==0 || !file.exists(unite_db)) {

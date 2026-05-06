@@ -1,5 +1,5 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "release_date": "2026-05-06",
-  "changelog": "Fix: license activation system, offline key validation, sys.path fix for backend module imports"
+  "changelog": "Fix: COX1 taxonomy crash (MIDORI2 taxLevels mismatch), ITS1/ITS2 pipeline flags mismatch with backend"
 }
