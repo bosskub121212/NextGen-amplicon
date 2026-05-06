@@ -67,10 +67,8 @@ if (is.null(opt$input_dir))  stop("--input_dir is required")
 if (is.null(opt$output_dir)) stop("--output_dir is required")
 
 dir.create(opt$output_dir, recursive=TRUE, showWarnings=FALSE)
-log_file <- file.path(opt$output_dir, "pipeline.log")
-con <- file(log_file, open="wt")
-sink(con, type="output")
-sink(con, type="message")
+# Note: do NOT use sink() here — backend reads stdout via proc.stdout.
+# Writing to a log file via sink() makes Python receive nothing.
 
 cat("=== NextGen-Amplicon PacBio CCS Pipeline ===\n")
 cat("Job     :", opt$job_name, "\n")

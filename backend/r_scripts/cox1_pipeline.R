@@ -72,10 +72,8 @@ if (is.null(opt$input_dir))  stop("--input_dir is required")
 if (is.null(opt$output_dir)) stop("--output_dir is required")
 
 dir.create(opt$output_dir, recursive=TRUE, showWarnings=FALSE)
-log_file <- file.path(opt$output_dir, "pipeline.log")
-con <- file(log_file, open="wt")
-sink(con, type="output")
-sink(con, type="message")
+# Note: do NOT use sink() here — backend reads stdout via proc.stdout.
+# Writing to a log file via sink() makes Python receive nothing.
 
 cat("=== NextGen-Amplicon COX1 Pipeline ===\n")
 cat("Job:", opt$job_name, "\n")
@@ -297,6 +295,18 @@ mergers <- mergePairs(dadaF, derepF, dadaR, derepR,
                       minOverlap=opt$min_overlap,
                       maxMismatch=0,
                       verbose=FALSE)
+
+# When there is only 1 sample, dada() and mergePairs() return plain objects
+# (not named lists). Wrap them NOW — after merge — so downstream
+# [[sample_name]] indexing in read-tracking works correctly.
+if (length(snames_ok) == 1) {
+  if (!is.list(dadaF) || is.null(names(dadaF)))
+    dadaF <- setNames(list(dadaF), snames_ok)
+  if (!is.list(dadaR) || is.null(names(dadaR)))
+    dadaR <- setNames(list(dadaR), snames_ok)
+  if (is.data.frame(mergers))
+    mergers <- setNames(list(mergers), snames_ok)
+}
 
 # ------------------------------------------------------------------
 # Step 8: Construct ASV table
@@ -742,4 +752,4 @@ cat("Finished:", format(Sys.time()), "\n")
 
 write_checkpoint("done", 100, "COX1 pipeline complete")
 
-sink(type="output"); sink(type="message"); close(con)
+cat("Pipeline stdout closed normally.\n")
