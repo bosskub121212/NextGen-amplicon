@@ -343,26 +343,45 @@ class KeygenApp(tk.Tk):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    app = KeygenApp()
+    try:
+        # Create root first so we can configure styles BEFORE building the UI
+        root = tk.Tk()
+        root.withdraw()   # hide briefly while we set up styles
 
-    # Try to apply a modern ttk theme
-    style = ttk.Style(app)
-    for theme in ("vista", "winnative", "clam", "alt", "default"):
-        if theme in style.theme_names():
-            style.theme_use(theme)
-            break
+        # Apply a modern ttk theme
+        style = ttk.Style(root)
+        for theme in ("vista", "winnative", "clam", "alt", "default"):
+            if theme in style.theme_names():
+                style.theme_use(theme)
+                break
 
-    # Make the Accent button stand out
-    style.configure(
-        "Accent.TButton",
-        font=("Segoe UI", 11, "bold"),
-        foreground="#ffffff",
-        background="#4f46e5",
-    )
-    style.map(
-        "Accent.TButton",
-        background=[("active", "#4338ca"), ("!disabled", "#4f46e5")],
-        foreground=[("!disabled", "#ffffff")],
-    )
+        # Define Accent.TButton BEFORE KeygenApp builds the UI
+        style.configure(
+            "Accent.TButton",
+            font=("Segoe UI", 11, "bold"),
+            foreground="#ffffff",
+            background="#4f46e5",
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", "#4338ca"), ("!disabled", "#4f46e5")],
+            foreground=[("!disabled", "#ffffff")],
+        )
 
-    app.mainloop()
+        root.destroy()   # discard the temp root
+
+        app = KeygenApp()
+        app.mainloop()
+
+    except Exception:
+        import traceback
+        # Show error in a messagebox so it doesn't just vanish
+        try:
+            tk.Tk().withdraw()
+            messagebox.showerror(
+                "KeyGen Startup Error",
+                traceback.format_exc()
+            )
+        except Exception:
+            print(traceback.format_exc())
+            input("Press Enter to exit...")

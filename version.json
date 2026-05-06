@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
-  "release_date": "2026-05-05",
-  "changelog": "Initial release — DADA2 pipeline with checkpoint warning, taxonomy plots, alpha/beta diversity"
+  "version": "1.0.1",
+  "release_date": "2026-05-06",
+  "changelog": "Fix: license activation system, offline key validation, sys.path fix for backend module imports"
 }

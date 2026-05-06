@@ -3,7 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
-import subprocess, os, uuid, json, threading, time, shutil
+import subprocess, os, sys, uuid, json, threading, time, shutil
+
+# Ensure backend/ directory is on sys.path so local modules (license, updater, etc.) can be imported
+sys.path.insert(0, os.path.dirname(__file__))
 
 try:
     import psutil
@@ -972,6 +975,9 @@ except ImportError:
     pass
 
 # -- 15. License endpoints ----------------------------------------------------
+class ActivateLicenseRequest(BaseModel):
+    license_key: str
+
 try:
     from license import check_license, activate_license, deactivate_license
 
@@ -980,9 +986,8 @@ try:
         return check_license()
 
     @app.post("/license/activate")
-    def license_activate(body: dict):
-        key = body.get("license_key", "")
-        return activate_license(key)
+    def license_activate(req: ActivateLicenseRequest):
+        return activate_license(req.license_key)
 
     @app.delete("/license/deactivate")
     def license_deactivate():
@@ -997,5 +1002,6 @@ try:
     def license_machine_id():
         return {"machine_id": _get_mid()}
 
-except ImportError:
-    pass
+except Exception as _lic_err:
+    print(f"[license] Could not load license module: {_lic_err}")
+    import traceback; traceback.print_exc()
