@@ -188,16 +188,25 @@ step "R packages"
 
 info "Installing CRAN + Bioconductor packages (this takes 15–40 min first time)..."
 
-Rscript - <<'RSCRIPT'
+# Ensure user-writable R library
+R_USER_LIB="$HOME/R/library"
+mkdir -p "$R_USER_LIB"
+
+R_LIBS_USER="$R_USER_LIB" Rscript - <<'RSCRIPT'
 options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+# ── Use writable user library ─────────────────────────────────────────────
+user_lib <- Sys.getenv("R_LIBS_USER", unset = file.path(Sys.getenv("HOME"), "R", "library"))
+dir.create(user_lib, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(user_lib, .libPaths()))
 
 # ── Helper: install if missing ──────────────────────────────────────────────
 install_if_missing <- function(pkgs, from = "CRAN") {
   need <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
   if (length(need) == 0) { cat("  All present:", paste(pkgs, collapse=", "), "\n"); return(invisible()) }
   cat("  Installing:", paste(need, collapse=", "), "\n")
-  if (from == "CRAN")   install.packages(need, quiet = TRUE, dependencies = TRUE)
-  if (from == "BiocMgr") BiocManager::install(need, ask = FALSE, update = FALSE)
+  if (from == "CRAN")   install.packages(need, quiet = TRUE, dependencies = TRUE, lib = user_lib)
+  if (from == "BiocMgr") BiocManager::install(need, ask = FALSE, update = FALSE, lib = user_lib)
 }
 
 # ── CRAN packages ───────────────────────────────────────────────────────────
@@ -212,7 +221,7 @@ install_if_missing(cran_pkgs)
 
 # ── BiocManager ────────────────────────────────────────────────────────────
 if (!requireNamespace("BiocManager", quietly = TRUE))
-  install.packages("BiocManager", quiet = TRUE)
+  install.packages("BiocManager", quiet = TRUE, lib = user_lib)
 
 bioc_pkgs <- c(
   "dada2", "ShortRead", "Biostrings", "phyloseq",
@@ -231,7 +240,7 @@ if (!requireNamespace("Tax4Fun2", quietly = TRUE)) {
   tryCatch({
     download.file(zenodo_url, tmp, quiet = TRUE, method = "curl",
                   extra = "--retry 3 --max-time 120")
-    install.packages(tmp, repos = NULL, type = "source")
+    install.packages(tmp, repos = NULL, type = "source", lib = user_lib)
     cat("  Tax4Fun2 installed from Zenodo\n")
   }, error = function(e) {
     warning(paste("Tax4Fun2 install failed:", e$message))
