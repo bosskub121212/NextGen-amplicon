@@ -38,7 +38,7 @@ try_download() {
   mkdir -p "$(dirname "$dest")"
   for url in "$@"; do
     echo "  Trying: $url"
-    if wget -q --show-progress --timeout=60 --tries=2 \
+    if wget -q --show-progress --timeout=30 --read-timeout=30 --tries=1 \
             --user-agent="Mozilla/5.0" \
             -O "$dest" "$url" 2>/dev/null && [[ -s "$dest" ]]; then
       ok "$label"
@@ -57,14 +57,15 @@ mkdir -p "$SILVA_DIR"
 
 try_download "SILVA 138.1 genus-level (16S train set)" \
   "$SILVA_DIR/silva_nr99_v138.1_train_set.fa.gz" \
-  "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz" \
-  "https://data.qiime2.org/2024.5/common/silva-138-99-seqs.qza" || \
-warn "Download silva_nr99_v138.1_train_set.fa.gz from https://zenodo.org/record/4587955"
+  "https://zenodo.org/records/4587955/files/silva_nr99_v138.1_train_set.fa.gz" \
+  "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz" || \
+warn "Manual: wget -O $SILVA_DIR/silva_nr99_v138.1_train_set.fa.gz 'https://zenodo.org/records/4587955/files/silva_nr99_v138.1_train_set.fa.gz'"
 
 try_download "SILVA 138.1 species assignment" \
   "$SILVA_DIR/silva_species_assignment_v138.1.fa.gz" \
+  "https://zenodo.org/records/4587955/files/silva_species_assignment_v138.1.fa.gz" \
   "https://zenodo.org/record/4587955/files/silva_species_assignment_v138.1.fa.gz" || \
-warn "Download silva_species_assignment_v138.1.fa.gz from https://zenodo.org/record/4587955"
+warn "Manual: wget -O $SILVA_DIR/silva_species_assignment_v138.1.fa.gz 'https://zenodo.org/records/4587955/files/silva_species_assignment_v138.1.fa.gz'"
 
 # ── 2. UNITE v10 — ITS Fungi ──────────────────────────────────
 echo ""
@@ -84,7 +85,7 @@ else
     "https://unite.ut.ee/sh_files/UNITE_public_all_04.04.2024.tgz"
   do
     echo "  Trying: $url"
-    if wget -q --show-progress --timeout=120 --tries=2 \
+    if wget -q --show-progress --timeout=30 --read-timeout=60 --tries=1 \
             --user-agent="Mozilla/5.0" \
             -O "$UNITE_TGZ" "$url" 2>/dev/null && [[ -s "$UNITE_TGZ" ]]; then
       DOWNLOADED=1; break
@@ -158,7 +159,7 @@ try_download "MIDORI2 COX1 genus" \
 MIDORI_SP="MIDORI2_UNIQ_NUC_GB264_CO1_DADA2_sp.fasta.gz"
 MIDORI_SP_OUT="$COX1_DIR/$MIDORI_SP"
 if [[ ! -f "$MIDORI_SP_OUT" ]]; then
-  wget -q --show-progress --timeout=120 --tries=1 \
+  wget -q --show-progress --timeout=30 --read-timeout=60 --tries=1 \
        --user-agent="Mozilla/5.0" \
        -O "$MIDORI_SP_OUT" \
        "${MIDORI_BASE}/${MIDORI_SP}" 2>/dev/null && ok "MIDORI2 COX1 species" || \
