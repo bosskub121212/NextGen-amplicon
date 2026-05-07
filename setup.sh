@@ -41,8 +41,8 @@ echo ""
 echo "[2/6] Checking Node.js..."
 if ! command -v node &>/dev/null || [[ "$(node -v | cut -d. -f1 | tr -d 'v')" -lt 18 ]]; then
   echo "  Installing Node.js 20 LTS..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - -qq
-  sudo apt-get install -y -qq nodejs
+  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+  sudo apt-get install -y nodejs
 fi
 echo "  Node.js $(node -v) OK"
 
@@ -61,29 +61,40 @@ echo "  Python venv OK (packages: fastapi uvicorn psutil)"
 echo ""
 echo "[4/6] Installing R packages (this takes 10–30 min first time)..."
 
+# Ensure user-writable R library exists
+R_USER_LIB="$HOME/R/library"
+mkdir -p "$R_USER_LIB"
+export R_LIBS_USER="$R_USER_LIB"
+
 # Bioconductor + DADA2
-Rscript - <<'REOF'
+R_LIBS_USER="$R_USER_LIB" Rscript - <<'REOF'
 options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+# ── Use writable user library ─────────────────────────────────
+user_lib <- Sys.getenv("R_LIBS_USER", unset=file.path(Sys.getenv("HOME"), "R", "library"))
+dir.create(user_lib, recursive=TRUE, showWarnings=FALSE)
+.libPaths(c(user_lib, .libPaths()))
+cat(sprintf("  R library: %s\n", user_lib))
 
 # ── Bioconductor manager ──────────────────────────────────────
 if (!requireNamespace("BiocManager", quietly=TRUE)) {
-  install.packages("BiocManager", quiet=TRUE)
+  install.packages("BiocManager", quiet=TRUE, lib=user_lib)
 }
 
 # ── DADA2 (Bioconductor) ──────────────────────────────────────
 if (!requireNamespace("dada2", quietly=TRUE)) {
   cat("Installing dada2 (Bioconductor)...\n")
-  BiocManager::install("dada2", ask=FALSE, update=FALSE, quiet=TRUE)
+  BiocManager::install("dada2", ask=FALSE, update=FALSE, quiet=TRUE, lib=user_lib)
 } else {
   cat("  dada2 already installed\n")
 }
 
 # ── Visualization packages (CRAN) ────────────────────────────
-pkgs <- c("optparse","ggplot2","reshape2","vegan","ape","pheatmap","scales","jsonlite")
+pkgs <- c("optparse","ggplot2","reshape2","vegan","ape","pheatmap","scales","jsonlite","ShortRead")
 for (pkg in pkgs) {
   if (!requireNamespace(pkg, quietly=TRUE)) {
     cat(sprintf("Installing %s...\n", pkg))
-    install.packages(pkg, quiet=TRUE)
+    install.packages(pkg, quiet=TRUE, lib=user_lib)
   } else {
     cat(sprintf("  %s already installed\n", pkg))
   }
@@ -91,7 +102,7 @@ for (pkg in pkgs) {
 
 # ── Verify ────────────────────────────────────────────────────
 cat("\n=== Package check ===\n")
-all_pkgs <- c("dada2","optparse","ggplot2","reshape2","vegan","ape","pheatmap","jsonlite")
+all_pkgs <- c("dada2","optparse","ggplot2","reshape2","vegan","ape","pheatmap","jsonlite","ShortRead")
 ok <- TRUE
 for (pkg in all_pkgs) {
   status <- if (requireNamespace(pkg, quietly=TRUE)) "OK" else "MISSING"
