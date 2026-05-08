@@ -7,7 +7,7 @@
 
 import { useEffect, useState, useRef } from "react";
 
-const API = "http://localhost:8000";
+const API = ""; // relative URL — works on any host/port
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // re-check every hour
 
 interface UpdateInfo {
@@ -70,7 +70,7 @@ export default function UpdateBanner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: tokenInput.trim() })
       }).then(r => r.json());
-      if (res.success) {
+      if (res.ok || res.success) {
         setTokenMsg("✅ Token saved! Checking for updates...");
         setTokenInput("");
         setShowTokenForm(false);
