@@ -138,6 +138,11 @@ class WorkerConfig(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
+    # Serve frontend if built, otherwise return API info
+    for d in [BASE_DIR.parent / "frontend" / "dist", BASE_DIR.parent / "frontend" / "build"]:
+        idx = d / "index.html"
+        if idx.exists():
+            return FileResponse(str(idx))
     return {"message": "16S/12S Analysis API 🧬", "max_workers": MAX_WORKERS}
 
 # ── 1. Upload ─────────────────────────────────────────────────────────────────
@@ -1014,6 +1019,28 @@ try:
 
 except ImportError:
     pass
+
+# -- 15. Serve frontend static files (SPA) ------------------------------------
+# Looks for dist/ next to the backend/ directory (i.e. ~/r16s-app/frontend/dist)
+from fastapi.staticfiles import StaticFiles
+
+_FRONTEND_DIRS = [
+    BASE_DIR.parent / "frontend" / "dist",   # Vite build output
+    BASE_DIR.parent / "frontend" / "build",  # CRA build output (legacy)
+]
+_FRONTEND_DIR = next((d for d in _FRONTEND_DIRS if d.is_dir()), None)
+
+if _FRONTEND_DIR:
+    # Mount static assets (JS/CSS chunks) — must come before the catch-all
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIR / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_spa(full_path: str):
+        """Return index.html for any unknown path so React Router works."""
+        index = _FRONTEND_DIR / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+        return JSONResponse(status_code=404, content={"error": "Frontend not built"})
 
 # -- 15. License endpoints ----------------------------------------------------
 class ActivateLicenseRequest(BaseModel):
