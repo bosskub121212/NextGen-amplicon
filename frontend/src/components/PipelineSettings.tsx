@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import DbFileBrowser from "./DbFileBrowser";
 
 // ── Full parameter set for all pipeline types ─────────────────────────────
 export interface PipelineParams {
@@ -172,7 +173,8 @@ interface Props {
 }
 
 export default function PipelineSettings({ params, onChange, marker, onMarker }: Props) {
-  const [openStep, setOpenStep] = useState<number | null>(1);
+  const [openStep,    setOpenStep]    = useState<number | null>(1);
+  const [showBrowser, setShowBrowser] = useState(false);
   // Real database paths fetched from backend db_paths.json
   const [dbPaths, setDbPaths] = useState<Record<string, string>>({});
   const [dbDir,   setDbDir]   = useState<string>("");
@@ -255,13 +257,25 @@ export default function PipelineSettings({ params, onChange, marker, onMarker }:
         <div className="param-item" style={{ marginTop: "8px" }}>
           <label className="param-label">Custom Database Path</label>
           {dbDir && (
-            <span className="param-hint">วาง .fa.gz ไว้ใน: <code>{dbDir}</code></span>
+            <span className="param-hint">วาง .fa.gz / .fasta.gz ไว้ใน: <code>{dbDir}</code></span>
           )}
-          <input type="text" className="param-input"
-            placeholder={`${dbDir || "~/r16s-app/backend/databases"}/mydb.fa.gz`}
-            value={params.dbPath}
-            onChange={e => set("dbPath", e.target.value)} />
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <input type="text" className="param-input" style={{ flex: 1 }}
+              placeholder={`${dbDir || "~/r16s-app/backend/databases"}/mydb.fa.gz`}
+              value={params.dbPath}
+              onChange={e => set("dbPath", e.target.value)} />
+            <button className="browse-btn" onClick={() => setShowBrowser(true)}
+              title="เลือกไฟล์จากโฟลเดอร์ databases">
+              📂 Browse
+            </button>
+          </div>
         </div>
+      )}
+      {showBrowser && (
+        <DbFileBrowser
+          onSelect={path => { set("dbPath", path); }}
+          onClose={() => setShowBrowser(false)}
+        />
       )}
     </div>
   );

@@ -873,6 +873,30 @@ def get_databases():
             result["error"] = str(e)
     return result
 
+# -- 9b2. Database file browser -----------------------------------------------
+@app.get("/databases/browse")
+def browse_databases():
+    """List all database files inside the databases/ folder for the browser picker."""
+    db_dir = BASE_DIR / "databases"
+    db_dir.mkdir(parents=True, exist_ok=True)
+
+    DB_EXTS = {".gz", ".fasta", ".fa", ".fastq"}
+    files = []
+    for f in sorted(db_dir.rglob("*")):
+        if f.is_file() and f.suffix in DB_EXTS:
+            rel = f.relative_to(db_dir)
+            files.append({
+                "name":     f.name,
+                "path":     str(f),
+                "rel_path": str(rel),
+                "size_mb":  round(f.stat().st_size / 1_048_576, 1),
+            })
+
+    return {
+        "db_dir": str(db_dir),
+        "files":  files,
+    }
+
 # -- 9c. Worker config --------------------------------------------------------
 @app.get("/config")
 def get_config():
