@@ -86,6 +86,18 @@ PKGS=(
 sudo apt-get install -y "${PKGS[@]}" -qq
 ok "System packages installed"
 
+# ── Node.js 20 (NodeSource — includes npm) ────────────────────────────────────
+step "Node.js 20 (NodeSource)"
+if command -v node &>/dev/null && node --version | grep -qP '^v(1[89]|[2-9]\d)'; then
+  ok "Node.js $(node --version) already installed"
+else
+  info "Adding NodeSource repo and installing Node.js 20..."
+  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - -qq
+  sudo apt-get install -y nodejs -qq
+  ok "Node.js $(node --version) installed"
+fi
+ok "npm $(npm --version)"
+
 # ── R 4.4 ─────────────────────────────────────────────────────────────────────
 step "R $R_VERSION_MAJOR.x (CRAN)"
 
