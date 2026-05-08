@@ -80,7 +80,7 @@ PKGS=(
   libgsl-dev libglpk-dev libgmp3-dev zlib1g-dev
   libopenblas-dev liblapack-dev
   python3 python3-pip python3-venv python3-dev
-  nodejs npm
+  nodejs
   procps htop
 )
 sudo apt-get install -y "${PKGS[@]}" -qq
