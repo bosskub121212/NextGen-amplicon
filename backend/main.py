@@ -135,6 +135,32 @@ class RunParams(BaseModel):
 class WorkerConfig(BaseModel):
     max_workers: int = 2
 
+# ── License endpoints ─────────────────────────────────────────────────────────
+try:
+    from license import check_license, activate_license, deactivate_license, get_machine_id as _get_mid
+
+    @app.get("/license/status")
+    def license_status():
+        return check_license()
+
+    class LicenseKeyBody(BaseModel):
+        license_key: str
+
+    @app.post("/license/activate")
+    def license_activate(body: LicenseKeyBody):
+        return activate_license(body.license_key)
+
+    @app.post("/license/deactivate")
+    def license_deactivate():
+        return deactivate_license()
+
+    @app.get("/license/machine-id")
+    def license_machine_id():
+        return {"machine_id": _get_mid()}
+
+except ImportError:
+    pass
+
 # ─────────────────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
