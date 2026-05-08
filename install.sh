@@ -252,11 +252,11 @@ RSCRIPT
 
 ok "R packages installed"
 
-# ── Cutadapt (for ITS trimming) ────────────────────────────────────────────────
+# ── Cutadapt (required for COX1, PacBio, ITS primer trimming) ─────────────────
 step "Cutadapt"
 source "$VENV_DIR/bin/activate"
 if ! command -v cutadapt &>/dev/null; then
-  pip install cutadapt -q
+  pip install "cutadapt>=4.6" -q
   ok "cutadapt $(cutadapt --version) installed"
 else
   ok "cutadapt already available: $(cutadapt --version)"

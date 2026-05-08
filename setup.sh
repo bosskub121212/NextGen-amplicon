@@ -54,8 +54,17 @@ python3 -m venv ../venv
 source ../venv/bin/activate
 pip install --quiet --upgrade pip
 pip install --quiet -r requirements.txt
+echo "  Python venv OK (packages: fastapi uvicorn psutil cutadapt)"
+
+# cutadapt verification
+if command -v cutadapt &>/dev/null; then
+  echo "  cutadapt $(cutadapt --version) OK"
+else
+  echo "  Installing cutadapt separately..."
+  pip install --quiet "cutadapt>=4.6"
+  echo "  cutadapt $(cutadapt --version) OK"
+fi
 deactivate
-echo "  Python venv OK (packages: fastapi uvicorn psutil)"
 
 # ── 4. R packages ────────────────────────────────────────────
 echo ""

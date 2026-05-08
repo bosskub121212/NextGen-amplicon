@@ -40,9 +40,9 @@ option_list <- list(
   make_option("--threads",     type="integer",  default=4),
   make_option("--job_name",    type="character", default="ITS_job"),
   make_option("--primer_f",    type="character", default="",
-              help="Forward primer (accepted but trimming handled by ITSxpress)"),
+              help="Forward primer sequence for cutadapt trimming"),
   make_option("--primer_r",    type="character", default="",
-              help="Reverse primer (accepted but trimming handled by ITSxpress)"),
+              help="Reverse primer sequence for cutadapt trimming"),
   # ── Kept for backwards-compat / direct CLI use ───────────────────────────
   make_option("--taxDatabase", type="character", default="UNITE"),
   make_option("--dbPath",      type="character", default=""),
@@ -100,9 +100,66 @@ sample_names <- sub("_R1.*","", basename(fnFs_raw))
 cat("Samples found:", length(sample_names), "\n")
 cat(paste(sample_names, collapse=", "), "\n\n")
 
-# ── Step 1: Filter (NO truncLen for ITS!) ─────────────────────
+# ── Step 1a: Primer trimming with cutadapt ────────────────────
+prog(5, "Step 1/6 — Trimming primers with cutadapt")
+cat("Step 1/6a: Primer Trimming (cutadapt)...\n")
+
+# Default primers by region if not specified
+default_primer_f <- if (region == "ITS1") "CTTGGTCATTTAGAGGAAGTAA" else "GTGAATCATCGAATCTTTGAA"
+default_primer_r <- if (region == "ITS1") "GCTGCGTTCTTCATCGATGC"   else "TCCTCCGCTTATTGATATGC"
+
+primer_f <- if (nchar(opt$primer_f) > 0) opt$primer_f else default_primer_f
+primer_r <- if (nchar(opt$primer_r) > 0) opt$primer_r else default_primer_r
+
+cat("Primer F:", primer_f, "\n")
+cat("Primer R:", primer_r, "\n")
+
+# Reverse complement helper
+RC <- function(seq) {
+  chartr("ACGTacgt", "TGCAtgca", paste(rev(strsplit(seq, "")[[1]]), collapse=""))
+}
+primer_f_rc <- RC(primer_f)
+primer_r_rc <- RC(primer_r)
+
+cutadapt_ok <- (system("cutadapt --version", ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+trim_dir <- file.path(output_dir, "trimmed")
+
+if (cutadapt_ok) {
+  dir.create(trim_dir, recursive=TRUE, showWarnings=FALSE)
+  trimFs <- file.path(trim_dir, paste0(sample_names, "_F_trim.fastq.gz"))
+  trimRs <- file.path(trim_dir, paste0(sample_names, "_R_trim.fastq.gz"))
+
+  n_trimmed <- 0
+  for (i in seq_along(fnFs_raw)) {
+    cmd <- sprintf(
+      "cutadapt -g %s -a %s -G %s -A %s --discard-untrimmed -m 50 -j %d -o %s -p %s %s %s > /dev/null 2>&1",
+      primer_f, primer_r_rc,
+      primer_r, primer_f_rc,
+      opt$threads, trimFs[i], trimRs[i], fnFs_raw[i], fnRs_raw[i]
+    )
+    ret <- system(cmd)
+    if (ret == 0 && file.exists(trimFs[i]) && file.size(trimFs[i]) > 0) n_trimmed <- n_trimmed + 1
+  }
+  cat(sprintf("cutadapt: %d/%d samples trimmed OK\n", n_trimmed, length(fnFs_raw)))
+
+  # Use trimmed files if we got any; else fall back to raw
+  valid <- file.exists(trimFs) & file.size(trimFs) > 0
+  if (sum(valid) > 0) {
+    fnFs_raw <- trimFs[valid]
+    fnRs_raw <- trimRs[valid]
+    sample_names <- sample_names[valid]
+    cat("Using cutadapt-trimmed reads for downstream steps\n\n")
+  } else {
+    cat("WARNING: cutadapt produced no output. Using untrimmed reads.\n\n")
+  }
+} else {
+  cat("WARNING: cutadapt not found — primers NOT trimmed.\n")
+  cat("Install: pip install cutadapt  (or re-run setup.sh)\n\n")
+}
+
+# ── Step 1b: Filter (NO truncLen for ITS!) ────────────────────
 prog(10, "Step 1/6 — Quality filtering (no length truncation)")
-cat("Step 1/6: Quality Filtering (ITS — no truncLen)...\n")
+cat("Step 1/6b: Quality Filtering (ITS — no truncLen)...\n")
 
 filt_dir <- file.path(output_dir, "filtered")
 filtFs <- file.path(filt_dir, paste0(sample_names, "_F_filt.fastq.gz"))
