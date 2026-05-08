@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 // ── Full parameter set for all pipeline types ─────────────────────────────
 export interface PipelineParams {
@@ -44,8 +44,8 @@ export const defaultParams: PipelineParams = {
   nbases: 1e8,
   pool: "FALSE",
   chimeraMethod: "consensus",
-  taxDatabase: "SILVA_138.2_toGenus",
-  dbPath: "/home/boss/r16s-app/backend/databases/silva_nr99_v138.2_toGenus_trainset.fa.gz",
+  taxDatabase: "SILVA_16S",
+  dbPath: "",
   minBoot: 50,
   topN: 30,
   // ITS defaults
@@ -78,31 +78,71 @@ const MARKER_OPTIONS: { value: MarkerType; label: string; description: string; i
   { value: "ITS1",    icon: "🍄", label: "ITS1 Fungi",       description: "Fungal ITS1 — UNITE v10 database" },
   { value: "ITS2",    icon: "🍄", label: "ITS2 Fungi",       description: "Fungal ITS2 — UNITE v10 database" },
   { value: "COX1",    icon: "🦑", label: "COX1 / CO1",       description: "Animal metabarcoding — MIDORI2 database" },
-  { value: "18S-nema",icon: "🪱", label: "18S Nematode",     description: "Nematode 18S — 18S-NemaBase / PR2" },
+  { value: "18S-nema",icon: "🐛", label: "18S Nematode",     description: "Nematode 18S — 18S-NemaBase / PR2" },
   { value: "PacBio",  icon: "🧬", label: "PacBio CCS 16S",   description: "Full-length 16S V1–V9 long reads" },
 ];
 
 const DB_OPTIONS = [
   {
-    value: "SILVA_138.2_toGenus",
-    label: "SILVA 138.2 — Genus level (recommended)",
-    path: "/home/boss/r16s-app/backend/databases/silva_nr99_v138.2_toGenus_trainset.fa.gz",
+    value: "SILVA_16S",
+    label: "SILVA 138.1 — Genus level (recommended)",
+    pathKey: "SILVA_16S",
     marker: ["16S", "18S-nema", "PacBio"],
   },
   {
-    value: "SILVA_138.2_toSpecies",
-    label: "SILVA 138.2 — Species level (slower)",
-    path: "/home/boss/r16s-app/backend/databases/silva_nr99_v138.2_toSpecies_trainset.fa.gz",
+    value: "SILVA_16S_sp",
+    label: "SILVA 138.1 — Species level (slower)",
+    pathKey: "SILVA_16S_sp",
     marker: ["16S", "18S-nema", "PacBio"],
   },
   {
-    value: "PR2",
+    value: "PR2_18S",
     label: "PR2 v5 SSU (12S / Eukaryotes)",
-    path: "/home/boss/r16s-app/backend/databases/pr2_version_5.0.0_SSU_dada2.fasta.gz",
+    pathKey: "PR2_18S",
     marker: ["12S", "18S-nema"],
   },
-  { value: "custom", label: "Custom path...", path: "", marker: ["16S","12S","18S-nema","PacBio"] },
+  {
+    value: "NemaBase_18S",
+    label: "18S-NemaBase (nematode-specific)",
+    pathKey: "NemaBase_18S",
+    marker: ["18S-nema"],
+  },
+  {
+    value: "UNITE_ITS1",
+    label: "UNITE v10 (ITS Fungi)",
+    pathKey: "UNITE_ITS1",
+    marker: ["ITS1","ITS2"],
+  },
+  {
+    value: "MIDORI2_COX1",
+    label: "MIDORI2 COX1 (Animal metabarcoding)",
+    pathKey: "MIDORI2_COX1",
+    marker: ["COX1"],
+  },
+  { value: "custom", label: "Custom path...", pathKey: "", marker: ["16S","12S","18S-nema","PacBio","ITS1","ITS2","COX1"] },
 ];
+
+// PacBio primers by region
+const PACBIO_PRIMERS_BY_REGION: Record<string, { f: string; r: string; label: string }[]> = {
+  "V1-V9": [
+    { f: "AGRGTTYGATYMTGGCTCAG", r: "RGYTACCTTGTTACGACTT",  label: "27F / 1492R (V1–V9 full-length)" },
+    { f: "AGAGTTTGATCMTGGCTCAG", r: "GYTACCTTGTTACGACTT",   label: "8F / 1492R (alternative)" },
+  ],
+  "V1-V3": [
+    { f: "AGAGTTTGATCMTGGCTCAG", r: "ATTACCGCGGCTGCTGG",    label: "8F / 534R (V1–V3)" },
+    { f: "AGRGTTYGATYMTGGCTCAG", r: "ATTACCGCGGCTGCTGG",    label: "27F / 534R (V1–V3 alt)" },
+  ],
+  "V3-V5": [
+    { f: "CCTACGGGAGGCAGCAG",    r: "GACTACHVGGGTATCTAATCC",label: "341F / 806R (V3–V5)" },
+  ],
+  "V4": [
+    { f: "GTGYCAGCMGCCGCGGTAA",  r: "GGACTACNVGGGTWTCTAAT", label: "515F / 806R (V4)" },
+    { f: "CCTACGGGNGGCWGCAG",    r: "GACTACHVGGGTATCTAATCC",label: "341F / 806R (V4 alt)" },
+  ],
+  "custom": [
+    { f: "AGRGTTYGATYMTGGCTCAG", r: "RGYTACCTTGTTACGACTT",  label: "27F / 1492R (default)" },
+  ],
+};
 
 // Default primers per marker
 const DEFAULT_PRIMERS: Record<string, { f: string; r: string; label: string }[]> = {
@@ -122,10 +162,6 @@ const DEFAULT_PRIMERS: Record<string, { f: string; r: string; label: string }[]>
     { f: "CGCGAATRGCTCATTACAACAGC", r: "GGGCGGTGTGTACAAAGGGCAGGG", label: "NF1 / 18Sr2b (nematode-specific)" },
     { f: "TTGTACACACCGCCC",          r: "CCTTCYGCAGGTTCACCTAC",     label: "TAReuk454FWD1 / TAReukREV3 (eukaryote)" },
   ],
-  PacBio: [
-    { f: "AGRGTTYGATYMTGGCTCAG", r: "RGYTACCTTGTTACGACTT", label: "27F / 1492R (V1–V9 full-length)" },
-    { f: "AGAGTTTGATCMTGGCTCAG", r: "GYTACCTTGTTACGACTT",  label: "8F / 1492R (alternative)" },
-  ],
 };
 
 interface Props {
@@ -137,21 +173,98 @@ interface Props {
 
 export default function PipelineSettings({ params, onChange, marker, onMarker }: Props) {
   const [openStep, setOpenStep] = useState<number | null>(1);
+  // Real database paths fetched from backend db_paths.json
+  const [dbPaths, setDbPaths] = useState<Record<string, string>>({});
+  const [dbDir,   setDbDir]   = useState<string>("");
+
   const set = (key: keyof PipelineParams, val: any) =>
     onChange({ ...params, [key]: val });
+
+  // Fetch real db paths from backend on mount
+  useEffect(() => {
+    fetch("/databases").then(r => r.ok ? r.json() : null).then(data => {
+      if (data?.databases) setDbPaths(data.databases);
+      if (data?.db_dir)    setDbDir(data.db_dir);
+    }).catch(() => {});
+  }, []);
 
   const isITS     = marker === "ITS1" || marker === "ITS2";
   const isCOX1    = marker === "COX1";
   const isPacBio  = marker === "PacBio";
   const isNema    = marker === "18S-nema";
   const is16S     = marker === "16S";
-  const isStandard = !isITS && !isCOX1 && !isPacBio;  // 16S/12S/18S-nema use dada2_pipeline.R
+  const isStandard = !isITS && !isCOX1 && !isPacBio;
+
+  // Resolve real path for a DB option
+  const resolveDbPath = (opt: typeof DB_OPTIONS[0]) => {
+    if (opt.value === "custom") return params.dbPath;
+    return dbPaths[opt.pathKey] || "";
+  };
 
   const availableDBs = DB_OPTIONS.filter(db =>
     (db.marker as string[]).includes(marker)
   );
 
-  const defaultPrimers = DEFAULT_PRIMERS[marker] || [];
+  // PacBio: primers change when region changes
+  const pacbioPrimers = PACBIO_PRIMERS_BY_REGION[params.pb_region] ?? PACBIO_PRIMERS_BY_REGION["V1-V9"];
+
+  // Auto-select first primer when region changes
+  const setPbRegion = (region: string) => {
+    const regionPrimers = PACBIO_PRIMERS_BY_REGION[region] ?? PACBIO_PRIMERS_BY_REGION["V1-V9"];
+    onChange({ ...params, pb_region: region, primer_f: regionPrimers[0].f, primer_r: regionPrimers[0].r });
+  };
+
+  const defaultPrimers = isPacBio ? pacbioPrimers : (DEFAULT_PRIMERS[marker] || []);
+
+  // Helper: render database radio list (shared between PacBio and Standard Step 5)
+  const renderDbOptions = (hint: string) => (
+    <div className="param-item" style={{ marginTop: "12px" }}>
+      <label className="param-label">Taxonomy Database</label>
+      <span className="param-hint">{hint}</span>
+      <div className="db-options">
+        {availableDBs.map(db => {
+          const realPath = resolveDbPath(db);
+          const isSelected = params.taxDatabase === db.value;
+          return (
+            <label key={db.value}
+              className={`db-option ${isSelected ? "active" : ""}`}
+              style={{ cursor: "pointer", display: "block" }}>
+              <input type="radio" name="taxDatabase" value={db.value}
+                checked={isSelected}
+                onChange={() => {
+                  set("taxDatabase", db.value);
+                  if (db.value !== "custom" && realPath) set("dbPath", realPath);
+                }}
+                style={{ marginRight: "8px" }} />
+              <span className="db-label">{db.label}</span>
+              {isSelected && realPath && db.value !== "custom" && (
+                <div className="db-path-info">
+                  <code className="db-path">{realPath}</code>
+                </div>
+              )}
+              {isSelected && !realPath && db.value !== "custom" && (
+                <div className="db-path-info" style={{ color: "#ef4444", fontSize: "12px" }}>
+                  ⚠ ไม่พบไฟล์ — รัน <code>bash ~/r16s-app/download_databases.sh</code> ก่อน
+                </div>
+              )}
+            </label>
+          );
+        })}
+      </div>
+      {params.taxDatabase === "custom" && (
+        <div className="param-item" style={{ marginTop: "8px" }}>
+          <label className="param-label">Custom Database Path</label>
+          {dbDir && (
+            <span className="param-hint">วาง .fa.gz ไว้ใน: <code>{dbDir}</code></span>
+          )}
+          <input type="text" className="param-input"
+            placeholder={`${dbDir || "~/r16s-app/backend/databases"}/mydb.fa.gz`}
+            value={params.dbPath}
+            onChange={e => set("dbPath", e.target.value)} />
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="settings-wrap">
@@ -360,7 +473,7 @@ export default function PipelineSettings({ params, onChange, marker, onMarker }:
               <label className="param-label">16S Region Amplified</label>
               <span className="param-hint">For record-keeping and metadata output</span>
               <select className="param-input" value={params.pb_region}
-                onChange={e => set("pb_region", e.target.value)}>
+                onChange={e => setPbRegion(e.target.value)}>
                 <option value="V1-V9">V1–V9 (full-length, ~1500 bp)</option>
                 <option value="V1-V3">V1–V3 (~450 bp)</option>
                 <option value="V3-V5">V3–V5 (~400 bp)</option>
@@ -393,21 +506,7 @@ export default function PipelineSettings({ params, onChange, marker, onMarker }:
             </div>
           </div>
 
-          {/* Taxonomy database */}
-          <div className="param-item" style={{ marginTop: "12px" }}>
-            <label className="param-label">Taxonomy Database</label>
-            <span className="param-hint">SILVA recommended for full-length 16S</span>
-            <div className="db-options">
-              {availableDBs.map(db => (
-                <div key={db.value}
-                  className={`db-option ${params.taxDatabase === db.value ? "active" : ""}`}
-                  onClick={() => { set("taxDatabase", db.value); if (db.value !== "custom") set("dbPath", db.path); }}>
-                  <span className="db-radio">{params.taxDatabase === db.value ? "🔵" : "⚪"}</span>
-                  <span className="db-label">{db.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+          {renderDbOptions("SILVA recommended for full-length 16S")}
 
           <div className="param-grid">
             <ParamNumber label="Min Bootstrap (%)" hint="Minimum confidence for taxonomy"
@@ -535,41 +634,10 @@ export default function PipelineSettings({ params, onChange, marker, onMarker }:
 
                   {s.id === 5 && (
                     <div className="param-grid-full">
-                      <div className="param-item">
-                        <label className="param-label">Taxonomy Database</label>
-                        <span className="param-hint">
-                          {marker === "16S" ? "For Bacteria / Archaea"
-                            : marker === "12S" ? "For Vertebrates / Fish"
-                            : "For Nematodes / Eukaryotes"}
-                        </span>
-                        <div className="db-options">
-                          {availableDBs.map(db => (
-                            <div key={db.value}
-                              className={`db-option ${params.taxDatabase === db.value ? "active" : ""}`}
-                              onClick={() => {
-                                set("taxDatabase", db.value);
-                                if (db.value !== "custom") set("dbPath", db.path);
-                              }}>
-                              <div className="db-option-top">
-                                <span className="db-radio">{params.taxDatabase === db.value ? "🔵" : "⚪"}</span>
-                                <span className="db-label">{db.label}</span>
-                              </div>
-                              {db.path && db.value !== "custom" && (
-                                <code className="db-path">{db.path.split("/").pop()}</code>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {params.taxDatabase === "custom" && (
-                        <div className="param-item">
-                          <label className="param-label">Custom Database Path</label>
-                          <input type="text" className="param-input"
-                            placeholder="/home/boss/r16s-app/backend/databases/mydb.fa.gz"
-                            value={params.dbPath}
-                            onChange={e => set("dbPath", e.target.value)} />
-                        </div>
+                      {renderDbOptions(
+                        marker === "16S" ? "For Bacteria / Archaea"
+                          : marker === "12S" ? "For Vertebrates / Fish"
+                          : "For Nematodes / Eukaryotes"
                       )}
 
                       <div className="param-item">

@@ -856,7 +856,24 @@ def clear_history():
         save_jobs()
     return {"cleared": len(to_del)}
 
-# -- 9b. Worker config --------------------------------------------------------
+# -- 9b. Database paths -------------------------------------------------------
+@app.get("/databases")
+def get_databases():
+    """Return available taxonomy databases and their paths."""
+    db_dir = BASE_DIR / "databases"
+    db_paths_file = db_dir / "db_paths.json"
+    result = {"db_dir": str(db_dir), "databases": {}, "available": []}
+    if db_paths_file.exists():
+        try:
+            import json as _json
+            db_paths = _json.loads(db_paths_file.read_text())
+            result["databases"] = db_paths
+            result["available"] = [k for k, v in db_paths.items() if v and Path(v).exists()]
+        except Exception as e:
+            result["error"] = str(e)
+    return result
+
+# -- 9c. Worker config --------------------------------------------------------
 @app.get("/config")
 def get_config():
     return {"max_workers": MAX_WORKERS}

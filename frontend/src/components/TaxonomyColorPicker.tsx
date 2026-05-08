@@ -28,7 +28,7 @@ interface Props { jobId: string; apiBase: string; }
 export default function TaxonomyColorPicker({ jobId, apiBase }: Props) {
   const [taxa,    setTaxa]    = useState<TaxaColor[]>([]);
   const [loading, setLoading] = useState(true);
-  const [level,   setLevel]   = useState<"Phylum"|"Class"|"Order">("Phylum");
+  const [level,   setLevel]   = useState<"Phylum"|"Class"|"Order"|"Genus"|"Species">("Phylum");
 
   // Store colours for ALL levels simultaneously, so we can send all at once
   const [allColors, setAllColors] = useState<AllColors>({});
@@ -62,7 +62,7 @@ export default function TaxonomyColorPicker({ jobId, apiBase }: Props) {
   }, [jobId, apiBase, allColors]);
 
   // When level changes: first persist current level colours, then load new level
-  const switchLevel = (newLvl: "Phylum"|"Class"|"Order") => {
+  const switchLevel = (newLvl: "Phylum"|"Class"|"Order"|"Genus"|"Species") => {
     // Save current taxa colours into allColors before switching
     setAllColors((prev) => ({
       ...prev,
@@ -115,7 +115,7 @@ export default function TaxonomyColorPicker({ jobId, apiBase }: Props) {
       <div className="tc-header">
         <h3>🎨 Taxonomy Color Settings</h3>
         <div className="tc-level-group">
-          {(["Phylum","Class","Order"] as const).map((l) => (
+          {(["Phylum","Class","Order","Genus","Species"] as const).map((l) => (
             <button key={l}
               className={`tc-level-btn ${level === l ? "active" : ""}`}
               onClick={() => switchLevel(l)}>{l}</button>
@@ -190,7 +190,7 @@ export default function TaxonomyColorPicker({ jobId, apiBase }: Props) {
 
       <div className="tc-hint">
         Colours apply to all taxonomy stacked bar PDFs.<br/>
-        Switch levels above to customise Phylum, Class, and Order separately.
+        Switch levels above to customise Phylum, Class, Order, Genus, and Species separately.
       </div>
     </div>
   );
@@ -219,6 +219,21 @@ function getMock(level: string): Array<{name:string; abundance:number}> {
       {name:"Oscillospirales", abundance:14.0},
       {name:"Actinomycetales", abundance:12.2},
       {name:"Other",           abundance:26.5},
+    ],
+    Genus: [
+      {name:"Blautia",         abundance:14.2},
+      {name:"Bacteroides",     abundance:18.7},
+      {name:"Faecalibacterium",abundance:10.1},
+      {name:"Lachnospiraceae", abundance:9.3},
+      {name:"Ruminococcus",    abundance:8.5},
+      {name:"Other",           abundance:39.2},
+    ],
+    Species: [
+      {name:"Blautia obeum",          abundance:9.1},
+      {name:"Bacteroides uniformis",  abundance:11.3},
+      {name:"Faecalibacterium prausnitzii", abundance:8.8},
+      {name:"Ruminococcus gnavus",    abundance:6.4},
+      {name:"Other",                  abundance:64.4},
     ],
   };
   return mocks[level] ?? mocks["Phylum"];
