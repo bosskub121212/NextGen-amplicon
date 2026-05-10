@@ -40,6 +40,8 @@ RESULTS_DIR.mkdir(exist_ok=True)
 # ── Job store + thread pool ───────────────────────────────────────────────────
 jobs: dict = {}
 jobs_lock = threading.Lock()
+# log_queues for async SSE streaming (used by qiime2_pipeline)
+log_queues: dict = {}
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
 executor    = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
@@ -1045,6 +1047,17 @@ try:
 
 except ImportError:
     pass
+
+# -- 15a. QIIME2 pipeline router -----------------------------------------------
+try:
+    from qiime2_pipeline import router as _q2_router, set_shared_stores as _q2_set_stores
+    _q2_set_stores(jobs, log_queues)
+    app.include_router(_q2_router)
+    print("[qiime2] QIIME2 pipeline router registered at /qiime2/*")
+except ImportError as _q2_err:
+    print(f"[qiime2] qiime2_pipeline.py not found — QIIME2 endpoints disabled: {_q2_err}")
+except Exception as _q2_err:
+    print(f"[qiime2] Failed to load qiime2_pipeline: {_q2_err}")
 
 # -- 15. Serve frontend static files (SPA) ------------------------------------
 # Looks for dist/ next to the backend/ directory (i.e. ~/r16s-app/frontend/dist)

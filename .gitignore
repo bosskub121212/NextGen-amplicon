@@ -1,42 +1,38 @@
 # Python
-venv/
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
-*.egg-info/
+venv/
+.env
 
 # Node
-node_modules/
+frontend/node_modules/
 frontend/dist/
 frontend/build/
+frontend/.env
 
-# App runtime
+# App runtime data
 backend/uploads/
 backend/results/
-logs/
-*.log
-
-# License / secrets
-.license_cache.json
-.dev_bypass
-.config/
-
-# Databases (ใหญ่เกินไป)
 backend/databases/
-databases/
-*.gz
-*.fasta.gz
-*.fa.gz
-*.tgz
-*.zip
-backend/databases/SILVA/
-backend/databases/UNITE/
-backend/databases/MIDORI2/
-backend/databases/NemaBase/
-backend/databases/*.fa.gz
-backend/databases/*.fasta.gz
-backend/databases/*.gz
+backend/jobs_history.json
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+
+# Test output / sample data
+U2BI-076/
+test*/
+
+# License cache (stored locally per machine)
+.license_cache.json
+
+# Developer bypass — never commit this file
+.dev_bypass
+
+# Keygen tools — local only, never push to git
+tools/
