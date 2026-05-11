@@ -1073,6 +1073,22 @@ export default function App() {
           />
         </div>
 
+        {/* Marker pill + Pipeline settings */}
+        <div className="section-card">
+          <div className="section-title">🧬 Pipeline Settings</div>
+          {marker && (
+            <div className="marker-selected-pill">
+              Selected: <strong>{marker}</strong>
+            </div>
+          )}
+          <PipelineSettings
+            params={params}
+            onChange={setParams}
+            marker={marker}
+            onMarker={setMarker}
+          />
+        </div>
+
         {/* Upload */}
         <div className="section-card">
           <div className="section-title">📂 Upload FASTQ Files</div>
@@ -1136,24 +1152,6 @@ export default function App() {
             <MetadataEditor sampleNames={sampleNames} onChange={setMetadata} />
           </div>
         )}
-
-
-        {/* Marker pill + Pipeline settings */}
-        <div className="section-card">
-          <div className="section-title">🧬 Pipeline Settings</div>
-          {marker && (
-            <div className="marker-selected-pill">
-              Selected: <strong>{marker}</strong>
-            </div>
-          )}
-          <PipelineSettings
-            params={params}
-            onChange={setParams}
-            marker={marker}
-            onMarker={setMarker}
-          />
-        </div>
-
 
         {/* Advanced toggle */}
         <div className="section-card">
