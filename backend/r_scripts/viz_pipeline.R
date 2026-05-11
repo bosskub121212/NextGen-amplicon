@@ -1899,6 +1899,232 @@ if (has_phyloseq && has_vegan && has_meta && has_ggplot2) {
   cat("  Skipped (requires phyloseq + vegan + metadata)\n")
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 17 — Beta Distance Heatmap (sample × sample)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 17: Beta Distance Heatmap ──────────────────────────\n")
+if (has_phyloseq && has_vegan && requireNamespace("pheatmap", quietly=TRUE)) {
+  tryCatch({
+    ps_bh  <- transform_sample_counts(ps, function(x) x / sum(x))
+    otu_bh <- as.matrix(otu_table(ps_bh))
+    if (taxa_are_rows(ps_bh)) otu_bh <- t(otu_bh)
+
+    dist_methods_bh <- c("bray", "jaccard")
+    for (dm_bh in dist_methods_bh) {
+      tryCatch({
+        d_bh  <- as.matrix(vegan::vegdist(otu_bh, method=dm_bh))
+
+        # Annotation bar by group
+        ann_col_bh <- NULL
+        ann_col_colors <- NULL
+        if (has_meta) {
+          grp_bh <- meta_df[rownames(d_bh), GROUP_COL]
+          grp_bh[is.na(grp_bh)] <- "Unknown"
+          ann_col_bh <- data.frame(Group=grp_bh, row.names=rownames(d_bh))
+          pal_bh <- make_palette(length(unique(grp_bh)))
+          ann_col_colors <- list(Group=setNames(pal_bh, unique(grp_bh)))
+        }
+
+        fname_bh <- sprintf("17_beta_heatmap_%s.pdf", dm_bh)
+        pdf(file.path(PLOTS_DIR, fname_bh),
+            width=max(7, ncol(d_bh)*0.5+2),
+            height=max(6, nrow(d_bh)*0.5+2))
+        pheatmap::pheatmap(
+          d_bh,
+          color            = colorRampPalette(c("#eff6ff","#3b82f6","#1e3a8a"))(50),
+          clustering_distance_rows = as.dist(d_bh),
+          clustering_distance_cols = as.dist(d_bh),
+          clustering_method = "average",
+          annotation_col    = ann_col_bh,
+          annotation_row    = ann_col_bh,
+          annotation_colors = ann_col_colors,
+          main    = sprintf("Beta Diversity Heatmap — %s distance", dm_bh),
+          fontsize = 9,
+          border_color = NA
+        )
+        dev.off()
+        cat(sprintf("  ✓ Saved: %s\n", fname_bh))
+      }, error=function(e) cat(sprintf("  [WARN] Heatmap %s: %s\n", dm_bh, e$message)))
+    }
+  }, error=function(e) cat(sprintf("[WARN] Beta heatmap section: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires phyloseq + vegan + pheatmap)\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 18 — OTU/ASV Distribution Chart
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 18: OTU/ASV Distribution ───────────────────────────\n")
+if (has_phyloseq && has_ggplot2) {
+  tryCatch({
+    # Per-sample read counts and ASV richness
+    samp_reads <- sample_sums(ps)
+    samp_rich  <- apply(otu_table(ps), ifelse(taxa_are_rows(ps), 2, 1),
+                        function(x) sum(x > 0))
+
+    df_dist <- data.frame(
+      Sample  = names(samp_reads),
+      Reads   = as.integer(samp_reads),
+      Richness = as.integer(samp_rich),
+      stringsAsFactors = FALSE
+    )
+    if (has_meta)
+      df_dist$Group <- meta_df[df_dist$Sample, GROUP_COL]
+    else
+      df_dist$Group <- "All"
+
+    df_dist$Sample <- factor(df_dist$Sample,
+                             levels=df_dist$Sample[order(df_dist$Reads, decreasing=TRUE)])
+    n_grp_od <- length(unique(df_dist$Group))
+    pal_od   <- make_palette(n_grp_od)
+
+    # Panel A: read count bar
+    p_reads <- ggplot(df_dist, aes(x=Sample, y=Reads, fill=Group)) +
+      geom_col(alpha=0.85) +
+      scale_fill_manual(values=pal_od) +
+      geom_hline(yintercept=mean(df_dist$Reads), linetype=2, colour="grey40") +
+      labs(title="Read Count per Sample",
+           x="", y="Total Reads", fill=GROUP_COL) +
+      theme_bw(base_size=10) +
+      theme(axis.text.x=element_text(angle=45, hjust=1),
+            legend.position="top")
+
+    # Panel B: ASV richness bar
+    p_rich <- ggplot(df_dist, aes(x=Sample, y=Richness, fill=Group)) +
+      geom_col(alpha=0.85) +
+      scale_fill_manual(values=pal_od) +
+      geom_hline(yintercept=mean(df_dist$Richness), linetype=2, colour="grey40") +
+      labs(title="ASV Richness per Sample",
+           x="", y="Number of ASVs", fill=GROUP_COL) +
+      theme_bw(base_size=10) +
+      theme(axis.text.x=element_text(angle=45, hjust=1),
+            legend.position="none")
+
+    # Panel C: ASV abundance histogram (how many ASVs have each read count)
+    asv_sums <- rowSums(otu_table(ps))
+    if (!taxa_are_rows(ps)) asv_sums <- colSums(otu_table(ps))
+    df_asv_hist <- data.frame(TotalReads=as.integer(asv_sums))
+
+    p_hist <- ggplot(df_asv_hist, aes(x=TotalReads)) +
+      geom_histogram(bins=40, fill="#3b82f6", colour="white", alpha=0.85) +
+      scale_x_log10(labels=scales::comma) +
+      labs(title="ASV Abundance Distribution",
+           x="Total Reads per ASV (log10)", y="Count") +
+      theme_bw(base_size=10)
+
+    if (requireNamespace("patchwork", quietly=TRUE)) {
+      p_od <- patchwork::wrap_plots(p_reads, p_rich, p_hist, ncol=1)
+      save_pdf(p_od, "18_otu_distribution.pdf",
+               width=max(8, nsamples(ps)*0.5+2), height=14)
+    } else {
+      save_pdf(p_reads, "18a_read_counts.pdf",
+               width=max(8, nsamples(ps)*0.5+2), height=5)
+      save_pdf(p_rich,  "18b_asv_richness.pdf",
+               width=max(8, nsamples(ps)*0.5+2), height=5)
+      save_pdf(p_hist,  "18c_asv_histogram.pdf", width=7, height=5)
+    }
+    write.csv(df_dist, file.path(TABLES_DIR, "otu_distribution.csv"),
+              row.names=FALSE)
+  }, error=function(e) cat(sprintf("[WARN] OTU distribution: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires phyloseq + ggplot2)\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 19 — STAMP-style Extended Error Bar Plots
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 19: STAMP-style Error Bar Plots ─────────────────────\n")
+if (has_phyloseq && has_meta && has_ggplot2) {
+  tryCatch({
+    grps_st   <- unique(meta_df[[GROUP_COL]])
+    pairs_st  <- combn(grps_st, 2, simplify=FALSE)
+
+    for (rank_st in c("Genus", "Family", "Phylum")) {
+      if (!(rank_st %in% rank_names(ps))) next
+      tryCatch({
+        ps_st  <- tax_glom(ps, taxrank=rank_st, NArm=FALSE)
+        ps_st  <- transform_sample_counts(ps_st, function(x) x / sum(x) * 100)
+        otu_st <- as.matrix(otu_table(ps_st))
+        if (taxa_are_rows(ps_st)) otu_st <- t(otu_st)
+
+        tax_st <- sub("^[a-z]__", "",
+                      as.character(tax_table(ps_st)[, rank_st]))
+        tax_st[is.na(tax_st) | tax_st == ""] <-
+          taxa_names(ps_st)[is.na(tax_st) | tax_st == ""]
+        colnames(otu_st) <- tax_st
+
+        for (pair_st in pairs_st) {
+          g1s <- pair_st[1]; g2s <- pair_st[2]
+          s1s <- intersect(rownames(meta_df)[meta_df[[GROUP_COL]] == g1s],
+                           rownames(otu_st))
+          s2s <- intersect(rownames(meta_df)[meta_df[[GROUP_COL]] == g2s],
+                           rownames(otu_st))
+          if (length(s1s) < 2 || length(s2s) < 2) next
+
+          # Mean ± SE per group, t-test p-value
+          stamp_rows <- do.call(rbind, lapply(colnames(otu_st), function(tx) {
+            x1 <- otu_st[s1s, tx]; x2 <- otu_st[s2s, tx]
+            p  <- tryCatch(t.test(x1, x2)$p.value, error=function(e) NA)
+            data.frame(
+              taxon    = tx,
+              mean1    = mean(x1), se1 = sd(x1)/sqrt(length(x1)),
+              mean2    = mean(x2), se2 = sd(x2)/sqrt(length(x2)),
+              p_value  = p,
+              stringsAsFactors = FALSE
+            )
+          }))
+          stamp_rows$p_adj <- p.adjust(stamp_rows$p_value, method="BH")
+          stamp_rows       <- stamp_rows[order(stamp_rows$p_adj), ]
+
+          # Top 25 by mean abundance (regardless of significance)
+          stamp_rows$mean_total <- stamp_rows$mean1 + stamp_rows$mean2
+          top_st <- head(stamp_rows[order(stamp_rows$mean_total, decreasing=TRUE), ], 25)
+          top_st$taxon <- factor(top_st$taxon, levels=rev(top_st$taxon))
+          top_st$sig   <- ifelse(!is.na(top_st$p_adj) & top_st$p_adj < 0.05, "*", "")
+
+          pal2_st <- make_palette(2)
+
+          # Build long format for error bars
+          df_long_st <- rbind(
+            data.frame(taxon=top_st$taxon, mean=top_st$mean1,
+                       se=top_st$se1, group=g1s, sig=top_st$sig,
+                       stringsAsFactors=FALSE),
+            data.frame(taxon=top_st$taxon, mean=top_st$mean2,
+                       se=top_st$se2, group=g2s, sig=top_st$sig,
+                       stringsAsFactors=FALSE)
+          )
+
+          p_st <- ggplot(df_long_st,
+                         aes(x=taxon, y=mean, colour=group)) +
+            geom_point(position=position_dodge(0.5), size=3) +
+            geom_errorbar(aes(ymin=pmax(mean-se*1.96, 0), ymax=mean+se*1.96),
+                          position=position_dodge(0.5), width=0.3, linewidth=0.7) +
+            geom_text(data=subset(df_long_st, group==g1s & sig=="*"),
+                      aes(label=sig, y=mean+se*1.96+0.3),
+                      colour="black", size=5, show.legend=FALSE) +
+            coord_flip() +
+            scale_colour_manual(values=setNames(pal2_st, c(g1s, g2s))) +
+            labs(title=sprintf("STAMP — %s: %s vs %s\n(top 25 by abundance, * = q<0.05)",
+                               rank_st, g1s, g2s),
+                 x="", y="Mean Relative Abundance (%)", colour="Group") +
+            theme_bw(base_size=10) +
+            theme(legend.position="top")
+
+          fname_st <- sprintf("19_stamp_%s_%s_vs_%s.pdf",
+                              tolower(rank_st), g1s, g2s)
+          save_pdf(p_st, fname_st,
+                   width=9, height=max(6, nrow(top_st)*0.38+2))
+          cat(sprintf("  %s %s vs %s: done (%d sig taxa)\n",
+                      rank_st, g1s, g2s,
+                      sum(!is.na(top_st$p_adj) & top_st$p_adj < 0.05)))
+        }
+      }, error=function(e) cat(sprintf("  [WARN] STAMP %s: %s\n", rank_st, e$message)))
+    }
+  }, error=function(e) cat(sprintf("[WARN] STAMP section: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires phyloseq + metadata + ggplot2)\n")
+}
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 plots_made <- list.files(PLOTS_DIR, pattern="\\.pdf$")
 tables_made <- list.files(TABLES_DIR, pattern="\\.csv$")

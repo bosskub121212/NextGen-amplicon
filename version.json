@@ -1,5 +1,5 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "release_date": "2026-05-11",
-  "changelog": "Phase 3 new analyses: Spearman co-occurrence network (|r|>=0.6, p<0.05) with ZiPi node role classification, RDA ordination with environmental variables + PERMANOVA. New R packages: igraph, ggraph, Hmisc."
+  "changelog": "Gap fill: Beta distance heatmap (Bray+Jaccard, sample x sample pheatmap), OTU/ASV distribution charts (read counts, richness, abundance histogram), STAMP-style extended error bar plots (mean+95%CI per group, all pairwise, Genus/Family/Phylum)."
 }
