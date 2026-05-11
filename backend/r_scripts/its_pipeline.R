@@ -39,10 +39,16 @@ option_list <- list(
   make_option("--maxEE_r",     type="double",   default=2.0),
   make_option("--threads",     type="integer",  default=4),
   make_option("--job_name",    type="character", default="ITS_job"),
-  make_option("--primer_f",    type="character", default="",
+  make_option("--primer_f",          type="character", default="",
               help="Forward primer sequence for cutadapt trimming"),
-  make_option("--primer_r",    type="character", default="",
+  make_option("--primer_r",          type="character", default="",
               help="Reverse primer sequence for cutadapt trimming"),
+  make_option("--error_rate",        type="double",    default=0.1,
+              help="cutadapt -e: fraction of mismatches allowed"),
+  make_option("--min_overlap",       type="integer",   default=3,
+              help="cutadapt -O: minimum overlap bases"),
+  make_option("--discard_untrimmed", type="logical",   default=FALSE,
+              help="Discard reads where primer was not found"),
   # ── Kept for backwards-compat / direct CLI use ───────────────────────────
   make_option("--taxDatabase", type="character", default="UNITE"),
   make_option("--dbPath",      type="character", default=""),
@@ -129,13 +135,16 @@ if (cutadapt_ok) {
   trimFs <- file.path(trim_dir, paste0(sample_names, "_F_trim.fastq.gz"))
   trimRs <- file.path(trim_dir, paste0(sample_names, "_R_trim.fastq.gz"))
 
+  discard_flag <- if (isTRUE(opt$discard_untrimmed)) "--discard-untrimmed" else ""
   n_trimmed <- 0
   for (i in seq_along(fnFs_raw)) {
     cmd <- sprintf(
-      "cutadapt -g %s -a %s -G %s -A %s --discard-untrimmed -m 50 -j %d -o %s -p %s %s %s > /dev/null 2>&1",
+      "cutadapt -g %s -a %s -G %s -A %s -e %s -O %d -m 50 -j %d %s -o %s -p %s %s %s > /dev/null 2>&1",
       primer_f, primer_r_rc,
       primer_r, primer_f_rc,
-      opt$threads, trimFs[i], trimRs[i], fnFs_raw[i], fnRs_raw[i]
+      opt$error_rate, opt$min_overlap,
+      opt$threads, discard_flag,
+      trimFs[i], trimRs[i], fnFs_raw[i], fnRs_raw[i]
     )
     ret <- system(cmd)
     if (ret == 0 && file.exists(trimFs[i]) && file.size(trimFs[i]) > 0) n_trimmed <- n_trimmed + 1

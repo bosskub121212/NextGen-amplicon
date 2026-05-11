@@ -136,9 +136,11 @@ class RunParams(BaseModel):
     metadata:      list[MetaRow] = []
     # --- ITS params ---
     its_region:    str   = "ITS1"   # ITS1 or ITS2
-    primer_f:      str   = ""       # forward primer (blank = skip cutadapt)
-    primer_r:      str   = ""       # reverse primer
-    discardUntrimmed: bool = False  # discard reads where primer not found
+    primer_f:           str   = ""    # forward primer (blank = skip cutadapt)
+    primer_r:           str   = ""    # reverse primer
+    discardUntrimmed:   bool  = False # discard reads where primer not found
+    cutadaptErrorRate:  float = 0.1  # -e  fraction mismatches allowed
+    cutadaptOverlap:    int   = 3    # -O  minimum overlap bases
     # --- COX1 params ---
     truncLen_cox1_f: int   = 230
     truncLen_cox1_r: int   = 200
@@ -361,6 +363,10 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--primer_f", params.primer_f]
         if params.primer_r:
             cmd += ["--primer_r", params.primer_r]
+        cmd += ["--error_rate", str(params.cutadaptErrorRate),
+                "--min_overlap", str(params.cutadaptOverlap)]
+        if params.discardUntrimmed:
+            cmd += ["--discard_untrimmed", "TRUE"]
         if params.metadata:
             cmd += ["--metadata", metadata_path]
         if db_paths_json:
@@ -388,6 +394,8 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--primer_f", params.primer_f]
         if params.primer_r:
             cmd += ["--primer_r", params.primer_r]
+        cmd += ["--error_rate", str(params.cutadaptErrorRate),
+                "--min_overlap", str(params.cutadaptOverlap)]
         if params.discardUntrimmed:
             cmd += ["--discard_untrimmed", "TRUE"]
         if params.metadata:
@@ -446,6 +454,8 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--primer_f", params.primer_f]
         if params.primer_r:
             cmd += ["--primer_r", params.primer_r]
+        cmd += ["--error_rate", str(params.cutadaptErrorRate),
+                "--min_overlap", str(params.cutadaptOverlap)]
         if params.discardUntrimmed:
             cmd += ["--discard_untrimmed", "TRUE"]
         if params.run_tax4fun:

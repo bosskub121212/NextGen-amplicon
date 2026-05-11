@@ -62,11 +62,15 @@ option_list <- list(
               help="Path to 18S-NemaBase FASTA for nematode 18S mode"),
   make_option("--db_paths_json", type="character", default="",
               help="Path to db_paths.json for auto-detecting databases"),
-  make_option("--primer_f",     type="character", default="",
+  make_option("--primer_f",          type="character", default="",
               help="Forward primer sequence for cutadapt trimming (blank = skip)"),
-  make_option("--primer_r",     type="character", default="",
+  make_option("--primer_r",          type="character", default="",
               help="Reverse primer sequence for cutadapt trimming (blank = skip)"),
-  make_option("--discard_untrimmed", type="logical", default=FALSE,
+  make_option("--error_rate",        type="double",    default=0.1,
+              help="cutadapt -e: fraction of mismatches allowed (default 0.1)"),
+  make_option("--min_overlap",       type="integer",   default=3,
+              help="cutadapt -O: minimum overlap bases (default 3)"),
+  make_option("--discard_untrimmed", type="logical",   default=FALSE,
               help="Discard reads where primer was not found")
 )
 opt <- parse_args(OptionParser(option_list=option_list))
@@ -134,8 +138,10 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
         "cutadapt",
         "-g", opt$primer_f,   "-a", primer_r_rc,
         "-G", opt$primer_r,   "-A", primer_f_rc,
-        discard_flag,
+        "-e", opt$error_rate,
+        "-O", opt$min_overlap,
         "-m 50 --cores=0",
+        discard_flag,
         "-o", cutFs[i], "-p", cutRs[i],
         fnFs[i], fnRs[i],
         "> /dev/null 2>&1"

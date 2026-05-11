@@ -32,10 +32,16 @@ option_list <- list(
               help="Directory for all output files"),
   make_option("--db_paths",     type="character", default=NULL,
               help="Path to db_paths.json (optional; auto-detected if absent)"),
-  make_option("--primer_f",     type="character", default="GGWACWGGWTGAACWGTWTAYCCYCC",
+  make_option("--primer_f",          type="character", default="GGWACWGGWTGAACWGTWTAYCCYCC",
               help="Forward primer sequence (default: mlCOIintF)"),
-  make_option("--primer_r",     type="character", default="TANACYTCNGGRTGNCCRAARAAYCA",
+  make_option("--primer_r",          type="character", default="TANACYTCNGGRTGNCCRAARAAYCA",
               help="Reverse primer sequence (default: jgHCO2198)"),
+  make_option("--error_rate",        type="double",    default=0.1,
+              help="cutadapt -e: fraction of mismatches allowed"),
+  make_option("--min_overlap",       type="integer",   default=3,
+              help="cutadapt -O: minimum overlap bases"),
+  make_option("--discard_untrimmed", type="logical",   default=TRUE,
+              help="Discard reads where primer was not found (default TRUE for COX1)"),
   make_option("--truncLen_f",   type="integer",   default=230,
               help="Truncate forward reads at this length (0 = no truncation)"),
   make_option("--truncLen_r",   type="integer",   default=200,
@@ -198,12 +204,14 @@ if (cutadapt_ok) {
   primer_f_rc <- RC(opt$primer_f)
   primer_r_rc <- RC(opt$primer_r)
 
+  discard_flag <- if (isTRUE(opt$discard_untrimmed)) "--discard-untrimmed" else ""
   for (i in seq_along(fnFs)) {
     cmd <- sprintf(
-      "cutadapt -g %s -a %s -G %s -A %s --discard-untrimmed -m 50 -j %d -o %s -p %s %s %s > /dev/null 2>&1",
+      "cutadapt -g %s -a %s -G %s -A %s -e %s -O %d -m 50 -j %d %s -o %s -p %s %s %s > /dev/null 2>&1",
       opt$primer_f, primer_r_rc,
       opt$primer_r, primer_f_rc,
-      opt$threads,
+      opt$error_rate, opt$min_overlap,
+      opt$threads, discard_flag,
       fnFs_trim[i], fnRs_trim[i],
       fnFs[i], fnRs[i]
     )
