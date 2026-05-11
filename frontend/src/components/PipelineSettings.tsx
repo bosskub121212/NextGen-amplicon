@@ -239,14 +239,26 @@ interface Props {
 }
 
 export default function PipelineSettings({ params, onChange, marker, onMarker, onMetadata }: Props) {
-  const [openStep,    setOpenStep]    = useState<number | null>(1);
-  const [showBrowser, setShowBrowser] = useState(false);
-  const [dbPaths,     setDbPaths]     = useState<Record<string, string>>({});
-  const [dbDir,       setDbDir]       = useState<string>("");
+  const [openStep,       setOpenStep]       = useState<number | null>(1);
+  const [showBrowser,    setShowBrowser]    = useState(false);
+  const [dbPaths,        setDbPaths]        = useState<Record<string, string>>({});
+  const [dbDir,          setDbDir]          = useState<string>("");
+  // Local primer selection — gives instant visual feedback without waiting for parent re-render
+  const [selectedPrimerF, setSelectedPrimerF] = useState<string>(params.primer_f);
+
+  // Sync local state if params.primer_f is changed from outside (e.g. reset)
+  useEffect(() => {
+    setSelectedPrimerF(params.primer_f);
+  }, [params.primer_f]);
 
   const set = (key: keyof PipelineParams, val: any) => onChange({ ...params, [key]: val });
   const toggle = <T,>(arr: T[], val: T): T[] =>
     arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
+
+  const selectPreset = (f: string, r: string) => {
+    setSelectedPrimerF(f);
+    onChange({ ...params, primer_f: f, primer_r: r });
+  };
 
   useEffect(() => {
     fetch("/databases").then(r => r.ok ? r.json() : null).then(data => {
@@ -376,7 +388,7 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
               {pacBioPrimers.map((pr, i) => (
                 <button key={i}
                   className={`primer-preset-btn ${params.primer_f === pr.f ? "active" : ""}`}
-                  onClick={() => { set("primer_f", pr.f); set("primer_r", pr.r); }}>
+                  onClick={() => onChange({ ...params, primer_f: pr.f, primer_r: pr.r })}>
                   {pr.label}
                 </button>
               ))}
@@ -424,11 +436,11 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
               {(ITS_PRIMERS[params.its_region] || []).map((pr, i) => (
                 <button key={i}
                   className={`primer-preset-btn ${params.primer_f === pr.f ? "active" : ""}`}
-                  onClick={() => { set("primer_f", pr.f); set("primer_r", pr.r); }}>
+                  onClick={() => onChange({ ...params, primer_f: pr.f, primer_r: pr.r })}>
                   {pr.label}
                 </button>
               ))}
-              <button className="primer-preset-btn" onClick={() => { set("primer_f", ""); set("primer_r", ""); }}>
+              <button className="primer-preset-btn" onClick={() => onChange({ ...params, primer_f: "", primer_r: "" })}>
                 Use defaults
               </button>
             </div>
@@ -543,17 +555,17 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
                       <div className="ps-section-label">PRIMER PRESETS</div>
                       <div className="ps-primer-grid">
                         {allPresets.map((pr, i) => (
-                          <button key={i}
-                            className={`ps-primer-card ${params.primer_f === pr.f ? "ps-primer-card--active" : ""}`}
-                            onClick={() => { set("primer_f", pr.f); set("primer_r", pr.r); }}>
+                          <button key={i} type="button"
+                            className={`ps-primer-card ${selectedPrimerF === pr.f ? "ps-primer-card--active" : ""}`}
+                            onClick={() => selectPreset(pr.f, pr.r)}>
                             <div className="ps-primer-name">{pr.label}</div>
                             <div className="ps-primer-seq">F: {pr.f.length > 18 ? pr.f.slice(0, 18) + "…" : pr.f}</div>
                             <div className="ps-primer-seq">R: {pr.r.length > 18 ? pr.r.slice(0, 18) + "…" : pr.r}</div>
                           </button>
                         ))}
-                        <button
-                          className={`ps-primer-card ${!params.primer_f ? "ps-primer-card--active" : ""}`}
-                          onClick={() => { set("primer_f", ""); set("primer_r", ""); }}>
+                        <button type="button"
+                          className={`ps-primer-card ${!selectedPrimerF ? "ps-primer-card--active" : ""}`}
+                          onClick={() => selectPreset("", "")}>
                           <div className="ps-primer-name">Skip</div>
                           <div className="ps-primer-seq">No primer removal</div>
                         </button>

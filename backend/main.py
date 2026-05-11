@@ -14,6 +14,28 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 from pathlib import Path
+import hashlib as _hashlib
+
+# ── Integrity check: hash license.py at startup ───────────────────────────────
+_BACKEND_DIR = Path(__file__).parent
+_LICENSE_FILE = _BACKEND_DIR / "license.py"
+_LICENSE_HASH_AT_STARTUP: str = ""
+
+def _compute_file_hash(path: Path) -> str:
+    try:
+        return _hashlib.sha256(path.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+if _LICENSE_FILE.exists():
+    _LICENSE_HASH_AT_STARTUP = _compute_file_hash(_LICENSE_FILE)
+
+def _integrity_ok() -> bool:
+    """Return False if license.py was modified after the server started."""
+    if not _LICENSE_HASH_AT_STARTUP:
+        return True  # Can't check → allow (first boot)
+    current = _compute_file_hash(_LICENSE_FILE)
+    return current == _LICENSE_HASH_AT_STARTUP
 
 app = FastAPI(title="16S/12S Analysis API")
 app.add_middleware(
@@ -199,6 +221,14 @@ async def upload_files(files: list[UploadFile] = File(...)):
 async def run_analysis(job_id: str, params: RunParams):
     if job_id not in jobs:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
+
+    # ── Integrity gate (detect tampered license.py) ───────────────────────────
+    if not _integrity_ok():
+        return JSONResponse(
+            status_code=403,
+            content={"error": "integrity_violation",
+                     "message": "Application integrity check failed. Please reinstall."}
+        )
 
     # ── License gate ──────────────────────────────────────────────────────────
     try:
@@ -889,7 +919,28 @@ def clear_history():
         save_jobs()
     return {"cleared": len(to_del)}
 
-# -- 9b. Database paths -------------------------------------------------------
+# -- 9b. Cleanup orphaned result folders on disk -------------------------------
+@app.delete("/results/cleanup")
+def cleanup_orphan_results():
+    """Remove result/upload folders on disk that have no matching job in history."""
+    known_ids = set(jobs.keys())
+    removed = []
+    errors = []
+    for folder_root in (RESULTS_DIR, UPLOAD_DIR):
+        if not folder_root.exists():
+            continue
+        for subfolder in folder_root.iterdir():
+            if subfolder.is_dir() and subfolder.name not in known_ids:
+                try:
+                    shutil.rmtree(subfolder)
+                    removed.append(subfolder.name)
+                    print(f"[cleanup] Removed orphan: {subfolder}")
+                except Exception as e:
+                    errors.append(str(e))
+                    print(f"[cleanup] Could not remove {subfolder}: {e}")
+    return {"removed": len(removed), "paths": removed, "errors": errors}
+
+# -- 9c. Database paths -------------------------------------------------------
 @app.get("/databases")
 def get_databases():
     """Return available taxonomy databases and their paths."""
@@ -964,23 +1015,6 @@ def download_zip(job_id: str):
     filename = f"{safe_name}_{marker}_results.zip"
     return StreamingResponse(buf, media_type="application/zip",
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
-
-# -- 11. Replot ---------------------------------------------------------------
-@app.post("/replot/{job_id}")
-def replot(job_id: str):
-    if job_id not in jobs:
-        return JSONResponse(status_code=404, content={"error": "Job not found"})
-    output_dir = jobs[job_id].get("output_dir", str(RESULTS_DIR / job_id))
-    if not Path(output_dir).exists():
-        return JSONResponse(status_code=404, content={"error": "Results not found"})
-    replot_script = R_SCRIPTS_DIR / "replot.R"
-    if not replot_script.exists():
-        return JSONResponse(status_code=404, content={"error": "replot.R not found"})
-    cmd = ["Rscript", str(replot_script), "--output", output_dir]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    out, _ = proc.communicate(timeout=300)
-    return {"status": "ok" if proc.returncode == 0 else "error",
-            "log": out[-2000:] if out else ""}
 
 # -- 12. Taxonomy for colour picker -------------------------------------------
 @app.get("/taxonomy/{job_id}")

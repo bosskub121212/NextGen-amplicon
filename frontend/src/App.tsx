@@ -6,6 +6,7 @@ import DNAProgress from "./components/DNAProgress";
 import MetadataEditor, { MetaRow } from "./components/MetadataEditor";
 import UpdateBanner from "./components/UpdateBanner";
 import LicenseModal, { LicenseStatus } from "./components/LicenseModal";
+import SettingsPanel, { ThemeId } from "./components/SettingsPanel";
 import "./App.css";
 
 const API = "http://localhost:8000";
@@ -106,6 +107,8 @@ export default function App() {
   // Delete confirmation popup
   const [deleteConfirm, setDeleteConfirm] = useState<{jobId: string; jobName: string} | null>(null);
   const [clearConfirm, setClearConfirm]   = useState(false);
+  const [cleanupConfirm, setCleanupConfirm] = useState(false);
+  const [cleanupResult, setCleanupResult]   = useState<{removed: number; paths: string[]} | null>(null);
   // Checkpoint warning
   const [checkpointJobId, setCheckpointJobId] = useState<string|null>(null);
   const [checkpointData, setCheckpointData]   = useState<CheckpointData|null>(null);
@@ -116,6 +119,17 @@ export default function App() {
   const [licenseStatus, setLicenseStatus]   = useState<LicenseStatus|null>(null);
   const [showLicense,   setShowLicense]     = useState(false);
   const [licenseChecked, setLicenseChecked] = useState(false);
+
+  // ── Theme ─────────────────────────────────────────────────────────
+  const [theme, setTheme] = useState<ThemeId>(() =>
+    (localStorage.getItem("app-theme") as ThemeId) || "default"
+  );
+  const [showSettings, setShowSettings] = useState(false);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme === "default" ? "" : theme);
+    localStorage.setItem("app-theme", theme);
+  }, [theme]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef      = useRef<ReturnType<typeof setInterval>|null>(null);
@@ -292,6 +306,10 @@ export default function App() {
   const handleClearHistory = async () => {
     await axios.delete(`${API}/history`); await refreshJobs();
   };
+  const handleCleanupOrphans = async () => {
+    const res = await axios.delete(`${API}/results/cleanup`);
+    setCleanupResult({ removed: res.data.removed, paths: res.data.paths });
+  };
 
   // Auto-navigate to history when a checkpoint is detected
   useEffect(() => {
@@ -348,8 +366,13 @@ export default function App() {
         {(j.status === "running" || j.status === "queued") && (
           <div className="job-progress-row">
             <div className="job-progress-track">
-              <div className="job-progress-fill"
-                style={{ width: `${j.progress}%`, background: STATUS_COLOR[j.status] }} />
+              <div
+                className={`job-progress-fill${j.status === "running" ? " job-progress-fill--brand" : ""}`}
+                style={{
+                  width: `${j.progress}%`,
+                  background: j.status === "running" ? undefined : STATUS_COLOR[j.status],
+                }}
+              />
             </div>
             <span className="job-progress-pct">{j.progress}%</span>
           </div>
@@ -401,7 +424,7 @@ export default function App() {
                 onClick={() => setShowColorPicker(showColorPicker === j.job_id ? null : j.job_id)}>
                 🎨 Taxonomy Colors
               </button>
-              <a href={`${API}/download-zip/${j.job_id}`} download className="btn-view">
+              <a href={`${API}/download/${j.job_id}`} download className="btn-view">
                 📥 Download Results
               </a>
             </>
@@ -574,6 +597,14 @@ export default function App() {
   if (screen === "home") {
     return (
       <div className="home-screen">
+        {/* Settings gear — top-right corner */}
+        <button
+          className="btn-settings"
+          style={{ position: "absolute", top: 18, right: 22 }}
+          title="Settings"
+          onClick={() => setShowSettings(true)}
+        >⚙️</button>
+
         {checkpointJobId && (
           <div className="chk-home-banner" onClick={() => setScreen("history")}>
             ⚠️ A pipeline has paused and needs your decision — <strong>click to review</strong>
@@ -626,6 +657,7 @@ export default function App() {
             </span>
             {historyJobs.length > 0 &&
               <button className="btn-clear-hist" onClick={() => setClearConfirm(true)}>🗑 Clear History</button>}
+            <button className="btn-cleanup-orphans" onClick={() => setCleanupConfirm(true)} title="ลบไฟล์ที่เหลือค้างบนดิสก์ (orphaned files)">🧹 Clean Disk</button>
             <button className="btn-refresh" onClick={refreshJobs}>↻ Refresh</button>
           </div>
         </div>
@@ -697,6 +729,58 @@ export default function App() {
                   }}>
                   🗑 ลบทั้งหมด
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Cleanup orphaned files confirmation ── */}
+        {cleanupConfirm && (
+          <div className="popup-overlay">
+            <div className="step-popup del-confirm-popup">
+              <div className="popup-step-icon">🧹</div>
+              <h2 className="popup-title">ล้างไฟล์ค้างบนดิสก์</h2>
+              <p className="del-confirm-msg">
+                ลบโฟลเดอร์ผลลัพธ์บนดิสก์ที่<strong> ไม่มีรายการใน history</strong> แล้ว
+                (orphaned files จาก job ที่ถูกลบไปแล้ว)
+              </p>
+              <p className="del-confirm-sub">⚠️ การดำเนินการนี้ไม่สามารถย้อนกลับได้</p>
+              <div className="popup-footer">
+                <button className="popup-back" onClick={() => setCleanupConfirm(false)}>← ยกเลิก</button>
+                <button className="btn-del-confirm"
+                  onClick={async () => {
+                    await handleCleanupOrphans();
+                    setCleanupConfirm(false);
+                  }}>
+                  🧹 ล้างไฟล์
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Cleanup result ── */}
+        {cleanupResult && (
+          <div className="popup-overlay">
+            <div className="step-popup del-confirm-popup">
+              <div className="popup-step-icon">{cleanupResult.removed > 0 ? "✅" : "ℹ️"}</div>
+              <h2 className="popup-title">ผลการล้างไฟล์</h2>
+              {cleanupResult.removed === 0 ? (
+                <p className="del-confirm-msg">ไม่พบไฟล์ค้างบนดิสก์ — ดิสก์สะอาดดีอยู่แล้ว 👍</p>
+              ) : (
+                <>
+                  <p className="del-confirm-msg">
+                    ลบไฟล์ค้าง <strong>{cleanupResult.removed} โฟลเดอร์</strong> เรียบร้อยแล้ว
+                  </p>
+                  <div className="cleanup-path-list">
+                    {cleanupResult.paths.map(p => (
+                      <div key={p} className="cleanup-path-item">📁 {p}</div>
+                    ))}
+                  </div>
+                </>
+              )}
+              <div className="popup-footer">
+                <button className="btn-del-confirm" onClick={() => setCleanupResult(null)}>ตกลง</button>
               </div>
             </div>
           </div>
@@ -873,6 +957,14 @@ export default function App() {
         />
       )}
 
+      {showSettings && (
+        <SettingsPanel
+          theme={theme}
+          onTheme={(t) => setTheme(t)}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+
       {/* ── CPU / Submit Popup ── */}
       {showSubmitPopup && (
         <div className="popup-overlay">
@@ -963,6 +1055,9 @@ export default function App() {
             </button>
             <button className="btn-history" onClick={() => setScreen("history")}>
               🗓 View Jobs
+            </button>
+            <button className="btn-settings" title="Settings" onClick={() => setShowSettings(true)}>
+              ⚙️
             </button>
           </div>
         </div>

@@ -100,7 +100,7 @@ sample_names <- sub("_R1.*|_1\\.(fq|fastq).*", "", basename(fnFs))
 prog(8, sprintf("Found %d sample(s) — ready to process", length(fnFs)))
 
 # ── Step 2: Filter & Trim ─────────────────────────────────────
-prog(12, "Step 1/5 — Filtering and trimming reads")
+prog(12, "Step 1/8 — Filtering and trimming reads")
 cat("Step 1/5: Filter & Trim...\n")
 filtFs <- file.path(opt$output, "filtered", paste0(sample_names, "_F_filt.fastq.gz"))
 filtRs <- file.path(opt$output, "filtered", paste0(sample_names, "_R_filt.fastq.gz"))
@@ -135,7 +135,7 @@ tryCatch({
 }, error=function(e) cat("  [skip] Trim_seq copy:", e$message, "\n"))
 
 # ── Step 3: Learn Error Rates ─────────────────────────────────
-prog(32, "Step 2/5 — Learning error rates (this takes a while...)")
+prog(32, "Step 2/8 — Learning error rates (this takes a while...)")
 cat("Step 2/5: Learning Error Rates...\n")
 errF <- learnErrors(filtFs, nbases=opt$nbases, multithread=TRUE)
 errR <- learnErrors(filtRs, nbases=opt$nbases, multithread=TRUE)
@@ -157,7 +157,7 @@ tryCatch({
 }, error=function(e) cat("  [skip] Error model plots:", e$message, "\n"))
 
 # ── Step 4: Denoise ───────────────────────────────────────────
-prog(48, "Step 3/5 — Denoising & ASV inference")
+prog(48, "Step 3/8 — Denoising & ASV inference")
 cat("Step 3/5: Denoising (DADA2 Inference)...\n")
 pool_val <- if (opt$pool == "TRUE") TRUE else if (opt$pool == "FALSE") FALSE else "pseudo"
 derepFs  <- derepFastq(filtFs)
@@ -173,7 +173,7 @@ if (inherits(dadaRs, "dada")) dadaRs <- setNames(list(dadaRs), sample_names)
 cat("  Done.\n\n")
 
 # ── Step 5: Sequence Table & Chimera ─────────────────────────
-prog(65, "Step 4/5 — Building sequence table & removing chimeras")
+prog(65, "Step 4/8 — Building sequence table & removing chimeras")
 cat("Step 4/5: Sequence Table & Chimera Removal...\n")
 mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=FALSE)
 if (is.data.frame(mergers)) mergers <- setNames(list(mergers), sample_names)
@@ -237,7 +237,7 @@ if (merged_pct < 10 || nonchim_pct < 10) {
 }
 
 # ── Step 6: Taxonomy ──────────────────────────────────────────
-prog(78, sprintf("Step 5/5 — Taxonomic assignment (%d ASVs)", ncol(seqtab_nochim)))
+prog(78, sprintf("Step 5/8 — Taxonomic assignment (%d ASVs)", ncol(seqtab_nochim)))
 cat("Step 5/5: Taxonomic Assignment...\n")
 tax <- NULL
 
@@ -363,7 +363,7 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
 }
 
 # ── Save Results ──────────────────────────────────────────────
-prog(90, "Saving results to output files...")
+prog(88, "Step 6/8 — Saving results & CSV tables...")
 cat("Saving results...\n")
 
 # ASV table
@@ -419,7 +419,7 @@ summary_data <- list(
 )
 write(toJSON(summary_data, auto_unbox=TRUE), file.path(opt$output, "summary.json"))
 
-prog(92, "Generating comprehensive report plots...")
+prog(92, "Step 7/8 — Generating taxonomy & report plots...")
 cat("Generating plots...\n")
 
 # ── Load optional visualization packages ───────────────────────
@@ -696,6 +696,8 @@ tryCatch({
   cat("  asv_length_distribution.pdf\n")
 }, error=function(e) cat("  [skip] ASV length:", e$message, "\n"))
 
+prog(95, "Step 8/8 — Diversity & statistical analyses...")
+
 # ═══════════════════════════════════════════════════════════════
 #  PLOT SECTION 4 — ALPHA DIVERSITY
 # ═══════════════════════════════════════════════════════════════
@@ -763,6 +765,37 @@ tryCatch({
   }
   cat("  alpha_diversity.pdf + alpha_diversity.csv\n")
 }, error=function(e) cat("  [skip] alpha diversity:", e$message, "\n"))
+
+# ── ALPHA STATS: Pairwise Wilcoxon + BH correction ─────────────
+tryCatch({
+  gv_alpha <- if (!is.null(group_vec)) group_vec else NULL
+  if (!is.null(gv_alpha) && length(unique(gv_alpha[sample_names])) >= 2) {
+    grps_alpha <- factor(gv_alpha[sample_names])
+    wilcox_list <- lapply(c("Observed","Chao1","Shannon","Simpson"), function(metric) {
+      if (!metric %in% colnames(alpha_df)) return(NULL)
+      vals <- setNames(alpha_df[[metric]], alpha_df$Sample)
+      tryCatch({
+        wt <- pairwise.wilcox.test(vals, grps_alpha, p.adjust.method="BH")
+        p_mat <- wt$p.value
+        rows <- rownames(p_mat); cols <- colnames(p_mat)
+        do.call(rbind, lapply(seq_along(rows), function(i)
+          do.call(rbind, lapply(seq_along(cols), function(j) {
+            v <- p_mat[i, j]
+            if (is.na(v)) return(NULL)
+            data.frame(metric=metric, group1=rows[i], group2=cols[j],
+                       p.adj=round(v,6), stringsAsFactors=FALSE)
+          }))
+        ))
+      }, error=function(e) NULL)
+    })
+    wilcox_all <- do.call(rbind, Filter(Negate(is.null), wilcox_list))
+    if (!is.null(wilcox_all) && nrow(wilcox_all) > 0) {
+      write.csv(wilcox_all,
+                file.path(opt$output, "alpha_diversity_stats.csv"), row.names=FALSE)
+      cat("  alpha_diversity_stats.csv\n")
+    }
+  }
+}, error=function(e) cat("  [skip] Wilcoxon alpha:", e$message, "\n"))
 
 # ═══════════════════════════════════════════════════════════════
 #  PLOT SECTION 5 — RAREFACTION CURVES (overall, coloured by sample)
@@ -1047,6 +1080,276 @@ tryCatch({
     }, error=function(e) { if (sink.number() > 0) sink(); cat("  [skip] PERMANOVA:", e$message, "\n") })
   }
 }, error=function(e) cat("  [skip] beta diversity:", e$message, "\n"))
+
+# ── BETA EXTRA: Jaccard NMDS ────────────────────────────────────
+tryCatch({
+  if (n_samp >= 3 && has_vegan) {
+    rel_ab_jacc <- seqtab_nochim / rowSums(seqtab_nochim)
+    jacc_dist   <- vegan::vegdist(rel_ab_jacc, method="jaccard", binary=TRUE)
+    set.seed(42)
+    nmds_jacc   <- vegan::metaMDS(as.matrix(jacc_dist), k=2, trymax=50, trace=FALSE)
+    nmds_df     <- as.data.frame(nmds_jacc$points)
+    colnames(nmds_df) <- c("NMDS1","NMDS2")
+    nmds_df$Sample <- rownames(nmds_df)
+    if (has_ggplot2) {
+      nmds_df$Group <- factor(if (!is.null(group_vec)) group_vec[nmds_df$Sample]
+                               else rep("All", nrow(nmds_df)))
+      pal_jacc <- if (!is.null(group_pal)) group_pal else samp_cols
+      p_jacc <- ggplot2::ggplot(nmds_df,
+                  ggplot2::aes(x=NMDS1, y=NMDS2, colour=Group, label=Sample)) +
+        ggplot2::geom_point(size=4) +
+        ggplot2::geom_text(vjust=-0.8, size=3) +
+        ggplot2::scale_colour_manual(values=pal_jacc) +
+        ggplot2::annotate("text", x=-Inf, y=Inf, hjust=-0.1, vjust=1.5,
+                          label=sprintf("stress = %.4f", nmds_jacc$stress), size=3.5) +
+        ggplot2::labs(title="NMDS — Binary Jaccard Distance") +
+        ggplot2::theme_bw(base_size=11)
+      ggplot2::ggsave(file.path(opt$output, "beta_nmds_jaccard.pdf"),
+                      p_jacc, width=7, height=6, device="pdf")
+    } else {
+      pdf(file.path(opt$output, "beta_nmds_jaccard.pdf"), width=7, height=6)
+      plot(nmds_jacc$points, pch=16, col=samp_cols, cex=2,
+           main=sprintf("NMDS — Binary Jaccard (stress=%.4f)", nmds_jacc$stress))
+      text(nmds_jacc$points, labels=sample_names, pos=3, cex=0.8)
+      dev.off()
+    }
+    cat("  beta_nmds_jaccard.pdf\n")
+  }
+}, error=function(e) cat("  [skip] Jaccard NMDS:", e$message, "\n"))
+
+# ── BETA EXTRA: Pairwise PERMANOVA ─────────────────────────────
+tryCatch({
+  if (n_samp >= 4 && has_vegan) {
+    gv_beta <- if (length(meta_cols) > 0) meta_cols[[1]] else
+               if (!is.null(group_vec)) setNames(group_vec, sample_names) else NULL
+    if (!is.null(gv_beta)) {
+      gv_vals <- gv_beta[sample_names]
+      grps    <- unique(gv_vals[!is.na(gv_vals) & nchar(gv_vals) > 0])
+      if (length(grps) >= 2) {
+        rel_ab_pw <- seqtab_nochim / rowSums(seqtab_nochim)
+        bc_dist_pw <- vegan::vegdist(rel_ab_pw, method="bray")
+        pairs <- combn(grps, 2, simplify=FALSE)
+        pw_rows <- do.call(rbind, lapply(pairs, function(pair) {
+          subs <- names(gv_vals)[gv_vals %in% pair]
+          if (length(subs) < 4) return(NULL)
+          sub_d <- as.dist(as.matrix(bc_dist_pw)[subs, subs])
+          sub_g <- factor(gv_vals[subs])
+          tryCatch({
+            pm <- vegan::adonis2(sub_d ~ sub_g, permutations=999)
+            data.frame(group1=pair[1], group2=pair[2],
+                       R2=round(pm$R2[1],4), F.stat=round(pm$F[1],4),
+                       p=pm$`Pr(>F)`[1], p.adj=NA_real_,
+                       stringsAsFactors=FALSE)
+          }, error=function(e) NULL)
+        }))
+        if (!is.null(pw_rows) && nrow(pw_rows) > 0) {
+          pw_rows$p.adj <- p.adjust(pw_rows$p, method="BH")
+          write.csv(pw_rows, file.path(opt$output, "beta_pairwise_permanova.csv"),
+                    row.names=FALSE)
+          cat("  beta_pairwise_permanova.csv\n")
+        }
+      }
+    }
+  }
+}, error=function(e) cat("  [skip] Pairwise PERMANOVA:", e$message, "\n"))
+
+# ── BETA EXTRA: ANOSIM (global + pairwise) ─────────────────────
+tryCatch({
+  if (n_samp >= 3 && has_vegan) {
+    gv_anosim <- if (length(meta_cols) > 0) meta_cols[[1]] else
+                 if (!is.null(group_vec)) setNames(group_vec, sample_names) else NULL
+    if (!is.null(gv_anosim)) {
+      gv_vals_a <- gv_anosim[sample_names]
+      grp_fac_a <- factor(gv_vals_a)
+      if (nlevels(grp_fac_a) >= 2) {
+        rel_ab_an  <- seqtab_nochim / rowSums(seqtab_nochim)
+        bc_dist_an <- vegan::vegdist(rel_ab_an, method="bray")
+        sink_path  <- file.path(opt$output, "beta_anosim.txt")
+        sink(sink_path)
+        cat("=== ANOSIM (Bray-Curtis) ===\n\n")
+        anosi_res <- vegan::anosim(bc_dist_an, grp_fac_a, permutations=999)
+        print(anosi_res)
+        cat("\n=== Pairwise ANOSIM ===\n")
+        grps_a <- unique(gv_vals_a[!is.na(gv_vals_a) & nchar(gv_vals_a) > 0])
+        sink()   # close before loop to avoid nested sink issues
+        pw_anosim <- do.call(rbind, lapply(combn(grps_a, 2, simplify=FALSE), function(pair) {
+          subs <- names(gv_vals_a)[gv_vals_a %in% pair]
+          if (length(subs) < 4) return(NULL)
+          sub_d <- as.dist(as.matrix(bc_dist_an)[subs, subs])
+          sub_g <- factor(gv_vals_a[subs])
+          tryCatch({
+            an <- vegan::anosim(sub_d, sub_g, permutations=999)
+            data.frame(group1=pair[1], group2=pair[2],
+                       R=round(an$statistic,4), p=an$signif,
+                       stringsAsFactors=FALSE)
+          }, error=function(e) NULL)
+        }))
+        if (!is.null(pw_anosim) && nrow(pw_anosim) > 0) {
+          pw_anosim$p.adj <- p.adjust(pw_anosim$p, method="BH")
+          # Append pairwise results to text file
+          write("\n=== Pairwise ANOSIM (BH-corrected) ===", sink_path, append=TRUE)
+          write(capture.output(print(pw_anosim)), sink_path, append=TRUE)
+          write.csv(pw_anosim, file.path(opt$output, "beta_anosim_pairwise.csv"),
+                    row.names=FALSE)
+          cat("  beta_anosim_pairwise.csv\n")
+        }
+        cat("  beta_anosim.txt\n")
+      }
+    }
+  }
+}, error=function(e) {
+  if (sink.number() > 0) sink()
+  cat("  [skip] ANOSIM:", e$message, "\n")
+})
+
+# ═══════════════════════════════════════════════════════════════
+#  PLOT SECTION 7b — DESeq2 Differential Abundance
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  has_phyloseq_da <- requireNamespace("phyloseq", quietly=TRUE)
+  has_deseq2      <- requireNamespace("DESeq2",   quietly=TRUE)
+  gv_da <- if (!is.null(group_vec)) group_vec else NULL
+  if (has_phyloseq_da && has_deseq2 && !is.null(gv_da) &&
+      length(unique(gv_da[sample_names])) >= 2 && n_samp >= 4) {
+
+    suppressPackageStartupMessages({
+      library(phyloseq); library(DESeq2)
+    })
+    cat("[DESeq2] Building phyloseq...\n")
+
+    # Build phyloseq from seqtab_nochim
+    OTU_ps  <- phyloseq::otu_table(t(seqtab_nochim), taxa_are_rows=TRUE)
+    meta_ps <- data.frame(Group=factor(gv_da[sample_names]), row.names=sample_names)
+    SAMP_ps <- phyloseq::sample_data(meta_ps)
+    if (!is.null(tax)) {
+      TAX_ps <- phyloseq::tax_table(as.matrix(tax))
+      ps_da  <- phyloseq::phyloseq(OTU_ps, TAX_ps, SAMP_ps)
+    } else {
+      ps_da  <- phyloseq::phyloseq(OTU_ps, SAMP_ps)
+    }
+
+    # Collapse at genus if rank available
+    if (!is.null(tax) && "Genus" %in% colnames(tax)) {
+      ps_da <- phyloseq::tax_glom(ps_da, taxrank="Genus", NArm=FALSE)
+    }
+
+    # Filter: remove features with >90% zeros
+    ps_filt <- phyloseq::prune_taxa(
+      rowSums(phyloseq::otu_table(ps_da) == 0) <
+        ncol(phyloseq::otu_table(ps_da)) * 0.9,
+      ps_da
+    )
+    if (phyloseq::ntaxa(ps_filt) < 2) stop("Too few taxa after filtering for DESeq2")
+
+    cat(sprintf("[DESeq2] %d taxa × %d samples\n",
+                phyloseq::ntaxa(ps_filt), phyloseq::nsamples(ps_filt)))
+
+    ps_ds <- phyloseq::phyloseq_to_deseq2(ps_filt, ~ Group)
+    ds    <- DESeq2::estimateSizeFactors(ps_ds, type="poscounts")
+    ds    <- DESeq2::DESeq(ds, test="Wald", fitType="parametric", quiet=TRUE)
+    res   <- DESeq2::results(ds, alpha=0.05)
+    res_df <- as.data.frame(res)
+    res_df$taxon <- rownames(res_df)
+
+    # Annotate labels
+    if (!is.null(tax) && "Genus" %in% colnames(tax)) {
+      lab <- tax[res_df$taxon, "Genus"]
+      lab[is.na(lab) | lab == ""] <- res_df$taxon[is.na(lab) | lab == ""]
+    } else {
+      lab <- res_df$taxon
+    }
+    res_df$label <- sub("^[a-z]__", "", lab)
+    res_df       <- res_df[order(res_df$padj, na.last=NA), ]
+
+    write.csv(res_df, file.path(opt$output, "deseq2_results.csv"), row.names=FALSE)
+    cat("  deseq2_results.csv\n")
+
+    if (has_ggplot2) {
+      # ── Volcano ──
+      vdf <- res_df[!is.na(res_df$padj) & !is.na(res_df$log2FoldChange), ]
+      vdf$Significant   <- vdf$padj < 0.05
+      vdf$neg_log10_p   <- -log10(vdf$padj + 1e-300)
+      top_lab_df        <- head(vdf[vdf$Significant, ], 15)
+
+      p_volc <- ggplot2::ggplot(vdf,
+                  ggplot2::aes(x=log2FoldChange, y=neg_log10_p, colour=Significant)) +
+        ggplot2::geom_point(alpha=0.7, size=2) +
+        ggplot2::scale_colour_manual(values=c("grey60","#ef4444")) +
+        ggplot2::geom_hline(yintercept=-log10(0.05), linetype=2, colour="#6b7280") +
+        ggplot2::geom_vline(xintercept=0,            linetype=2, colour="#6b7280") +
+        ggplot2::labs(title="DESeq2 — Differential Abundance",
+                      x="Log2 Fold Change", y="-log10(padj)") +
+        ggplot2::theme_bw(base_size=11)
+      if (requireNamespace("ggrepel", quietly=TRUE) && nrow(top_lab_df) > 0)
+        p_volc <- p_volc + ggrepel::geom_text_repel(
+          data=top_lab_df,
+          ggplot2::aes(label=label), size=2.8, show.legend=FALSE)
+      ggplot2::ggsave(file.path(opt$output, "deseq2_volcano.pdf"),
+                      p_volc, width=8, height=6, device="pdf")
+      cat("  deseq2_volcano.pdf\n")
+
+      # ── Heatmap of top 20 ──
+      sig_taxa <- head(res_df$taxon, 20)
+      if (length(sig_taxa) >= 2 && has_pheatmap) {
+        ps_rel  <- phyloseq::transform_sample_counts(ps_da,
+                     function(x) x / sum(x) * 100)
+        ps_sig  <- phyloseq::prune_taxa(
+                     intersect(sig_taxa, phyloseq::taxa_names(ps_rel)), ps_rel)
+        mat     <- as.matrix(phyloseq::otu_table(ps_sig))
+        if (!phyloseq::taxa_are_rows(ps_sig)) mat <- t(mat)
+
+        if (!is.null(tax) && "Genus" %in% colnames(tax)) {
+          rl <- sub("^[a-z]__", "", tax[rownames(mat), "Genus"])
+          rl[is.na(rl) | rl == ""] <- rownames(mat)[is.na(rl) | rl == ""]
+          rownames(mat) <- rl
+        }
+
+        ann_col_da <- data.frame(
+          Group = meta_ps[colnames(mat), "Group"],
+          row.names = colnames(mat)
+        )
+        n_lvl    <- nlevels(ann_col_da$Group)
+        grp_pal_da <- if (!is.null(group_pal)) group_pal[seq_len(n_lvl)] else
+                        setNames(scales::hue_pal()(n_lvl), levels(ann_col_da$Group))
+
+        # Phylum annotation if available
+        if (!is.null(tax) && "Phylum" %in% colnames(tax)) {
+          matched <- intersect(sig_taxa, rownames(tax))
+          phy_vec <- sub("^[a-z]__", "", tax[matched, "Phylum"])
+          phy_vec[is.na(phy_vec)] <- "Unknown"
+          phy_uniq <- unique(phy_vec)
+          n_phy    <- length(phy_uniq)
+          phy_cols <- if (requireNamespace("RColorBrewer", quietly=TRUE))
+            setNames(RColorBrewer::brewer.pal(max(3, min(n_phy,12)),"Paired")[seq_len(n_phy)], phy_uniq)
+          else setNames(scales::hue_pal()(n_phy), phy_uniq)
+          ann_row_da <- data.frame(Phylum=phy_vec, row.names=rownames(mat)[seq_along(phy_vec)])
+          ann_colors_da <- list(Group=grp_pal_da, Phylum=phy_cols)
+        } else {
+          ann_row_da    <- NULL
+          ann_colors_da <- list(Group=grp_pal_da)
+        }
+
+        pheatmap::pheatmap(
+          mat,
+          scale             = "row",
+          annotation_col    = ann_col_da,
+          annotation_row    = ann_row_da,
+          annotation_colors = ann_colors_da,
+          color             = colorRampPalette(c("#3b82f6","white","#ef4444"))(100),
+          main              = "DESeq2 — Top 20 Differential Taxa (row-scaled %)",
+          fontsize          = 8,
+          filename          = file.path(opt$output, "deseq2_heatmap.pdf"),
+          width             = max(7, n_samp * 0.5 + 4),
+          height            = max(6, length(sig_taxa) * 0.4 + 3)
+        )
+        cat("  deseq2_heatmap.pdf\n")
+      }
+    }
+
+  } else {
+    cat("  [DESeq2] Skipped (needs DESeq2 + phyloseq + >=2 groups + >=4 samples)\n")
+  }
+}, error=function(e) cat("  [skip] DESeq2:", e$message, "\n"))
 
 # ═══════════════════════════════════════════════════════════════
 #  PLOT SECTION 8 — PREVALENCE vs MEAN ABUNDANCE (Genus, all samples)
