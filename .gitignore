@@ -36,3 +36,7 @@ test*/
 
 # Keygen tools — local only, never push to git
 tools/
+
+# Large database files — stored locally, not in git
+databases/
+backend/classifiers/
