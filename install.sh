@@ -89,18 +89,36 @@ else
 fi
 cd "$INSTALL_DIR"
 
-step "Python environment"
+step "Python environment (FastAPI backend)"
 [[ ! -d "$VENV_DIR" ]] && python3 -m venv "$VENV_DIR" && ok "venv created"
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip -q
 pip install fastapi "uvicorn[standard]" pydantic python-multipart aiofiles requests psutil pandas numpy -q
 ok "Python packages installed"
-if ! command -v cutadapt &>/dev/null; then
-  pip install "cutadapt>=4.6" -q && ok "cutadapt installed"
-else
-  ok "cutadapt already present"
-fi
 deactivate
+
+step "Cutadapt (dedicated venv)"
+CUTADAPT_VENV="$HOME/cutadapt-env"
+if [[ ! -d "$CUTADAPT_VENV" ]]; then
+  python3 -m venv "$CUTADAPT_VENV"
+  ok "cutadapt-env created"
+fi
+source "$CUTADAPT_VENV/bin/activate"
+pip install --upgrade pip -q
+pip install cutadapt -q
+CUTADAPT_VERSION=$(cutadapt --version)
+ok "cutadapt $CUTADAPT_VERSION installed"
+deactivate
+
+# Symlink so backend can call 'cutadapt' directly without activating venv
+mkdir -p "$HOME/.local/bin"
+ln -sf "$CUTADAPT_VENV/bin/cutadapt" "$HOME/.local/bin/cutadapt"
+# Ensure ~/.local/bin is in PATH
+if ! grep -q 'HOME/.local/bin' ~/.bashrc 2>/dev/null; then
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+fi
+export PATH="$HOME/.local/bin:$PATH"
+ok "cutadapt symlinked → $HOME/.local/bin/cutadapt"
 
 step "R packages (15-40 min first time)"
 Rscript "$INSTALL_DIR/backend/r_scripts/install_packages.R"
