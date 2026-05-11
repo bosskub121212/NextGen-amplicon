@@ -1400,6 +1400,238 @@ if (has_meta && has_ggplot2 && has_phyloseq &&
   }
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 12 — UPGMA Hierarchical Clustering Tree
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 12: UPGMA Clustering Tree ──────────────────────────\n")
+if (has_phyloseq && has_vegan && has_ggplot2) {
+  tryCatch({
+    # Relative abundance matrix
+    ps_upg  <- transform_sample_counts(ps, function(x) x / sum(x))
+    otu_upg <- as.matrix(otu_table(ps_upg))
+    if (taxa_are_rows(ps_upg)) otu_upg <- t(otu_upg)
+
+    # Distance metrics to cluster
+    dist_methods <- c("bray", "jaccard")
+    for (dm in dist_methods) {
+      tryCatch({
+        d_upg  <- vegan::vegdist(otu_upg, method=dm)
+        hc_upg <- hclust(d_upg, method="average")   # UPGMA = average linkage
+
+        # Colour bars by group if metadata available
+        if (has_meta) {
+          grp_upg <- meta_df[hc_upg$labels, GROUP_COL]
+          grp_upg[is.na(grp_upg)] <- "Unknown"
+          pal_upg  <- make_palette(length(unique(grp_upg)))
+          col_upg  <- setNames(pal_upg, unique(grp_upg))
+          label_col <- col_upg[grp_upg]
+        }
+
+        fname <- sprintf("12_upgma_%s.pdf", dm)
+        pdf(file.path(PLOTS_DIR, fname), width=max(8, nsamples(ps)*0.6), height=6)
+        par(mar=c(5,4,3,2))
+        plot(hc_upg,
+             main=sprintf("UPGMA Clustering — %s distance", dm),
+             xlab="", sub="", cex=0.85)
+        if (has_meta) {
+          rect.hclust(hc_upg, k=min(length(unique(grp_upg)), nsamples(ps)-1),
+                      border=pal_upg)
+        }
+        dev.off()
+        cat(sprintf("  ✓ Saved: %s\n", fname))
+      }, error=function(e) cat(sprintf("  [WARN] UPGMA %s: %s\n", dm, e$message)))
+    }
+  }, error=function(e) cat(sprintf("[WARN] UPGMA section: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires phyloseq + vegan + ggplot2)\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 13 — Metastats (T-test based differential abundance)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 13: Metastats (T-test) ─────────────────────────────\n")
+if (has_phyloseq && has_meta && has_ggplot2) {
+  tryCatch({
+    grps_ms <- unique(meta_df[[GROUP_COL]])
+    grp_pairs_ms <- combn(grps_ms, 2, simplify=FALSE)
+
+    for (ranks_ms in c("Genus", "Family", "Phylum")) {
+      if (!(ranks_ms %in% rank_names(ps))) next
+      tryCatch({
+        ps_ms  <- tax_glom(ps, taxrank=ranks_ms, NArm=FALSE)
+        ps_ms  <- transform_sample_counts(ps_ms, function(x) x / sum(x) * 100)
+        otu_ms <- as.matrix(otu_table(ps_ms))
+        if (taxa_are_rows(ps_ms)) otu_ms <- t(otu_ms)
+
+        # Get taxon names
+        tax_ms <- sub("^[a-z]__", "",
+                      as.character(tax_table(ps_ms)[, ranks_ms]))
+        tax_ms[is.na(tax_ms) | tax_ms == ""] <- taxa_names(ps_ms)[is.na(tax_ms) | tax_ms == ""]
+        colnames(otu_ms) <- tax_ms
+
+        for (pair_ms in grp_pairs_ms) {
+          g1 <- pair_ms[1]; g2 <- pair_ms[2]
+          s1 <- rownames(meta_df)[meta_df[[GROUP_COL]] == g1]
+          s2 <- rownames(meta_df)[meta_df[[GROUP_COL]] == g2]
+          s1 <- intersect(s1, rownames(otu_ms))
+          s2 <- intersect(s2, rownames(otu_ms))
+          if (length(s1) < 2 || length(s2) < 2) next
+
+          mat1 <- otu_ms[s1, , drop=FALSE]
+          mat2 <- otu_ms[s2, , drop=FALSE]
+
+          meta_res <- do.call(rbind, lapply(colnames(otu_ms), function(tx) {
+            tryCatch({
+              tt <- t.test(mat1[, tx], mat2[, tx], var.equal=FALSE)
+              data.frame(
+                taxon   = tx,
+                mean_g1 = round(mean(mat1[, tx]), 4),
+                mean_g2 = round(mean(mat2[, tx]), 4),
+                p_value = tt$p.value,
+                stringsAsFactors = FALSE
+              )
+            }, error=function(e) NULL)
+          }))
+
+          if (is.null(meta_res) || nrow(meta_res) == 0) next
+          meta_res$p_adj <- p.adjust(meta_res$p_value, method="BH")
+          meta_res       <- meta_res[order(meta_res$p_adj), ]
+          colnames(meta_res)[2:3] <- c(paste0("mean_", g1), paste0("mean_", g2))
+
+          csv_name <- sprintf("metastats_%s_%s_vs_%s.csv",
+                              tolower(ranks_ms), g1, g2)
+          write.csv(meta_res, file.path(TABLES_DIR, csv_name), row.names=FALSE)
+
+          # Bar plot — top 20 significant (q≤0.05)
+          sig_ms <- meta_res[!is.na(meta_res$p_adj) & meta_res$p_adj <= 0.05, ]
+          if (nrow(sig_ms) == 0) {
+            cat(sprintf("  %s %s vs %s: no significant taxa (q≤0.05)\n",
+                        ranks_ms, g1, g2))
+            next
+          }
+          top_ms <- head(sig_ms, 20)
+          m1col  <- paste0("mean_", g1)
+          m2col  <- paste0("mean_", g2)
+          plot_ms <- rbind(
+            data.frame(taxon=top_ms$taxon, mean=top_ms[[m1col]], group=g1,
+                       stringsAsFactors=FALSE),
+            data.frame(taxon=top_ms$taxon, mean=top_ms[[m2col]], group=g2,
+                       stringsAsFactors=FALSE)
+          )
+          plot_ms$taxon <- factor(plot_ms$taxon,
+                                  levels=rev(unique(top_ms$taxon)))
+
+          p_ms <- ggplot(plot_ms, aes(x=taxon, y=mean, fill=group)) +
+            geom_col(position="dodge", alpha=0.85) +
+            coord_flip() +
+            scale_fill_manual(values=make_palette(2)) +
+            labs(title=sprintf("Metastats — %s: %s vs %s (q≤0.05)", ranks_ms, g1, g2),
+                 x="", y="Mean Relative Abundance (%)", fill="Group") +
+            theme_bw(base_size=10) +
+            theme(legend.position="top")
+
+          pdf_name <- sprintf("13_metastats_%s_%s_vs_%s.pdf",
+                              tolower(ranks_ms), g1, g2)
+          save_pdf(p_ms, pdf_name,
+                   width=9, height=max(5, nrow(top_ms)*0.35+2))
+          cat(sprintf("  %s %s vs %s: %d significant taxa\n",
+                      ranks_ms, g1, g2, nrow(sig_ms)))
+        }
+      }, error=function(e) cat(sprintf("  [WARN] Metastats %s: %s\n", ranks_ms, e$message)))
+    }
+  }, error=function(e) cat(sprintf("[WARN] Metastats section: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires phyloseq + metadata + ggplot2)\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 14 — Ternary Plots (≥3 groups)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 14: Ternary Plots ───────────────────────────────────\n")
+if (has_phyloseq && has_meta && has_ggplot2 &&
+    requireNamespace("ggtern", quietly=TRUE)) {
+  tryCatch({
+    grps_tern <- unique(meta_df[[GROUP_COL]])
+    if (length(grps_tern) < 3) {
+      cat("  Skipped (need ≥3 groups for ternary plots)\n")
+    } else {
+      suppressPackageStartupMessages(library(ggtern))
+
+      # Collapse to genus
+      rank_tern <- if ("Genus" %in% rank_names(ps)) "Genus" else
+                   if ("Family" %in% rank_names(ps)) "Family" else NULL
+
+      if (!is.null(rank_tern)) {
+        ps_tern  <- tax_glom(ps, taxrank=rank_tern, NArm=FALSE)
+        ps_tern  <- transform_sample_counts(ps_tern, function(x) x / sum(x) * 100)
+        otu_tern <- as.matrix(otu_table(ps_tern))
+        if (taxa_are_rows(ps_tern)) otu_tern <- t(otu_tern)
+
+        tax_tern <- sub("^[a-z]__", "",
+                        as.character(tax_table(ps_tern)[, rank_tern]))
+        tax_tern[is.na(tax_tern) | tax_tern == ""] <-
+          taxa_names(ps_tern)[is.na(tax_tern) | tax_tern == ""]
+        colnames(otu_tern) <- tax_tern
+
+        # Compute mean per group
+        grp_means_tern <- do.call(rbind, lapply(grps_tern, function(g) {
+          samps_g <- intersect(rownames(meta_df)[meta_df[[GROUP_COL]] == g],
+                               rownames(otu_tern))
+          if (length(samps_g) == 0) return(NULL)
+          colMeans(otu_tern[samps_g, , drop=FALSE])
+        }))
+        rownames(grp_means_tern) <- grps_tern
+
+        # Top 20 taxa by total abundance
+        top_tern <- names(sort(colSums(grp_means_tern), decreasing=TRUE))[1:min(20, ncol(grp_means_tern))]
+
+        # All combinations of 3 groups
+        group_combos <- combn(grps_tern, 3, simplify=FALSE)
+        for (combo in group_combos[1:min(3, length(group_combos))]) {
+          g1t <- combo[1]; g2t <- combo[2]; g3t <- combo[3]
+          df_tern <- data.frame(
+            taxon = top_tern,
+            g1    = as.numeric(grp_means_tern[g1t, top_tern]),
+            g2    = as.numeric(grp_means_tern[g2t, top_tern]),
+            g3    = as.numeric(grp_means_tern[g3t, top_tern]),
+            stringsAsFactors = FALSE
+          )
+          colnames(df_tern)[2:4] <- c(g1t, g2t, g3t)
+          # Normalize rows to sum to 100
+          row_sums_t <- rowSums(df_tern[,2:4])
+          row_sums_t[row_sums_t == 0] <- 1
+          df_tern[,2:4] <- df_tern[,2:4] / row_sums_t * 100
+
+          p_tern <- ggtern(df_tern,
+                           aes_string(x=g1t, y=g2t, z=g3t)) +
+            geom_point(aes(colour=taxon), size=3, alpha=0.8) +
+            theme_bw() +
+            theme(legend.position="right",
+                  legend.text=element_text(size=7)) +
+            labs(title=sprintf("Ternary — %s/%s/%s (%s level)",
+                               g1t, g2t, g3t, rank_tern),
+                 colour=rank_tern)
+
+          if (requireNamespace("ggrepel", quietly=TRUE)) {
+            p_tern <- p_tern +
+              ggrepel::geom_text_repel(aes(label=taxon), size=2.5,
+                                       max.overlaps=8, show.legend=FALSE)
+          }
+
+          fname_tern <- sprintf("14_ternary_%s_%s_%s.pdf", g1t, g2t, g3t)
+          save_pdf(p_tern, fname_tern, width=9, height=7)
+        }
+        cat(sprintf("  Ternary plots done (%d group combo(s))\n",
+                    min(3, length(group_combos))))
+      }
+    }
+  }, error=function(e) cat(sprintf("[WARN] Ternary section: %s\n", e$message)))
+} else if (!requireNamespace("ggtern", quietly=TRUE)) {
+  cat("  Skipped (install ggtern: install.packages('ggtern'))\n")
+} else {
+  cat("  Skipped (requires phyloseq + metadata + ≥3 groups)\n")
+}
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 plots_made <- list.files(PLOTS_DIR, pattern="\\.pdf$")
 tables_made <- list.files(TABLES_DIR, pattern="\\.csv$")

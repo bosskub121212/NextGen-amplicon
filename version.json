@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "release_date": "2026-05-11",
-  "changelog": "Phase 1 new analyses: Shannon rarefaction curve, rank abundance curve, specaccum, PCA (CLR, 3 axes + scree), group-level taxonomy bars, beta distance boxplot (within/between), Venn diagram, ANOVA per taxonomic level, LEfSe LDA barplot. New install script: backend/r_scripts/install_packages.R"
+  "changelog": "Phase 2 new analyses: UPGMA hierarchical clustering tree (Bray-Curtis + Jaccard), Metastats T-test differential abundance (per rank, all pairwise group comparisons), Ternary plots (3-group composition, genus level). New R packages: ggdendro, ggtern."
 }

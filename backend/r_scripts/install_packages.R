@@ -44,7 +44,10 @@ cran_pkgs <- c(
   "vegan", "picante",
   # Phase 1 additions
   "ggVennDiagram",   # Venn diagrams
-  "scales"           # axis formatting
+  "scales",          # axis formatting
+  # Phase 2 additions
+  "ggdendro",        # UPGMA dendrogram plotting
+  "ggtern"           # Ternary plots (3-group composition)
 )
 for (p in cran_pkgs) install_if_missing(p, bioc=FALSE)
 
