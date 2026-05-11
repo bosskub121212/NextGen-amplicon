@@ -61,7 +61,13 @@ option_list <- list(
   make_option("--nema_db",       type="character", default="",
               help="Path to 18S-NemaBase FASTA for nematode 18S mode"),
   make_option("--db_paths_json", type="character", default="",
-              help="Path to db_paths.json for auto-detecting databases")
+              help="Path to db_paths.json for auto-detecting databases"),
+  make_option("--primer_f",     type="character", default="",
+              help="Forward primer sequence for cutadapt trimming (blank = skip)"),
+  make_option("--primer_r",     type="character", default="",
+              help="Reverse primer sequence for cutadapt trimming (blank = skip)"),
+  make_option("--discard_untrimmed", type="logical", default=FALSE,
+              help="Discard reads where primer was not found")
 )
 opt <- parse_args(OptionParser(option_list=option_list))
 
@@ -98,6 +104,63 @@ cat("Found R1:", length(fnFs), "files\n")
 cat("Found R2:", length(fnRs), "files\n\n")
 sample_names <- sub("_R1.*|_1\\.(fq|fastq).*", "", basename(fnFs))
 prog(8, sprintf("Found %d sample(s) — ready to process", length(fnFs)))
+
+# ── Step 1b (optional): Cutadapt Primer Trimming ─────────────
+RC <- function(seq) {
+  chartr("ACGTacgt", "TGCAtgca", paste(rev(strsplit(seq, "")[[1]]), collapse=""))
+}
+
+if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
+  prog(10, "Step 1/8 — Cutadapt primer trimming")
+  cat("Step 1b: Primer Trimming with cutadapt...\n")
+  cat("  Primer F:", opt$primer_f, "\n")
+  cat("  Primer R:", opt$primer_r, "\n")
+
+  cutadapt_ok <- (system("cutadapt --version", ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+
+  if (cutadapt_ok) {
+    primer_f_rc <- RC(opt$primer_f)
+    primer_r_rc <- RC(opt$primer_r)
+    cut_dir     <- file.path(opt$output, "cutadapt")
+    dir.create(cut_dir, recursive=TRUE, showWarnings=FALSE)
+
+    cutFs <- file.path(cut_dir, paste0(sample_names, "_F_cut.fastq.gz"))
+    cutRs <- file.path(cut_dir, paste0(sample_names, "_R_cut.fastq.gz"))
+
+    discard_flag <- if (isTRUE(opt$discard_untrimmed)) "--discard-untrimmed" else ""
+    n_cut <- 0
+    for (i in seq_along(fnFs)) {
+      cmd <- paste(
+        "cutadapt",
+        "-g", opt$primer_f,   "-a", primer_r_rc,
+        "-G", opt$primer_r,   "-A", primer_f_rc,
+        discard_flag,
+        "-m 50 --cores=0",
+        "-o", cutFs[i], "-p", cutRs[i],
+        fnFs[i], fnRs[i],
+        "> /dev/null 2>&1"
+      )
+      ret <- system(cmd)
+      if (ret == 0 && file.exists(cutFs[i]) && file.size(cutFs[i]) > 0) n_cut <- n_cut + 1
+    }
+    cat(sprintf("  cutadapt: %d/%d samples trimmed OK\n", n_cut, length(fnFs)))
+
+    valid_cut <- file.exists(cutFs) & file.size(cutFs) > 0
+    if (sum(valid_cut) > 0) {
+      fnFs         <- cutFs[valid_cut]
+      fnRs         <- cutRs[valid_cut]
+      sample_names <- sample_names[valid_cut]
+      cat("  Using cutadapt-trimmed reads for downstream steps\n\n")
+    } else {
+      cat("  WARNING: cutadapt produced no output — using untrimmed reads\n\n")
+    }
+  } else {
+    cat("  WARNING: cutadapt not found — primers NOT trimmed\n")
+    cat("  Install: pip install cutadapt  (or run setup.sh)\n\n")
+  }
+} else {
+  cat("Step 1b: No primers specified — skipping cutadapt\n\n")
+}
 
 # ── Step 2: Filter & Trim ─────────────────────────────────────
 prog(12, "Step 1/8 — Filtering and trimming reads")
