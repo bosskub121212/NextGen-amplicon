@@ -5,16 +5,19 @@
 #  output directory — does NOT re-run DADA2.
 # ============================================================
 
-KNOWN_LIB <- "/home/boss/R/x86_64-pc-linux-gnu-library/4.6"
-if (dir.exists(KNOWN_LIB)) .libPaths(c(KNOWN_LIB, .libPaths()))
 tryCatch({
-  home_dir <- Sys.getenv("HOME", unset="/home/boss")
+  r_libs_user <- Sys.getenv("R_LIBS_USER", unset="")
+  if (nchar(r_libs_user) > 0 && dir.exists(r_libs_user))
+    .libPaths(unique(c(r_libs_user, .libPaths())))
+  home_dir <- Sys.getenv("HOME", unset=path.expand("~"))
   r_root   <- file.path(home_dir, "R")
   if (dir.exists(r_root)) {
     vdirs <- list.dirs(r_root, recursive=TRUE, full.names=TRUE)
     vdirs <- vdirs[grepl("/\\d+\\.\\d+$", vdirs)]
-    .libPaths(unique(c(vdirs, .libPaths())))
+    if (length(vdirs) > 0) .libPaths(unique(c(vdirs, .libPaths())))
   }
+  simple_lib <- file.path(home_dir, "R", "library")
+  if (dir.exists(simple_lib)) .libPaths(unique(c(simple_lib, .libPaths())))
 }, error=function(e) NULL)
 
 suppressPackageStartupMessages({

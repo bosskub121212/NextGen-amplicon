@@ -1,5 +1,5 @@
 {
-  "version": "1.1.1",
+  "version": "1.2.0",
   "release_date": "2026-05-11",
-  "changelog": "Fix: cutadapt primer trimming now works for all pipelines (16S/ITS/COX1) with correct error-rate, overlap, and discard-untrimmed settings passed from UI."
+  "changelog": "Phase 1 new analyses: Shannon rarefaction curve, rank abundance curve, specaccum, PCA (CLR, 3 axes + scree), group-level taxonomy bars, beta distance boxplot (within/between), Venn diagram, ANOVA per taxonomic level, LEfSe LDA barplot. New install script: backend/r_scripts/install_packages.R"
 }

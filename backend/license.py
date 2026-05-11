@@ -22,15 +22,32 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import platform
+import struct
 from datetime import date, datetime, timedelta
 from pathlib import Path
+
+# ── Optional encryption (graceful fallback if not installed) ──────────────────
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    _CRYPTO_OK = True
+except ImportError:
+    _CRYPTO_OK = False
 
 # ── Master switch ─────────────────────────────────────────────────────────────
 LICENSE_ENABLED = True
 
 # ── HMAC secret — MUST match tools/keygen.py ─────────────────────────────────
 HMAC_SECRET = "NGAMP-OFFLINE-KEY-2026-CHANGE-BEFORE-PROD"
+
+# ── Dev-bypass signing secret (internal only — never expose) ──────────────────
+_DEV_BYPASS_SECRET = "NGAMP-DEV-INTERNAL-7f3a9c2e-BYPASS-SIGN"
+
+# ── Cache encryption salt (fixed, non-secret) ─────────────────────────────────
+_CACHE_SALT = b"ngamp_cache_v2_salt_2026"
 
 # ── Pipeline registry ─────────────────────────────────────────────────────────
 PIPELINES: list = [
@@ -137,26 +154,107 @@ def _mask_to_pipelines(mask: int) -> list:
     return [name for name, bit in PIPELINES if mask & (1 << bit)]
 
 
-# ── Cache helpers ─────────────────────────────────────────────────────────────
+# ── Cache encryption helpers ──────────────────────────────────────────────────
+
+def _get_cache_cipher():
+    """Derive a Fernet cipher key from the machine ID. Requires cryptography lib."""
+    if not _CRYPTO_OK:
+        return None
+    mid = get_machine_id().encode()
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=_CACHE_SALT,
+        iterations=200_000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(mid))
+    return Fernet(key)
+
 
 def _load_cache() -> dict:
+    if not CACHE_FILE.exists():
+        return {}
+    raw = CACHE_FILE.read_bytes()
+    # Try encrypted first
+    if _CRYPTO_OK:
+        try:
+            cipher = _get_cache_cipher()
+            decrypted = cipher.decrypt(raw)
+            return json.loads(decrypted)
+        except Exception:
+            pass
+    # Fallback: try plain JSON (old format — invalidate by returning empty)
     try:
-        return json.loads(CACHE_FILE.read_text())
+        data = json.loads(raw.decode())
+        # Old plain-text cache found — re-encrypt and save securely
+        if data:
+            _save_cache(data)
+        return data
     except Exception:
         return {}
 
 
 def _save_cache(data: dict):
     try:
-        CACHE_FILE.write_text(json.dumps(data, indent=2))
+        payload = json.dumps(data).encode()
+        if _CRYPTO_OK:
+            cipher = _get_cache_cipher()
+            CACHE_FILE.write_bytes(cipher.encrypt(payload))
+        else:
+            # No crypto lib — store plain (degraded security)
+            CACHE_FILE.write_bytes(payload)
     except Exception as exc:
         print(f"[license] Cache write failed: {exc}")
+
+
+# ── Dev-bypass authentication ─────────────────────────────────────────────────
+
+def _verify_dev_bypass() -> bool:
+    """Check .dev_bypass contains a valid machine-bound HMAC signature."""
+    if not DEV_BYPASS.exists():
+        return False
+    try:
+        content = DEV_BYPASS.read_text().strip()
+        # Format: NGAMP-DEV-{machine_id}-{sig8}
+        parts = content.split("-")
+        if len(parts) < 4 or parts[0] != "NGAMP" or parts[1] != "DEV":
+            return False
+        given_sig = parts[-1].upper()
+        mid_and_prefix = "-".join(parts[:-1])
+        expected_sig = hmac.new(
+            _DEV_BYPASS_SECRET.encode(),
+            mid_and_prefix.encode(),
+            hashlib.sha256,
+        ).hexdigest()[:8].upper()
+        if not hmac.compare_digest(given_sig, expected_sig):
+            print("[license] WARNING: .dev_bypass present but signature invalid — ignored")
+            return False
+        # Also verify machine ID matches this machine
+        claimed_mid = parts[2] if len(parts) >= 3 else ""
+        if claimed_mid and claimed_mid.lower() != get_machine_id().lower():
+            print("[license] WARNING: .dev_bypass machine ID mismatch — ignored")
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def generate_dev_bypass_token() -> str:
+    """Generate a signed .dev_bypass token for this machine (run by developer)."""
+    mid = get_machine_id()
+    prefix = f"NGAMP-DEV-{mid}"
+    sig = hmac.new(
+        _DEV_BYPASS_SECRET.encode(),
+        prefix.encode(),
+        hashlib.sha256,
+    ).hexdigest()[:8].upper()
+    return f"{prefix}-{sig}"
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def check_license() -> dict:
-    if DEV_BYPASS.exists():
+    if _verify_dev_bypass():
         return {
             "status":          "dev",
             "message":         "Developer machine — license bypass active.",
@@ -240,7 +338,7 @@ def check_license() -> dict:
 
 
 def get_license_pipelines() -> list:
-    if DEV_BYPASS.exists() or not LICENSE_ENABLED:
+    if _verify_dev_bypass() or not LICENSE_ENABLED:
         return PIPELINE_NAMES
     status = check_license()
     return status.get("pipelines", [])

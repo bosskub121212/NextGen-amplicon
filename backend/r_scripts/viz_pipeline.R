@@ -83,6 +83,7 @@ has_dplyr    <- load_pkg("dplyr")
 has_tidyr    <- load_pkg("tidyr")
 has_ancombc  <- load_pkg("ANCOMBC")
 has_funguild <- load_pkg("FUNGuildR")
+has_lefser   <- load_pkg("lefser")
 
 # Extra plotting helpers (non-fatal if missing)
 if (has_ggplot2) {
@@ -376,6 +377,106 @@ tryCatch({
 }, error=function(e) cat(sprintf("[WARN] Rarefaction: %s\n", e$message)))
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 3b — Shannon Rarefaction Curve
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 3b: Shannon Rarefaction Curve ──────────────────────\n")
+if (has_vegan && has_ggplot2) {
+  tryCatch({
+    otu_rr    <- as.matrix(otu_table(ps))
+    if (taxa_are_rows(ps)) otu_rr <- t(otu_rr)
+    max_d_sh  <- min(max(rowSums(otu_rr)), 30000)
+    steps_sh  <- unique(c(seq(100, max_d_sh, by=max(200, max_d_sh %/% 30)), max_d_sh))
+
+    shan_list <- lapply(seq_len(nrow(otu_rr)), function(i) {
+      sname <- rownames(otu_rr)[i]
+      x     <- otu_rr[i, ]
+      valid <- steps_sh[steps_sh <= sum(x)]
+      if (length(valid) < 2) return(NULL)
+      do.call(rbind, lapply(valid, function(s) {
+        set.seed(42)
+        raref <- vegan::rrarefy(matrix(x, nrow=1), s)[1, ]
+        data.frame(Sample=sname, Depth=s,
+                   Shannon=vegan::diversity(raref, "shannon"), stringsAsFactors=FALSE)
+      }))
+    })
+    shan_df <- do.call(rbind, Filter(Negate(is.null), shan_list))
+
+    if (!is.null(shan_df) && nrow(shan_df) > 0) {
+      if (has_meta) shan_df[[GROUP_COL]] <- meta_df[shan_df$Sample, GROUP_COL]
+      write.csv(shan_df, file.path(TABLES_DIR, "shannon_rarefaction.csv"), row.names=FALSE)
+      n_s_sh <- length(unique(shan_df$Sample))
+      pal_sh <- make_palette(n_s_sh)
+      p_sh <- ggplot(shan_df, aes(x=Depth, y=Shannon, color=Sample)) +
+        geom_line(size=0.8, alpha=0.85) +
+        scale_color_manual(values=pal_sh) +
+        labs(title="Shannon Diversity Rarefaction Curve",
+             x="Sequencing depth", y="Shannon Index") +
+        theme_bw() +
+        theme(legend.text=element_text(size=8), legend.key.size=unit(0.5,"cm"))
+      save_pdf(p_sh, "03b_shannon_rarefaction.pdf", width=10, height=6)
+    }
+  }, error=function(e) cat(sprintf("[WARN] Shannon rarefaction: %s\n", e$message)))
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 3c — Rank Abundance Curve
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 3c: Rank Abundance Curve ───────────────────────────\n")
+if (has_ggplot2) {
+  tryCatch({
+    otu_ra <- as.matrix(otu_table(ps))
+    if (taxa_are_rows(ps)) otu_ra <- t(otu_ra)
+
+    ra_list <- lapply(seq_len(nrow(otu_ra)), function(i) {
+      x   <- sort(otu_ra[i, otu_ra[i,] > 0], decreasing=TRUE)
+      if (length(x) == 0) return(NULL)
+      rel <- x / sum(x) * 100
+      data.frame(Sample=rownames(otu_ra)[i], Rank=seq_along(rel),
+                 RelAbundance=as.numeric(rel), stringsAsFactors=FALSE)
+    })
+    ra_df <- do.call(rbind, Filter(Negate(is.null), ra_list))
+
+    if (!is.null(ra_df) && nrow(ra_df) > 0) {
+      if (has_meta) ra_df[[GROUP_COL]] <- meta_df[ra_df$Sample, GROUP_COL]
+      write.csv(ra_df, file.path(TABLES_DIR, "rank_abundance.csv"), row.names=FALSE)
+      n_ra  <- length(unique(ra_df$Sample))
+      pal_ra <- make_palette(n_ra)
+      p_ra <- ggplot(ra_df, aes(x=Rank, y=RelAbundance, color=Sample)) +
+        geom_line(size=0.8, alpha=0.85) +
+        scale_y_log10() +
+        scale_color_manual(values=pal_ra) +
+        labs(title="Rank Abundance Curve",
+             x="ASV Rank", y="Relative Abundance (%, log scale)") +
+        theme_bw() +
+        theme(legend.text=element_text(size=8), legend.key.size=unit(0.5,"cm"))
+      save_pdf(p_ra, "03c_rank_abundance.pdf", width=10, height=6)
+    }
+  }, error=function(e) cat(sprintf("[WARN] Rank abundance: %s\n", e$message)))
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 3d — Species Accumulation Curve (specaccum)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 3d: Species Accumulation Curve ─────────────────────\n")
+if (has_vegan && has_ggplot2 && nsamples(ps) >= 3) {
+  tryCatch({
+    otu_sp <- as.matrix(otu_table(ps))
+    if (taxa_are_rows(ps)) otu_sp <- t(otu_sp)
+    sp_acc <- vegan::specaccum(otu_sp, method="random", permutations=100)
+    sp_df  <- data.frame(Sites=sp_acc$sites, Richness=sp_acc$richness, SD=sp_acc$sd)
+    write.csv(sp_df, file.path(TABLES_DIR, "specaccum.csv"), row.names=FALSE)
+    p_sp <- ggplot(sp_df, aes(x=Sites, y=Richness)) +
+      geom_ribbon(aes(ymin=Richness-SD, ymax=Richness+SD), fill="#3b82f6", alpha=0.2) +
+      geom_line(color="#3b82f6", size=1) +
+      geom_point(color="#3b82f6", size=2) +
+      labs(title="Species Accumulation Curve",
+           x="Number of Samples", y="Cumulative ASV Richness") +
+      theme_bw()
+    save_pdf(p_sp, "03d_specaccum.pdf", width=8, height=5)
+  }, error=function(e) cat(sprintf("[WARN] Specaccum: %s\n", e$message)))
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 4 — Taxonomy bar plots
 # ═══════════════════════════════════════════════════════════════════════════════
 cat("\n── Section 4: Taxonomy Bar Plots ─────────────────────────────\n")
@@ -426,6 +527,49 @@ tryCatch({
     }, error=function(e) cat(sprintf("  [WARN] %s barplot: %s\n", rank, e$message)))
   }
 }, error=function(e) cat(sprintf("[WARN] Taxonomy barplots: %s\n", e$message)))
+
+# ── Group-level taxonomy bar charts ──────────────────────────────────────────
+if (has_meta && has_ggplot2) {
+  cat("  Generating group-level taxonomy bar charts...\n")
+  tax_ranks_avail2 <- rank_names(ps)
+  plot_ranks2 <- intersect(c("Phylum","Class","Order","Family","Genus"), tax_ranks_avail2)
+  for (rank2 in plot_ranks2) {
+    tryCatch({
+      ps_glom2 <- tax_glom(ps, taxrank=rank2, NArm=FALSE)
+      ps_rel2  <- transform_sample_counts(ps_glom2, function(x) x/sum(x)*100)
+      melt2    <- psmelt(ps_rel2)
+      melt2[[rank2]][is.na(melt2[[rank2]])] <- "Unclassified"
+      melt2[[GROUP_COL]] <- meta_df[melt2$Sample, GROUP_COL]
+
+      # Aggregate by group (mean)
+      group_melt2 <- melt2 %>%
+        dplyr::group_by(.data[[GROUP_COL]], .data[[rank2]]) %>%
+        dplyr::summarise(Abundance=mean(Abundance, na.rm=TRUE), .groups="drop")
+
+      top_t2 <- group_melt2 %>%
+        dplyr::group_by(.data[[rank2]]) %>%
+        dplyr::summarise(m=mean(Abundance)) %>%
+        dplyr::arrange(dplyr::desc(m)) %>%
+        dplyr::slice_head(n=15) %>%
+        dplyr::pull(.data[[rank2]])
+      group_melt2$TaxLabel <- ifelse(group_melt2[[rank2]] %in% top_t2,
+                                      group_melt2[[rank2]], "Other")
+      n_col2 <- length(unique(group_melt2$TaxLabel))
+      pal2   <- c(make_palette(min(15, n_col2-1)), "grey80")[seq_len(n_col2)]
+
+      p2 <- ggplot(group_melt2, aes_string(x=GROUP_COL, y="Abundance", fill="TaxLabel")) +
+        geom_bar(stat="identity", width=0.7) +
+        scale_fill_manual(values=pal2, name=rank2) +
+        labs(title=sprintf("Group-level Relative Abundance — %s", rank2),
+             x="Group", y="Mean Relative Abundance (%)") +
+        theme_bw() +
+        theme(axis.text.x=element_text(angle=30, hjust=1),
+              legend.text=element_text(size=8))
+      save_pdf(p2, sprintf("04b_taxonomy_group_%s.pdf", tolower(rank2)),
+               width=max(6, length(unique(group_melt2[[GROUP_COL]]))*1.5+3), height=7)
+    }, error=function(e) cat(sprintf("  [WARN] Group bar %s: %s\n", rank2, e$message)))
+  }
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 5 — Beta diversity
@@ -646,6 +790,129 @@ tryCatch({
   }, error=function(e) cat(sprintf("  [WARN] Jaccard NMDS: %s\n", e$message)))
 
 }, error=function(e) cat(sprintf("[WARN] Beta diversity: %s\n", e$message)))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5b — PCA (Principal Component Analysis, CLR-transformed)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 5b: PCA ────────────────────────────────────────────\n")
+if (has_ggplot2) {
+  tryCatch({
+    # CLR transform (pseudocount of 1 to handle zeros)
+    ps_clr <- transform_sample_counts(ps, function(x) {
+      xp <- x + 1
+      log(xp / exp(mean(log(xp))))
+    })
+    mat_clr <- as.matrix(otu_table(ps_clr))
+    if (taxa_are_rows(ps_clr)) mat_clr <- t(mat_clr)
+
+    pca_res  <- prcomp(mat_clr, scale.=FALSE, center=TRUE)
+    var_exp  <- summary(pca_res)$importance[2, ] * 100
+    n_pc     <- min(3, ncol(pca_res$x))
+    pca_sc   <- as.data.frame(pca_res$x[, seq_len(n_pc)])
+    pca_sc$Sample <- rownames(pca_sc)
+    if (has_meta) pca_sc[[GROUP_COL]] <- meta_df[pca_sc$Sample, GROUP_COL]
+
+    n_g_pca <- if (has_meta) length(unique(pca_sc[[GROUP_COL]])) else nsamples(ps)
+    pal_pca <- make_palette(n_g_pca)
+
+    make_pca_plot <- function(xcol, ycol) {
+      p <- ggplot(pca_sc, aes_string(
+          x=xcol, y=ycol,
+          color=if (has_meta) GROUP_COL else "Sample",
+          label="Sample")) +
+        geom_point(size=3.5, alpha=0.85) +
+        (if (requireNamespace("ggrepel", quietly=TRUE))
+           ggrepel::geom_text_repel(size=2.8, show.legend=FALSE)
+         else geom_text(vjust=-1, size=2.8, show.legend=FALSE)) +
+        stat_ellipse(aes_string(group=if (has_meta) GROUP_COL else "Sample"),
+                     type="t", linetype=2, show.legend=FALSE) +
+        scale_color_manual(values=pal_pca) +
+        labs(title="PCA (CLR-transformed)",
+             x=sprintf("%s [%.1f%%]", xcol, var_exp[as.integer(sub("PC","",xcol))]),
+             y=sprintf("%s [%.1f%%]", ycol, var_exp[as.integer(sub("PC","",ycol))])) +
+        theme_bw()
+      p
+    }
+
+    save_pdf(make_pca_plot("PC1","PC2"), "05b_PCA_PC1_PC2.pdf")
+    if (n_pc >= 3) {
+      save_pdf(make_pca_plot("PC1","PC3"), "05b_PCA_PC1_PC3.pdf")
+      save_pdf(make_pca_plot("PC2","PC3"), "05b_PCA_PC2_PC3.pdf")
+    }
+
+    # Scree plot
+    n_scree <- min(15, length(var_exp))
+    scree_df <- data.frame(PC=seq_len(n_scree), Variance=var_exp[seq_len(n_scree)])
+    p_scree <- ggplot(scree_df, aes(x=PC, y=Variance)) +
+      geom_col(fill="#3b82f6", alpha=0.8) +
+      geom_line(color="#1e40af", size=0.8) +
+      geom_point(color="#1e40af", size=2) +
+      scale_x_continuous(breaks=seq_len(n_scree)) +
+      labs(title="PCA Scree Plot", x="Principal Component", y="Variance Explained (%)") +
+      theme_bw()
+    save_pdf(p_scree, "05b_PCA_scree.pdf", width=8, height=5)
+    write.csv(pca_sc, file.path(TABLES_DIR, "pca_scores.csv"), row.names=FALSE)
+
+  }, error=function(e) cat(sprintf("[WARN] PCA: %s\n", e$message)))
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 5c — Beta Distance Boxplot (within vs between groups)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 5c: Beta Distance Boxplot ──────────────────────────\n")
+if (has_meta && has_ggplot2 && has_vegan) {
+  tryCatch({
+    ps_rel_bp  <- transform_sample_counts(ps, function(x) x/sum(x))
+    dist_bc_bp <- phyloseq::distance(ps_rel_bp, method="bray")
+    gv_bp      <- meta_df[sample_names(ps), GROUP_COL]
+    dm_bp      <- as.matrix(dist_bc_bp)
+    sn_bp      <- rownames(dm_bp)
+
+    dist_pairs <- do.call(rbind, lapply(seq_len(nrow(dm_bp)-1), function(i) {
+      do.call(rbind, lapply(seq(i+1, nrow(dm_bp)), function(j) {
+        gi <- gv_bp[sn_bp[i]]; gj <- gv_bp[sn_bp[j]]
+        data.frame(Distance=dm_bp[i,j],
+                   Type=ifelse(gi==gj,"Within","Between"),
+                   Group1=gi, Group2=gj, stringsAsFactors=FALSE)
+      }))
+    }))
+
+    if (!is.null(dist_pairs) && nrow(dist_pairs) > 0) {
+      write.csv(dist_pairs, file.path(TABLES_DIR, "beta_distance_pairs.csv"), row.names=FALSE)
+
+      p_db <- ggplot(dist_pairs, aes(x=Type, y=Distance, fill=Type)) +
+        geom_boxplot(alpha=0.7, outlier.shape=NA) +
+        geom_jitter(width=0.12, size=1.5, alpha=0.5) +
+        scale_fill_manual(values=c("Within"="#3b82f6","Between"="#ef4444")) +
+        labs(title="Bray-Curtis Distance: Within vs Between Groups",
+             x="", y="Bray-Curtis Distance") +
+        theme_bw() + theme(legend.position="none")
+      save_pdf(p_db, "05c_beta_distance_boxplot.pdf", width=5, height=6)
+
+      # Per-comparison detail
+      grp_pairs_bp <- unique(dist_pairs[dist_pairs$Type=="Between",
+                                         c("Group1","Group2")])
+      within_rows <- data.frame(
+        Comparison=paste0("Within-", unique(gv_bp)),
+        Type="Within", stringsAsFactors=FALSE
+      )
+      dist_pairs$Comparison <- ifelse(
+        dist_pairs$Type=="Within",
+        paste0("Within-", dist_pairs$Group1),
+        paste(dist_pairs$Group1, "vs", dist_pairs$Group2)
+      )
+      p_db2 <- ggplot(dist_pairs, aes(x=Comparison, y=Distance, fill=Type)) +
+        geom_boxplot(alpha=0.7, outlier.shape=NA) +
+        geom_jitter(width=0.12, size=1.5, alpha=0.5) +
+        scale_fill_manual(values=c("Within"="#3b82f6","Between"="#ef4444")) +
+        labs(title="Bray-Curtis Distances by Group Comparison",
+             x="", y="Bray-Curtis Distance") +
+        theme_bw() +
+        theme(axis.text.x=element_text(angle=30, hjust=1), legend.position="top")
+      save_pdf(p_db2, "05c_beta_distance_groups.pdf", width=max(6, nrow(grp_pairs_bp)+3), height=6)
+    }
+  }, error=function(e) cat(sprintf("[WARN] Distance boxplot: %s\n", e$message)))
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 6 — Differential Abundance (ANCOMBC2)
@@ -915,6 +1182,223 @@ tryCatch({
     cat("  ✓ Saved: taxonomy_table.csv\n")
   }
 }, error=function(e) cat(sprintf("[WARN] Export tables: %s\n", e$message)))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 9 — Venn Diagram (shared ASVs between groups)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 9: Venn Diagram ────────────────────────────────────\n")
+if (has_meta && has_phyloseq && length(unique(meta_df[[GROUP_COL]])) >= 2) {
+  tryCatch({
+    gv_venn   <- meta_df[sample_names(ps), GROUP_COL]
+    grp_names <- unique(gv_venn[!is.na(gv_venn)])
+    otu_mat_v <- as.matrix(otu_table(ps))
+    if (!taxa_are_rows(ps)) otu_mat_v <- t(otu_mat_v)
+
+    venn_sets <- lapply(setNames(grp_names, grp_names), function(g) {
+      samps <- names(gv_venn)[!is.na(gv_venn) & gv_venn == g]
+      if (length(samps) == 0) return(character(0))
+      gs <- rowSums(otu_mat_v[, samps, drop=FALSE])
+      names(gs)[gs > 0]
+    })
+    if (length(venn_sets) > 5) {
+      venn_sets <- venn_sets[order(sapply(venn_sets,length), decreasing=TRUE)[1:5]]
+    }
+    n_v <- length(venn_sets)
+
+    # Save membership table regardless of plot package
+    all_t <- unique(unlist(venn_sets))
+    if (length(all_t) > 0) {
+      vmtbl <- do.call(cbind, lapply(venn_sets, function(s) as.integer(all_t %in% s)))
+      rownames(vmtbl) <- all_t
+      write.csv(as.data.frame(vmtbl),
+                file.path(TABLES_DIR, "venn_membership.csv"))
+      # Summary stats
+      venn_summary <- data.frame(
+        Group=names(venn_sets),
+        N_unique=sapply(names(venn_sets), function(g) {
+          others <- unlist(venn_sets[names(venn_sets) != g])
+          sum(!(venn_sets[[g]] %in% others))
+        }),
+        N_total=sapply(venn_sets, length)
+      )
+      write.csv(venn_summary, file.path(TABLES_DIR, "venn_summary.csv"), row.names=FALSE)
+    }
+
+    if (n_v >= 2 && requireNamespace("ggVennDiagram", quietly=TRUE)) {
+      suppressPackageStartupMessages(library(ggVennDiagram))
+      p_venn <- ggVennDiagram(venn_sets, label_alpha=0, set_size=4) +
+        scale_fill_gradient(low="white", high="#3b82f6") +
+        scale_color_manual(values=rep("grey40", n_v)) +
+        labs(title=sprintf("Shared ASVs between groups (%s)", GROUP_COL)) +
+        theme(legend.position="right")
+      save_pdf(p_venn, "09_venn_diagram.pdf", width=8, height=7)
+    } else if (n_v >= 2 && has_ggplot2) {
+      # Fallback: UpSet-style bar chart
+      if (length(all_t) > 0) {
+        cat("  [INFO] ggVennDiagram not installed — using overlap bar chart\n")
+        cat("         Install with: install.packages('ggVennDiagram')\n")
+        # Show unique + shared counts as a bar chart
+        vc <- venn_summary
+        p_vbar <- ggplot(vc, aes(x=reorder(Group,-N_unique), y=N_unique, fill=Group)) +
+          geom_col(alpha=0.8) +
+          labs(title="Unique ASVs per Group (Venn summary)",
+               x="Group", y="# Unique ASVs") +
+          theme_bw() + theme(legend.position="none")
+        save_pdf(p_vbar, "09_venn_unique_bar.pdf", width=7, height=5)
+      }
+    }
+  }, error=function(e) cat(sprintf("[WARN] Venn diagram: %s\n", e$message)))
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 10 — ANOVA per taxonomic level (+ Tukey post-hoc)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 10: ANOVA per Taxonomic Level ──────────────────────\n")
+if (has_meta && has_ggplot2 && has_phyloseq &&
+    length(unique(meta_df[[GROUP_COL]])) >= 2) {
+  tryCatch({
+    anova_ranks <- intersect(c("Phylum","Class","Order","Family","Genus"), rank_names(ps))
+    for (rank_a in anova_ranks) {
+      tryCatch({
+        ps_glom_a <- tax_glom(ps, taxrank=rank_a, NArm=FALSE)
+        ps_rel_a  <- transform_sample_counts(ps_glom_a, function(x) x/sum(x)*100)
+        melt_a    <- psmelt(ps_rel_a)
+        melt_a[[rank_a]][is.na(melt_a[[rank_a]])] <- "Unclassified"
+        melt_a[[GROUP_COL]] <- meta_df[melt_a$Sample, GROUP_COL]
+
+        taxa_a <- unique(melt_a[[rank_a]])
+        # Keep only taxa with ≥0.1% mean in at least one group
+        taxa_a <- taxa_a[sapply(taxa_a, function(t) {
+          st  <- melt_a[melt_a[[rank_a]] == t, ]
+          any(tapply(st$Abundance, st[[GROUP_COL]], mean, na.rm=TRUE) >= 0.1)
+        })]
+        if (length(taxa_a) == 0) next
+
+        anova_rows <- do.call(rbind, lapply(taxa_a, function(t) {
+          st  <- melt_a[melt_a[[rank_a]] == t, ]
+          grp <- st[[GROUP_COL]]; abu <- st$Abundance
+          if (length(unique(grp)) < 2 || any(table(grp) < 2)) return(NULL)
+          tryCatch({
+            fit   <- aov(abu ~ grp)
+            p_val <- summary(fit)[[1]]$`Pr(>F)`[1]
+            means <- tapply(abu, grp, mean, na.rm=TRUE)
+            row   <- data.frame(taxon=t, p_value=round(p_val,6), stringsAsFactors=FALSE)
+            for (g in names(means)) row[[paste0("mean_",g)]] <- round(means[g],4)
+            row
+          }, error=function(e) NULL)
+        }))
+
+        if (!is.null(anova_rows) && nrow(anova_rows) > 0) {
+          anova_rows$p_adj <- p.adjust(anova_rows$p_value, method="BH")
+          anova_rows <- anova_rows[order(anova_rows$p_adj), ]
+          write.csv(anova_rows,
+                    file.path(TABLES_DIR, sprintf("anova_%s.csv", tolower(rank_a))),
+                    row.names=FALSE)
+
+          sig_a <- anova_rows$taxon[!is.na(anova_rows$p_adj) & anova_rows$p_adj < 0.05]
+          n_sig_a <- length(sig_a)
+          cat(sprintf("  %s: %d significant taxa (padj<0.05)\n", rank_a, n_sig_a))
+
+          if (n_sig_a >= 1) {
+            top_a    <- head(sig_a, 12)
+            plot_a   <- melt_a[melt_a[[rank_a]] %in% top_a, ]
+            plot_a[[rank_a]] <- factor(plot_a[[rank_a]], levels=top_a)
+            n_g_a   <- length(unique(plot_a[[GROUP_COL]]))
+            pal_a   <- make_palette(n_g_a)
+
+            p_an <- ggplot(plot_a, aes_string(x=GROUP_COL, y="Abundance", fill=GROUP_COL)) +
+              geom_boxplot(alpha=0.7, outlier.shape=NA) +
+              geom_jitter(width=0.15, size=1.5, alpha=0.7) +
+              facet_wrap(as.formula(paste("~", rank_a)), scales="free_y", ncol=3) +
+              scale_fill_manual(values=pal_a) +
+              labs(title=sprintf("ANOVA significant %s (padj<0.05)", rank_a),
+                   x=GROUP_COL, y="Relative Abundance (%)") +
+              theme_bw(base_size=9) +
+              theme(axis.text.x=element_text(angle=30, hjust=1), legend.position="none")
+            save_pdf(p_an,
+                     sprintf("10_anova_%s.pdf", tolower(rank_a)),
+                     width=max(8, ceiling(length(top_a)/3)*3.5),
+                     height=max(6, ceiling(length(top_a)/3)*3))
+          }
+        }
+      }, error=function(e) cat(sprintf("  [WARN] ANOVA %s: %s\n", rank_a, e$message)))
+    }
+  }, error=function(e) cat(sprintf("[WARN] ANOVA section: %s\n", e$message)))
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 11 — LEfSe Analysis (Linear Discriminant Analysis Effect Size)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 11: LEfSe Analysis ─────────────────────────────────\n")
+if (has_meta && has_ggplot2 && has_phyloseq &&
+    length(unique(meta_df[[GROUP_COL]])) >= 2 &&
+    nsamples(ps) >= 4) {
+  if (requireNamespace("lefser", quietly=TRUE) &&
+      requireNamespace("SummarizedExperiment", quietly=TRUE)) {
+    tryCatch({
+      suppressPackageStartupMessages({
+        library(lefser)
+        library(SummarizedExperiment)
+      })
+      # Collapse to genus level if available
+      ps_lef <- if ("Genus" %in% rank_names(ps))
+                  tax_glom(ps, "Genus", NArm=FALSE) else ps
+
+      otu_lef <- as.matrix(otu_table(ps_lef))
+      if (!taxa_are_rows(ps_lef)) otu_lef <- t(otu_lef)
+      # Relative abundance × 1e6 (CPM)
+      otu_lef_rel <- sweep(otu_lef, 2, colSums(otu_lef), "/") * 1e6
+
+      grp_lef <- factor(meta_df[colnames(otu_lef_rel), GROUP_COL])
+      se_lef  <- SummarizedExperiment(
+        assays  = list(counts=otu_lef_rel),
+        colData = S4Vectors::DataFrame(group=grp_lef)
+      )
+
+      res_lef <- lefser(se_lef, groupCol="group", lda.threshold=2)
+
+      if (!is.null(res_lef) && nrow(res_lef) > 0) {
+        # Annotate with genus names
+        if ("Genus" %in% rank_names(ps_lef)) {
+          gmap <- sub("^[a-z]__","", as.character(tax_table(ps_lef)[,"Genus"]))
+          names(gmap) <- taxa_names(ps_lef)
+          res_lef$Label <- ifelse(res_lef$Names %in% names(gmap),
+                                   gmap[res_lef$Names], res_lef$Names)
+          res_lef$Label[is.na(res_lef$Label)|res_lef$Label==""] <-
+            res_lef$Names[is.na(res_lef$Label)|res_lef$Label==""]
+        } else {
+          res_lef$Label <- res_lef$Names
+        }
+
+        grp_levels <- levels(grp_lef)
+        res_lef$Direction <- ifelse(res_lef$scores > 0, grp_levels[2], grp_levels[1])
+        res_lef <- res_lef[order(res_lef$scores), ]
+        res_lef$Label <- factor(res_lef$Label, levels=res_lef$Label)
+        write.csv(res_lef, file.path(TABLES_DIR, "lefse_results.csv"), row.names=FALSE)
+
+        n_dir <- length(unique(res_lef$Direction))
+        pal_lef <- setNames(make_palette(n_dir), unique(res_lef$Direction))
+
+        p_lef <- ggplot(res_lef, aes(x=Label, y=scores, fill=Direction)) +
+          geom_col(alpha=0.85) +
+          coord_flip() +
+          scale_fill_manual(values=pal_lef, name="Enriched in") +
+          geom_hline(yintercept=0, color="grey50") +
+          labs(title=sprintf("LEfSe — Significant Biomarkers (LDA≥2)\nGrouped by: %s", GROUP_COL),
+               x="", y="LDA Score (log10)") +
+          theme_bw(base_size=10) +
+          theme(legend.position="top")
+        save_pdf(p_lef, "11_lefse_lda_barplot.pdf",
+                 width=9, height=max(5, nrow(res_lef)*0.32+2))
+        cat(sprintf("  LEfSe: %d significant biomarkers\n", nrow(res_lef)))
+      } else {
+        cat("  LEfSe: no significant biomarkers found (try lowering lda.threshold)\n")
+      }
+    }, error=function(e) cat(sprintf("[WARN] LEfSe: %s\n", e$message)))
+  } else {
+    cat("  Skipped (install lefser: BiocManager::install('lefser'))\n")
+  }
+}
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
 plots_made <- list.files(PLOTS_DIR, pattern="\\.pdf$")
