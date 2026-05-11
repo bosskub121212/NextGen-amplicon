@@ -140,6 +140,52 @@ mkdir -p "$(dirname "$DB_PATHS")"
 [[ ! -f "$DB_PATHS" ]] && echo '{"silva":"","unite":"","midori2_co1":"","midori2_co1_sp":"","nemabase":""}' > "$DB_PATHS"
 ok "Directories ready"
 
+step "Optional tools (KronaTools + PICRUSt2)"
+
+# KronaTools (Krona interactive charts)
+if ! command -v ktImportText &>/dev/null; then
+  info "Installing KronaTools..."
+  sudo apt-get install -y krona -qq 2>/dev/null && \
+    ok "KronaTools installed" || \
+    warn "KronaTools not in apt — install manually: conda install -c bioconda krona"
+else
+  ok "KronaTools already installed: $(ktImportText 2>&1 | head -1 || true)"
+fi
+
+# PICRUSt2 (optional, ~3GB database, needs conda)
+if command -v conda &>/dev/null; then
+  if ! conda env list | grep -q "^picrust2"; then
+    info "Installing PICRUSt2 via conda (this may take 10-20 min + ~3GB)..."
+    conda create -n picrust2 -c bioconda -c conda-forge picrust2 -y -q 2>/dev/null && \
+      ok "PICRUSt2 conda env created (activate: conda activate picrust2)" || \
+      warn "PICRUSt2 install failed — skip and install manually later"
+  else
+    ok "PICRUSt2 conda env already exists"
+  fi
+else
+  warn "conda not found — PICRUSt2 skipped (optional)"
+  warn "  Install miniconda3, then: conda create -n picrust2 -c bioconda -c conda-forge picrust2"
+fi
+
+# FAPROTAX (Python, ~50MB)
+FAPROTAX_DIR="$HOME/faprotax"
+if [[ ! -d "$FAPROTAX_DIR" ]]; then
+  info "Installing FAPROTAX..."
+  python3 -m pip install faprotax -q 2>/dev/null && \
+    ok "FAPROTAX installed" || {
+      # Fallback: download from official site
+      warn "pip install failed — trying direct download..."
+      curl -fsSL "https://pages.uoregon.edu/slouca/LoucaLab/archive/FAPROTAX/FAPROTAX_1.2.4.zip" \
+        -o /tmp/faprotax.zip 2>/dev/null && \
+        unzip -q /tmp/faprotax.zip -d "$HOME/" && \
+        mv "$HOME/FAPROTAX_1.2.4" "$FAPROTAX_DIR" && \
+        ok "FAPROTAX downloaded to $FAPROTAX_DIR" || \
+        warn "FAPROTAX install failed — install manually from http://www.loucalab.com/archive/FAPROTAX/"
+    }
+else
+  ok "FAPROTAX already at $FAPROTAX_DIR"
+fi
+
 step "Helper scripts"
 cat > "$INSTALL_DIR/start_backend.sh" <<'STARTSH'
 #!/usr/bin/env bash

@@ -51,7 +51,9 @@ cran_pkgs <- c(
   # Phase 3 additions
   "igraph",          # Co-occurrence network
   "ggraph",          # Network visualization
-  "Hmisc"            # Spearman correlation (rcorr)
+  "Hmisc",           # Spearman correlation (rcorr)
+  "phangorn",        # Phylogenetic tree building (NJ tree for UniFrac)
+  "ape"              # Tree manipulation
 )
 for (p in cran_pkgs) install_if_missing(p, bioc=FALSE)
 
@@ -63,7 +65,12 @@ bioc_pkgs <- c(
   # Phase 1 additions
   "lefser",              # LEfSe analysis
   "SummarizedExperiment",
-  "S4Vectors"
+  "S4Vectors",
+  # Phase 3b additions (UniFrac + tree viz)
+  "DECIPHER",            # Multiple sequence alignment (for NJ tree)
+  "Biostrings",          # DNA sequence handling
+  "ggtree",              # Phylogenetic tree visualization
+  "treeio"               # Tree I/O (ggtree dependency)
 )
 for (p in bioc_pkgs) install_if_missing(p, bioc=TRUE)
 

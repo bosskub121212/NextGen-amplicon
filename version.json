@@ -1,5 +1,5 @@
 {
-  "version": "1.5.0",
+  "version": "2.0.0",
   "release_date": "2026-05-11",
-  "changelog": "Gap fill: Beta distance heatmap (Bray+Jaccard, sample x sample pheatmap), OTU/ASV distribution charts (read counts, richness, abundance histogram), STAMP-style extended error bar plots (mean+95%CI per group, all pairwise, Genus/Family/Phylum)."
+  "changelog": "Full gap closure: UniFrac PCoA+NMDS (weighted+unweighted, auto NJ tree via DECIPHER+phangorn), Phylogenetic tree viz (ggtree circular, Phylum color), Krona charts (ktImportText or text export), LEfSe cladogram (ggraph circular taxonomy tree). New wrappers: FAPROTAX (python), BugBase (R/GitHub). Optional installs: KronaTools, PICRUSt2 (conda), FAPROTAX."
 }

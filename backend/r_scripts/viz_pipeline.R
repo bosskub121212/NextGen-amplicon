@@ -2125,6 +2125,303 @@ if (has_phyloseq && has_meta && has_ggplot2) {
   cat("  Skipped (requires phyloseq + metadata + ggplot2)\n")
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 20 — UniFrac PCoA + NMDS (Weighted + Unweighted)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 20: UniFrac PCoA + NMDS ─────────────────────────────\n")
+if (has_phyloseq && has_ggplot2) {
+  tryCatch({
+    ps_uf    <- ps
+    tree_ok  <- has_tree
+
+    # Auto-build NJ tree if not present and rep-seqs FASTA available
+    if (!tree_ok && file.exists(seq_fasta) &&
+        requireNamespace("DECIPHER",    quietly=TRUE) &&
+        requireNamespace("phangorn",    quietly=TRUE) &&
+        requireNamespace("Biostrings",  quietly=TRUE)) {
+      tryCatch({
+        suppressPackageStartupMessages({ library(DECIPHER); library(phangorn) })
+        cat("  Building NJ tree from rep-seqs (may take a few minutes)...\n")
+        seqs_uf <- Biostrings::readDNAStringSet(seq_fasta)
+        if (length(seqs_uf) > 300) {
+          top300  <- names(sort(taxa_sums(ps_uf), decreasing=TRUE))[1:300]
+          seqs_uf <- seqs_uf[intersect(names(seqs_uf), top300)]
+        }
+        cat(sprintf("  Aligning %d sequences...\n", length(seqs_uf)))
+        aln_uf      <- DECIPHER::AlignSeqs(seqs_uf, verbose=FALSE)
+        phang_uf    <- phangorn::phyDat(as(aln_uf, "matrix"), type="DNA")
+        dm_uf       <- phangorn::dist.ml(phang_uf)
+        tree_uf_obj <- phangorn::midpoint(phangorn::NJ(dm_uf))
+        common_uf   <- intersect(taxa_names(ps_uf), tree_uf_obj$tip.label)
+        ps_uf       <- prune_taxa(common_uf, ps_uf)
+        phy_tree(ps_uf) <- tree_uf_obj
+        tree_ok     <- TRUE
+        cat(sprintf("  ✓ NJ tree: %d taxa\n", length(common_uf)))
+      }, error=function(e) cat(sprintf("  [WARN] Tree build: %s\n", e$message)))
+    }
+
+    if (!tree_ok) {
+      cat("  Skipped — no tree (provide tree/tree.nwk or install DECIPHER+phangorn)\n")
+    } else {
+      n_grp_uf <- if (has_meta) length(unique(meta_df[[GROUP_COL]])) else 1
+      pal_uf   <- make_palette(n_grp_uf)
+
+      uf_list <- list(
+        list(d="unifrac",  m="PCoA", lbl="Unweighted UniFrac PCoA",  f="20a_unifrac_unwt_pcoa.pdf"),
+        list(d="wunifrac", m="PCoA", lbl="Weighted UniFrac PCoA",    f="20b_unifrac_wt_pcoa.pdf"),
+        list(d="unifrac",  m="NMDS", lbl="Unweighted UniFrac NMDS",  f="20c_unifrac_unwt_nmds.pdf"),
+        list(d="wunifrac", m="NMDS", lbl="Weighted UniFrac NMDS",    f="20d_unifrac_wt_nmds.pdf")
+      )
+      for (uf in uf_list) {
+        tryCatch({
+          ord_uf <- phyloseq::ordinate(ps_uf, method=uf$m, distance=uf$d)
+          p_uf <- if (has_meta) {
+            base_uf <- phyloseq::plot_ordination(ps_uf, ord_uf, color=GROUP_COL) +
+              geom_point(size=3.5, alpha=0.85) +
+              scale_colour_manual(values=pal_uf) +
+              labs(title=uf$lbl,
+                   subtitle=sprintf("n=%d samples | grouped by: %s",
+                                    nsamples(ps_uf), GROUP_COL)) +
+              theme_bw(base_size=11)
+            # Add ellipse only if enough samples per group
+            grp_counts_uf <- table(meta_df[[GROUP_COL]])
+            if (all(grp_counts_uf >= 3))
+              base_uf <- base_uf +
+                stat_ellipse(aes_string(group=GROUP_COL), level=0.95,
+                             linetype=2, linewidth=0.6)
+            base_uf
+          } else {
+            phyloseq::plot_ordination(ps_uf, ord_uf) +
+              geom_point(size=3.5, colour="#3b82f6", alpha=0.85) +
+              labs(title=uf$lbl) + theme_bw(base_size=11)
+          }
+          save_pdf(p_uf, uf$f, width=8, height=6)
+        }, error=function(e) cat(sprintf("  [WARN] %s: %s\n", uf$lbl, e$message)))
+      }
+    }
+  }, error=function(e) cat(sprintf("[WARN] UniFrac section: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires phyloseq + ggplot2)\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 21 — Phylogenetic Tree Visualization (ggtree)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 21: Phylogenetic Tree (ggtree) ──────────────────────\n")
+if (has_phyloseq && requireNamespace("ggtree", quietly=TRUE)) {
+  tryCatch({
+    suppressPackageStartupMessages(library(ggtree))
+
+    tree_viz <- tryCatch(phy_tree(ps), error=function(e) NULL)
+    if (is.null(tree_viz)) {
+      cat("  Skipped — no tree in phyloseq object\n")
+    } else {
+      # Prune to top 100 taxa by abundance for readability
+      ps_tv <- ps
+      if (ntaxa(ps) > 100) {
+        top100 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:100]
+        ps_tv  <- prune_taxa(top100, ps)
+        cat("  Pruned to top 100 taxa for readability\n")
+      }
+      tree_tv <- phy_tree(ps_tv)
+
+      # Build tip annotation data frame
+      tip_df_tv <- data.frame(label=tree_tv$tip.label, stringsAsFactors=FALSE)
+      tip_df_tv$Abundance <- log10(taxa_sums(ps_tv)[tip_df_tv$label] + 1)
+
+      if ("Phylum" %in% rank_names(ps_tv)) {
+        tip_df_tv$Phylum <- sub("^[a-z]__", "",
+          as.character(tax_table(ps_tv)[tip_df_tv$label, "Phylum"]))
+      }
+      if ("Genus" %in% rank_names(ps_tv)) {
+        tip_df_tv$Genus <- sub("^[a-z]__", "",
+          as.character(tax_table(ps_tv)[tip_df_tv$label, "Genus"]))
+        tip_df_tv$Genus[is.na(tip_df_tv$Genus) | tip_df_tv$Genus==""] <- ""
+      }
+
+      p_tree <- ggtree(tree_tv, layout="circular", linewidth=0.3,
+                        colour="grey60") %<+% tip_df_tv
+
+      if ("Phylum" %in% colnames(tip_df_tv)) {
+        n_phy_tv <- length(unique(na.omit(tip_df_tv$Phylum)))
+        pal_tv   <- make_palette(min(n_phy_tv, 12))
+        p_tree <- p_tree +
+          geom_tippoint(aes(colour=Phylum, size=Abundance), alpha=0.85) +
+          scale_colour_manual(values=pal_tv, na.value="grey70",
+                              name="Phylum") +
+          scale_size_continuous(range=c(1.5, 5), name="log10(reads)") +
+          labs(title=sprintf("Phylogenetic Tree — top %d ASVs", ntaxa(ps_tv)),
+               subtitle="Tip colour = Phylum | size = abundance") +
+          theme(legend.text=element_text(size=7),
+                plot.title=element_text(hjust=0.5))
+      } else {
+        p_tree <- p_tree +
+          geom_tippoint(aes(size=Abundance), colour="#3b82f6", alpha=0.8) +
+          scale_size_continuous(range=c(1.5, 5), name="log10(reads)") +
+          labs(title="Phylogenetic Tree")
+      }
+      save_pdf(p_tree, "21_phylogenetic_tree.pdf", width=11, height=11)
+    }
+  }, error=function(e) cat(sprintf("[WARN] ggtree section: %s\n", e$message)))
+} else if (!requireNamespace("ggtree", quietly=TRUE)) {
+  cat("  Skipped (install: BiocManager::install('ggtree'))\n")
+} else {
+  cat("  Skipped (requires phyloseq)\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 22 — Krona Charts (per-sample taxonomy HTML)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 22: Krona Charts ────────────────────────────────────\n")
+if (has_phyloseq) {
+  tryCatch({
+    krona_dir <- file.path(PLOTS_DIR, "krona")
+    dir.create(krona_dir, showWarnings=FALSE)
+
+    rank_order_kr <- intersect(
+      c("Kingdom","Phylum","Class","Order","Family","Genus","Species"),
+      rank_names(ps))
+
+    krona_files <- c()
+    for (samp_kr in sample_names(ps)) {
+      tryCatch({
+        counts_kr <- if (taxa_are_rows(ps)) otu_table(ps)[, samp_kr] else
+                     otu_table(ps)[samp_kr, ]
+        counts_kr <- counts_kr[counts_kr > 0]
+        if (length(counts_kr) == 0) next
+
+        tax_kr  <- tax_table(ps)[names(counts_kr), rank_order_kr, drop=FALSE]
+        lines_kr <- sapply(seq_along(counts_kr), function(i) {
+          path_kr <- sub("^[a-z]__", "", as.character(tax_kr[i, ]))
+          path_kr <- path_kr[!is.na(path_kr) & nchar(trimws(path_kr)) > 0]
+          paste(c(as.integer(counts_kr[i]), path_kr), collapse="\t")
+        })
+        fname_kr <- file.path(krona_dir, paste0(samp_kr, ".krona.txt"))
+        writeLines(lines_kr, fname_kr)
+        krona_files <- c(krona_files, fname_kr)
+      }, error=function(e) NULL)
+    }
+    cat(sprintf("  Written %d Krona text files\n", length(krona_files)))
+
+    # Call ktImportText if KronaTools is installed
+    kt_bin <- Sys.which("ktImportText")
+    if (nchar(kt_bin) > 0 && length(krona_files) > 0) {
+      html_kr <- file.path(PLOTS_DIR, "22_krona_all_samples.html")
+      cmd_kr  <- paste(c(kt_bin, "-o", shQuote(html_kr),
+                          shQuote(krona_files)), collapse=" ")
+      ret_kr  <- system(cmd_kr, ignore.stderr=TRUE)
+      if (ret_kr == 0)
+        cat("  ✓ Saved: 22_krona_all_samples.html\n")
+      else
+        cat("  [WARN] ktImportText failed — text files saved for manual use\n")
+    } else {
+      cat("  KronaTools not found — to generate HTML:\n")
+      cat("    sudo apt-get install -y krona\n")
+      cat(sprintf("    ktImportText -o krona.html %s/*.krona.txt\n", krona_dir))
+    }
+  }, error=function(e) cat(sprintf("[WARN] Krona section: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires phyloseq)\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 23 — LEfSe Cladogram (taxonomy tree colored by enrichment)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 23: LEfSe Cladogram ─────────────────────────────────\n")
+if (has_phyloseq && has_ggplot2 && requireNamespace("igraph", quietly=TRUE)) {
+  tryCatch({
+    lefse_csv <- file.path(TABLES_DIR, "lefse_results.csv")
+    if (!file.exists(lefse_csv)) {
+      cat("  Skipped — lefse_results.csv not found (run LEfSe first)\n")
+    } else {
+      lefse_df_cl <- read.csv(lefse_csv, stringsAsFactors=FALSE)
+      if (nrow(lefse_df_cl) == 0) {
+        cat("  Skipped — no significant LEfSe biomarkers\n")
+      } else {
+        suppressPackageStartupMessages(library(igraph))
+
+        rank_clad <- intersect(
+          c("Phylum","Class","Order","Family","Genus"), rank_names(ps))
+        tax_clad  <- as.data.frame(tax_table(ps)[, rank_clad, drop=FALSE],
+                                    stringsAsFactors=FALSE)
+        tax_clad  <- as.data.frame(lapply(tax_clad, function(x)
+          sub("^[a-z]__", "", trimws(x))), stringsAsFactors=FALSE)
+
+        # Build edge list: Root → Phylum → Class → ...
+        edges_cl <- data.frame(from="Root",
+                                to=unique(na.omit(tax_clad[,1][nchar(tax_clad[,1])>0])),
+                                stringsAsFactors=FALSE)
+        for (r in seq_len(length(rank_clad)-1)) {
+          pairs_cl <- unique(tax_clad[, c(r, r+1), drop=FALSE])
+          pairs_cl <- pairs_cl[!is.na(pairs_cl[,1]) & !is.na(pairs_cl[,2]) &
+                                  nchar(pairs_cl[,1])>0 & nchar(pairs_cl[,2])>0, ]
+          if (nrow(pairs_cl) > 0)
+            edges_cl <- rbind(edges_cl,
+              data.frame(from=pairs_cl[,1], to=pairs_cl[,2],
+                         stringsAsFactors=FALSE))
+        }
+        edges_cl <- unique(edges_cl)
+        edges_cl <- edges_cl[edges_cl$from != edges_cl$to, ]
+
+        g_cl <- igraph::graph_from_data_frame(edges_cl, directed=TRUE)
+        node_names_cl <- igraph::V(g_cl)$name
+
+        # LEfSe enrichment lookup
+        grp_levels_cl <- unique(lefse_df_cl$Direction)
+        n_grp_cl      <- length(grp_levels_cl)
+        pal_cl_grp    <- make_palette(n_grp_cl)
+        col_lookup_cl <- c(setNames(pal_cl_grp, grp_levels_cl), "none"="grey85")
+
+        lef_dir_cl   <- setNames(lefse_df_cl$Direction, lefse_df_cl$Label)
+        lef_score_cl <- setNames(abs(lefse_df_cl$scores), lefse_df_cl$Label)
+
+        node_col_cl  <- sapply(node_names_cl, function(n)
+          if (n %in% names(lef_dir_cl)) col_lookup_cl[lef_dir_cl[n]] else "grey85")
+        node_size_cl <- sapply(node_names_cl, function(n)
+          if (n %in% names(lef_score_cl)) 4 + lef_score_cl[n]*1.5 else 3)
+
+        if (requireNamespace("ggraph", quietly=TRUE)) {
+          suppressPackageStartupMessages(library(ggraph))
+          p_clad <- ggraph(g_cl, layout="dendrogram", circular=TRUE) +
+            geom_edge_diagonal(colour="grey75", alpha=0.5, linewidth=0.35) +
+            geom_node_point(aes(size=node_size_cl), colour=node_col_cl,
+                            alpha=0.9) +
+            geom_node_text(
+              aes(label=ifelse(name %in% names(lef_dir_cl), name, "")),
+              repel=TRUE, size=2.2, colour=node_col_cl, max.overlaps=20) +
+            scale_size_continuous(range=c(1.5, 8), guide="none") +
+            labs(title=sprintf("LEfSe Cladogram — %d significant biomarkers",
+                               nrow(lefse_df_cl)),
+                 subtitle=paste(grp_levels_cl, collapse=" vs ")) +
+            theme_void(base_size=9) +
+            theme(plot.title=element_text(hjust=0.5, size=12, face="bold"),
+                  plot.subtitle=element_text(hjust=0.5))
+          save_pdf(p_clad, "23_lefse_cladogram.pdf", width=12, height=12)
+        } else {
+          pdf(file.path(PLOTS_DIR, "23_lefse_cladogram.pdf"), width=12, height=12)
+          igraph::plot.igraph(g_cl,
+            layout           = igraph::layout_as_tree(g_cl, circular=TRUE),
+            vertex.color     = node_col_cl,
+            vertex.size      = pmin(node_size_cl, 15),
+            vertex.label     = ifelse(node_names_cl %in% names(lef_dir_cl),
+                                      node_names_cl, ""),
+            vertex.label.cex = 0.45,
+            edge.arrow.size  = 0.2,
+            main = sprintf("LEfSe Cladogram (%d biomarkers)", nrow(lefse_df_cl)))
+          legend("bottomright", legend=c(grp_levels_cl, "Not significant"),
+                 fill=c(pal_cl_grp, "grey85"), bty="n", cex=0.8)
+          dev.off()
+          cat("  ✓ Saved: 23_lefse_cladogram.pdf\n")
+        }
+        cat(sprintf("  LEfSe cladogram: %d biomarkers, %d nodes\n",
+                    nrow(lefse_df_cl), igraph::vcount(g_cl)))
+      }
+    }
+  }, error=function(e) cat(sprintf("[WARN] LEfSe cladogram: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires phyloseq + ggplot2 + igraph)\n")
+}
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 plots_made <- list.files(PLOTS_DIR, pattern="\\.pdf$")
 tables_made <- list.files(TABLES_DIR, pattern="\\.csv$")
