@@ -1,5 +1,5 @@
 {
-  "version": "1.0.2",
-  "release_date": "2026-05-06",
-  "changelog": "Fix: COX1 taxonomy crash (MIDORI2 taxLevels), ITS1/ITS2 flag mismatch, COX1/PacBio progress display (PROGRESS format)"
+  "version": "1.1.1",
+  "release_date": "2026-05-11",
+  "changelog": "Fix: cutadapt primer trimming now works for all pipelines (16S/ITS/COX1) with correct error-rate, overlap, and discard-untrimmed settings passed from UI."
 }
