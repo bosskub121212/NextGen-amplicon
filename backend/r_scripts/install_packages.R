@@ -47,7 +47,11 @@ cran_pkgs <- c(
   "scales",          # axis formatting
   # Phase 2 additions
   "ggdendro",        # UPGMA dendrogram plotting
-  "ggtern"           # Ternary plots (3-group composition)
+  "ggtern",          # Ternary plots (3-group composition)
+  # Phase 3 additions
+  "igraph",          # Co-occurrence network
+  "ggraph",          # Network visualization
+  "Hmisc"            # Spearman correlation (rcorr)
 )
 for (p in cran_pkgs) install_if_missing(p, bioc=FALSE)
 

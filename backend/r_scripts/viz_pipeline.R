@@ -1632,6 +1632,273 @@ if (has_phyloseq && has_meta && has_ggplot2 &&
   cat("  Skipped (requires phyloseq + metadata + ≥3 groups)\n")
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 15 — Co-occurrence Network + ZiPi Plot
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 15: Co-occurrence Network + ZiPi ────────────────────\n")
+if (has_phyloseq && has_ggplot2 &&
+    requireNamespace("igraph",  quietly=TRUE) &&
+    requireNamespace("Hmisc",   quietly=TRUE)) {
+  tryCatch({
+    suppressPackageStartupMessages({
+      library(igraph)
+      library(Hmisc)
+    })
+
+    # Collapse to genus, relative abundance
+    ps_net <- if ("Genus" %in% rank_names(ps))
+                tax_glom(ps, "Genus", NArm=FALSE) else ps
+    ps_net <- transform_sample_counts(ps_net, function(x) x / sum(x) * 100)
+
+    # Keep taxa present in ≥30% of samples, mean rel abund ≥0.1%
+    ps_net <- filter_taxa(ps_net,
+                          function(x) sum(x > 0) / length(x) >= 0.3 &
+                                      mean(x) >= 0.1, TRUE)
+
+    otu_net <- as.matrix(otu_table(ps_net))
+    if (taxa_are_rows(ps_net)) otu_net <- t(otu_net)
+
+    cat(sprintf("  Network taxa (filtered): %d\n", ncol(otu_net)))
+
+    if (ncol(otu_net) >= 5 && nrow(otu_net) >= 5) {
+      # Spearman correlation
+      cor_res  <- Hmisc::rcorr(otu_net, type="spearman")
+      r_mat    <- cor_res$r
+      p_mat    <- cor_res$P
+      diag(r_mat) <- 0
+
+      # Threshold: |r| ≥ 0.6, p < 0.05
+      adj_mat <- (abs(r_mat) >= 0.6) & (p_mat < 0.05) & !is.na(p_mat)
+      diag(adj_mat) <- FALSE
+
+      if (sum(adj_mat) > 0) {
+        g_net <- igraph::graph_from_adjacency_matrix(
+          adj_mat, mode="undirected", diag=FALSE)
+        igraph::E(g_net)$weight <- r_mat[adj_mat]
+        igraph::E(g_net)$color  <- ifelse(
+          r_mat[adj_mat] > 0, "#3b82f6", "#ef4444")
+
+        # Node properties
+        deg_net   <- igraph::degree(g_net)
+        btwn_net  <- igraph::betweenness(g_net, normalized=TRUE)
+
+        # Taxon labels
+        tax_lab_net <- sub("^[a-z]__", "",
+          as.character(tax_table(ps_net)[igraph::V(g_net)$name,
+            if ("Genus" %in% rank_names(ps_net)) "Genus" else rank_names(ps_net)[1]]))
+        tax_lab_net[is.na(tax_lab_net) | tax_lab_net == ""] <-
+          igraph::V(g_net)$name[is.na(tax_lab_net) | tax_lab_net == ""]
+        igraph::V(g_net)$label <- tax_lab_net
+
+        # Group colour by metadata if available
+        if (has_meta && requireNamespace("ggraph", quietly=TRUE)) {
+          suppressPackageStartupMessages(library(ggraph))
+          set.seed(42)
+          p_net <- ggraph(g_net, layout="fr") +
+            geom_edge_link(aes(colour=color), alpha=0.5, width=0.7) +
+            geom_node_point(aes(size=deg_net), colour="#1e40af", alpha=0.8) +
+            geom_node_text(aes(label=label), repel=TRUE, size=2.5,
+                           max.overlaps=15) +
+            scale_edge_colour_identity() +
+            scale_size_continuous(range=c(2, 8), name="Degree") +
+            labs(title=sprintf("Co-occurrence Network (|r|≥0.6, p<0.05)\n%d nodes, %d edges",
+                               igraph::vcount(g_net), igraph::ecount(g_net))) +
+            theme_void(base_size=10) +
+            theme(plot.title=element_text(hjust=0.5))
+          save_pdf(p_net, "15a_cooccurrence_network.pdf", width=10, height=9)
+        } else {
+          # Fallback: base R plot
+          pdf(file.path(PLOTS_DIR, "15a_cooccurrence_network.pdf"), width=10, height=9)
+          igraph::plot.igraph(g_net,
+            vertex.label      = tax_lab_net,
+            vertex.label.cex  = 0.6,
+            vertex.size       = sqrt(deg_net + 1) * 4,
+            vertex.color      = "#93c5fd",
+            edge.color        = igraph::E(g_net)$color,
+            edge.width        = 1.5,
+            layout            = igraph::layout_with_fr(g_net),
+            main              = sprintf("Co-occurrence Network (%d nodes, %d edges)",
+                                        igraph::vcount(g_net), igraph::ecount(g_net)))
+          legend("bottomleft",
+                 legend=c("Positive (r≥0.6)", "Negative (r≤-0.6)"),
+                 col=c("#3b82f6","#ef4444"), lwd=2, bty="n", cex=0.8)
+          dev.off()
+          cat("  ✓ Saved: 15a_cooccurrence_network.pdf\n")
+        }
+
+        # Export edge table
+        el_net <- igraph::as_data_frame(g_net, what="edges")
+        el_net$r <- round(r_mat[cbind(el_net$from, el_net$to)], 4)
+        write.csv(el_net, file.path(TABLES_DIR, "network_edges.csv"),
+                  row.names=FALSE)
+
+        # ── ZiPi plot ──────────────────────────────────────────────────────────
+        # Module detection via fast_greedy
+        comm_net <- igraph::cluster_fast_greedy(
+          igraph::as.undirected(g_net))
+        modules  <- igraph::membership(comm_net)
+
+        node_df <- data.frame(
+          taxon  = names(modules),
+          module = as.integer(modules),
+          degree = deg_net[names(modules)],
+          stringsAsFactors = FALSE
+        )
+
+        # Within-module z-score (Zi)
+        node_df$Zi <- sapply(seq_len(nrow(node_df)), function(i) {
+          mod_nodes <- node_df$taxon[node_df$module == node_df$module[i]]
+          mod_degs  <- node_df$degree[node_df$module == node_df$module[i]]
+          if (length(mod_degs) < 2) return(0)
+          (node_df$degree[i] - mean(mod_degs)) / sd(mod_degs)
+        })
+        node_df$Zi[is.nan(node_df$Zi) | is.na(node_df$Zi)] <- 0
+
+        # Participation coefficient (Pi)
+        node_df$Pi <- sapply(seq_len(nrow(node_df)), function(i) {
+          nd   <- node_df$degree[i]
+          if (nd == 0) return(0)
+          nbrs <- names(igraph::neighbors(g_net, node_df$taxon[i]))
+          km_s <- table(node_df$module[match(nbrs, node_df$taxon)])
+          1 - sum((km_s / nd)^2)
+        })
+
+        # Classify roles
+        node_df$Role <- with(node_df, ifelse(
+          Zi >= 2.5 & Pi <  0.62, "Module hub",
+          ifelse(Zi >= 2.5 & Pi >= 0.62, "Network hub",
+          ifelse(Zi <  2.5 & Pi >= 0.62, "Connector",
+                                          "Peripheral"))))
+
+        write.csv(node_df, file.path(TABLES_DIR, "network_zipi.csv"),
+                  row.names=FALSE)
+
+        role_cols <- c("Peripheral"="#94a3b8","Connector"="#f59e0b",
+                       "Module hub"="#3b82f6","Network hub"="#ef4444")
+
+        p_zipi <- ggplot(node_df, aes(x=Pi, y=Zi, colour=Role)) +
+          geom_point(size=3, alpha=0.85) +
+          geom_vline(xintercept=0.62, linetype=2, colour="grey50") +
+          geom_hline(yintercept=2.5,  linetype=2, colour="grey50") +
+          scale_colour_manual(values=role_cols) +
+          labs(title="ZiPi Plot — Node Ecological Roles",
+               x="Participation Coefficient (Pi)",
+               y="Within-module Connectivity (Zi)") +
+          theme_bw(base_size=10)
+        if (requireNamespace("ggrepel", quietly=TRUE)) {
+          hub_nodes <- node_df[node_df$Role != "Peripheral", ]
+          if (nrow(hub_nodes) > 0)
+            p_zipi <- p_zipi +
+              ggrepel::geom_text_repel(data=hub_nodes,
+                aes(label=taxon), size=2.8, show.legend=FALSE)
+        }
+        save_pdf(p_zipi, "15b_zipi_plot.pdf", width=8, height=6)
+        cat(sprintf("  Network: %d nodes, %d edges | hubs: %d\n",
+                    igraph::vcount(g_net), igraph::ecount(g_net),
+                    sum(node_df$Role %in% c("Module hub","Network hub"))))
+      } else {
+        cat("  No edges passed threshold (|r|≥0.6, p<0.05) — try more samples\n")
+      }
+    } else {
+      cat("  Too few taxa or samples for network analysis\n")
+    }
+  }, error=function(e) cat(sprintf("[WARN] Network section: %s\n", e$message)))
+} else {
+  cat("  Skipped (install igraph + Hmisc: install.packages(c('igraph','Hmisc')))\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 16 — RDA / CCA (microbiome vs environmental factors)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 16: RDA / CCA ───────────────────────────────────────\n")
+if (has_phyloseq && has_vegan && has_meta && has_ggplot2) {
+  tryCatch({
+    # Find numeric environmental columns (excluding group col and SampleID)
+    skip_cols <- c("SampleID", GROUP_COL)
+    env_cols  <- setdiff(colnames(meta_df), skip_cols)
+    num_cols  <- env_cols[sapply(meta_df[, env_cols, drop=FALSE],
+                                 function(x) is.numeric(x) || all(!is.na(suppressWarnings(as.numeric(x)))))]
+
+    if (length(num_cols) == 0) {
+      cat("  Skipped — no numeric environmental variables found in metadata\n")
+      cat("  (add columns like pH, temperature, depth etc. to metadata TSV)\n")
+    } else {
+      cat(sprintf("  Environmental variables: %s\n", paste(num_cols, collapse=", ")))
+
+      # Collapse to genus, CLR transform
+      ps_rda <- if ("Genus" %in% rank_names(ps))
+                  tax_glom(ps, "Genus", NArm=FALSE) else ps
+      otu_rda <- as.matrix(otu_table(ps_rda))
+      if (taxa_are_rows(ps_rda)) otu_rda <- t(otu_rda)
+
+      # CLR transform
+      otu_clr <- t(apply(otu_rda, 1, function(x) {
+        xp <- x + 1; log(xp / exp(mean(log(xp))))
+      }))
+
+      # Align samples
+      common_rda <- intersect(rownames(otu_clr), rownames(meta_df))
+      otu_clr    <- otu_clr[common_rda, , drop=FALSE]
+      env_df     <- meta_df[common_rda, num_cols, drop=FALSE]
+      env_df     <- as.data.frame(lapply(env_df, as.numeric))
+
+      # Remove columns with NA or zero variance
+      env_df <- env_df[, sapply(env_df, function(x)
+        !all(is.na(x)) && var(x, na.rm=TRUE) > 0), drop=FALSE]
+
+      if (ncol(env_df) == 0 || nrow(env_df) < 5) {
+        cat("  Skipped — not enough valid env data after filtering\n")
+      } else {
+        # RDA (linear, CLR data)
+        rda_res <- vegan::rda(otu_clr ~ ., data=env_df)
+        rda_sum <- summary(rda_res)
+
+        # Extract scores
+        site_sc  <- as.data.frame(scores(rda_res, display="sites",  choices=1:2))
+        biplot_sc <- as.data.frame(scores(rda_res, display="bp",    choices=1:2))
+        pct       <- round(rda_sum$cont$importance[2, 1:2] * 100, 1)
+
+        site_sc$Sample <- rownames(site_sc)
+        if (has_meta)
+          site_sc$Group <- meta_df[site_sc$Sample, GROUP_COL]
+
+        biplot_sc$Variable <- rownames(biplot_sc)
+
+        n_grp_rda <- length(unique(site_sc$Group))
+        pal_rda   <- make_palette(n_grp_rda)
+
+        p_rda <- ggplot(site_sc, aes(x=RDA1, y=RDA2)) +
+          geom_point(aes(colour=Group), size=3, alpha=0.85) +
+          scale_colour_manual(values=pal_rda) +
+          geom_segment(data=biplot_sc,
+                       aes(x=0, y=0, xend=RDA1*0.8, yend=RDA2*0.8),
+                       arrow=arrow(length=unit(0.25,"cm")),
+                       colour="#374151", linewidth=0.7) +
+          ggrepel::geom_text_repel(data=biplot_sc,
+                       aes(x=RDA1*0.85, y=RDA2*0.85, label=Variable),
+                       size=3.2, colour="#374151") +
+          geom_hline(yintercept=0, linetype=2, colour="grey70") +
+          geom_vline(xintercept=0, linetype=2, colour="grey70") +
+          labs(title=sprintf("RDA — Microbiome vs Environmental Factors\nGrouped by: %s", GROUP_COL),
+               x=sprintf("RDA1 (%.1f%%)", pct[1]),
+               y=sprintf("RDA2 (%.1f%%)", pct[2]),
+               colour=GROUP_COL) +
+          theme_bw(base_size=10)
+        save_pdf(p_rda, "16_rda_ordination.pdf", width=9, height=7)
+
+        # PERMANOVA against env variables
+        perm_rda <- vegan::adonis2(otu_clr ~ ., data=env_df,
+                                   permutations=999, method="euclidean")
+        write.csv(as.data.frame(perm_rda),
+                  file.path(TABLES_DIR, "rda_permanova.csv"))
+        cat(sprintf("  RDA: RDA1=%.1f%%, RDA2=%.1f%%\n", pct[1], pct[2]))
+      }
+    }
+  }, error=function(e) cat(sprintf("[WARN] RDA section: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires phyloseq + vegan + metadata)\n")
+}
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 plots_made <- list.files(PLOTS_DIR, pattern="\\.pdf$")
 tables_made <- list.files(TABLES_DIR, pattern="\\.csv$")
