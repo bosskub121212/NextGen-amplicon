@@ -21,8 +21,28 @@ echo ""
 # STEP 1: Pull latest code
 # ─────────────────────────────────────────────────────────────────────────────
 echo "── Step 1: Pulling latest code ─────────────────────────────"
+
+# jobs_history.json is local-only data (job queue/history per machine).
+# If git is still tracking it (was committed before .gitignore was added),
+# we preserve the content, reset the tracked copy, pull, then restore.
+JOBS_FILE="backend/jobs_history.json"
+JOBS_BACKUP=""
+if git ls-files --error-unmatch "$JOBS_FILE" &>/dev/null; then
+  echo "  ℹ  Preserving local job history across update..."
+  JOBS_BACKUP=$(cat "$JOBS_FILE" 2>/dev/null || echo "")
+  git checkout -- "$JOBS_FILE" 2>/dev/null || true
+  # Permanently stop tracking this file so this never happens again
+  git rm --cached "$JOBS_FILE" 2>/dev/null || true
+fi
+
 git pull origin main
 echo "  ✓ Code updated"
+
+# Restore job history if we had one
+if [ -n "$JOBS_BACKUP" ]; then
+  echo "$JOBS_BACKUP" > "$JOBS_FILE"
+  echo "  ✓ Job history restored"
+fi
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
