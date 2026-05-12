@@ -39,6 +39,10 @@ export interface PipelineParams {
   pb_max_len:        number;
   pb_maxEE:          number;
   pb_region:         string;
+  // ONT
+  ont_region:        string;
+  ont_min_abundance: number;
+  ont_db_path:       string;
   // Cutadapt
   cutadaptErrorRate: number;
   cutadaptOverlap:   number;
@@ -92,6 +96,7 @@ export const defaultParams: PipelineParams = {
   cox1_min_len: 300, cox1_max_len: 330,
   run_lulu: true,
   pb_min_len: 1000, pb_max_len: 1600, pb_maxEE: 3.0, pb_region: "V1-V9",
+  ont_region: "V1-V9", ont_min_abundance: 0.0001, ont_db_path: "",
   cutadaptErrorRate: 0.1, cutadaptOverlap: 3, discardUntrimmed: false,
   runPhylogeny: true, phyloThreads: 4,
   runDiversity: true,
@@ -106,7 +111,7 @@ export const defaultParams: PipelineParams = {
   metadataPath: "",
 };
 
-export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio";
+export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio" | "ONT-16S";
 
 // ── Primer presets (Cutadapt step) ────────────────────────────────────────────
 const CUTADAPT_PRESETS: { label: string; f: string; r: string; markers: string[] }[] = [
@@ -127,6 +132,7 @@ const MARKER_OPTIONS: { value: MarkerType; label: string; description: string; i
   { value: "COX1",     icon: "🦑", label: "COX1 / CO1",     description: "Animal metabarcoding — MIDORI2 database" },
   { value: "18S-nema", icon: "🐛", label: "18S Nematode",   description: "Nematode 18S — NemaBase / PR2" },
   { value: "PacBio",   icon: "🧬", label: "PacBio CCS 16S", description: "Full-length 16S V1–V9 long reads" },
+  { value: "ONT-16S",  icon: "🧫", label: "ONT 16S",        description: "Oxford Nanopore V7-V8 / V1-V9 — Emu pipeline" },
 ];
 
 const DB_OPTIONS = [
@@ -136,7 +142,8 @@ const DB_OPTIONS = [
   { value: "NemaBase_18S", label: "18S-NemaBase (nematode-specific)", pathKey: "NemaBase_18S", marker: ["18S-nema"] },
   { value: "UNITE_ITS1",   label: "UNITE v10 (ITS Fungi)",           pathKey: "UNITE_ITS1",   marker: ["ITS1","ITS2"] },
   { value: "MIDORI2_COX1", label: "MIDORI2 COX1 (Animal barcoding)", pathKey: "MIDORI2_COX1", marker: ["COX1"] },
-  { value: "custom",       label: "Custom path...",                   pathKey: "",             marker: ["16S","12S","18S-nema","PacBio","ITS1","ITS2","COX1"] },
+  { value: "EMU_SILVA",    label: "Emu — SILVA database",             pathKey: "emu_silva",    marker: ["ONT-16S"] },
+  { value: "custom",       label: "Custom path...",                   pathKey: "",             marker: ["16S","12S","18S-nema","PacBio","ITS1","ITS2","COX1","ONT-16S"] },
 ];
 
 const PACBIO_PRIMERS: Record<string, { f: string; r: string; label: string }[]> = {
@@ -270,9 +277,10 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
   const isITS     = marker === "ITS1" || marker === "ITS2";
   const isCOX1    = marker === "COX1";
   const isPacBio  = marker === "PacBio";
+  const isONT     = marker === "ONT-16S";
   const isNema    = marker === "18S-nema";
   const is16S     = marker === "16S";
-  const isStandard = !isITS && !isCOX1 && !isPacBio;
+  const isStandard = !isITS && !isCOX1 && !isPacBio && !isONT;
   const hasPhylo  = is16S || marker === "12S" || isPacBio;
 
   const availableDBs = DB_OPTIONS.filter(db => (db.marker as string[]).includes(marker));
@@ -407,6 +415,170 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
                 ))}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── ONT-16S specific ──────────────────────────────────────────── */}
+      {isONT && (
+        <div className="ext-section">
+          <h4 className="ext-section-title">🧫 ONT 16S Settings — Emu Pipeline</h4>
+
+          {/* Info box */}
+          <div className="ps-info-box ps-info-box--ok" style={{ marginBottom: 16 }}>
+            ✅ ONT reads (single FASTQ per sample) → Emu abundance → same visualizations as Illumina
+          </div>
+
+          <div className="param-grid">
+            {/* Region selector */}
+            <div className="param-item">
+              <label className="param-label">16S Region</label>
+              <span className="param-hint">V7-V8 = ~337 bp (genus-level) · V1-V9 = ~1500 bp (species-level)</span>
+              <select className="param-input" value={params.ont_region}
+                onChange={e => {
+                  const region = e.target.value;
+                  // Auto-fill primer presets
+                  if (region === "V7-V8") {
+                    onChange({ ...params, ont_region: region, primer_f: "ATGGCTGTCGTCAGCT", primer_r: "ACGGGGCGGTGTGTAC" });
+                  } else if (region === "V1-V9") {
+                    onChange({ ...params, ont_region: region, primer_f: "AGRGTTYGATYMTGGCTCAG", primer_r: "RGYTACCTTGTTACGACTT" });
+                  } else {
+                    onChange({ ...params, ont_region: region });
+                  }
+                }}>
+                <option value="V1-V9">V1–V9 (full-length, ~1500 bp, species-level)</option>
+                <option value="V7-V8">V7–V8 (~337 bp, genus-level)</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+
+            {/* Min abundance */}
+            <div className="param-item">
+              <label className="param-label">Min Abundance Filter</label>
+              <span className="param-hint">Discard taxa below this relative abundance (0.0001 = 0.01%)</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <input type="range" min={0.00001} max={0.01} step={0.00001}
+                  value={params.ont_min_abundance}
+                  onChange={e => set("ont_min_abundance", Number(e.target.value))}
+                  style={{ flex: 1, accentColor: "#22d3ee" }} />
+                <span style={{ color: "#22d3ee", fontWeight: 700, width: 60, textAlign: "right", fontSize: 12 }}>
+                  {params.ont_min_abundance.toExponential(1)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Primer presets */}
+          <div className="primer-section" style={{ marginTop: 12 }}>
+            <label className="param-label">Primer Pair</label>
+            <div className="primer-presets">
+              <button className={`primer-preset-btn ${params.primer_f === "AGRGTTYGATYMTGGCTCAG" ? "active" : ""}`}
+                onClick={() => onChange({ ...params, primer_f: "AGRGTTYGATYMTGGCTCAG", primer_r: "RGYTACCTTGTTACGACTT" })}>
+                27F / 1492R (V1–V9)
+              </button>
+              <button className={`primer-preset-btn ${params.primer_f === "ATGGCTGTCGTCAGCT" ? "active" : ""}`}
+                onClick={() => onChange({ ...params, primer_f: "ATGGCTGTCGTCAGCT", primer_r: "ACGGGGCGGTGTGTAC" })}>
+                1055F / 1392R (V7–V8)
+              </button>
+              <button className={`primer-preset-btn ${!params.primer_f ? "active" : ""}`}
+                onClick={() => onChange({ ...params, primer_f: "", primer_r: "" })}>
+                No primers (skip cutadapt)
+              </button>
+            </div>
+          </div>
+
+          {/* Primer inputs */}
+          <div className="param-grid" style={{ marginTop: 8 }}>
+            <div className="param-item">
+              <label className="param-label">Forward Primer (5'→3')</label>
+              <input type="text" className="param-input"
+                style={{ fontFamily: "monospace", letterSpacing: "0.5px" }}
+                placeholder="e.g. AGRGTTYGATYMTGGCTCAG"
+                value={params.primer_f}
+                onChange={e => set("primer_f", e.target.value.toUpperCase())} />
+            </div>
+            <div className="param-item">
+              <label className="param-label">Reverse Primer (5'→3')</label>
+              <input type="text" className="param-input"
+                style={{ fontFamily: "monospace", letterSpacing: "0.5px" }}
+                placeholder="e.g. RGYTACCTTGTTACGACTT"
+                value={params.primer_r}
+                onChange={e => set("primer_r", e.target.value.toUpperCase())} />
+            </div>
+          </div>
+
+          {/* Emu database */}
+          <div className="param-item" style={{ marginTop: 12 }}>
+            <label className="param-label">Emu Database Path</label>
+            <span className="param-hint">Directory containing Emu SILVA database (from: emu download-db silva)</span>
+            {(() => {
+              const emuPath = dbPaths["emu_silva"] || "";
+              return emuPath ? (
+                <div style={{ fontSize: 12, color: "#10b981", marginBottom: 6 }}>✅ {emuPath}</div>
+              ) : (
+                <div style={{ fontSize: 12, color: "#f59e0b", marginBottom: 6 }}>
+                  ⚠ Emu DB not configured — run: <code style={{ fontSize: 11 }}>emu download-db silva --db-dir ~/r16s-app/backend/databases/emu_silva</code>
+                </div>
+              );
+            })()}
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="text" className="param-input" style={{ flex: 1 }}
+                placeholder={`${dbDir || "~/r16s-app/backend/databases"}/emu_silva`}
+                value={params.ont_db_path || dbPaths["emu_silva"] || ""}
+                onChange={e => set("ont_db_path", e.target.value)} />
+              <button className="browse-btn" onClick={() => setShowBrowser(true)}>📂 Browse</button>
+            </div>
+          </div>
+
+          {showBrowser && (
+            <DbFileBrowser onSelect={path => { set("ont_db_path", path); setShowBrowser(false); }} onClose={() => setShowBrowser(false)} />
+          )}
+
+          {/* TopN */}
+          <div className="param-grid" style={{ marginTop: 12 }}>
+            <div className="param-item">
+              <label className="param-label">Top Taxa to Show in Plots</label>
+              <div className="topn-toggle">
+                {([30,50,100] as const).map(n => (
+                  <button key={n} className={`topn-btn ${params.topN === n ? "active" : ""}`}
+                    onClick={() => set("topN", n)}>Top {n}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Pipeline summary */}
+          <div className="ps-cmd-block" style={{ marginTop: 12 }}>
+            <div className="ps-cmd-header"><span>emu_pipeline.py — steps</span></div>
+            <pre className="ps-cmd-body">{`1. Scan input FASTQ files (single file per sample)
+2. Trim primers with cutadapt${params.primer_f ? ` (${params.primer_f.slice(0,10)}… / ${params.primer_r.slice(0,10)}…)` : " — SKIPPED (no primers set)"}
+3. Run Emu abundance on each sample
+4. Combine per-sample TSVs → asv_table.csv + taxonomy.csv
+5. Write read_tracking.csv + summary.json
+6. Generate visualizations (viz_pipeline.R)`}</pre>
+          </div>
+
+          {/* Metadata */}
+          <div className="ext-section" style={{ marginTop: 16, borderTop: "1px solid #1e293b", paddingTop: 16 }}>
+            <h4 className="ext-section-title">
+              📊 Metadata{" "}
+              <span style={{ fontWeight: 400, fontSize: 13, color: "#6b7280" }}>
+                (optional — for diversity grouping)
+              </span>
+            </h4>
+            <MetadataUpload
+              inline
+              onMetadataReady={(info: MetadataInfo, grp: string) => {
+                onChange({ ...params, metadataPath: info.path, groupCol: grp });
+                onMetadata?.(info.path, grp);
+              }}
+              onGroupColChange={(col: string) => onChange({ ...params, groupCol: col })}
+            />
+            {params.metadataPath && (
+              <p style={{ fontSize: 12, color: "#10b981", marginTop: 8 }}>
+                ✅ Metadata loaded · Group column: <strong>{params.groupCol}</strong>
+              </p>
+            )}
           </div>
         </div>
       )}

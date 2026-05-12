@@ -1,5 +1,5 @@
 {
-  "version": "2.0.5",
+  "version": "2.1.0",
   "release_date": "2026-05-12",
-  "changelog": "Heatmap color picker (12 palettes × 5 heatmap types). Fix CPU usage display always showing 0% when using multithread. Fix merged read tracking bug. Fix job file deletion. Fix update.sh jobs_history conflict."
+  "changelog": "ONT 16S pipeline (Emu): full V1-V9 and sub-region V7-V8 support for Oxford Nanopore reads. Single FASTQ per sample upload. Alpha diversity boxplot. Fix species_assignment file pattern."
 }

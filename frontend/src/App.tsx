@@ -258,10 +258,13 @@ export default function App() {
     try {
       const res = await axios.post(`${API}/upload`, form);
       setPendingJobId(res.data.job_id);
-      const r1   = Array.from(selectedFiles).filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
+      const isONT = marker === "ONT-16S";
+      const r1   = isONT ? [] : Array.from(selectedFiles).filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
       const base = r1.length > 0 ? r1 : Array.from(selectedFiles);
       const names = base.map(f =>
-        f.name.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "")
+        isONT
+          ? f.name.replace(/\.(fastq|fq)(\.gz)?$/i, "")
+          : f.name.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "")
       );
       setSampleNames(names);
       setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
@@ -612,9 +615,9 @@ export default function App() {
         )}
         <div className="home-logo-card">
           <span className="home-dna">🧬</span>
-          <h1 className="home-title">16S / 12S Amplicon Analysis</h1>
+          <h1 className="home-title">16S / 12S / ONT Amplicon Analysis</h1>
           <p className="home-desc">
-            DADA2 Pipeline — Professional Microbiome &amp; Metabarcoding Analysis
+            DADA2 · Emu — Professional Microbiome &amp; Metabarcoding Analysis
           </p>
         </div>
         <div className="home-panels">
@@ -1076,6 +1079,11 @@ export default function App() {
         {/* Upload */}
         <div className="section-card">
           <div className="section-title">📂 Upload FASTQ Files</div>
+          {marker === "ONT-16S" && (
+            <div className="ps-info-box ps-info-box--ok" style={{ marginBottom: 10, fontSize: 13 }}>
+              🧫 <strong>ONT mode:</strong> Upload one FASTQ file per sample (single reads, not paired R1/R2)
+            </div>
+          )}
           <div
             className={`drop-zone ${dragOver ? "drag-over" : ""}`}
             onDragOver={e => { e.preventDefault(); setDragOver(true); }}
@@ -1085,10 +1093,13 @@ export default function App() {
               const dt = e.dataTransfer.files;
               if (dt.length) {
                 setSelectedFiles(dt);
-                const r1 = Array.from(dt).filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
+                const isONT = marker === "ONT-16S";
+                const r1 = isONT ? [] : Array.from(dt).filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
                 const base = r1.length > 0 ? r1 : Array.from(dt);
                 const names = base.map(f =>
-                  f.name.replace(/_R1.*|_1\.(fq|fastq).*/i,"").replace(/\.(fastq|fq)(\.gz)?$/i,"")
+                  isONT
+                    ? f.name.replace(/\.(fastq|fq)(\.gz)?$/i,"")
+                    : f.name.replace(/_R1.*|_1\.(fq|fastq).*/i,"").replace(/\.(fastq|fq)(\.gz)?$/i,"")
                 );
                 setSampleNames(names);
                 setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
@@ -1098,7 +1109,9 @@ export default function App() {
           >
             {selectedFiles?.length
               ? <>📁 <strong>{selectedFiles.length} file(s)</strong> selected — click to change</>
-              : <>📂 Drop .fastq / .fastq.gz files here, or <u>click to browse</u></>
+              : marker === "ONT-16S"
+                ? <>🧫 Drop ONT .fastq / .fastq.gz files here (one per sample), or <u>click to browse</u></>
+                : <>📂 Drop .fastq / .fastq.gz files here, or <u>click to browse</u></>
             }
           </div>
           <input
@@ -1108,10 +1121,13 @@ export default function App() {
               const files = e.target.files;
               if (files?.length) {
                 setSelectedFiles(files);
-                const r1 = Array.from(files).filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
+                const isONT = marker === "ONT-16S";
+                const r1 = isONT ? [] : Array.from(files).filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
                 const base = r1.length > 0 ? r1 : Array.from(files);
                 const names = base.map(f =>
-                  f.name.replace(/_R1.*|_1\.(fq|fastq).*/i,"").replace(/\.(fastq|fq)(\.gz)?$/i,"")
+                  isONT
+                    ? f.name.replace(/\.(fastq|fq)(\.gz)?$/i,"")
+                    : f.name.replace(/_R1.*|_1\.(fq|fastq).*/i,"").replace(/\.(fastq|fq)(\.gz)?$/i,"")
                 );
                 setSampleNames(names);
                 setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
@@ -1137,7 +1153,6 @@ export default function App() {
           </div>
         )}
 
-
         {/* Marker pill + Pipeline settings */}
         <div className="section-card">
           <div className="section-title">🧬 Pipeline Settings</div>
@@ -1153,7 +1168,6 @@ export default function App() {
             onMarker={setMarker}
           />
         </div>
-
 
         {/* Advanced toggle */}
         <div className="section-card">

@@ -126,6 +126,7 @@ class RunParams(BaseModel):
     # COX1       → cox1_pipeline.R
     # 18S-nema   → dada2_pipeline.R with nema_db
     # PacBio     → pacbio_pipeline.R
+    # ONT-16S    → emu_pipeline.py  (Oxford Nanopore, Emu)
     marker:        str   = "16S"
     # --- 16S / 12S / nema params ---
     truncLen_F:    int   = 240
@@ -161,6 +162,10 @@ class RunParams(BaseModel):
     pb_max_len:    int   = 1600
     pb_maxEE:      float = 3.0
     pb_region:     str   = "V1-V9"
+    # --- ONT params ---
+    ont_region:        str   = "V1-V9"   # V1-V9 or V7-V8 etc.
+    ont_min_abundance: float = 0.0001    # Emu min abundance threshold
+    ont_db_path:       str   = ""        # path to Emu database directory
     # --- Functional prediction ---
     run_tax4fun:   bool  = False
     run_picrust2:  bool  = False
@@ -410,6 +415,36 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--metadata", metadata_path]
         if db_paths_json:
             cmd += ["--db_paths", db_paths_json]
+
+    elif marker in ("ONT-16S", "ONT16S", "ONT"):
+        # ── ONT 16S pipeline via Emu ────────────────────────────────────────
+        emu_script = R_SCRIPTS_DIR.parent / "emu_pipeline.py"
+        # Lookup emu_silva from db_paths.json if ont_db_path not specified
+        _emu_db_auto = ""
+        try:
+            _dp = json.loads(Path(db_paths_json).read_text()) if Path(db_paths_json).exists() else {}
+            _emu_db_auto = _dp.get("emu_silva", "")
+        except Exception:
+            pass
+        ont_db = params.ont_db_path or _emu_db_auto or db_path
+        cmd = [
+            sys.executable, str(emu_script),
+            "--input",         input_dir,
+            "--output",        output_dir,
+            "--db_path",       ont_db,
+            "--threads",       str(4),
+            "--region",        params.ont_region,
+            "--min_abundance", str(params.ont_min_abundance),
+            "--topN",          str(params.topN),
+            "--marker",        params.marker,
+            "--job_name",      params.job_name or job_id,
+        ]
+        if params.primer_f:
+            cmd += ["--primer_f", params.primer_f]
+        if params.primer_r:
+            cmd += ["--primer_r", params.primer_r]
+        if params.metadata:
+            cmd += ["--metadata", metadata_path]
 
     elif marker == "PACBIO":
         # ── PacBio CCS long-read 16S pipeline ──────────────────────────────

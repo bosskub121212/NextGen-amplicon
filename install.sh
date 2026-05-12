@@ -137,7 +137,18 @@ step "Directory structure"
 mkdir -p "$INSTALL_DIR"/{backend/uploads,backend/results,databases/{SILVA,UNITE,MIDORI2,NemaBase},logs}
 DB_PATHS="$INSTALL_DIR/backend/databases/db_paths.json"
 mkdir -p "$(dirname "$DB_PATHS")"
-[[ ! -f "$DB_PATHS" ]] && echo '{"silva":"","unite":"","midori2_co1":"","midori2_co1_sp":"","nemabase":""}' > "$DB_PATHS"
+[[ ! -f "$DB_PATHS" ]] && echo '{"silva":"","unite":"","midori2_co1":"","midori2_co1_sp":"","nemabase":"","emu_silva":""}' > "$DB_PATHS"
+# Add emu_silva key to existing db_paths.json if missing
+python3 - <<'PYEOF'
+import json, pathlib
+p = pathlib.Path("backend/databases/db_paths.json")
+if p.exists():
+    d = json.loads(p.read_text())
+    if "emu_silva" not in d:
+        d["emu_silva"] = ""
+        p.write_text(json.dumps(d, indent=2))
+        print("  added emu_silva key to db_paths.json")
+PYEOF
 ok "Directories ready"
 
 step "Optional tools (KronaTools + PICRUSt2)"
@@ -201,6 +212,50 @@ if [[ ! -d "$FAPROTAX_DIR" ]]; then
     }
 else
   ok "FAPROTAX already at $FAPROTAX_DIR"
+fi
+
+step "Optional tools (Emu — ONT 16S)"
+
+# Emu — ONT full-length / sub-region 16S pipeline
+if command -v conda &>/dev/null; then
+  if conda run -n emu emu --version &>/dev/null 2>&1; then
+    ok "Emu already installed in conda env 'emu'"
+  else
+    echo ""
+    echo -e "${BOLD}${CYAN}  Emu enables ONT 16S analysis (V7-V8, V1-V9). Requires ~500 MB + ~4 GB database.${NC}"
+    read -r -p "  Install Emu now? [Y/n] " _EMU_ANS
+    _EMU_ANS="${_EMU_ANS:-Y}"
+    if [[ "$_EMU_ANS" =~ ^[Yy] ]]; then
+      _CONDA_CMD="conda"; command -v mamba &>/dev/null && _CONDA_CMD="mamba"
+      info "Creating conda env 'emu'..."
+      $_CONDA_CMD create -n emu -c bioconda -c conda-forge emu -y 2>&1 | \
+        grep -E "^(Preparing|Executing|Installing|done|ERROR)" || true
+      if conda run -n emu emu --version &>/dev/null 2>&1; then
+        ok "Emu installed"
+        echo ""
+        echo -e "${BOLD}${CYAN}  Download Emu SILVA database now? (~4 GB)${NC}"
+        read -r -p "  Download Emu database? [Y/n] " _EMUDB_ANS
+        _EMUDB_ANS="${_EMUDB_ANS:-Y}"
+        if [[ "$_EMUDB_ANS" =~ ^[Yy] ]]; then
+          EMU_DB_DIR="$HOME/r16s-app/backend/databases/emu_silva"
+          mkdir -p "$EMU_DB_DIR"
+          info "Downloading Emu SILVA database to $EMU_DB_DIR ..."
+          conda run -n emu emu download-db silva --db-dir "$EMU_DB_DIR" && \
+            ok "Emu database ready at $EMU_DB_DIR" || \
+            warn "Emu database download failed — run manually: emu download-db silva --db-dir ~/r16s-app/backend/databases/emu_silva"
+        else
+          info "Emu database skipped — download later: emu download-db silva --db-dir ~/r16s-app/backend/databases/emu_silva"
+        fi
+      else
+        warn "Emu install failed — install manually: conda create -n emu -c bioconda emu"
+      fi
+    else
+      info "Emu skipped — install later for ONT 16S support"
+    fi
+  fi
+else
+  warn "conda not found — Emu skipped (requires conda)"
+  warn "  Install miniconda3, then: conda create -n emu -c bioconda emu"
 fi
 
 step "Helper scripts"
