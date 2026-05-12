@@ -255,7 +255,7 @@ track_early <- cbind(
   out,
   sapply(dadaFs, function(d) sum(d$denoised)),
   sapply(dadaRs, function(d) sum(d$denoised)),
-  sapply(mergers, function(m) sum(m$accept)),
+  sapply(mergers, function(m) sum(m$abundance[m$accept])),   # reads merged (not unique seqs)
   rowSums(seqtab_nochim)
 )
 colnames(track_early) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")
@@ -381,8 +381,8 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
       cat("  Taxonomy assigned successfully.\n\n")
       db_dir2       <- dirname(db_path)
       sp_candidates <- list.files(db_dir2,
-                                  pattern="(?i)assignspecies.*\\.fa(\\.gz)?$",
-                                  full.names=TRUE, perl=TRUE)
+                                  pattern="assignspecies.*\\.fa(\\.gz)?$",
+                                  full.names=TRUE, ignore.case=TRUE)
       if (length(sp_candidates) > 0) {
         tryCatch({
           gc(verbose=FALSE)
@@ -445,7 +445,7 @@ track <- cbind(
   out,
   sapply(dadaFs, function(d) sum(d$denoised)),
   sapply(dadaRs, function(d) sum(d$denoised)),
-  sapply(mergers, function(m) sum(m$accept)),
+  sapply(mergers, function(m) sum(m$abundance[m$accept])),   # reads merged (not unique seqs)
   rowSums(seqtab_nochim)
 )
 colnames(track) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")

@@ -1,5 +1,5 @@
 {
   "version": "2.0.4",
   "release_date": "2026-05-12",
-  "changelog": "Fix job deletion: deleting a job from history now removes its upload + results folders from disk. Add Clean Disk button to sweep orphaned folders."
+  "changelog": "Fix job deletion (removes upload+results folders). Fix read-tracking bug: merged reads now shows actual reads merged (not unique sequences) — eliminates false low-merge checkpoint warning. Fix species DB search (list.files ignore.case)."
 }
