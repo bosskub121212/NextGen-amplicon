@@ -38,7 +38,19 @@ install_if_missing <- function(pkg, bioc=FALSE) {
 # ── CRAN packages ─────────────────────────────────────────────────────────────
 cat("── CRAN packages ────────────────────────────────────────────\n")
 cran_pkgs <- c(
-  # Core (should already be installed)
+  # Low-level deps (must come first — Bioconductor packages depend on these)
+  "bitops",          # Rsamtools dependency
+  "abind",           # SummarizedExperiment dependency
+  "matrixStats",     # DelayedArray / DESeq2 dependency
+  "snow",            # parallel backend
+  "RcppEigen",       # many Bioc packages
+  "RcppParallel",    # dada2 dependency
+  "deldir",          # ShortRead dependency
+  "png", "jpeg",     # ShortRead dependency
+  "interp",          # ShortRead dependency
+  "hwriter",         # ShortRead dependency
+  "latticeExtra",    # ShortRead dependency
+  # Core
   "optparse", "jsonlite", "ggplot2", "dplyr", "tidyr",
   "RColorBrewer", "ggrepel", "patchwork", "cowplot", "pheatmap",
   "vegan", "picante",
