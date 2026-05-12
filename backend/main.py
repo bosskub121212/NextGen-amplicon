@@ -70,6 +70,14 @@ executor    = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 # ── psutil Process cache (keeps objects alive between polls so cpu_percent works) ──
 _proc_cache: dict[int, "psutil.Process"] = {}  # pid → Process
 
+# Warm up system-wide cpu_percent baseline so the first real reading is accurate
+if HAS_PSUTIL:
+    try:
+        import psutil as _ps_init
+        _ps_init.cpu_percent(interval=None)
+    except Exception:
+        pass
+
 # ── Persist helpers ───────────────────────────────────────────────────────────
 def load_jobs():
     """Load job history from disk on startup."""
@@ -638,44 +646,51 @@ def get_progress(job_id: str):
     if jobs[job_id].get("status") == "running" and HAS_PSUTIL:
         try:
             pid = jobs[job_id].get("pid")
+
+            # ── CPU: use system-wide measurement ───────────────────────────────
+            # Per-process cpu_percent(interval=None) returns 0.0 on first call
+            # for every newly-forked child (multithread R forks many short-lived
+            # children). System-wide avoids this — and for single-job workloads
+            # it accurately reflects what the pipeline is consuming.
+            cpu_pct = round(psutil.cpu_percent(interval=None), 1)
+
+            # ── RAM: sum parent + all children (recursive) ──────────────────────
             if pid:
-                # Reuse cached Process so cpu_percent() has a prior baseline
                 if pid not in _proc_cache:
                     _proc_cache[pid] = psutil.Process(pid)
-                    # First call establishes baseline — will read 0 this time,
-                    # accurate value on next poll (~2 s later)
-                    _proc_cache[pid].cpu_percent(interval=None)
 
                 p = _proc_cache[pid]
-                children = p.children(recursive=True)
-                all_procs = [p] + children
+                try:
+                    children = p.children(recursive=True)
+                except psutil.NoSuchProcess:
+                    children = []
 
-                raw_cpu  = sum(
-                    pp.cpu_percent(interval=None)
-                    for pp in all_procs if pp.is_running()
-                )
-                ram_mb   = round(sum(
-                    pp.memory_info().rss
-                    for pp in all_procs if pp.is_running()
-                ) / 1024 / 1024, 1)
+                # Cache new children so future cpu_percent calls have a baseline
+                for child in children:
+                    if child.pid not in _proc_cache:
+                        try:
+                            _proc_cache[child.pid] = child
+                            child.cpu_percent(interval=None)   # establish baseline
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
 
-                # Normalize CPU to 0-100 % of full machine capacity
-                # logical=True counts hyperthreads (e.g. 4-core/8-thread → 8)
-                n_logical = psutil.cpu_count(logical=True)  or 1
-                n_physical= psutil.cpu_count(logical=False) or 1
-                cpu_pct   = round(raw_cpu / n_logical, 1)
-
+                all_procs = [p] + [_proc_cache.get(c.pid, c) for c in children]
+                ram_bytes = 0
+                for pp in all_procs:
+                    try:
+                        if pp.is_running():
+                            ram_bytes += pp.memory_info().rss
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                ram_mb = round(ram_bytes / 1024 / 1024, 1)
             else:
-                # Fallback: system-wide (no PID yet)
-                n_logical  = psutil.cpu_count(logical=True)  or 1
-                n_physical = psutil.cpu_count(logical=False) or 1
-                cpu_pct    = round(psutil.cpu_percent(interval=None), 1)
-                vm         = psutil.virtual_memory()
-                ram_mb     = round(vm.used / 1024 / 1024, 1)
+                # No PID yet — use system RAM used as fallback
+                vm = psutil.virtual_memory()
+                ram_mb = round(vm.used / 1024 / 1024, 1)
 
             # Always report machine totals for the UI
-            vm_total    = psutil.virtual_memory()
-            ram_total_mb= round(vm_total.total / 1024 / 1024, 1)
+            vm_total     = psutil.virtual_memory()
+            ram_total_mb = round(vm_total.total / 1024 / 1024, 1)
 
         except Exception:
             # Process may have ended — clean up cache

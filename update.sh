@@ -57,9 +57,27 @@ echo "  ✓ Frontend rebuilt"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 3: Check if new R packages are needed
+# STEP 3: Ensure start_backend.sh exists and is executable
 # ─────────────────────────────────────────────────────────────────────────────
-echo "── Step 3: Checking R packages ─────────────────────────────"
+echo "── Step 3: Checking helper scripts ────────────────────────"
+if [[ ! -f "$SCRIPT_DIR/start_backend.sh" ]]; then
+  cat > "$SCRIPT_DIR/start_backend.sh" <<'STARTSH'
+#!/usr/bin/env bash
+cd "$(dirname "$0")"
+source venv/bin/activate
+cd backend
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+STARTSH
+  echo "  ✓ start_backend.sh created"
+fi
+chmod +x "$SCRIPT_DIR/start_backend.sh"
+echo "  ✓ start_backend.sh ready"
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 4: Check if new R packages are needed
+# ─────────────────────────────────────────────────────────────────────────────
+echo "── Step 4: Checking R packages ─────────────────────────────"
 Rscript backend/r_scripts/install_packages.R
 echo ""
 
