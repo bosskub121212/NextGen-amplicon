@@ -1,5 +1,5 @@
 {
-  "version": "2.0.0",
+  "version": "2.0.2",
   "release_date": "2026-05-11",
-  "changelog": "Full gap closure: UniFrac PCoA+NMDS (weighted+unweighted, auto NJ tree via DECIPHER+phangorn), Phylogenetic tree viz (ggtree circular, Phylum color), Krona charts (ktImportText or text export), LEfSe cladogram (ggraph circular taxonomy tree). New wrappers: FAPROTAX (python), BugBase (R/GitHub). Optional installs: KronaTools, PICRUSt2 (conda), FAPROTAX."
+  "changelog": "New analyses: ClusterTree+Bar (UPGMA dendrogram + stacked bar combined), COG functional prediction via PICRUSt2, PICRUSt2 auto-install with interactive prompt in install.sh."
 }

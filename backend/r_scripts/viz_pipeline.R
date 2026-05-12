@@ -1447,6 +1447,105 @@ if (has_phyloseq && has_vegan && has_ggplot2) {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 12b — ClusterTree + Bar (UPGMA dendrogram + Taxonomy stacked bar)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 12b: ClusterTree + Bar ─────────────────────────────\n")
+if (has_phyloseq && has_vegan && has_ggplot2 &&
+    requireNamespace("ggdendro", quietly=TRUE) &&
+    requireNamespace("patchwork", quietly=TRUE) &&
+    requireNamespace("tidyr",    quietly=TRUE)) {
+  tryCatch({
+    suppressPackageStartupMessages({
+      library(ggdendro)
+      library(patchwork)
+      library(tidyr)
+    })
+
+    ps_ct  <- transform_sample_counts(ps, function(x) x / sum(x))
+    otu_ct <- as.matrix(otu_table(ps_ct))
+    if (taxa_are_rows(ps_ct)) otu_ct <- t(otu_ct)
+
+    d_ct  <- vegan::vegdist(otu_ct, method="bray")
+    hc_ct <- hclust(d_ct, method="average")
+    sample_order <- hc_ct$labels[hc_ct$order]
+
+    # ── Dendrogram ──────────────────────────────────────────────────────────
+    dend_data <- ggdendro::dendro_data(hc_ct, type="rectangle")
+
+    p_dend <- ggplot() +
+      ggdendro::geom_segment(
+        data = ggdendro::segment(dend_data),
+        aes(x=x, y=y, xend=xend, yend=yend),
+        linewidth=0.5, colour="#475569") +
+      ggdendro::geom_text(
+        data = ggdendro::label(dend_data),
+        aes(x=x, y=y, label=label),
+        hjust=1, size=2.8, colour="#1e293b") +
+      coord_flip() +
+      scale_y_reverse(expand=c(0.15, 0)) +
+      theme_void(base_size=9) +
+      theme(plot.margin=margin(4,0,4,4))
+
+    # ── Stacked bar (Phylum) ────────────────────────────────────────────────
+    tax_rank_ct <- if ("Phylum" %in% rank_names(ps)) "Phylum" else rank_names(ps)[min(2, length(rank_names(ps)))]
+    ps_phy <- tryCatch(tax_glom(ps_ct, taxrank=tax_rank_ct, NArm=FALSE), error=function(e) NULL)
+
+    if (!is.null(ps_phy)) {
+      otu_bar <- as.data.frame(as.matrix(otu_table(ps_phy)))
+      if (taxa_are_rows(ps_phy)) otu_bar <- as.data.frame(t(otu_bar))
+      tax_names_ct <- sub("^[a-z]__", "",
+                          as.character(tax_table(ps_phy)[, tax_rank_ct]))
+      tax_names_ct[is.na(tax_names_ct) | tax_names_ct == ""] <- "Unknown"
+      colnames(otu_bar) <- make.unique(tax_names_ct)
+      otu_bar$Sample <- rownames(otu_bar)
+      otu_bar$Sample <- factor(otu_bar$Sample, levels=sample_order)
+
+      top10 <- names(sort(colSums(otu_bar[, -ncol(otu_bar)]), decreasing=TRUE))[
+                 seq_len(min(10, ncol(otu_bar)-1))]
+      df_melt <- tidyr::pivot_longer(otu_bar, cols=-Sample,
+                                     names_to="Taxon", values_to="Abund")
+      df_melt$Taxon <- ifelse(df_melt$Taxon %in% top10, df_melt$Taxon, "Other")
+      df_melt$Taxon <- factor(df_melt$Taxon, levels=c(top10, "Other"))
+
+      pal_ct <- c(make_palette(length(top10)), "#94a3b8")
+      names(pal_ct) <- c(top10, "Other")
+
+      p_bar <- ggplot(df_melt, aes(x=Sample, y=Abund, fill=Taxon)) +
+        geom_bar(stat="identity", width=0.82) +
+        scale_fill_manual(values=pal_ct) +
+        scale_y_continuous(labels=scales::percent_format(accuracy=1),
+                           expand=c(0,0)) +
+        coord_flip() +
+        labs(y="Relative Abundance", x=NULL,
+             fill=tax_rank_ct,
+             title=sprintf("ClusterTree — Bray-Curtis UPGMA + %s", tax_rank_ct)) +
+        theme_bw(base_size=9) +
+        theme(axis.text.y=element_blank(),
+              axis.ticks.y=element_blank(),
+              panel.grid.major.y=element_blank(),
+              panel.grid.minor=element_blank(),
+              legend.position="right",
+              legend.key.size=unit(0.35,"cm"),
+              legend.text=element_text(size=7.5),
+              plot.title=element_text(size=9, face="bold"),
+              plot.margin=margin(4,4,4,0))
+
+      combined_ct <- p_dend + p_bar +
+        patchwork::plot_layout(widths=c(1, 2.2))
+
+      w_ct <- max(10, nsamples(ps) * 0.45 + 5)
+      h_ct <- max(5,  nsamples(ps) * 0.28 + 2)
+      fname_ct <- "12b_clustertree_bar.pdf"
+      ggsave(file.path(PLOTS_DIR, fname_ct), plot=combined_ct,
+             width=w_ct, height=h_ct, device="pdf")
+      cat(sprintf("  ✓ Saved: %s\n", fname_ct))
+    }
+  }, error=function(e) cat(sprintf("  [WARN] ClusterTree+Bar: %s\n", e$message)))
+} else {
+  cat("  Skipped (requires ggdendro + patchwork + tidyr)\n")
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 13 — Metastats (T-test based differential abundance)
 # ═══════════════════════════════════════════════════════════════════════════════
 cat("\n── Section 13: Metastats (T-test) ─────────────────────────────\n")

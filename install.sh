@@ -152,19 +152,36 @@ else
   ok "KronaTools already installed: $(ktImportText 2>&1 | head -1 || true)"
 fi
 
-# PICRUSt2 (optional, ~3GB database, needs conda)
+# PICRUSt2 — auto-install if conda available (KEGG, MetaCyc, COG predictions)
 if command -v conda &>/dev/null; then
-  if ! conda env list | grep -q "^picrust2"; then
-    info "Installing PICRUSt2 via conda (this may take 10-20 min + ~3GB)..."
-    conda create -n picrust2 -c bioconda -c conda-forge picrust2 -y -q 2>/dev/null && \
-      ok "PICRUSt2 conda env created (activate: conda activate picrust2)" || \
-      warn "PICRUSt2 install failed — skip and install manually later"
-  else
+  if conda env list | grep -q "^picrust2"; then
     ok "PICRUSt2 conda env already exists"
+  else
+    echo ""
+    echo -e "${BOLD}${CYAN}  PICRUSt2 enables KEGG, MetaCyc, and COG functional prediction (~3 GB, 10-20 min).${NC}"
+    read -r -p "  Install PICRUSt2 now? [Y/n] " _PICRUST_ANS
+    _PICRUST_ANS="${_PICRUST_ANS:-Y}"
+    if [[ "$_PICRUST_ANS" =~ ^[Yy] ]]; then
+      info "Installing PICRUSt2 via conda..."
+      # Use mamba if available (faster), fall back to conda
+      _CONDA_CMD="conda"
+      command -v mamba &>/dev/null && _CONDA_CMD="mamba"
+      $_CONDA_CMD create -n picrust2 -c bioconda -c conda-forge picrust2 -y 2>&1 | \
+        grep -E "^(Preparing|Executing|Installing|done|ERROR)" || true
+      if conda env list | grep -q "^picrust2"; then
+        ok "PICRUSt2 installed — KEGG/MetaCyc/COG prediction enabled"
+      else
+        warn "PICRUSt2 install failed — run manually later:"
+        warn "  conda create -n picrust2 -c bioconda -c conda-forge picrust2 -y"
+      fi
+    else
+      info "PICRUSt2 skipped — re-run install.sh to add it later"
+    fi
   fi
 else
-  warn "conda not found — PICRUSt2 skipped (optional)"
-  warn "  Install miniconda3, then: conda create -n picrust2 -c bioconda -c conda-forge picrust2"
+  warn "conda not found — PICRUSt2 skipped"
+  warn "  Install miniconda3 from https://docs.conda.io/en/latest/miniconda.html"
+  warn "  Then: conda create -n picrust2 -c bioconda -c conda-forge picrust2 -y"
 fi
 
 # FAPROTAX (Python, ~50MB)
