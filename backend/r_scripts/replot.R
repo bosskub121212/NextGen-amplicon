@@ -274,6 +274,47 @@ if (length(meta_cols) > 0 && !is.null(tax)) {
 }
 
 # ═══════════════════════════════════════════════════════════════
+#  HEATMAP PALETTE HELPER
+# ═══════════════════════════════════════════════════════════════
+# Supported palette IDs (must match TaxonomyColorPicker.tsx HEATMAP_PALETTE_OPTIONS)
+HM_PALETTES <- list(
+  blue      = c("#f0f4ff","#3b82f6","#1e1b4b"),
+  orange    = c("#fff7ed","#f97316","#431407"),
+  green     = c("#f0fff4","#22c55e","#14532d"),
+  purple    = c("#faf5ff","#a855f7","#3b0764"),
+  red       = c("#fff1f2","#ef4444","#7f1d1d"),
+  teal      = c("#f0fdfa","#14b8a6","#042f2e"),
+  pink      = c("#fdf2f8","#ec4899","#500724"),
+  viridis   = c("#440154","#21918c","#fde725"),
+  plasma    = c("#0d0887","#cc4778","#f0f921"),
+  rdbu      = c("#1e40af","#ffffff","#b91c1c"),
+  greyscale = c("#f8fafc","#64748b","#0f172a"),
+  brown     = c("#fdf8f0","#d97706","#451a03")
+)
+HM_DEFAULTS <- list(
+  taxonomy_genus  = "blue",
+  taxonomy_family = "orange",
+  taxonomy_phylum = "green",
+  beta_bray       = "blue",
+  beta_jaccard    = "blue"
+)
+
+get_heatmap_pal <- function(key, n=100) {
+  # key examples: "taxonomy_genus", "beta_bray"
+  # Falls back to HM_DEFAULTS, then to blue
+  hm_prefs <- custom_colors[["heatmaps"]]
+  pid <- if (!is.null(hm_prefs) && !is.null(hm_prefs[[key]]))
+           hm_prefs[[key]]
+         else
+           HM_DEFAULTS[[key]] %||% "blue"
+  stops <- HM_PALETTES[[pid]] %||% HM_PALETTES[["blue"]]
+  colorRampPalette(stops)(n)
+}
+
+# NULL-coalescing helper (R doesn't have %||% by default)
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+# ═══════════════════════════════════════════════════════════════
 #  REGENERATE — taxonomy heatmaps
 # ═══════════════════════════════════════════════════════════════
 if (!is.null(tax) && has_pheatmap) {
@@ -304,18 +345,13 @@ if (!is.null(tax) && has_pheatmap) {
       mat_hm <- sapply(tu, function(t) rowSums(rel_hm[, tv == t, drop=FALSE]))
       if (is.null(dim(mat_hm)))
         mat_hm <- matrix(mat_hm, nrow=1, dimnames=list(sample_names, tu))
-      top_n_hm <- if (hm_lvl=="Phylum") min(20,ncol(mat_hm)) else min(30,ncol(mat_hm))
+      top_n_hm    <- if (hm_lvl=="Phylum") min(20,ncol(mat_hm)) else min(30,ncol(mat_hm))
       top_taxa_hm <- names(sort(colMeans(mat_hm), decreasing=TRUE))[1:top_n_hm]
       heat_mat_hm <- t(mat_hm[, top_taxa_hm, drop=FALSE])
 
-      # Apply custom row colours (per-taxon) via annotation_row colour override
-      # pheatmap doesn't directly support per-row custom fill for data cells,
-      # so we use the standard blue palette; custom colours affect stacked bars only.
-      hm_colors <- switch(hm_lvl,
-        Genus  = colorRampPalette(c("#f0f4ff","#3b82f6","#1e1b4b"))(100),
-        Family = colorRampPalette(c("#fff7ed","#f97316","#431407"))(100),
-        Phylum = colorRampPalette(c("#f0fff4","#22c55e","#14532d"))(100)
-      )
+      pal_key  <- paste0("taxonomy_", tolower(hm_lvl))
+      hm_colors <- get_heatmap_pal(pal_key, n=100)
+
       hm_file <- file.path(opt$output,
                            sprintf("taxonomy_heatmap_%s.pdf", tolower(hm_lvl)))
       pheatmap::pheatmap(
@@ -324,16 +360,69 @@ if (!is.null(tax) && has_pheatmap) {
         annotation_colors = if (length(ann_colors_hm)>0) ann_colors_hm else NULL,
         color             = hm_colors,
         scale             = "row",
-        main              = sprintf("Top %d %s — Heatmap", top_n_hm, hm_lvl),
+        clustering_distance_rows = "euclidean",
+        clustering_distance_cols = "euclidean",
+        main              = sprintf("Top %d %s — Relative Abundance Heatmap", top_n_hm, hm_lvl),
         fontsize_row      = max(5, min(9, 200/top_n_hm)),
         fontsize_col      = 8,
+        border_color      = NA,
         filename          = hm_file,
-        width             = max(8, n_samp*0.6+4),
+        width             = max(8, n_samp*0.6+4+length(meta_cols)*0.8),
         height            = max(8, top_n_hm*0.35+3)
       )
       cat("  Regenerated:", basename(hm_file), "\n")
     }, error=function(e) cat("  [skip] heatmap", hm_lvl, ":", e$message, "\n"))
   }
+}
+
+# ═══════════════════════════════════════════════════════════════
+#  REGENERATE — beta diversity heatmap
+# ═══════════════════════════════════════════════════════════════
+has_vegan <- requireNamespace("vegan", quietly=TRUE)
+if (has_pheatmap && has_vegan) {
+  cat("Regenerating beta heatmap...\n")
+  tryCatch({
+    rel_bh <- sweep(seqtab_nochim, 1, rowSums(seqtab_nochim), "/")
+    for (dm_bh in c("bray","jaccard")) {
+      tryCatch({
+        d_bh <- as.matrix(vegan::vegdist(rel_bh, method=dm_bh))
+        pal_key_bh <- paste0("beta_", dm_bh)
+        hm_col_bh  <- get_heatmap_pal(pal_key_bh, n=50)
+
+        # Annotation
+        ann_col_bh    <- NULL
+        ann_col_colors <- NULL
+        if (!is.null(meta_df) && length(meta_cols) > 0) {
+          first_col  <- names(meta_cols)[1]
+          grp_bh     <- meta_cols[[first_col]]
+          grp_bh[nchar(grp_bh)==0] <- "Unknown"
+          ann_col_bh <- data.frame(Group=grp_bh, row.names=names(grp_bh))
+          pal_bh     <- make_pal(length(unique(grp_bh)))
+          ann_col_colors <- list(Group=setNames(pal_bh, unique(grp_bh)))
+        }
+
+        # "beta_heatmap.pdf" for bray (main), separate file for jaccard
+        fname_bh <- if (dm_bh == "bray") "beta_heatmap.pdf" else "beta_heatmap_jaccard.pdf"
+        pdf_w <- max(7, ncol(d_bh)*0.5+2); pdf_h <- max(6, nrow(d_bh)*0.5+2)
+        pdf(file.path(opt$output, fname_bh), width=pdf_w, height=pdf_h)
+        pheatmap::pheatmap(
+          d_bh,
+          color                    = hm_col_bh,
+          clustering_distance_rows = as.dist(d_bh),
+          clustering_distance_cols = as.dist(d_bh),
+          clustering_method        = "average",
+          annotation_col           = ann_col_bh,
+          annotation_row           = ann_col_bh,
+          annotation_colors        = ann_col_colors,
+          main                     = sprintf("Beta Diversity Heatmap — %s distance", dm_bh),
+          fontsize                  = 9,
+          border_color             = NA
+        )
+        dev.off()
+        cat("  Regenerated:", fname_bh, "\n")
+      }, error=function(e) cat("  [skip] beta heatmap", dm_bh, ":", e$message, "\n"))
+    }
+  }, error=function(e) cat("  [skip] beta heatmap section:", e$message, "\n"))
 }
 
 # ── Update taxonomy_summary.json with new colour info ─────────

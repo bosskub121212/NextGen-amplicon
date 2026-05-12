@@ -1,5 +1,5 @@
 {
-  "version": "2.0.4",
+  "version": "2.0.5",
   "release_date": "2026-05-12",
-  "changelog": "Fix job deletion (removes upload+results folders). Fix read-tracking bug: merged reads now shows actual reads merged (not unique sequences) — eliminates false low-merge checkpoint warning. Fix species DB search (list.files ignore.case)."
+  "changelog": "Heatmap color picker: choose palette for Genus/Family/Phylum taxonomy heatmaps and Beta diversity heatmaps (12 palettes). Fix merged read tracking bug. Fix species DB search. Fix job file deletion."
 }

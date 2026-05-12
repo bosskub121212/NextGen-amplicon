@@ -828,6 +828,19 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #1a202c;
 .tc-legend-dot   { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
 .tc-apply-btn    { width: 100%; padding: 11px; background: #be185d; color: #fff; border: none; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; transition: background .2s; }
 .tc-apply-btn:hover { background: #9d174d; }
+.tc-save-msg     { padding: 10px 13px; border-radius: 8px; font-size: 13px; margin-top: 4px; }
+.tc-save-ok      { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+.tc-save-err     { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.tc-hint         { font-size: 11px; color: #9ca3af; text-align: center; }
+
+/* Heatmap palette picker */
+.tc-heatmap-section   { display: flex; flex-direction: column; gap: 18px; }
+.tc-heatmap-desc      { font-size: 12px; color: #64748b; margin: 0; padding: 8px 12px; background: #f8fafc; border-radius: 7px; border: 1px solid #e2e8f0; }
+.tc-heatmap-row       { background: #fff; border-radius: 10px; padding: 12px 14px; border: 1px solid #fce7f3; display: flex; flex-direction: column; gap: 8px; }
+.tc-heatmap-label     { font-size: 12px; font-weight: 700; color: #1e1b4b; letter-spacing: .3px; }
+.tc-heatmap-palettes  { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.tc-pal-swatch-wrap   { display: flex; flex-direction: column; gap: 3px; cursor: pointer; }
+.tc-pal-swatch-label  { font-size: 9px; text-align: center; font-weight: 600; letter-spacing: .2px; }
 
 /* ══════════════════════════════════════════════════════════
    METADATA EDITOR
