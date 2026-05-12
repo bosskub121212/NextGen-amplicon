@@ -812,14 +812,21 @@ tryCatch({
         ggplot2::theme(axis.text.x=ggplot2::element_text(angle=30, hjust=1),
                        legend.position="none")
     } else {
-      p <- ggplot2::ggplot(long, ggplot2::aes(x=Sample, y=Value, fill=Sample)) +
-        ggplot2::geom_bar(stat="identity") +
-        ggplot2::scale_fill_manual(values=samp_cols) +
+      # No groups — single boxplot per metric showing distribution across all samples
+      # with coloured jitter dots so individual samples are still identifiable
+      p <- ggplot2::ggplot(long, ggplot2::aes(x=Metric, y=Value)) +
+        ggplot2::geom_boxplot(fill="#93c5fd", colour="#1e40af",
+                              alpha=0.6, outlier.shape=NA, width=0.45) +
+        ggplot2::geom_jitter(ggplot2::aes(colour=Sample),
+                             width=0.15, size=3, alpha=0.9) +
+        ggplot2::scale_colour_manual(values=samp_cols) +
         ggplot2::facet_wrap(~Metric, scales="free_y", ncol=2) +
-        ggplot2::labs(title="Alpha Diversity Metrics", x="Sample", y="Value") +
+        ggplot2::labs(title="Alpha Diversity Metrics",
+                      x="", y="Value", colour="Sample") +
         ggplot2::theme_bw(base_size=11) +
-        ggplot2::theme(axis.text.x=ggplot2::element_text(angle=45, hjust=1),
-                       legend.position="none")
+        ggplot2::theme(axis.text.x=ggplot2::element_blank(),
+                       axis.ticks.x=ggplot2::element_blank(),
+                       legend.position="right")
     }
     ggplot2::ggsave(file.path(opt$output, "alpha_diversity.pdf"),
                     p, width=9, height=7, device="pdf")
