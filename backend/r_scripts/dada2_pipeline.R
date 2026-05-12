@@ -381,7 +381,7 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
       cat("  Taxonomy assigned successfully.\n\n")
       db_dir2       <- dirname(db_path)
       sp_candidates <- list.files(db_dir2,
-                                  pattern="assignspecies.*\\.fa(\\.gz)?$",
+                                  pattern="(assignspecies|species_assignment).*\\.fa(\\.gz)?$",
                                   full.names=TRUE, ignore.case=TRUE)
       if (length(sp_candidates) > 0) {
         tryCatch({
