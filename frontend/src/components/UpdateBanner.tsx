@@ -2,10 +2,10 @@
  * UpdateBanner — polls /update/check on mount and shows a dismissible
  * notification when a new version is available.
  *
- * Also shows a token-setup prompt if no GitHub token is configured.
+ * Public repo — no GitHub token required for checking or applying updates.
  */
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 
 const API = ""; // relative URL — works on any host/port
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // re-check every hour
@@ -27,30 +27,22 @@ interface ApplyResult {
 }
 
 export default function UpdateBanner() {
-  const [info, setInfo]             = useState<UpdateInfo | null>(null);
-  const [tokenNeeded, setTokenNeeded] = useState(false);
-  const [tokenInput, setTokenInput] = useState("");
-  const [tokenSaving, setTokenSaving] = useState(false);
-  const [tokenMsg, setTokenMsg]     = useState("");
-  const [applying, setApplying]     = useState(false);
+  const [info, setInfo]               = useState<UpdateInfo | null>(null);
+  const [applying, setApplying]       = useState(false);
   const [applyResult, setApplyResult] = useState<ApplyResult | null>(null);
-  const [dismissed, setDismissed]   = useState(false);
-  const [showTokenForm, setShowTokenForm] = useState(false);
+  const [dismissed, setDismissed]     = useState(false);
+  const [checking, setChecking]       = useState(false);
 
-  // ── Check token then version ──────────────────────────────────
+  // ── Check version (no token needed — public repo) ─────────────
   const doCheck = async () => {
+    setChecking(true);
     try {
-      const ts = await fetch(`${API}/update/token-status`).then(r => r.json());
-      if (!ts.configured) {
-        setTokenNeeded(true);
-        return;
-      }
-      setTokenNeeded(false);
       const data: UpdateInfo = await fetch(`${API}/update/check`).then(r => r.json());
       setInfo(data);
     } catch {
-      // silently ignore network errors — backend might not be up yet
+      // silently ignore — backend may not be up yet
     }
+    setChecking(false);
   };
 
   useEffect(() => {
@@ -59,35 +51,10 @@ export default function UpdateBanner() {
     return () => clearInterval(iv);
   }, []);
 
-  // ── Save token ────────────────────────────────────────────────
-  const saveToken = async () => {
-    if (!tokenInput.trim()) return;
-    setTokenSaving(true);
-    setTokenMsg("");
-    try {
-      const res = await fetch(`${API}/update/save-token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: tokenInput.trim() })
-      }).then(r => r.json());
-      if (res.ok || res.success) {
-        setTokenMsg("✅ Token saved! Checking for updates...");
-        setTokenInput("");
-        setShowTokenForm(false);
-        setTimeout(() => { setTokenMsg(""); doCheck(); }, 1500);
-      } else {
-        setTokenMsg(`❌ ${res.message}`);
-      }
-    } catch {
-      setTokenMsg("❌ Could not reach backend.");
-    }
-    setTokenSaving(false);
-  };
-
   // ── Apply update ──────────────────────────────────────────────
   const applyUpdate = async () => {
     if (!window.confirm(
-      "This will run git pull and npm install.\n\nMake sure no analysis is running!\n\nContinue?"
+      "This will run git pull + npm install + npm build.\n\nMake sure no analysis is running!\n\nContinue?"
     )) return;
 
     setApplying(true);
@@ -103,72 +70,28 @@ export default function UpdateBanner() {
     setApplying(false);
   };
 
-  // ── Nothing to show ──────────────────────────────────────────
+  // ── Nothing to show ───────────────────────────────────────────
   if (dismissed) return null;
-  if (!tokenNeeded && (!info || (!info.available && !info.error))) return null;
-
-  // ── Token-needed banner ───────────────────────────────────────
-  if (tokenNeeded) {
-    return (
-      <div className="update-banner update-banner--token">
-        <div className="update-banner__left">
-          <span className="update-banner__icon">🔑</span>
-          <div>
-            <span className="update-banner__title">Auto-update setup needed</span>
-            <span className="update-banner__sub">
-              Add a GitHub token to enable automatic updates
-            </span>
-          </div>
-        </div>
-        <div className="update-banner__right">
-          {!showTokenForm ? (
-            <>
-              <button className="ub-btn ub-btn--primary"
-                onClick={() => setShowTokenForm(true)}>
-                Setup Token
-              </button>
-              <button className="ub-btn ub-btn--ghost"
-                onClick={() => setDismissed(true)}>✕</button>
-            </>
-          ) : (
-            <div className="ub-token-form">
-              <input
-                className="ub-token-input"
-                type="password"
-                placeholder="ghp_xxxxxxxxxxxx"
-                value={tokenInput}
-                onChange={e => setTokenInput(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && saveToken()}
-              />
-              <button className="ub-btn ub-btn--primary"
-                onClick={saveToken} disabled={tokenSaving}>
-                {tokenSaving ? "Saving…" : "Save"}
-              </button>
-              <button className="ub-btn ub-btn--ghost"
-                onClick={() => setShowTokenForm(false)}>Cancel</button>
-              {tokenMsg && <span className="ub-token-msg">{tokenMsg}</span>}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
+  if (!info) return null;
 
   // ── Error banner ──────────────────────────────────────────────
-  if (info?.error) {
-    if (info.error === "no_token") return null; // already handled above
+  if (info.error) {
     return (
       <div className="update-banner update-banner--error">
         <span className="update-banner__icon">⚠️</span>
-        <span className="update-banner__sub">{info.message}</span>
-        <button className="ub-btn ub-btn--ghost" onClick={() => setDismissed(true)}>✕</button>
+        <span className="update-banner__sub">
+          Update check failed: {info.message || info.error}
+        </span>
+        <button className="ub-btn ub-btn--ghost"
+          onClick={() => setDismissed(true)}>✕</button>
       </div>
     );
   }
 
-  // ── Update-available banner ───────────────────────────────────
-  if (!info?.available) return null;
+  // ── Up to date — show nothing ─────────────────────────────────
+  if (!info.available) return null;
 
+  // ── Update-available banner ───────────────────────────────────
   return (
     <div className="update-banner update-banner--available">
       <div className="update-banner__left">
@@ -192,7 +115,7 @@ export default function UpdateBanner() {
           <>
             <button className="ub-btn ub-btn--primary"
               onClick={applyUpdate} disabled={applying}>
-              {applying ? "Updating…" : "Update Now"}
+              {applying ? "⏳ Updating…" : "⬆️ Update Now"}
             </button>
             <button className="ub-btn ub-btn--ghost"
               onClick={() => setDismissed(true)}>Later</button>
@@ -210,7 +133,7 @@ export default function UpdateBanner() {
               <div key={i} className={`ub-step ${s.success ? "ok" : "fail"}`}>
                 <strong>{s.step}:</strong> {s.success ? "✓" : "✗"}
                 {!s.success && s.output && (
-                  <pre className="ub-step-out">{s.output}</pre>
+                  <pre className="ub-step-out">{s.output.slice(-400)}</pre>
                 )}
               </div>
             ))}
