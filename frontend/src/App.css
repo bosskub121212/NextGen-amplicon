@@ -2152,15 +2152,37 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #1a202c;
 .marker-btn {
   display: flex; flex-direction: column; align-items: center;
   gap: 4px; padding: 10px 8px;
-  border: 1.5px solid #e5e7eb; border-radius: 10px;
+  border: 2px solid #e5e7eb; border-radius: 12px;
   background: #f9fafb; cursor: pointer; font-family: inherit;
-  transition: all .15s;
+  transition: all .2s cubic-bezier(.34,1.56,.64,1);
+  position: relative; transform: translateY(0); box-shadow: 0 1px 3px rgba(0,0,0,.07);
 }
-.marker-btn:hover  { border-color: #6366f1; background: #f0f0ff; }
-.marker-btn.active { border-color: #6366f1; background: #eef2ff; }
-.marker-icon  { font-size: 20px; }
+.marker-btn:hover:not(.active) {
+  border-color: var(--brand-primary);
+  background: var(--brand-tint);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 10px rgba(0,0,0,.10);
+}
+.marker-btn.active {
+  border-color: var(--brand-primary);
+  background: var(--brand-tint);
+  transform: translateY(-3px) scale(1.04);
+  box-shadow:
+    0 6px 18px var(--brand-shadow),
+    0 0 0 3px color-mix(in srgb, var(--brand-primary) 18%, transparent);
+}
+.marker-btn.active .marker-label { color: var(--brand-hover); }
+.marker-icon  { font-size: 22px; transition: transform .2s; }
+.marker-btn.active .marker-icon { transform: scale(1.15); }
 .marker-label { font-size: 11px; font-weight: 700; color: #374151; text-align: center; }
 .marker-desc  { font-size: 12px; color: #6b7280; font-style: italic; margin: 0 0 4px; }
+
+/* purple dark-mode overrides for marker grid */
+[data-theme="purple"] .marker-btn         { background: #1d1932; border-color: #2e2450; }
+[data-theme="purple"] .marker-btn:hover:not(.active) { background: #261e3e; border-color: #5b44a0; }
+[data-theme="purple"] .marker-btn.active  { background: #2a1f4a; border-color: var(--brand-primary); }
+[data-theme="purple"] .marker-btn .marker-label { color: #c4b5fd; }
+[data-theme="purple"] .marker-btn.active .marker-label { color: #e9d5ff; }
 
 /* Specific pipeline ext sections (ITS / COX1 / PacBio) */
 .ext-section {
