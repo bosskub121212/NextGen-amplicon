@@ -112,21 +112,33 @@ def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
 def run_emu(samples: dict, out_dir: Path, db_path: str,
             min_abundance: float, threads: int) -> dict[str, Path]:
     """Run emu abundance on each sample. Returns map of sample → TSV output."""
-    emu = shutil.which("emu")
-    if not emu:
-        # Try conda environments
-        for candidate in [
-            Path.home() / "miniconda3" / "envs" / "emu" / "bin" / "emu",
-            Path.home() / "anaconda3" / "envs" / "emu" / "bin" / "emu",
-            Path.home() / "miniconda3" / "bin" / "emu",
-            Path.home() / "anaconda3" / "bin" / "emu",
-        ]:
-            if candidate.exists():
-                emu = str(candidate)
-                break
-    if not emu:
-        raise RuntimeError(
-            "Emu not found. Install with: conda install -c bioconda emu")
+    # Build the emu command prefix.
+    # Prefer 'conda run -n emu' to avoid venv/PATH conflicts when backend runs
+    # in a Python virtualenv — emu uses #!/usr/bin/env python3 which would
+    # otherwise pick up the venv Python instead of the conda emu env.
+    conda = shutil.which("conda")
+    emu_conda_bin = None
+    for candidate in [
+        Path.home() / "miniconda3" / "envs" / "emu" / "bin" / "emu",
+        Path.home() / "anaconda3" / "envs" / "emu" / "bin" / "emu",
+    ]:
+        if candidate.exists():
+            emu_conda_bin = str(candidate)
+            break
+
+    if conda and emu_conda_bin:
+        # Use 'conda run -n emu emu' — isolates the conda env completely
+        emu_prefix = [conda, "run", "--no-capture-output", "-n", "emu", "emu"]
+    elif emu_conda_bin:
+        # Find the matching Python in the conda env and call it explicitly
+        emu_python = str(Path(emu_conda_bin).parent / "python3")
+        emu_prefix = [emu_python, emu_conda_bin]
+    else:
+        emu_sys = shutil.which("emu")
+        if not emu_sys:
+            raise RuntimeError(
+                "Emu not found. Install with: conda create -n emu -c bioconda -c conda-forge emu -y")
+        emu_prefix = [emu_sys]
 
     emu_out_dir = out_dir / "emu_output"
     emu_out_dir.mkdir(exist_ok=True)
@@ -135,8 +147,8 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
     for name, fq in samples.items():
         sample_out = emu_out_dir / name
         sample_out.mkdir(exist_ok=True)
-        cmd = [
-            emu, "abundance",
+        cmd = emu_prefix + [
+            "abundance",
             "--type", "map-ont",
             "--db", db_path,
             "--threads", str(threads),
