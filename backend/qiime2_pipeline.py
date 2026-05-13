@@ -258,14 +258,17 @@ async def upload_metadata(file: UploadFile = File(...)):
     # Basic validation
     issues, warnings, columns, sample_ids = [], [], [], []
     try:
-        lines = tmp.read_text().splitlines()
+        lines = tmp.read_text(errors="replace").splitlines()
         lines = [l for l in lines if l.strip()]
         if not lines:
             issues.append("File is empty")
         else:
-            header = lines[0].split("\t")
+            # Auto-detect delimiter (TSV vs CSV)
+            delim = "\t" if "\t" in lines[0] else ","
+            header = [c.strip().strip('"').strip("'") for c in lines[0].split(delim)]
             columns = header
-            if header[0] not in ("sample-id", "#SampleID", "id"):
+            first_col = header[0].lower()
+            if first_col not in ("sample-id", "#sampleid", "sampleid", "id", "#sample-id"):
                 warnings.append(f"First column should be 'sample-id', got '{header[0]}'")
 
             has_types = len(lines) > 1 and lines[1].startswith("#q2:types")
@@ -276,9 +279,10 @@ async def upload_metadata(file: UploadFile = File(...)):
             for line in lines[data_start:]:
                 if line.startswith("#"):
                     continue
-                cols = line.split("\t")
-                if cols[0]:
-                    sample_ids.append(cols[0])
+                cols = line.split(delim)
+                sid = cols[0].strip().strip('"').strip("'")
+                if sid:
+                    sample_ids.append(sid)
     except Exception as e:
         issues.append(str(e))
 
