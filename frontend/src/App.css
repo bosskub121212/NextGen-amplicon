@@ -2481,3 +2481,87 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #1a202c;
   padding: 2px 8px; border-radius: 10px;
   letter-spacing: .05em; border: 1px solid #e5e7eb;
 }
+
+/* ══════════════════════════════════════════════════════════
+   THEME BACKGROUND OVERRIDES
+   Default → soft cool gray  |  Orange → warm cream  |  Purple → dark space
+══════════════════════════════════════════════════════════ */
+
+/* ── Default: slightly softer than pure white ── */
+body                { background: #edf0f7; }
+.hist-screen        { background: #edf0f7; }
+.wizard-wrap        { background: #edf0f7; }
+
+/* ── Orange: warm parchment ── */
+[data-theme="orange"] body,
+[data-theme="orange"] .hist-screen,
+[data-theme="orange"] .wizard-wrap        { background: #fdf4e9; }
+
+[data-theme="orange"] .wiz-card           { background: #fffaf3; border-color: #fde8d0; }
+[data-theme="orange"] .wiz-card-title     { color: #7c2d12; }
+[data-theme="orange"] .job-card           { background: #fffaf3; }
+[data-theme="orange"] .step-popup         { background: #fffaf3; }
+[data-theme="orange"] .confirm-summary    { background: #fff7ed; border-color: #fed7aa; }
+[data-theme="orange"] .wiz-input          { background: #fff8f2; border-color: #fcd9b0; }
+[data-theme="orange"] .wiz-input:focus    { background: #fff; }
+[data-theme="orange"] .marker-btn         { background: #fff7ed; border-color: #fcd9b0; }
+[data-theme="orange"] .dropzone           { background: #fff8f2; border-color: #fed7aa; }
+[data-theme="orange"] .dropzone:hover,
+[data-theme="orange"] .dropzone.drag-over { background: #fff0e0; border-color: #ea580c; }
+[data-theme="orange"] .queue-badge        { background: #fff7ed; }
+
+/* ── Purple: dark space mode ── */
+[data-theme="purple"] body                { background: #12101e; color: #e2d9f5; }
+[data-theme="purple"] .hist-screen,
+[data-theme="purple"] .wizard-wrap        { background: #12101e; }
+
+/* Cards & panels */
+[data-theme="purple"] .wiz-card           { background: #1d1932; border-color: #2e2450; }
+[data-theme="purple"] .wiz-card-title,
+[data-theme="purple"] .wizard-step-head h2{ color: #d4c8f0; }
+[data-theme="purple"] .wizard-step-head p { color: #9d89c5; }
+[data-theme="purple"] .wiz-label          { color: #b8a8e0; }
+[data-theme="purple"] .opt                { color: #7a6aaa; }
+[data-theme="purple"] .job-card           { background: #1d1932; box-shadow: 0 2px 12px rgba(0,0,0,.35); }
+[data-theme="purple"] .job-card.focused   { box-shadow: 0 4px 20px rgba(124,58,237,.28); }
+[data-theme="purple"] .job-name-text      { color: #e2d9f5; }
+[data-theme="purple"] .job-db             { color: #9d89c5; }
+[data-theme="purple"] .job-id-badge       { color: #7a6aaa; }
+[data-theme="purple"] .hist-section-label { color: #6a5a9a; }
+[data-theme="purple"] .hist-body .queue-badge { background: #2a1f45; color: #c4b5fd; }
+
+/* Inputs */
+[data-theme="purple"] .wiz-input          { background: #261e3e; border-color: #3d2d6e; color: #e2d9f5; }
+[data-theme="purple"] .wiz-input:focus    { background: #2c2448; border-color: #7c3aed; }
+[data-theme="purple"] .wiz-input::placeholder { color: #6a5a9a; }
+[data-theme="purple"] .marker-btn         { background: #231c3a; border-color: #3d2d6e; color: #c4b5fd; }
+[data-theme="purple"] .marker-btn:hover:not(.active) { background: #2e2450; border-color: #5b44a0; }
+
+/* Dropzone */
+[data-theme="purple"] .dropzone           { background: #1a1530; border-color: #3d2d6e; }
+[data-theme="purple"] .dropzone:hover,
+[data-theme="purple"] .dropzone.drag-over { background: #201848; border-color: #7c3aed; }
+[data-theme="purple"] .drop-hint p        { color: #b8a8e0; }
+[data-theme="purple"] .drop-hint small    { color: #6a5a9a; }
+[data-theme="purple"] .file-list li       { color: #c4b5fd; border-color: #2e2450; }
+
+/* Popup */
+[data-theme="purple"] .step-popup         { background: #1d1932; }
+[data-theme="purple"] .popup-title        { color: #d4c8f0; }
+[data-theme="purple"] .popup-desc         { color: #9d89c5; }
+[data-theme="purple"] .confirm-summary    { background: #261e3e; border-color: #3d2d6e; }
+[data-theme="purple"] .confirm-row        { color: #c4b5fd; border-color: #3d2d6e; }
+[data-theme="purple"] .confirm-row strong { color: #e2d9f5; }
+[data-theme="purple"] .popup-back         { background: #261e3e; border-color: #3d2d6e; color: #c4b5fd; }
+[data-theme="purple"] .popup-back:hover   { background: #2e2450; }
+[data-theme="purple"] .warn-box           { background: #2a1f10; border-color: #92400e; color: #fcd34d; }
+
+/* Misc text */
+[data-theme="purple"] .adv-toggle-btn     { color: #b8a8e0; }
+[data-theme="purple"] .adv-toggle-btn:hover { color: #e2d9f5; }
+[data-theme="purple"] .done-hint          { color: #9d89c5; }
+[data-theme="purple"] .cpu-label          { color: #b8a8e0; }
+[data-theme="purple"] .cpu-hint           { color: #6a5a9a; }
+[data-theme="purple"] .wiz-field label    { color: #b8a8e0; }
+[data-theme="purple"] .btn-del-hist       { background: #261e3e; border-color: #3d2d6e; color: #9d89c5; }
+[data-theme="purple"] .btn-del-hist:hover { background: #3b1f3e; border-color: #f87171; color: #fca5a5; }

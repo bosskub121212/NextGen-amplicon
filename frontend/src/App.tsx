@@ -453,7 +453,7 @@ export default function App() {
             <div className="job-expand-row">
               <div className="job-dna-left">
                 <DNAProgress percent={j.progress} logs={focusLogs}
-                  currentStep={focusLabel || j.step_label} />
+                  currentStep={focusLabel || j.step_label} theme={theme} />
               </div>
               <div className="job-stats-panel">
                 <div className="stat-item">
