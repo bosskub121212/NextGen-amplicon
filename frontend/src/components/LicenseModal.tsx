@@ -30,7 +30,7 @@ interface Props {
 }
 
 // Pipeline display order
-const ALL_PIPELINES = ["16S", "12S", "ITS1", "ITS2", "COX1", "18S-nema", "PacBio"];
+const ALL_PIPELINES = ["16S", "12S", "ITS1", "ITS2", "COX1", "18S-nema", "PacBio", "ONT-16S"];
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function LicenseModal({ required = false, onClose, onActivated }: Props) {
