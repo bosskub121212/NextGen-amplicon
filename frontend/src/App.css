@@ -2240,6 +2240,11 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #1a202c;
 .ps-primer-card--active .ps-primer-seq  { color: #bae6fd; }
 .ps-primer-name { font-size: 12px; font-weight: 700; color: #1e293b; }
 .ps-primer-seq  { font-size: 10px; color: #64748b; font-family: 'Consolas', monospace; word-break: break-all; }
+.ps-primer-card--custom { border-color: #7c3aed; }
+.ps-primer-card--custom:hover { border-color: #8b5cf6; background: #f3f0ff; }
+.ps-primer-card--custom.ps-primer-card--active { border-color: #7c3aed; background: #5b21b6; box-shadow: 0 2px 8px rgba(124,58,237,.45); }
+.ps-primer-card--custom.ps-primer-card--active .ps-primer-name { color: #fff; }
+.ps-primer-card--custom.ps-primer-card--active .ps-primer-seq  { color: #ddd6fe; }
 
 /* Command preview block */
 .ps-cmd-block {

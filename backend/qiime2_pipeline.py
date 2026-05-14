@@ -140,6 +140,11 @@ class Q2RunParams(BaseModel):
     # Taxonomy
     classifier_path: str   = ""
     confidence:      float = 0.7
+    # Custom classifier training
+    custom_classifier_mode: str = "default"  # default | train | upload
+    custom_classifier_path: str = ""          # path to .qza (upload mode)
+    train_amplicon_min_len: int = 200
+    train_amplicon_max_len: int = 600
     # Diversity
     sampling_depth:  int   = 10000
     group_col:       str   = "treatment"
@@ -169,6 +174,10 @@ class Q2StartParams(BaseModel):
     primer_r:        str   = ""
     classifier_path: str   = ""
     confidence:      float = 0.7
+    custom_classifier_mode: str = "default"
+    custom_classifier_path: str = ""
+    train_amplicon_min_len: int = 200
+    train_amplicon_max_len: int = 600
     sampling_depth:  int   = 10000
     group_col:       str   = "treatment"
     run_diffabund:   bool  = True
@@ -195,6 +204,104 @@ def find_classifier(marker: str, override: str = "") -> str:
         if matches:
             return matches[0]
     return ""
+
+
+async def train_custom_classifier(
+    primer_f: str,
+    primer_r: str,
+    marker: str,
+    min_len: int,
+    max_len: int,
+    job_id: str,
+    silva_ref_qza: str = "",
+    silva_tax_qza: str = "",
+) -> str:
+    """
+    Train a Naive Bayes classifier for a specific primer region.
+    Steps:
+      1. qiime feature-classifier extract-reads  (primer trimming on SILVA)
+      2. qiime feature-classifier fit-classifier-naive-bayes
+    Returns path to trained classifier .qza, or "" on failure.
+    """
+    import glob as _glob
+    CLASSIFIER_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Auto-locate SILVA reference sequences and taxonomy if not provided
+    if not silva_ref_qza:
+        candidates = _glob.glob(str(CLASSIFIER_DIR.parent / "databases" / "silva*seqs*.qza"))
+        candidates += _glob.glob(str(CLASSIFIER_DIR.parent / "databases" / "*silva*seqs*.qza"))
+        if candidates:
+            silva_ref_qza = candidates[0]
+    if not silva_tax_qza:
+        candidates = _glob.glob(str(CLASSIFIER_DIR.parent / "databases" / "silva*tax*.qza"))
+        candidates += _glob.glob(str(CLASSIFIER_DIR.parent / "databases" / "*silva*tax*.qza"))
+        if candidates:
+            silva_tax_qza = candidates[0]
+
+    if not silva_ref_qza or not Path(silva_ref_qza).exists():
+        q = _log_queues.get(job_id)
+        if q:
+            await q.put({"type": "log", "msg": "⚠️  train_custom_classifier: SILVA seqs .qza not found — skipping training"})
+        return ""
+    if not silva_tax_qza or not Path(silva_tax_qza).exists():
+        q = _log_queues.get(job_id)
+        if q:
+            await q.put({"type": "log", "msg": "⚠️  train_custom_classifier: SILVA taxonomy .qza not found — skipping training"})
+        return ""
+
+    # Build a unique name for this primer combination
+    import hashlib
+    pkey = hashlib.md5(f"{primer_f}_{primer_r}_{min_len}_{max_len}".encode()).hexdigest()[:8]
+    out_reads_qza  = str(CLASSIFIER_DIR / f"ref_reads_{marker}_{pkey}.qza")
+    out_clf_qza    = str(CLASSIFIER_DIR / f"classifier_{marker}_{pkey}.qza")
+
+    if Path(out_clf_qza).exists():
+        q = _log_queues.get(job_id)
+        if q:
+            await q.put({"type": "log", "msg": f"✅ Custom classifier already exists: {out_clf_qza}"})
+        return out_clf_qza
+
+    q = _log_queues.get(job_id)
+    if q:
+        await q.put({"type": "log", "msg": f"🧬 Training custom classifier for {marker} region (primers: {primer_f[:12]}… / {primer_r[:12]}…)"})
+        await q.put({"type": "log", "msg": "   Step 1/2: extract-reads (may take 10–20 min)…"})
+
+    rc = await stream_cmd(
+        q2(f"qiime feature-classifier extract-reads"
+           f" --i-sequences {silva_ref_qza}"
+           f" --p-f-primer {primer_f}"
+           f" --p-r-primer {primer_r}"
+           f" --p-min-length {min_len}"
+           f" --p-max-length {max_len}"
+           f" --p-n-jobs -1"
+           f" --o-reads {out_reads_qza}"
+           f" --quiet"),
+        job_id,
+    )
+    if rc != 0:
+        if q:
+            await q.put({"type": "log", "msg": f"❌ extract-reads failed (rc={rc}) — falling back to default classifier"})
+        return ""
+
+    if q:
+        await q.put({"type": "log", "msg": "   Step 2/2: fit-classifier-naive-bayes (may take 10–20 min)…"})
+
+    rc = await stream_cmd(
+        q2(f"qiime feature-classifier fit-classifier-naive-bayes"
+           f" --i-reference-reads {out_reads_qza}"
+           f" --i-reference-taxonomy {silva_tax_qza}"
+           f" --o-classifier {out_clf_qza}"
+           f" --quiet"),
+        job_id,
+    )
+    if rc != 0:
+        if q:
+            await q.put({"type": "log", "msg": f"❌ fit-classifier-naive-bayes failed (rc={rc}) — falling back to default classifier"})
+        return ""
+
+    if q:
+        await q.put({"type": "log", "msg": f"✅ Custom classifier trained: {out_clf_qza}"})
+    return out_clf_qza
 
 
 async def stream_cmd(cmd: str, job_id: str) -> int:
@@ -415,6 +522,10 @@ async def start_qiime2_pipeline(params: Q2StartParams,
         primer_r=params.primer_r,
         classifier_path=params.classifier_path,
         confidence=params.confidence,
+        custom_classifier_mode=params.custom_classifier_mode,
+        custom_classifier_path=params.custom_classifier_path,
+        train_amplicon_min_len=params.train_amplicon_min_len,
+        train_amplicon_max_len=params.train_amplicon_max_len,
         sampling_depth=params.sampling_depth,
         group_col=params.group_col,
         run_diffabund=params.run_diffabund,
@@ -555,7 +666,22 @@ async def _run_full_pipeline(p: Q2RunParams):
 
         # ── Step 5: Taxonomy ─────────────────────────────────────────
         taxonomy_qza = str(qza / "taxonomy.qza")
-        clf = find_classifier(p.marker, p.classifier_path)
+
+        # Resolve classifier: upload > train > default auto-detect
+        if p.custom_classifier_mode == "upload" and p.custom_classifier_path and Path(p.custom_classifier_path).exists():
+            clf = p.custom_classifier_path
+        elif p.custom_classifier_mode == "train" and p.primer_f and p.primer_r:
+            trained = await train_custom_classifier(
+                primer_f=p.primer_f,
+                primer_r=p.primer_r,
+                marker=p.marker,
+                min_len=p.train_amplicon_min_len,
+                max_len=p.train_amplicon_max_len,
+                job_id=p.job_id,
+            )
+            clf = trained if trained else find_classifier(p.marker, p.classifier_path)
+        else:
+            clf = find_classifier(p.marker, p.classifier_path)
 
         if clf:
             await run_step(

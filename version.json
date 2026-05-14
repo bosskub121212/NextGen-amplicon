@@ -1,5 +1,5 @@
 {
-  "version": "2.1.0",
-  "release_date": "2026-05-12",
-  "changelog": "ONT 16S pipeline (Emu): full V1-V9 and sub-region V7-V8 support for Oxford Nanopore reads. Single FASTQ per sample upload. Alpha diversity boxplot. Fix species_assignment file pattern."
+  "version": "2.1.1",
+  "release_date": "2026-05-14",
+  "changelog": "Custom primer preset + region-specific classifier training (QIIME2 extract-reads → fit-classifier-naive-bayes). Upload or auto-detect custom .qza classifiers. Comprehensive install.sh: Conda/Miniconda, QIIME2 env, Emu env, PICRUSt2, all database downloads (SILVA, UNITE, MIDORI2, NemaBase, Emu). download_databases.sh helper. Custom primer CUSTOM button in Step 1."
 }

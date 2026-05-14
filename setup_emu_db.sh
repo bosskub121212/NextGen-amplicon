@@ -121,14 +121,16 @@ if [[ "$_SKIP_BUILD" == "false" ]]; then
     ok "Intermediate files written to $PREP_DIR"
 
     # ── Step 6: Run emu build-database ───────────────────────
+    # db_name is a positional arg; emu outputs to CWD/db_name/
     step "Running emu build-database (~2-5 min)"
+    cd "$PREP_DIR"
     conda run --no-capture-output -n emu \
         emu build-database \
-        --sequences     "$PREP_DIR/sequences.fasta" \
-        --seq2tax       "$PREP_DIR/seq2taxid.tsv" \
-        --taxonomy-list "$PREP_DIR/taxonomy_list.tsv" \
-        --db-name       silva_db \
-        --output-dir    "$PREP_DIR"
+        --sequences     sequences.fasta \
+        --seq2tax       seq2taxid.tsv \
+        --taxonomy-list taxonomy_list.tsv \
+        silva_db
+    cd -
 
     if [[ -f "$SILVA_DB_DIR/species_taxid.fasta" && -f "$SILVA_DB_DIR/taxonomy.tsv" ]]; then
         N=$(grep -c "^>" "$SILVA_DB_DIR/species_taxid.fasta")

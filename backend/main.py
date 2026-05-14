@@ -169,6 +169,11 @@ class RunParams(BaseModel):
     # --- Functional prediction ---
     run_tax4fun:   bool  = False
     run_picrust2:  bool  = False
+    # --- Custom classifier (QIIME2) ---
+    customClassifierMode: str   = "default"  # default | train | upload
+    customClassifierPath: str   = ""          # path to .qza (upload mode)
+    trainAmpliconMinLen:  int   = 200         # min len for extract-reads (train mode)
+    trainAmpliconMaxLen:  int   = 600         # max len for extract-reads (train mode)
     # --- Shared db paths override ---
     db_paths_json: str   = ""
 

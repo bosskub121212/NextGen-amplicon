@@ -71,6 +71,11 @@ export interface PipelineParams {
   picrust2Databases: string[];
   // Metadata
   metadataPath:      string;
+  // Custom Classifier
+  customClassifierMode: "default" | "train" | "upload";
+  customClassifierPath: string;
+  trainAmpliconMinLen:  number;
+  trainAmpliconMaxLen:  number;
 }
 
 export const defaultParams: PipelineParams = {
@@ -109,6 +114,10 @@ export const defaultParams: PipelineParams = {
   picrust2PlaceTool: "epa-ng", picrust2MaxNSTI: 2, picrust2Threads: 8,
   picrust2Databases: ["metacyc", "ec", "ko"],
   metadataPath: "",
+  customClassifierMode: "default",
+  customClassifierPath: "",
+  trainAmpliconMinLen: 200,
+  trainAmpliconMaxLen: 600,
 };
 
 export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio" | "ONT-16S";
@@ -741,6 +750,15 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
                           <div className="ps-primer-name">Skip</div>
                           <div className="ps-primer-seq">No primer removal</div>
                         </button>
+                        <button type="button"
+                          className={`ps-primer-card ps-primer-card--custom ${
+                            selectedPrimerF === "__custom__" || (selectedPrimerF && !allPresets.some(p => p.f === selectedPrimerF))
+                              ? "ps-primer-card--active" : ""
+                          }`}
+                          onClick={() => { setSelectedPrimerF("__custom__"); }}>
+                          <div className="ps-primer-name">✏️ Custom</div>
+                          <div className="ps-primer-seq">Define your own primers</div>
+                        </button>
                       </div>
 
                       {/* Primer inputs */}
@@ -988,6 +1006,100 @@ FastTree -gtr -nt aligned.fasta > unrooted-tree.nwk
 
                       {showBrowser && (
                         <DbFileBrowser onSelect={p => { set("dbPath", p); }} onClose={() => setShowBrowser(false)} />
+                      )}
+
+                      {/* Custom Classifier Training */}
+                      {(marker === "16S" || marker === "12S" || marker === "18S-nema") && (
+                        <div style={{ marginTop: 18, border: "1px solid #334155", borderRadius: 8, padding: 14, background: "#0f172a" }}>
+                          <div className="ps-section-label" style={{ marginBottom: 10 }}>
+                            🧬 CUSTOM CLASSIFIER (Region-specific training)
+                          </div>
+                          <p className="param-hint" style={{ marginBottom: 10 }}>
+                            Train a Naive Bayes classifier for your exact primer region (e.g. 300–500 bp amplicons).
+                            Outperforms full-length classifiers for partial-region data.
+                          </p>
+                          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                            {(["default", "train", "upload"] as const).map(mode => (
+                              <button key={mode} type="button"
+                                style={{
+                                  padding: "5px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                                  border: params.customClassifierMode === mode ? "1px solid #6366f1" : "1px solid #334155",
+                                  background: params.customClassifierMode === mode ? "#312e81" : "#1e293b",
+                                  color: params.customClassifierMode === mode ? "#c7d2fe" : "#94a3b8",
+                                }}
+                                onClick={() => set("customClassifierMode", mode)}>
+                                {mode === "default" ? "🔵 Auto-detect" : mode === "train" ? "🟣 Train from primers" : "📁 Upload .qza"}
+                              </button>
+                            ))}
+                          </div>
+
+                          {params.customClassifierMode === "default" && (
+                            <div className="ps-info-box" style={{ fontSize: 12 }}>
+                              Auto-detect classifier from <code>~/r16s-app/backend/classifiers/</code> based on marker type.
+                              Place your <code>.qza</code> file there to use it automatically.
+                            </div>
+                          )}
+
+                          {params.customClassifierMode === "train" && (
+                            <div>
+                              <div className="ps-info-box ps-info-box--warn" style={{ fontSize: 12, marginBottom: 10 }}>
+                                ⚙️ Will run <strong>qiime feature-classifier extract-reads</strong> + <strong>fit-classifier-naive-bayes</strong>
+                                on first job. Training may take 10–30 min and requires SILVA database.
+                              </div>
+                              <div className="param-grid">
+                                <div className="param-item">
+                                  <label className="param-label">Forward Primer</label>
+                                  <span className="param-hint">Same as Step 1 — uses primer_f automatically</span>
+                                  <input type="text" className="param-input"
+                                    style={{ fontFamily: "monospace", background: "#0f172a", color: "#64748b" }}
+                                    value={params.primer_f || "(from Step 1)"} readOnly />
+                                </div>
+                                <div className="param-item">
+                                  <label className="param-label">Reverse Primer</label>
+                                  <span className="param-hint">Same as Step 1 — uses primer_r automatically</span>
+                                  <input type="text" className="param-input"
+                                    style={{ fontFamily: "monospace", background: "#0f172a", color: "#64748b" }}
+                                    value={params.primer_r || "(from Step 1)"} readOnly />
+                                </div>
+                                <div className="param-item">
+                                  <label className="param-label">Min Amplicon Length (bp)</label>
+                                  <span className="param-hint">Trim extracted reads shorter than this</span>
+                                  <input type="number" className="param-input"
+                                    min={50} max={2000} value={params.trainAmpliconMinLen}
+                                    onChange={e => set("trainAmpliconMinLen", Number(e.target.value))} />
+                                </div>
+                                <div className="param-item">
+                                  <label className="param-label">Max Amplicon Length (bp)</label>
+                                  <span className="param-hint">Trim extracted reads longer than this</span>
+                                  <input type="number" className="param-input"
+                                    min={50} max={2000} value={params.trainAmpliconMaxLen}
+                                    onChange={e => set("trainAmpliconMaxLen", Number(e.target.value))} />
+                                </div>
+                              </div>
+                              <div style={{ fontSize: 11, color: "#475569", marginTop: 8 }}>
+                                💡 Tip for 300–500 bp amplicons: V3–V4 (341F/806R) → min 350 max 500 &nbsp;|&nbsp;
+                                V4–V5 (515F/926R) → min 300 max 450 &nbsp;|&nbsp; V1–V3 (27F/534R) → min 400 max 550
+                              </div>
+                            </div>
+                          )}
+
+                          {params.customClassifierMode === "upload" && (
+                            <div>
+                              <label className="param-label">Path to pre-trained classifier (.qza)</label>
+                              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                                <input type="text" className="param-input" style={{ flex: 1 }}
+                                  placeholder="/path/to/classifier.qza"
+                                  value={params.customClassifierPath}
+                                  onChange={e => set("customClassifierPath", e.target.value)} />
+                                <button className="browse-btn" onClick={() => setShowBrowser(true)}>📂</button>
+                              </div>
+                              <div style={{ fontSize: 11, color: "#475569", marginTop: 6 }}>
+                                Download pre-trained classifiers from{" "}
+                                <span style={{ color: "#6366f1" }}>docs.qiime2.org → Data resources</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       )}
 
                       {/* Method */}
