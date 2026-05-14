@@ -227,14 +227,25 @@ async def train_custom_classifier(
     CLASSIFIER_DIR.mkdir(parents=True, exist_ok=True)
 
     # Auto-locate SILVA reference sequences and taxonomy if not provided
+    # Search in databases/ and databases/qiime2_classifiers/
+    _db = CLASSIFIER_DIR.parent / "databases"
+    _q2 = _db / "qiime2_classifiers"
     if not silva_ref_qza:
-        candidates = _glob.glob(str(CLASSIFIER_DIR.parent / "databases" / "silva*seqs*.qza"))
-        candidates += _glob.glob(str(CLASSIFIER_DIR.parent / "databases" / "*silva*seqs*.qza"))
+        candidates = (
+            _glob.glob(str(_q2 / "silva*seqs*.qza")) +
+            _glob.glob(str(_q2 / "*silva*seqs*.qza")) +
+            _glob.glob(str(_db / "silva*seqs*.qza")) +
+            _glob.glob(str(_db / "*silva*seqs*.qza"))
+        )
         if candidates:
             silva_ref_qza = candidates[0]
     if not silva_tax_qza:
-        candidates = _glob.glob(str(CLASSIFIER_DIR.parent / "databases" / "silva*tax*.qza"))
-        candidates += _glob.glob(str(CLASSIFIER_DIR.parent / "databases" / "*silva*tax*.qza"))
+        candidates = (
+            _glob.glob(str(_q2 / "silva*tax*.qza")) +
+            _glob.glob(str(_q2 / "*silva*tax*.qza")) +
+            _glob.glob(str(_db / "silva*tax*.qza")) +
+            _glob.glob(str(_db / "*silva*tax*.qza"))
+        )
         if candidates:
             silva_tax_qza = candidates[0]
 
