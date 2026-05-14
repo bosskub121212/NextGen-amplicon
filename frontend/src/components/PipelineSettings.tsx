@@ -448,7 +448,7 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
                   const region = e.target.value;
                   // Auto-fill primer presets
                   if (region === "V7-V8") {
-                    onChange({ ...params, ont_region: region, primer_f: "ATGGCTGTCGTCAGCT", primer_r: "ACGGGGCGGTGTGTAC" });
+                    onChange({ ...params, ont_region: region, primer_f: "AACMGGATTAGATACCCKG", primer_r: "ACGTCATCCCCACCTTCC" });
                   } else if (region === "V1-V9") {
                     onChange({ ...params, ont_region: region, primer_f: "AGRGTTYGATYMTGGCTCAG", primer_r: "RGYTACCTTGTTACGACTT" });
                   } else {
@@ -485,9 +485,9 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
                 onClick={() => onChange({ ...params, primer_f: "AGRGTTYGATYMTGGCTCAG", primer_r: "RGYTACCTTGTTACGACTT" })}>
                 27F / 1492R (V1–V9)
               </button>
-              <button className={`primer-preset-btn ${params.primer_f === "ATGGCTGTCGTCAGCT" ? "active" : ""}`}
-                onClick={() => onChange({ ...params, primer_f: "ATGGCTGTCGTCAGCT", primer_r: "ACGGGGCGGTGTGTAC" })}>
-                1055F / 1392R (V7–V8)
+              <button className={`primer-preset-btn ${params.primer_f === "AACMGGATTAGATACCCKG" ? "active" : ""}`}
+                onClick={() => onChange({ ...params, primer_f: "AACMGGATTAGATACCCKG", primer_r: "ACGTCATCCCCACCTTCC" })}>
+                1055F / 1392R (V7–V8, ~337 bp)
               </button>
               <button className={`primer-preset-btn ${!params.primer_f ? "active" : ""}`}
                 onClick={() => onChange({ ...params, primer_f: "", primer_r: "" })}>
@@ -541,6 +541,40 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
 
           {showBrowser && (
             <DbFileBrowser onSelect={path => { set("ont_db_path", path); setShowBrowser(false); }} onClose={() => setShowBrowser(false)} />
+          )}
+
+          {/* Region-specific Emu DB hint */}
+          {params.ont_region === "V7-V8" && (
+            <div style={{ marginTop: 14, border: "1px solid #854d0e", borderRadius: 8, padding: 14, background: "#1c1408" }}>
+              <div style={{ fontWeight: 700, fontSize: 12, color: "#fbbf24", marginBottom: 6 }}>
+                💡 V7-V8 Region-Specific Database (Recommended)
+              </div>
+              <p className="param-hint" style={{ marginBottom: 10 }}>
+                Emu default database ใช้ full-length SILVA (~1500 bp) ซึ่งทำให้ alignment score ต่ำเมื่อ read ยาวแค่ 300–450 bp
+                ควร build V7-V8-specific database เพื่อ accuracy สูงขึ้น
+              </p>
+              <div className="ps-cmd-block">
+                <div className="ps-cmd-header"><span>build V7-V8 Emu database</span></div>
+                <pre className="ps-cmd-body">{`# ขั้นตอนที่ 1: สร้าง intermediate files (ตัด V7-V8 region ออกจาก SILVA)
+python3 ~/r16s-app/backend/python_scripts/build_emu_db.py \\
+  --silva-db ~/r16s-app/backend/databases/SILVA/silva_nr99_v138.1_train_set.fa.gz \\
+  --output-dir ~/r16s-app/backend/databases/emu_v7v8 \\
+  --region V7-V8
+
+# ขั้นตอนที่ 2: build Emu database จาก intermediate files
+conda run -n emu emu build-database \\
+  --sequences  ~/r16s-app/backend/databases/emu_v7v8/sequences.fasta \\
+  --seq2tax    ~/r16s-app/backend/databases/emu_v7v8/seq2taxid.tsv \\
+  --taxonomy-list ~/r16s-app/backend/databases/emu_v7v8/taxonomy_list.tsv \\
+  --db-name    silva_v7v8 \\
+  --output-dir ~/r16s-app/backend/databases/emu_v7v8
+
+# ขั้นตอนที่ 3: ใส่ path ด้านบน → ~/r16s-app/backend/databases/emu_v7v8/silva_v7v8`}</pre>
+              </div>
+              <div style={{ fontSize: 11, color: "#78716c", marginTop: 8 }}>
+                หรือใช้ custom primer อื่นได้: เพิ่ม --primer-f XXXXXXXX --primer-r XXXXXXXX --min-len 250 --max-len 450
+              </div>
+            </div>
           )}
 
           {/* TopN */}

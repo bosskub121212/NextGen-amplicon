@@ -1,5 +1,5 @@
 {
   "version": "2.1.1",
   "release_date": "2026-05-14",
-  "changelog": "Custom primer preset + region-specific classifier training (QIIME2 extract-reads → fit-classifier-naive-bayes). Upload or auto-detect custom .qza classifiers. Comprehensive install.sh: Conda/Miniconda, QIIME2 env, Emu env, PICRUSt2, all database downloads (SILVA, UNITE, MIDORI2, NemaBase, Emu). download_databases.sh helper. Custom primer CUSTOM button in Step 1."
+  "changelog": "Custom primer preset + region-specific QIIME2 classifier training. ONT V7-V8 region-specific Emu database builder (build_emu_db.py --region V7-V8). Fix V7-V8 primers (1055F/1392R). Comprehensive install.sh: Conda/Miniconda, QIIME2, Emu, PICRUSt2, all DB downloads. download_databases.sh helper."
 }
