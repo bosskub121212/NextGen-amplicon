@@ -58,6 +58,7 @@ PIPELINES: list = [
     ("COX1",      4),
     ("18S-nema",  5),
     ("PacBio",    6),
+    ("ONT-16S",   7),
 ]
 ALL_MASK = (1 << len(PIPELINES)) - 1
 
