@@ -25,7 +25,19 @@ info() { echo -e "${CYAN}  ℹ${NC}  $1"; }
 warn() { echo -e "${YELLOW}  ⚠${NC}  $1"; }
 die()  { echo -e "${RED}  ✗${NC}  $1"; exit 1; }
 step() { echo -e "\n${BOLD}${CYAN}══ $1 ══${NC}"; }
-ask()  { read -r -p "  $1 [Y/n] " _ANS; _ANS="${_ANS:-Y}"; [[ "$_ANS" =~ ^[Yy] ]]; }
+
+# ── Auto-yes flag ─────────────────────────────────────────────────────────────
+AUTO_YES=false
+for _arg in "$@"; do
+  [[ "$_arg" == "--yes" || "$_arg" == "-y" ]] && AUTO_YES=true
+done
+ask() {
+  if [[ "$AUTO_YES" == "true" ]]; then
+    echo -e "  $1 [Y/n] Y  ${CYAN}(auto)${NC}"
+    return 0
+  fi
+  read -r -p "  $1 [Y/n] " _ANS; _ANS="${_ANS:-Y}"; [[ "$_ANS" =~ ^[Yy] ]]
+}
 
 REPO_URL="https://github.com/bosskub121212/NextGen-amplicon.git"
 INSTALL_DIR="$HOME/r16s-app"
