@@ -123,14 +123,30 @@ export const defaultParams: PipelineParams = {
 export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio" | "ONT-16S";
 
 // ── Primer presets (Cutadapt step) ────────────────────────────────────────────
-const CUTADAPT_PRESETS: { label: string; f: string; r: string; markers: string[] }[] = [
-  { label: "16S V3–V4",  f: "CCTACGGGNGGCWGCAG",         r: "GACTACHVGGGTATCTAATCC",    markers: ["16S"] },
-  { label: "16S V4",     f: "GTGYCAGCMGCCGCGGTAA",        r: "GGACTACNVGGGTWTCTAAT",     markers: ["16S"] },
-  { label: "ITS1",       f: "TCCGTAGGTGAACCTGCGG",        r: "GCTGCGTTCTTCATCGATGC",     markers: ["ITS1"] },
-  { label: "ITS2",       f: "GTGAATCATCGAATCTTTGAA",      r: "TCCTCCGCTTATTGATATGC",     markers: ["ITS2"] },
-  { label: "18S (V4)",   f: "CCAGCASCYGCGGTAATTCC",       r: "ACTTTCGTTCTTGATYRA",       markers: ["18S-nema"] },
-  { label: "12S (fish)", f: "GTCGGTAAAACTCGTGCCAGC",      r: "CATAGTGGGGTATCTAATCCCAGTTTG", markers: ["12S"] },
-  { label: "COX1 mlCOI", f: "GGWACWGGWTGAACWGTWTAYCCYCC", r: "TANACYTCNGGRTGNCCRAARAAYCA",  markers: ["COX1"] },
+interface PrimerPreset {
+  label:      string;
+  f:          string;
+  r:          string;
+  markers:    string[];
+  region?:    string;   // named region — used for smart hints
+  truncF?:    number;   // suggested DADA2 truncLen_F when this preset is chosen
+  truncR?:    number;   // suggested DADA2 truncLen_R
+  ampMinLen?: number;   // suggested classifier-training amplicon min length
+  ampMaxLen?: number;   // suggested classifier-training amplicon max length
+}
+
+const CUTADAPT_PRESETS: PrimerPreset[] = [
+  { label: "16S V3–V4",  f: "CCTACGGGNGGCWGCAG",          r: "GACTACHVGGGTATCTAATCC",
+    markers: ["16S"],    region: "V3-V4", truncF: 240, truncR: 200, ampMinLen: 350, ampMaxLen: 500 },
+  { label: "16S V4",     f: "GTGYCAGCMGCCGCGGTAA",         r: "GGACTACNVGGGTWTCTAAT",
+    markers: ["16S"],    region: "V4",    truncF: 240, truncR: 160, ampMinLen: 250, ampMaxLen: 300 },
+  { label: "16S V7–V8",  f: "AACMGGATTAGATACCCKG",         r: "ACGTCATCCCCACCTTCC",
+    markers: ["16S"],    region: "V7-V8", truncF: 250, truncR: 200, ampMinLen: 300, ampMaxLen: 400 },
+  { label: "ITS1",       f: "TCCGTAGGTGAACCTGCGG",         r: "GCTGCGTTCTTCATCGATGC",     markers: ["ITS1"] },
+  { label: "ITS2",       f: "GTGAATCATCGAATCTTTGAA",       r: "TCCTCCGCTTATTGATATGC",     markers: ["ITS2"] },
+  { label: "18S (V4)",   f: "CCAGCASCYGCGGTAATTCC",        r: "ACTTTCGTTCTTGATYRA",       markers: ["18S-nema"] },
+  { label: "12S (fish)", f: "GTCGGTAAAACTCGTGCCAGC",       r: "CATAGTGGGGTATCTAATCCCAGTTTG", markers: ["12S"] },
+  { label: "COX1 mlCOI", f: "GGWACWGGWTGAACWGTWTAYCCYCC",  r: "TANACYTCNGGRTGNCCRAARAAYCA",  markers: ["COX1"] },
 ];
 
 const MARKER_OPTIONS: { value: MarkerType; label: string; description: string; icon: string }[] = [
@@ -271,9 +287,14 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
   const toggle = <T,>(arr: T[], val: T): T[] =>
     arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
 
-  const selectPreset = (f: string, r: string) => {
+  const selectPreset = (
+    f: string,
+    r: string,
+    extras?: Partial<Pick<PipelineParams,
+      "truncLen_F" | "truncLen_R" | "trainAmpliconMinLen" | "trainAmpliconMaxLen">>
+  ) => {
     setSelectedPrimerF(f);
-    onChange({ ...params, primer_f: f, primer_r: r });
+    onChange({ ...params, primer_f: f, primer_r: r, ...(extras ?? {}) });
   };
 
   useEffect(() => {
@@ -305,6 +326,10 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
   // Filtered cutadapt presets for current marker
   const cutadaptPresets = CUTADAPT_PRESETS.filter(p => p.markers.includes(marker));
   const allPresets = cutadaptPresets.length > 0 ? cutadaptPresets : CUTADAPT_PRESETS;
+
+  // Derive selected region from current primer_f (no extra state needed)
+  const activePreset = CUTADAPT_PRESETS.find(p => p.f === params.primer_f && p.markers.includes(marker));
+  const selectedRegion = activePreset?.region ?? "";
 
   const renderDbOptions = (hint: string) => (
     <div className="param-item" style={{ marginTop: 12 }}>
@@ -772,7 +797,10 @@ conda run -n emu emu build-database \\
                         {allPresets.map((pr, i) => (
                           <button key={i} type="button"
                             className={`ps-primer-card ${selectedPrimerF === pr.f ? "ps-primer-card--active" : ""}`}
-                            onClick={() => selectPreset(pr.f, pr.r)}>
+                            onClick={() => selectPreset(pr.f, pr.r, {
+                              ...(pr.truncF    !== undefined ? { truncLen_F: pr.truncF, truncLen_R: pr.truncR ?? params.truncLen_R } : {}),
+                              ...(pr.ampMinLen !== undefined ? { trainAmpliconMinLen: pr.ampMinLen, trainAmpliconMaxLen: pr.ampMaxLen ?? params.trainAmpliconMaxLen } : {}),
+                            })}>
                             <div className="ps-primer-name">{pr.label}</div>
                             <div className="ps-primer-seq">F: {pr.f.length > 18 ? pr.f.slice(0, 18) + "…" : pr.f}</div>
                             <div className="ps-primer-seq">R: {pr.r.length > 18 ? pr.r.slice(0, 18) + "…" : pr.r}</div>
@@ -881,7 +909,10 @@ conda run -n emu emu build-database \\
                         <div className="ps-tip">💡 <strong>Overlap</strong>: truncLen_F + truncLen_R must exceed amplicon length by ≥20 bp to merge</div>
                         <div className="ps-tip" style={{ color: "#22d3ee" }}>
                           Current: F={params.truncLen_F} + R={params.truncLen_R} = {params.truncLen_F + params.truncLen_R} bp
-                          {marker === "16S" && " (16S V3-V4 amplicon ~460 bp → need ≥480 combined)"}
+                          {selectedRegion === "V3-V4" && " (16S V3–V4 amplicon ~460 bp → need ≥480 combined)"}
+                          {selectedRegion === "V4"    && " (16S V4 amplicon ~253 bp → need ≥273 combined)"}
+                          {selectedRegion === "V7-V8" && " (16S V7–V8 amplicon ~337 bp → need ≥357 combined)"}
+                          {!selectedRegion && marker === "16S" && " (16S V3–V4 amplicon ~460 bp → need ≥480 combined)"}
                         </div>
                       </div>
                     </div>
@@ -1068,9 +1099,19 @@ FastTree -gtr -nt aligned.fasta > unrooted-tree.nwk
                           </div>
 
                           {params.customClassifierMode === "default" && (
-                            <div className="ps-info-box" style={{ fontSize: 12 }}>
-                              Auto-detect classifier from <code>~/r16s-app/backend/classifiers/</code> based on marker type.
-                              Place your <code>.qza</code> file there to use it automatically.
+                            <div>
+                              <div className="ps-info-box" style={{ fontSize: 12 }}>
+                                Auto-detect classifier from <code>~/r16s-app/backend/classifiers/</code> based on marker type.
+                                Place your <code>.qza</code> file there to use it automatically.
+                              </div>
+                              {selectedRegion === "V7-V8" && (
+                                <div className="ps-info-box ps-info-box--warn" style={{ fontSize: 12, marginTop: 8 }}>
+                                  ⚠️ <strong>V7–V8 region ต้องการ classifier เฉพาะ region</strong> — classifier มาตรฐาน (V3–V4/V4)
+                                  จะให้ผลไม่ดีกับ amplicon ที่ตัดจาก 1055F/1392R
+                                  แนะนำเปลี่ยนเป็น <strong>🟣 Train from primers</strong> เพื่อ train V7–V8 classifier จาก SILVA อัตโนมัติ
+                                  (ครั้งแรกใช้เวลา 10–30 นาที, ครั้งต่อไป reuse ได้เลย)
+                                </div>
+                              )}
                             </div>
                           )}
 
@@ -1111,8 +1152,16 @@ FastTree -gtr -nt aligned.fasta > unrooted-tree.nwk
                                 </div>
                               </div>
                               <div style={{ fontSize: 11, color: "#475569", marginTop: 8 }}>
-                                💡 Tip for 300–500 bp amplicons: V3–V4 (341F/806R) → min 350 max 500 &nbsp;|&nbsp;
-                                V4–V5 (515F/926R) → min 300 max 450 &nbsp;|&nbsp; V1–V3 (27F/534R) → min 400 max 550
+                                💡 Tip: V3–V4 (341F/806R) → min 350 max 500 &nbsp;|&nbsp;
+                                V4 (515F/806R) → min 250 max 300 &nbsp;|&nbsp;
+                                V7–V8 (1055F/1392R) → min 300 max 400 &nbsp;|&nbsp;
+                                V4–V5 (515F/926R) → min 300 max 450 &nbsp;|&nbsp;
+                                V1–V3 (27F/534R) → min 400 max 550
+                                {selectedRegion === "V7-V8" && (
+                                  <span style={{ color: "#a78bfa", fontWeight: 600 }}>
+                                    &nbsp;← ค่า V7–V8 ถูกตั้งให้แล้วอัตโนมัติ
+                                  </span>
+                                )}
                               </div>
                             </div>
                           )}
