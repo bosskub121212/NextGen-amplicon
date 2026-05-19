@@ -65,12 +65,12 @@ def count_reads(fastq: Path) -> int:
     except Exception:
         return 0
 
-def run_cmd(cmd: list, desc: str = "") -> bool:
+def run_cmd(cmd: list, desc: str = "", env=None) -> bool:
     """Run a subprocess, stream stdout/stderr, return success."""
     if desc:
         log(f"  → {desc}")
     log(f"  CMD: {' '.join(str(c) for c in cmd)}")
-    result = subprocess.run(cmd, capture_output=False)
+    result = subprocess.run(cmd, capture_output=False, env=env)
     if result.returncode != 0:
         log(f"  [WARN] Command returned {result.returncode}: {desc}")
         return False
@@ -126,11 +126,17 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             emu_conda_bin = str(candidate)
             break
 
+    # Build environment: inject emu conda bin dir into PATH so minimap2 is found
+    emu_env = os.environ.copy()
     if emu_conda_bin:
         # Prefer calling the emu env's Python directly — avoids issues where
         # 'conda run --no-capture-output' doesn't fully activate the env and
         # fails to find packages like pysam even when they're installed.
         emu_python = str(Path(emu_conda_bin).parent / "python3")
+        emu_bin_dir = str(Path(emu_conda_bin).parent)
+        # Always add emu env bin to PATH so minimap2 and other tools are found
+        emu_env["PATH"] = emu_bin_dir + os.pathsep + emu_env.get("PATH", "")
+        log(f"  emu PATH: {emu_bin_dir} prepended")
         if Path(emu_python).exists():
             emu_prefix = [emu_python, emu_conda_bin]
         elif conda:
@@ -162,7 +168,7 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             "--output-dir", str(sample_out),
             str(fq),
         ]
-        success = run_cmd(cmd, f"Emu: {name}")
+        success = run_cmd(cmd, f"Emu: {name}", env=emu_env)
         # Emu names output as <input_basename>_rel-abundance.tsv
         tsv_candidates = list(sample_out.glob("*rel-abundance.tsv"))
         if tsv_candidates:
