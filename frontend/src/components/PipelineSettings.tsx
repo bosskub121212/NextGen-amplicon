@@ -546,30 +546,59 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
 
           {/* Emu database */}
           <div className="param-item" style={{ marginTop: 12 }}>
-            <label className="param-label">Emu Database Path</label>
-            <span className="param-hint">Directory containing Emu SILVA database (from: emu download-db silva)</span>
+            <label className="param-label">Emu Database</label>
+            <span className="param-hint">เลือก Emu database directory (ต้องมี species_taxid.fasta + taxonomy.tsv)</span>
             {(() => {
-              const emuPath = dbPaths["emu_silva"] || "";
-              return emuPath ? (
-                <div style={{ fontSize: 12, color: "#10b981", marginBottom: 6 }}>✅ {emuPath}</div>
-              ) : (
-                <div style={{ fontSize: 12, color: "#f59e0b", marginBottom: 6 }}>
-                  ⚠ Emu DB not configured — run: <code style={{ fontSize: 11 }}>emu download-db silva --db-dir ~/r16s-app/backend/databases/emu_silva</code>
-                </div>
+              // Collect all emu_* entries from db_paths.json
+              const emuDbs: { key: string; path: string; label: string }[] = Object.entries(dbPaths)
+                .filter(([k, v]) => k.startsWith("emu_") && v)
+                .map(([k, v]) => ({
+                  key: k,
+                  path: v as string,
+                  label: k === "emu_silva" ? "Emu SILVA (full-length)"
+                       : k === "emu_db_mar2026" ? "Emu DB Mar 2026"
+                       : k.replace("emu_", "Emu "),
+                }));
+
+              const currentVal = params.ont_db_path || (emuDbs[0]?.path ?? "");
+              const isKnown = emuDbs.some(d => d.path === currentVal);
+
+              if (emuDbs.length === 0) {
+                return (
+                  <div style={{ fontSize: 12, color: "#f59e0b", marginBottom: 6 }}>
+                    ⚠ ไม่พบ Emu database — ดูวิธีสร้างด้านล่าง
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  <select
+                    className="param-input"
+                    style={{ width: "100%", marginBottom: 6 }}
+                    value={isKnown ? currentVal : "__custom__"}
+                    onChange={e => {
+                      if (e.target.value !== "__custom__") set("ont_db_path", e.target.value);
+                    }}
+                  >
+                    {emuDbs.map(d => (
+                      <option key={d.key} value={d.path}>{d.label} — {d.path.split("/").slice(-2).join("/")}</option>
+                    ))}
+                    <option value="__custom__">Custom path...</option>
+                  </select>
+                  {!isKnown && (
+                    <input type="text" className="param-input" style={{ width: "100%", marginBottom: 4 }}
+                      placeholder="Path to Emu database directory"
+                      value={currentVal}
+                      onChange={e => set("ont_db_path", e.target.value)} />
+                  )}
+                  <div style={{ fontSize: 11, color: "#10b981" }}>
+                    ✅ {currentVal}
+                  </div>
+                </>
               );
             })()}
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input type="text" className="param-input" style={{ flex: 1 }}
-                placeholder={`${dbDir || "~/r16s-app/backend/databases"}/emu_silva`}
-                value={params.ont_db_path || dbPaths["emu_silva"] || ""}
-                onChange={e => set("ont_db_path", e.target.value)} />
-              <button className="browse-btn" onClick={() => setShowBrowser(true)}>📂 Browse</button>
-            </div>
           </div>
-
-          {showBrowser && (
-            <DbFileBrowser onSelect={path => { set("ont_db_path", path); setShowBrowser(false); }} onClose={() => setShowBrowser(false)} />
-          )}
 
           {/* Region-specific Emu DB hint */}
           {params.ont_region === "V7-V8" && (
