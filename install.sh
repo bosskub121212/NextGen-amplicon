@@ -26,6 +26,34 @@ warn() { echo -e "${YELLOW}  ⚠${NC}  $1"; }
 die()  { echo -e "${RED}  ✗${NC}  $1"; exit 1; }
 step() { echo -e "\n${BOLD}${CYAN}══ $1 ══${NC}"; }
 
+# ── Timed runner: shows elapsed time after long commands ──────────────────────
+run_timed() {
+  # Usage: run_timed "label" command [args...]
+  local label="$1"; shift
+  local start_ts; start_ts=$(date +%s)
+  info "Starting: ${label}"
+
+  # Background ticker — prints elapsed every 60s so terminal doesn't look frozen
+  ( while true; do
+      sleep 60
+      local now elapsed; now=$(date +%s); elapsed=$((now - start_ts))
+      echo -e "${CYAN}  ⏳  ${label} — still running... $((elapsed/60))m$((elapsed%60))s${NC}"
+    done ) &
+  local ticker=$!
+
+  "$@"
+  local rc=$?
+  kill "$ticker" 2>/dev/null; wait "$ticker" 2>/dev/null
+
+  local now elapsed; now=$(date +%s); elapsed=$((now - start_ts))
+  if [[ $rc -eq 0 ]]; then
+    ok "${label} — done in $((elapsed/60))m$((elapsed%60))s"
+  else
+    warn "${label} — finished with errors after $((elapsed/60))m$((elapsed%60))s"
+  fi
+  return $rc
+}
+
 # ── Auto-yes flag ─────────────────────────────────────────────────────────────
 AUTO_YES=false
 for _arg in "$@"; do
@@ -235,9 +263,8 @@ else
     QIIME2_YML="/tmp/qiime2-amplicon.yml"
     curl -fsSL "$QIIME2_CHANNEL" -o "$QIIME2_YML" || \
       wget -q "$QIIME2_CHANNEL" -O "$QIIME2_YML"
-    info "Creating QIIME2 conda env (this may take 20–40 min)..."
-    $_CONDA_CMD env create -n "$QIIME2_ENV" --file "$QIIME2_YML" 2>&1 | \
-      grep -E "^(Preparing|Executing|Installing|done|ERROR|error)" || true
+    run_timed "QIIME2 conda env create (~20–40 min)" \
+      $_CONDA_CMD env create -n "$QIIME2_ENV" --file "$QIIME2_YML" || true
     rm -f "$QIIME2_YML"
     if conda env list | grep -q "^${QIIME2_ENV}"; then
       ok "QIIME2 env '$QIIME2_ENV' installed"
@@ -262,9 +289,8 @@ else
   echo ""
   echo -e "${BOLD}${CYAN}  Emu enables ONT 16S analysis (V7-V8, V1-V9). Requires ~500 MB conda env.${NC}"
   if ask "Install Emu now?"; then
-    info "Creating conda env 'emu'..."
-    $_CONDA_CMD create -n emu -c bioconda -c conda-forge emu -y 2>&1 | \
-      grep -E "^(Preparing|Executing|Installing|done|ERROR)" || true
+    run_timed "Emu conda env create (~5–10 min)" \
+      $_CONDA_CMD create -n emu -c bioconda -c conda-forge emu -y || true
     if conda run -n emu emu --version &>/dev/null 2>&1; then
       ok "Emu installed ($(conda run -n emu emu --version 2>/dev/null || echo 'ok'))"
     else
@@ -283,9 +309,8 @@ else
   echo ""
   echo -e "${BOLD}${CYAN}  PICRUSt2 enables KEGG, MetaCyc, COG predictions (~3 GB, 10-20 min).${NC}"
   if ask "Install PICRUSt2 now?"; then
-    info "Creating conda env 'picrust2'..."
-    $_CONDA_CMD create -n picrust2 -c bioconda -c conda-forge picrust2 -y 2>&1 | \
-      grep -E "^(Preparing|Executing|Installing|done|ERROR)" || true
+    run_timed "PICRUSt2 conda env create (~10–20 min)" \
+      $_CONDA_CMD create -n picrust2 -c bioconda -c conda-forge picrust2 -y || true
     conda env list | grep -q "^picrust2" && \
       ok "PICRUSt2 installed" || \
       warn "PICRUSt2 failed — try: conda create -n picrust2 -c bioconda -c conda-forge picrust2 -y"
