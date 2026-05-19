@@ -1,5 +1,5 @@
 {
-  "version": "2.1.1",
-  "release_date": "2026-05-14",
-  "changelog": "Custom primer preset + region-specific QIIME2 classifier training. ONT V7-V8 region-specific Emu database builder (build_emu_db.py --region V7-V8). Fix V7-V8 primers (1055F/1392R). Comprehensive install.sh: Conda/Miniconda, QIIME2, Emu, PICRUSt2, all DB downloads. download_databases.sh helper."
+  "version": "2.2.0",
+  "release_date": "2026-05-19",
+  "changelog": "ONT R10.4+ single-end DADA2 mode: sequencer toggle in 16S pipeline (Illumina/ONT), single-end file detection for ONT barcoded files, single-end cutadapt/filterAndTrim/denoise, skip merge step. UI: R2 fields hidden in ONT mode, quality plot tips updated, ONT requirements badge."
 }

@@ -169,6 +169,8 @@ class RunParams(BaseModel):
     # --- Functional prediction ---
     run_tax4fun:   bool  = False
     run_picrust2:  bool  = False
+    # --- Sequencer type (for DADA2 16S/12S pipelines) ---
+    sequencerType: str   = "illumina"   # illumina | ont
     # --- Custom classifier (QIIME2) ---
     customClassifierMode: str   = "default"  # default | train | upload
     customClassifierPath: str   = ""          # path to .qza (upload mode)
@@ -510,6 +512,8 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--tax4fun", "TRUE"]
             if db_paths_json:
                 cmd += ["--tax4fun_ref", ""]  # will be auto-detected from db_paths.json
+        if params.sequencerType == "ont":
+            cmd += ["--single_end", "TRUE"]
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,

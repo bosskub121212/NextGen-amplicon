@@ -71,13 +71,19 @@ option_list <- list(
   make_option("--min_overlap",       type="integer",   default=3,
               help="cutadapt -O: minimum overlap bases (default 3)"),
   make_option("--discard_untrimmed", type="logical",   default=FALSE,
-              help="Discard reads where primer was not found")
+              help="Discard reads where primer was not found"),
+  make_option("--single_end",        type="logical",   default=FALSE,
+              help="Single-end mode: ONT R10.4+ reads (no R2, no merge step)")
 )
 opt <- parse_args(OptionParser(option_list=option_list))
 
+# ── Single-end flag (ONT mode) ────────────────────────────────
+is_single <- isTRUE(opt$single_end)
+
 cat("=== DADA2 Pipeline Starting ===\n")
 cat("Marker   :", opt$marker, "\n")
-cat("Database :", opt$taxDatabase, "\n\n")
+cat("Database :", opt$taxDatabase, "\n")
+cat("Mode     :", if (is_single) "single-end (ONT)" else "paired-end (Illumina)", "\n\n")
 
 dir.create(opt$output, showWarnings=FALSE, recursive=TRUE)
 
@@ -90,10 +96,6 @@ prog <- function(pct, label) {
 prog(2, "Pipeline initialized — loading libraries")
 
 # ── Step 1: Find FASTQ files ─────────────────────────────────
-patterns <- list(
-  R1 = c("_R1.*\\.fastq$", "_R1.*\\.fastq\\.gz$", "_1\\.f(q|astq)(\\.gz)?$"),
-  R2 = c("_R2.*\\.fastq$", "_R2.*\\.fastq\\.gz$", "_2\\.f(q|astq)(\\.gz)?$")
-)
 findFASTQ <- function(dir, pats) {
   for (p in pats) {
     f <- sort(list.files(dir, pattern=p, full.names=TRUE))
@@ -101,12 +103,37 @@ findFASTQ <- function(dir, pats) {
   }
   return(character(0))
 }
-fnFs <- findFASTQ(opt$input, patterns$R1)
-fnRs <- findFASTQ(opt$input, patterns$R2)
-if (length(fnFs) == 0) stop("No FASTQ files found in: ", opt$input)
-cat("Found R1:", length(fnFs), "files\n")
-cat("Found R2:", length(fnRs), "files\n\n")
-sample_names <- sub("_R1.*|_1\\.(fq|fastq).*", "", basename(fnFs))
+
+if (is_single) {
+  # ── Single-end (ONT): accept any .fastq / .fastq.gz file ───
+  fnFs <- sort(list.files(opt$input,
+    pattern="\\.f(q|astq)(\\.gz)?$", full.names=TRUE))
+  if (length(fnFs) == 0) stop("No FASTQ files found in: ", opt$input)
+  fnRs <- character(0)
+  # Extract sample names — handles ONT Guppy/Dorado barcode naming:
+  #   FBE77026_pass_barcode08_877a528d_...fastq.gz → barcode08
+  #   barcode08.fastq.gz                           → barcode08
+  raw_names <- sub("\\.fastq\\.gz$|\\.fastq$|\\.fq\\.gz$|\\.fq$", "",
+                   basename(fnFs))
+  sample_names <- gsub(".*_pass_(barcode\\d+)_.*", "\\1", raw_names)
+  # Fallback: strip trailing _digits if still long
+  still_long <- !grepl("^barcode", sample_names)
+  sample_names[still_long] <- sub("_[0-9]+$", "", raw_names[still_long])
+  cat("Found (single-end):", length(fnFs), "files\n")
+  cat("Sample names:", paste(sample_names, collapse=", "), "\n\n")
+} else {
+  # ── Paired-end (Illumina): require R1/R2 ───────────────────
+  patterns <- list(
+    R1 = c("_R1.*\\.fastq$", "_R1.*\\.fastq\\.gz$", "_1\\.f(q|astq)(\\.gz)?$"),
+    R2 = c("_R2.*\\.fastq$", "_R2.*\\.fastq\\.gz$", "_2\\.f(q|astq)(\\.gz)?$")
+  )
+  fnFs <- findFASTQ(opt$input, patterns$R1)
+  fnRs <- findFASTQ(opt$input, patterns$R2)
+  if (length(fnFs) == 0) stop("No FASTQ files found in: ", opt$input)
+  cat("Found R1:", length(fnFs), "files\n")
+  cat("Found R2:", length(fnRs), "files\n\n")
+  sample_names <- sub("_R1.*|_1\\.(fq|fastq).*", "", basename(fnFs))
+}
 prog(8, sprintf("Found %d sample(s) — ready to process", length(fnFs)))
 
 # ── Step 1b (optional): Cutadapt Primer Trimming ─────────────
@@ -119,6 +146,7 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
   cat("Step 1b: Primer Trimming with cutadapt...\n")
   cat("  Primer F:", opt$primer_f, "\n")
   cat("  Primer R:", opt$primer_r, "\n")
+  if (is_single) cat("  Mode: single-end\n")
 
   cutadapt_ok <- (system("cutadapt --version", ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
 
@@ -128,37 +156,66 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
     cut_dir     <- file.path(opt$output, "cutadapt")
     dir.create(cut_dir, recursive=TRUE, showWarnings=FALSE)
 
-    cutFs <- file.path(cut_dir, paste0(sample_names, "_F_cut.fastq.gz"))
-    cutRs <- file.path(cut_dir, paste0(sample_names, "_R_cut.fastq.gz"))
-
     discard_flag <- if (isTRUE(opt$discard_untrimmed)) "--discard-untrimmed" else ""
     n_cut <- 0
-    for (i in seq_along(fnFs)) {
-      cmd <- paste(
-        "cutadapt",
-        "-g", opt$primer_f,   "-a", primer_r_rc,
-        "-G", opt$primer_r,   "-A", primer_f_rc,
-        "-e", opt$error_rate,
-        "-O", opt$min_overlap,
-        "-m 50 --cores=0",
-        discard_flag,
-        "-o", cutFs[i], "-p", cutRs[i],
-        fnFs[i], fnRs[i],
-        "> /dev/null 2>&1"
-      )
-      ret <- system(cmd)
-      if (ret == 0 && file.exists(cutFs[i]) && file.size(cutFs[i]) > 0) n_cut <- n_cut + 1
-    }
-    cat(sprintf("  cutadapt: %d/%d samples trimmed OK\n", n_cut, length(fnFs)))
 
-    valid_cut <- file.exists(cutFs) & file.size(cutFs) > 0
-    if (sum(valid_cut) > 0) {
-      fnFs         <- cutFs[valid_cut]
-      fnRs         <- cutRs[valid_cut]
-      sample_names <- sample_names[valid_cut]
-      cat("  Using cutadapt-trimmed reads for downstream steps\n\n")
+    if (is_single) {
+      # ── Single-end cutadapt ──────────────────────────────────
+      cutFs <- file.path(cut_dir, paste0(sample_names, "_cut.fastq.gz"))
+      for (i in seq_along(fnFs)) {
+        cmd <- paste(
+          "cutadapt",
+          "-g", opt$primer_f, "-a", primer_r_rc,
+          "-e", opt$error_rate,
+          "-O", opt$min_overlap,
+          "-m 50 --cores=0",
+          discard_flag,
+          "-o", cutFs[i],
+          fnFs[i],
+          "> /dev/null 2>&1"
+        )
+        ret <- system(cmd)
+        if (ret == 0 && file.exists(cutFs[i]) && file.size(cutFs[i]) > 0) n_cut <- n_cut + 1
+      }
+      cat(sprintf("  cutadapt: %d/%d samples trimmed OK\n", n_cut, length(fnFs)))
+      valid_cut <- file.exists(cutFs) & file.size(cutFs) > 0
+      if (sum(valid_cut) > 0) {
+        fnFs         <- cutFs[valid_cut]
+        sample_names <- sample_names[valid_cut]
+        cat("  Using cutadapt-trimmed reads for downstream steps\n\n")
+      } else {
+        cat("  WARNING: cutadapt produced no output — using untrimmed reads\n\n")
+      }
     } else {
-      cat("  WARNING: cutadapt produced no output — using untrimmed reads\n\n")
+      # ── Paired-end cutadapt ──────────────────────────────────
+      cutFs <- file.path(cut_dir, paste0(sample_names, "_F_cut.fastq.gz"))
+      cutRs <- file.path(cut_dir, paste0(sample_names, "_R_cut.fastq.gz"))
+      for (i in seq_along(fnFs)) {
+        cmd <- paste(
+          "cutadapt",
+          "-g", opt$primer_f,   "-a", primer_r_rc,
+          "-G", opt$primer_r,   "-A", primer_f_rc,
+          "-e", opt$error_rate,
+          "-O", opt$min_overlap,
+          "-m 50 --cores=0",
+          discard_flag,
+          "-o", cutFs[i], "-p", cutRs[i],
+          fnFs[i], fnRs[i],
+          "> /dev/null 2>&1"
+        )
+        ret <- system(cmd)
+        if (ret == 0 && file.exists(cutFs[i]) && file.size(cutFs[i]) > 0) n_cut <- n_cut + 1
+      }
+      cat(sprintf("  cutadapt: %d/%d samples trimmed OK\n", n_cut, length(fnFs)))
+      valid_cut <- file.exists(cutFs) & file.size(cutFs) > 0
+      if (sum(valid_cut) > 0) {
+        fnFs         <- cutFs[valid_cut]
+        fnRs         <- cutRs[valid_cut]
+        sample_names <- sample_names[valid_cut]
+        cat("  Using cutadapt-trimmed reads for downstream steps\n\n")
+      } else {
+        cat("  WARNING: cutadapt produced no output — using untrimmed reads\n\n")
+      }
     }
   } else {
     cat("  WARNING: cutadapt not found — primers NOT trimmed\n")
@@ -172,17 +229,30 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
 prog(12, "Step 1/8 — Filtering and trimming reads")
 cat("Step 1/5: Filter & Trim...\n")
 filtFs <- file.path(opt$output, "filtered", paste0(sample_names, "_F_filt.fastq.gz"))
-filtRs <- file.path(opt$output, "filtered", paste0(sample_names, "_R_filt.fastq.gz"))
 names(filtFs) <- sample_names
-names(filtRs) <- sample_names
 
-out <- filterAndTrim(
-  fnFs, filtFs, fnRs, filtRs,
-  truncLen   = c(opt$truncLen_F, opt$truncLen_R),
-  trimLeft   = c(opt$trimLeft_F, opt$trimLeft_R),
-  maxN=0, maxEE=c(opt$maxEE_F, opt$maxEE_R),
-  truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=TRUE
-)
+if (is_single) {
+  # ── Single-end filterAndTrim ─────────────────────────────────
+  out <- filterAndTrim(
+    fnFs, filtFs,
+    truncLen = opt$truncLen_F,
+    trimLeft = opt$trimLeft_F,
+    maxN=0, maxEE=opt$maxEE_F,
+    truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=TRUE
+  )
+  filtRs <- character(0)
+} else {
+  # ── Paired-end filterAndTrim ─────────────────────────────────
+  filtRs <- file.path(opt$output, "filtered", paste0(sample_names, "_R_filt.fastq.gz"))
+  names(filtRs) <- sample_names
+  out <- filterAndTrim(
+    fnFs, filtFs, fnRs, filtRs,
+    truncLen   = c(opt$truncLen_F, opt$truncLen_R),
+    trimLeft   = c(opt$trimLeft_F, opt$trimLeft_R),
+    maxN=0, maxEE=c(opt$maxEE_F, opt$maxEE_R),
+    truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=TRUE
+  )
+}
 cat("  Done. Reads passing filter:", sum(out[,2]), "\n\n")
 prog(28, sprintf("Filter & Trim done — %d reads passed", sum(out[,2])))
 
@@ -192,12 +262,18 @@ tryCatch({
   dir.create(trim_dir, showWarnings=FALSE, recursive=TRUE)
   for (i in seq_along(filtFs)) {
     if (file.exists(filtFs[i])) {
-      dst_f <- file.path(trim_dir, paste0(sample_names[i], "_R1.trim.fastq.gz"))
-      file.copy(filtFs[i], dst_f, overwrite=TRUE)
+      file.copy(filtFs[i],
+        file.path(trim_dir, paste0(sample_names[i], "_R1.trim.fastq.gz")),
+        overwrite=TRUE)
     }
-    if (file.exists(filtRs[i])) {
-      dst_r <- file.path(trim_dir, paste0(sample_names[i], "_R2.trim.fastq.gz"))
-      file.copy(filtRs[i], dst_r, overwrite=TRUE)
+  }
+  if (!is_single) {
+    for (i in seq_along(filtRs)) {
+      if (file.exists(filtRs[i])) {
+        file.copy(filtRs[i],
+          file.path(trim_dir, paste0(sample_names[i], "_R2.trim.fastq.gz")),
+          overwrite=TRUE)
+      }
     }
   }
   cat("  Trimmed FastQ saved to Trim_seq/\n")
@@ -207,7 +283,9 @@ tryCatch({
 prog(32, "Step 2/8 — Learning error rates (this takes a while...)")
 cat("Step 2/5: Learning Error Rates...\n")
 errF <- learnErrors(filtFs, nbases=opt$nbases, multithread=TRUE)
-errR <- learnErrors(filtRs, nbases=opt$nbases, multithread=TRUE)
+if (!is_single) {
+  errR <- learnErrors(filtRs, nbases=opt$nbases, multithread=TRUE)
+}
 cat("  Done.\n\n")
 
 # ── Save Error Model plots → output_dir/Dada2/ ────────────────
@@ -218,10 +296,14 @@ tryCatch({
     p_errF <- dada2::plotErrors(errF, nominalQ=TRUE)
     ggplot2::ggsave(file.path(dada2_dir, "ErrorModel_R1.pdf"),
                     p_errF, width=10, height=8, device="pdf")
-    p_errR <- dada2::plotErrors(errR, nominalQ=TRUE)
-    ggplot2::ggsave(file.path(dada2_dir, "ErrorModel_R2.pdf"),
-                    p_errR, width=10, height=8, device="pdf")
-    cat("  ErrorModel_R1.pdf + ErrorModel_R2.pdf saved to Dada2/\n")
+    if (!is_single) {
+      p_errR <- dada2::plotErrors(errR, nominalQ=TRUE)
+      ggplot2::ggsave(file.path(dada2_dir, "ErrorModel_R2.pdf"),
+                      p_errR, width=10, height=8, device="pdf")
+      cat("  ErrorModel_R1.pdf + ErrorModel_R2.pdf saved to Dada2/\n")
+    } else {
+      cat("  ErrorModel_R1.pdf saved to Dada2/\n")
+    }
   }
 }, error=function(e) cat("  [skip] Error model plots:", e$message, "\n"))
 
@@ -230,39 +312,61 @@ prog(48, "Step 3/8 — Denoising & ASV inference")
 cat("Step 3/5: Denoising (DADA2 Inference)...\n")
 pool_val <- if (opt$pool == "TRUE") TRUE else if (opt$pool == "FALSE") FALSE else "pseudo"
 derepFs  <- derepFastq(filtFs)
-derepRs  <- derepFastq(filtRs)
 if (!is.list(derepFs)) derepFs <- setNames(list(derepFs), sample_names)
-if (!is.list(derepRs)) derepRs <- setNames(list(derepRs), sample_names)
 names(derepFs) <- sample_names
-names(derepRs) <- sample_names
 dadaFs <- dada(derepFs, err=errF, pool=pool_val, multithread=TRUE)
-dadaRs <- dada(derepRs, err=errR, pool=pool_val, multithread=TRUE)
 if (inherits(dadaFs, "dada")) dadaFs <- setNames(list(dadaFs), sample_names)
-if (inherits(dadaRs, "dada")) dadaRs <- setNames(list(dadaRs), sample_names)
+
+if (!is_single) {
+  derepRs <- derepFastq(filtRs)
+  if (!is.list(derepRs)) derepRs <- setNames(list(derepRs), sample_names)
+  names(derepRs) <- sample_names
+  dadaRs <- dada(derepRs, err=errR, pool=pool_val, multithread=TRUE)
+  if (inherits(dadaRs, "dada")) dadaRs <- setNames(list(dadaRs), sample_names)
+}
 cat("  Done.\n\n")
 
 # ── Step 5: Sequence Table & Chimera ─────────────────────────
 prog(65, "Step 4/8 — Building sequence table & removing chimeras")
 cat("Step 4/5: Sequence Table & Chimera Removal...\n")
-mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=FALSE)
-if (is.data.frame(mergers)) mergers <- setNames(list(mergers), sample_names)
-seqtab       <- makeSequenceTable(mergers)
+
+if (is_single) {
+  # Single-end: build sequence table directly from dadaFs (no merge)
+  seqtab <- makeSequenceTable(dadaFs)
+} else {
+  mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=FALSE)
+  if (is.data.frame(mergers)) mergers <- setNames(list(mergers), sample_names)
+  seqtab <- makeSequenceTable(mergers)
+}
 seqtab_nochim <- removeBimeraDenovo(seqtab, method=opt$chimeraMethod, multithread=TRUE)
 cat("  ASVs after chimera removal:", ncol(seqtab_nochim), "\n\n")
 
 # ── Read tracking (early) for checkpoint evaluation ───────────
-track_early <- cbind(
-  out,
-  sapply(dadaFs, function(d) sum(d$denoised)),
-  sapply(dadaRs, function(d) sum(d$denoised)),
-  sapply(mergers, function(m) sum(m$abundance[m$accept])),   # reads merged (not unique seqs)
-  rowSums(seqtab_nochim)
-)
-colnames(track_early) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")
+if (is_single) {
+  track_early <- cbind(
+    out,
+    sapply(dadaFs, function(d) sum(d$denoised)),
+    rowSums(seqtab_nochim)
+  )
+  colnames(track_early) <- c("input","filtered","denoised","nonchim")
+} else {
+  track_early <- cbind(
+    out,
+    sapply(dadaFs, function(d) sum(d$denoised)),
+    sapply(dadaRs, function(d) sum(d$denoised)),
+    sapply(mergers, function(m) sum(m$abundance[m$accept])),
+    rowSums(seqtab_nochim)
+  )
+  colnames(track_early) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")
+}
 rownames(track_early) <- sample_names
 
-# ── CHECKPOINT: warn if merged/nonchim reads are very low ─────
-merged_pct  <- mean(track_early[,"merged"]  / pmax(track_early[,"input"], 1) * 100)
+# ── CHECKPOINT: warn if reads are very low ────────────────────
+if (!is_single) {
+  merged_pct  <- mean(track_early[,"merged"]  / pmax(track_early[,"input"], 1) * 100)
+} else {
+  merged_pct  <- 100  # skip merge check for single-end
+}
 nonchim_pct <- mean(track_early[,"nonchim"] / pmax(track_early[,"input"], 1) * 100)
 
 if (merged_pct < 10 || nonchim_pct < 10) {
@@ -441,14 +545,23 @@ asv_df$sequence <- rownames(asv_df)
 write.csv(asv_df, file.path(opt$output, "asv_table.csv"), row.names=FALSE)
 
 # Read tracking
-track <- cbind(
-  out,
-  sapply(dadaFs, function(d) sum(d$denoised)),
-  sapply(dadaRs, function(d) sum(d$denoised)),
-  sapply(mergers, function(m) sum(m$abundance[m$accept])),   # reads merged (not unique seqs)
-  rowSums(seqtab_nochim)
-)
-colnames(track) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")
+if (is_single) {
+  track <- cbind(
+    out,
+    sapply(dadaFs, function(d) sum(d$denoised)),
+    rowSums(seqtab_nochim)
+  )
+  colnames(track) <- c("input","filtered","denoised","nonchim")
+} else {
+  track <- cbind(
+    out,
+    sapply(dadaFs, function(d) sum(d$denoised)),
+    sapply(dadaRs, function(d) sum(d$denoised)),
+    sapply(mergers, function(m) sum(m$abundance[m$accept])),
+    rowSums(seqtab_nochim)
+  )
+  colnames(track) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")
+}
 rownames(track) <- sample_names
 write.csv(as.data.frame(track), file.path(opt$output, "read_tracking.csv"))
 

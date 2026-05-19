@@ -76,6 +76,8 @@ export interface PipelineParams {
   customClassifierPath: string;
   trainAmpliconMinLen:  number;
   trainAmpliconMaxLen:  number;
+  // Sequencer type (for DADA2 pipelines)
+  sequencerType: "illumina" | "ont";
 }
 
 export const defaultParams: PipelineParams = {
@@ -118,6 +120,7 @@ export const defaultParams: PipelineParams = {
   customClassifierPath: "",
   trainAmpliconMinLen: 200,
   trainAmpliconMaxLen: 600,
+  sequencerType: "illumina",
 };
 
 export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio" | "ONT-16S";
@@ -791,6 +794,44 @@ conda run -n emu emu build-database \\
                         Remove primers from reads before DADA2. Leave primers blank to skip cutadapt.
                       </p>
 
+                      {/* Sequencer type toggle */}
+                      <div className="ps-section-label">SEQUENCER TYPE</div>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                        <button type="button"
+                          style={{
+                            padding: "6px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+                            border: params.sequencerType !== "ont" ? "2px solid #6366f1" : "1px solid #334155",
+                            background: params.sequencerType !== "ont" ? "#1e1b4b" : "#1e293b",
+                            color: params.sequencerType !== "ont" ? "#a5b4fc" : "#94a3b8",
+                            fontWeight: params.sequencerType !== "ont" ? 600 : 400,
+                          }}
+                          onClick={() => set("sequencerType", "illumina")}>
+                          🔬 Illumina (paired-end)
+                        </button>
+                        <button type="button"
+                          style={{
+                            padding: "6px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+                            border: params.sequencerType === "ont" ? "2px solid #f59e0b" : "1px solid #334155",
+                            background: params.sequencerType === "ont" ? "#1c1200" : "#1e293b",
+                            color: params.sequencerType === "ont" ? "#fcd34d" : "#94a3b8",
+                            fontWeight: params.sequencerType === "ont" ? 600 : 400,
+                          }}
+                          onClick={() => set("sequencerType", "ont")}>
+                          🧬 ONT R10.4+ (single-end)
+                        </button>
+                      </div>
+                      {params.sequencerType === "ont" && (
+                        <div style={{
+                          background: "#1c1200", border: "1px solid #92400e",
+                          borderRadius: 6, padding: "8px 12px", marginBottom: 12, fontSize: 12,
+                          color: "#fcd34d", lineHeight: 1.6,
+                        }}>
+                          ⚠️ <strong>ONT mode</strong> — reads processed as single-end (no R2, no merge step).
+                          Requires <strong>R10.4.1 flowcell</strong> + <strong>Q20+ basecalling</strong>.
+                          Recommended for short amplicons ≤500 bp (e.g. V7–V8 ~337 bp).
+                        </div>
+                      )}
+
                       {/* Primer presets */}
                       <div className="ps-section-label">PRIMER PRESETS</div>
                       <div className="ps-primer-grid">
@@ -904,16 +945,29 @@ conda run -n emu emu build-database \\
                       </div>
 
                       <div className="ps-demux-tips">
-                        <div className="ps-tip">💡 <strong>Forward reads</strong> usually stay high quality to ~250 bp</div>
-                        <div className="ps-tip">💡 <strong>Reverse reads</strong> often drop at ~150–200 bp — truncate here</div>
-                        <div className="ps-tip">💡 <strong>Overlap</strong>: truncLen_F + truncLen_R must exceed amplicon length by ≥20 bp to merge</div>
-                        <div className="ps-tip" style={{ color: "#22d3ee" }}>
-                          Current: F={params.truncLen_F} + R={params.truncLen_R} = {params.truncLen_F + params.truncLen_R} bp
-                          {selectedRegion === "V3-V4" && " (16S V3–V4 amplicon ~460 bp → need ≥480 combined)"}
-                          {selectedRegion === "V4"    && " (16S V4 amplicon ~253 bp → need ≥273 combined)"}
-                          {selectedRegion === "V7-V8" && " (16S V7–V8 amplicon ~337 bp → need ≥357 combined)"}
-                          {!selectedRegion && marker === "16S" && " (16S V3–V4 amplicon ~460 bp → need ≥480 combined)"}
-                        </div>
+                        {params.sequencerType === "ont" ? (
+                          <>
+                            <div className="ps-tip">🧬 <strong>ONT single-end</strong> — only forward read quality shown</div>
+                            <div className="ps-tip">💡 ONT R10.4.1 reads: set truncLen_F near amplicon length (e.g. 280–300 for V7–V8)</div>
+                            <div className="ps-tip">💡 Recommend <strong>Max EE ≥ 3</strong> for ONT (more lenient than Illumina)</div>
+                            <div className="ps-tip" style={{ color: "#fcd34d" }}>
+                              Current: truncLen_F = {params.truncLen_F} bp (single-end, no merge needed)
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="ps-tip">💡 <strong>Forward reads</strong> usually stay high quality to ~250 bp</div>
+                            <div className="ps-tip">💡 <strong>Reverse reads</strong> often drop at ~150–200 bp — truncate here</div>
+                            <div className="ps-tip">💡 <strong>Overlap</strong>: truncLen_F + truncLen_R must exceed amplicon length by ≥20 bp to merge</div>
+                            <div className="ps-tip" style={{ color: "#22d3ee" }}>
+                              Current: F={params.truncLen_F} + R={params.truncLen_R} = {params.truncLen_F + params.truncLen_R} bp
+                              {selectedRegion === "V3-V4" && " (16S V3–V4 amplicon ~460 bp → need ≥480 combined)"}
+                              {selectedRegion === "V4"    && " (16S V4 amplicon ~253 bp → need ≥273 combined)"}
+                              {selectedRegion === "V7-V8" && " (16S V7–V8 amplicon ~337 bp → need ≥357 combined)"}
+                              {!selectedRegion && marker === "16S" && " (16S V3–V4 amplicon ~460 bp → need ≥480 combined)"}
+                            </div>
+                          </>
+                        )}
                       </div>
                     </div>
                   )}
@@ -921,18 +975,33 @@ conda run -n emu emu build-database \\
                   {/* ── Step 3: DADA2 ────────────────────────────────── */}
                   {s.id === 3 && (
                     <div className="param-grid">
+                      {params.sequencerType === "ont" && (
+                        <div style={{
+                          gridColumn: "1/-1", background: "#1c1200",
+                          border: "1px solid #92400e", borderRadius: 6,
+                          padding: "8px 12px", marginBottom: 4, fontSize: 12, color: "#fcd34d",
+                        }}>
+                          🧬 <strong>ONT single-end mode</strong> — R2 settings are disabled. Only forward read settings apply.
+                        </div>
+                      )}
                       <ParamNumber label="Truncate Forward (bp)" hint="Truncate at this position (set 0 to disable)"
-                        value={params.truncLen_F} min={0} max={350} onChange={v => set("truncLen_F", v)} />
-                      <ParamNumber label="Truncate Reverse (bp)" hint="Truncate at this position (set 0 to disable)"
-                        value={params.truncLen_R} min={0} max={350} onChange={v => set("truncLen_R", v)} />
+                        value={params.truncLen_F} min={0} max={500} onChange={v => set("truncLen_F", v)} />
+                      {params.sequencerType !== "ont" && (
+                        <ParamNumber label="Truncate Reverse (bp)" hint="Truncate at this position (set 0 to disable)"
+                          value={params.truncLen_R} min={0} max={350} onChange={v => set("truncLen_R", v)} />
+                      )}
                       <ParamNumber label="Max EE Forward" hint="Maximum expected errors — forward reads"
                         value={params.maxEE_F} min={1} max={10} step={0.5} onChange={v => set("maxEE_F", v)} />
-                      <ParamNumber label="Max EE Reverse" hint="Maximum expected errors — reverse reads"
-                        value={params.maxEE_R} min={1} max={10} step={0.5} onChange={v => set("maxEE_R", v)} />
+                      {params.sequencerType !== "ont" && (
+                        <ParamNumber label="Max EE Reverse" hint="Maximum expected errors — reverse reads"
+                          value={params.maxEE_R} min={1} max={10} step={0.5} onChange={v => set("maxEE_R", v)} />
+                      )}
                       <ParamNumber label="Trim Left Forward (bp)" hint="Trim from 5' end (if cutadapt not used)"
                         value={params.trimLeft_F} min={0} max={50} onChange={v => set("trimLeft_F", v)} />
-                      <ParamNumber label="Trim Left Reverse (bp)" hint="Trim from 5' end (if cutadapt not used)"
-                        value={params.trimLeft_R} min={0} max={50} onChange={v => set("trimLeft_R", v)} />
+                      {params.sequencerType !== "ont" && (
+                        <ParamNumber label="Trim Left Reverse (bp)" hint="Trim from 5' end (if cutadapt not used)"
+                          value={params.trimLeft_R} min={0} max={50} onChange={v => set("trimLeft_R", v)} />
+                      )}
                       <ParamSelect label="Pooling Mode" hint="How to pool samples for ASV inference"
                         value={params.pool}
                         options={[
