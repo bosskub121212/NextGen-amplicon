@@ -362,12 +362,22 @@ if (is_single) {
 rownames(track_early) <- sample_names
 
 # ── CHECKPOINT: warn if reads are very low ────────────────────
-if (!is_single) {
-  merged_pct  <- mean(track_early[,"merged"]  / pmax(track_early[,"input"], 1) * 100)
+# Single-end (ONT) mode: skip checkpoint entirely.
+# nonchim/input ratio is always low for ONT because input contains
+# many variable-quality reads that are expected to be filtered out.
+# The relevant check for ONT is nonchim/filtered, not nonchim/input.
+if (is_single) {
+  nonchim_of_filtered <- mean(track_early[,"nonchim"] /
+                              pmax(track_early[,"filtered"], 1) * 100)
+  cat(sprintf("  [ONT single-end] nonchim/filtered: %.1f%%\n", nonchim_of_filtered))
+  cat(sprintf("  [ONT single-end] nonchim/input:    %.1f%% (expected low — skipping checkpoint)\n",
+      mean(track_early[,"nonchim"] / pmax(track_early[,"input"], 1) * 100)))
+  merged_pct  <- 100
+  nonchim_pct <- 100  # skip checkpoint for single-end ONT
 } else {
-  merged_pct  <- 100  # skip merge check for single-end
+  merged_pct  <- mean(track_early[,"merged"]  / pmax(track_early[,"input"], 1) * 100)
+  nonchim_pct <- mean(track_early[,"nonchim"] / pmax(track_early[,"input"], 1) * 100)
 }
-nonchim_pct <- mean(track_early[,"nonchim"] / pmax(track_early[,"input"], 1) * 100)
 
 if (merged_pct < 10 || nonchim_pct < 10) {
   track_list <- lapply(seq_len(nrow(track_early)), function(i) {

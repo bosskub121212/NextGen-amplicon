@@ -50,8 +50,12 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 echo "── Step 2: Rebuilding frontend ─────────────────────────────"
 cd frontend
+# Load nvm if available (needed on machines that install Node via nvm)
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+nvm use 20 >/dev/null 2>&1 || true
 npm install --silent
-npm run build --silent
+npm run build
 cd ..
 echo "  ✓ Frontend rebuilt"
 echo ""
