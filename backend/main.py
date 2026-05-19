@@ -444,6 +444,14 @@ def run_r_pipeline(job_id: str, params: RunParams):
         except Exception:
             pass
         ont_db = params.ont_db_path or _emu_db_auto or db_path
+        # Validate: if ont_db points to a FILE (e.g. species_taxid.fasta was selected),
+        # use the parent directory instead
+        if ont_db and Path(ont_db).is_file():
+            print(f"[emu] WARNING: db_path pointed to a file, using parent dir: {ont_db}")
+            ont_db = str(Path(ont_db).parent)
+        # Also validate taxonomy.tsv exists in the resolved db dir
+        if ont_db and not (Path(ont_db) / "taxonomy.tsv").exists():
+            print(f"[emu] WARNING: taxonomy.tsv not found in {ont_db}")
         cmd = [
             sys.executable, str(emu_script),
             "--input",         input_dir,
