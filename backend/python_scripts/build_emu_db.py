@@ -203,17 +203,26 @@ def build_intermediate_files(silva_fasta: str, out_dir: pathlib.Path,
         for seq_id, taxid, _ in seq_records:
             fh.write(f"{seq_id}\t{taxid}\n")
 
-    # ── taxonomy.tsv (Emu requires this exact filename) ──
+    # ── taxonomy.tsv — Emu format ─────────────────────────────
+    # Emu reads this with pandas and expects a 'tax_id' column header,
+    # followed by separate columns for each taxonomy level.
+    # Levels: superkingdom, phylum, class, order, family, genus, species
+    TAX_LEVELS = ["superkingdom", "phylum", "class", "order", "family", "genus", "species"]
     tax_path = out_dir / "taxonomy.tsv"
     print(f"Writing {tax_path} …", flush=True)
     with open(tax_path, "w") as fh:
+        fh.write("tax_id\t" + "\t".join(TAX_LEVELS) + "\n")
         for lineage, taxid in sorted(lineage_to_taxid.items(), key=lambda x: x[1]):
-            fh.write(f"{taxid}\t{lineage}\n")
-    # Also keep taxonomy_list.tsv as alias for backward compatibility
+            parts = lineage.split(";")
+            parts += [""] * (len(TAX_LEVELS) - len(parts))   # pad if short
+            parts = parts[:len(TAX_LEVELS)]                   # trim if too long
+            fh.write(f"{taxid}\t" + "\t".join(parts) + "\n")
+    # Keep taxonomy_list.tsv (original format) for reference
     alias_path = out_dir / "taxonomy_list.tsv"
     if not alias_path.exists():
-        import shutil as _shutil
-        _shutil.copy2(tax_path, alias_path)
+        with open(alias_path, "w") as fh:
+            for lineage, taxid in sorted(lineage_to_taxid.items(), key=lambda x: x[1]):
+                fh.write(f"{taxid}\t{lineage}\n")
 
     return n_seqs, n_taxa
 

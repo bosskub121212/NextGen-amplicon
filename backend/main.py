@@ -426,11 +426,21 @@ def run_r_pipeline(job_id: str, params: RunParams):
     elif marker in ("ONT-16S", "ONT16S", "ONT"):
         # ── ONT 16S pipeline via Emu ────────────────────────────────────────
         emu_script = R_SCRIPTS_DIR.parent / "emu_pipeline.py"
-        # Lookup emu_silva from db_paths.json if ont_db_path not specified
+        # Lookup emu db from db_paths.json if ont_db_path not specified
+        # Try: ont_db_path → emu_db_mar2026 → emu_silva → any key starting with "emu_"
         _emu_db_auto = ""
         try:
             _dp = json.loads(Path(db_paths_json).read_text()) if Path(db_paths_json).exists() else {}
-            _emu_db_auto = _dp.get("emu_silva", "")
+            for _key in ("emu_db_mar2026", "emu_silva"):
+                _v = _dp.get(_key, "")
+                if _v and Path(_v).exists():
+                    _emu_db_auto = _v
+                    break
+            if not _emu_db_auto:
+                for _key, _v in _dp.items():
+                    if _key.startswith("emu_") and _v and Path(_v).exists():
+                        _emu_db_auto = _v
+                        break
         except Exception:
             pass
         ont_db = params.ont_db_path or _emu_db_auto or db_path
