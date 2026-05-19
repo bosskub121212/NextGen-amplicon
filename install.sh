@@ -291,6 +291,9 @@ else
   if ask "Install Emu now?"; then
     run_timed "Emu conda env create (~5–10 min)" \
       $_CONDA_CMD create -n emu -c bioconda -c conda-forge emu -y || true
+    # Ensure pysam is present (required by Emu; sometimes missing after conda create)
+    conda run -n emu pip install pysam --quiet 2>/dev/null || \
+      $_CONDA_CMD install -n emu -c bioconda pysam -y --quiet 2>/dev/null || true
     if conda run -n emu emu --version &>/dev/null 2>&1; then
       ok "Emu installed ($(conda run -n emu emu --version 2>/dev/null || echo 'ok'))"
     else

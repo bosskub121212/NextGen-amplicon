@@ -126,13 +126,18 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             emu_conda_bin = str(candidate)
             break
 
-    if conda and emu_conda_bin:
-        # Use 'conda run -n emu emu' — isolates the conda env completely
-        emu_prefix = [conda, "run", "--no-capture-output", "-n", "emu", "emu"]
-    elif emu_conda_bin:
-        # Find the matching Python in the conda env and call it explicitly
+    if emu_conda_bin:
+        # Prefer calling the emu env's Python directly — avoids issues where
+        # 'conda run --no-capture-output' doesn't fully activate the env and
+        # fails to find packages like pysam even when they're installed.
         emu_python = str(Path(emu_conda_bin).parent / "python3")
-        emu_prefix = [emu_python, emu_conda_bin]
+        if Path(emu_python).exists():
+            emu_prefix = [emu_python, emu_conda_bin]
+        elif conda:
+            # Fallback: conda run (some systems need this)
+            emu_prefix = [conda, "run", "--no-capture-output", "-n", "emu", "emu"]
+        else:
+            emu_prefix = [emu_conda_bin]
     else:
         emu_sys = shutil.which("emu")
         if not emu_sys:
