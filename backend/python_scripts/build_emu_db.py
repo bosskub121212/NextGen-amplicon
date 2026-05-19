@@ -203,12 +203,17 @@ def build_intermediate_files(silva_fasta: str, out_dir: pathlib.Path,
         for seq_id, taxid, _ in seq_records:
             fh.write(f"{seq_id}\t{taxid}\n")
 
-    # ── taxonomy_list.tsv ──
-    tax_path = out_dir / "taxonomy_list.tsv"
+    # ── taxonomy.tsv (Emu requires this exact filename) ──
+    tax_path = out_dir / "taxonomy.tsv"
     print(f"Writing {tax_path} …", flush=True)
     with open(tax_path, "w") as fh:
         for lineage, taxid in sorted(lineage_to_taxid.items(), key=lambda x: x[1]):
             fh.write(f"{taxid}\t{lineage}\n")
+    # Also keep taxonomy_list.tsv as alias for backward compatibility
+    alias_path = out_dir / "taxonomy_list.tsv"
+    if not alias_path.exists():
+        import shutil as _shutil
+        _shutil.copy2(tax_path, alias_path)
 
     return n_seqs, n_taxa
 
