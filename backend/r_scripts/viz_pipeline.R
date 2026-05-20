@@ -26,16 +26,27 @@ suppressPackageStartupMessages({
 # ── CLI args ──────────────────────────────────────────────────────────────────
 option_list <- list(
   make_option("--output_dir", type="character", default=NULL,
-              help="QIIME2 pipeline output directory"),
+              help="Pipeline output directory"),
+  make_option("--input_dir",  type="character", default=NULL,
+              help="Alias for --output_dir (Emu pipeline compatibility)"),
   make_option("--metadata",   type="character", default=NULL,
-              help="QIIME2 metadata TSV file (optional)"),
+              help="Metadata file (TSV or CSV, optional)"),
   make_option("--group_col",  type="character", default="treatment",
               help="Metadata column to use for grouping"),
   make_option("--marker",     type="character", default="16S",
-              help="Marker type: 16S|12S|ITS1|ITS2|COX1|18S-nema|PacBio")
+              help="Marker type: 16S|12S|ITS1|ITS2|COX1|18S-nema|PacBio|ONT-16S"),
+  make_option("--topN",       type="integer",   default=30,
+              help="Top N taxa to display [default: 30]"),
+  make_option("--threads",    type="integer",   default=4,
+              help="Threads (passed through)")
 )
 
 opt <- parse_args(OptionParser(option_list=option_list))
+
+# --input_dir is an alias for --output_dir (emu_pipeline.py compatibility)
+if (is.null(opt$output_dir) && !is.null(opt$input_dir)) {
+  opt$output_dir <- opt$input_dir
+}
 
 if (is.null(opt$output_dir)) {
   cat("ERROR: --output_dir is required\n")
@@ -46,6 +57,7 @@ OUTPUT_DIR  <- normalizePath(opt$output_dir, mustWork=FALSE)
 MARKER      <- opt$marker
 GROUP_COL   <- opt$group_col
 METADATA_FILE <- opt$metadata
+TOP_N       <- if (!is.null(opt$topN) && opt$topN > 0) opt$topN else 30
 
 PLOTS_DIR  <- file.path(OUTPUT_DIR, "r_plots")
 TABLES_DIR <- file.path(OUTPUT_DIR, "r_tables")
@@ -103,58 +115,101 @@ make_palette <- function(n) {
   }
 }
 
-# ── Load exported QIIME2 data ─────────────────────────────────────────────────
-cat("── Loading exported QIIME2 data ──────────────────────────────\n")
+# ── Detect pipeline mode: Emu (CSV) vs QIIME2/DADA2 (BIOM) ───────────────────
+emu_asv_file <- file.path(OUTPUT_DIR, "asv_table.csv")
+emu_tax_file <- file.path(OUTPUT_DIR, "taxonomy.csv")
+IS_EMU_MODE  <- file.exists(emu_asv_file) && file.exists(emu_tax_file) &&
+                MARKER %in% c("ONT-16S", "ONT16S", "ONT")
 
 biom_file  <- file.path(EXP_DIR, "feature-table", "feature-table.biom")
 tax_file   <- file.path(EXP_DIR, "taxonomy",       "taxonomy.tsv")
 tree_file  <- file.path(EXP_DIR, "tree",           "tree.nwk")
 seq_fasta  <- file.path(EXP_DIR, "rep-seqs",       "dna-sequences.fasta")
 
-if (!file.exists(biom_file)) {
-  cat(sprintf("[ERROR] BIOM file not found: %s\n", biom_file))
-  quit(status=1)
-}
+ps      <- NULL
+tax_df  <- NULL
 
-# Use phyloseq to import BIOM
-ps <- NULL
-if (has_phyloseq) {
+if (IS_EMU_MODE) {
+  # ── Emu mode: load asv_table.csv + taxonomy.csv ────────────────────────────
+  cat("── Loading Emu output (CSV format) ───────────────────────────\n")
+
   tryCatch({
-    ps <- import_biom(biom_file)
-    cat(sprintf("  Loaded BIOM: %d ASVs × %d samples\n",
-                ntaxa(ps), nsamples(ps)))
-  }, error=function(e) cat(sprintf("[WARN] BIOM import error: %s\n", e$message)))
-}
+    # ASV table: rows = tax_id, cols = samples
+    asv_raw <- read.csv(emu_asv_file, row.names=1, check.names=FALSE,
+                        stringsAsFactors=FALSE)
+    asv_mat <- as.matrix(asv_raw)
+    storage.mode(asv_mat) <- "numeric"
+    asv_mat[is.na(asv_mat)] <- 0
+    # Remove all-zero rows
+    asv_mat <- asv_mat[rowSums(asv_mat) > 0, , drop=FALSE]
+    cat(sprintf("  Loaded ASV table: %d taxa × %d samples\n",
+                nrow(asv_mat), ncol(asv_mat)))
 
-# Load taxonomy TSV
-tax_df <- NULL
-if (file.exists(tax_file)) {
-  tryCatch({
-    tax_df <- read.table(tax_file, header=TRUE, sep="\t",
-                         comment.char="", quote="", stringsAsFactors=FALSE)
-    cat(sprintf("  Loaded taxonomy: %d features\n", nrow(tax_df)))
+    # Taxonomy table: rows = tax_id, cols = Kingdom..Species
+    tax_raw <- read.csv(emu_tax_file, row.names=1, check.names=FALSE,
+                        stringsAsFactors=FALSE)
+    tax_cols <- intersect(c("Kingdom","Phylum","Class","Order","Family","Genus","Species"),
+                          colnames(tax_raw))
+    tax_mat <- as.matrix(tax_raw[, tax_cols, drop=FALSE])
+    tax_mat[is.na(tax_mat)] <- ""
+    # Align rows
+    common_ids <- intersect(rownames(asv_mat), rownames(tax_mat))
+    asv_mat  <- asv_mat[common_ids, , drop=FALSE]
+    tax_mat  <- tax_mat[common_ids, , drop=FALSE]
+    cat(sprintf("  Loaded taxonomy: %d taxa\n", nrow(tax_mat)))
 
-    if (has_phyloseq && !is.null(ps)) {
-      # Parse taxonomy into ranks
-      tax_col <- if ("Taxon" %in% colnames(tax_df)) "Taxon" else colnames(tax_df)[2]
-      tax_split <- strsplit(tax_df[[tax_col]], ";\\s*")
-      max_ranks <- max(sapply(tax_split, length))
-      ranks <- c("Kingdom","Phylum","Class","Order","Family","Genus","Species")[seq_len(min(7, max_ranks))]
-      tax_mat <- do.call(rbind, lapply(tax_split, function(x) {
-        x <- sub("^[a-z]__", "", x)        # strip k__, p__, etc.
-        x <- sub("^\\s+|\\s+$", "", x)
-        length(x) <- length(ranks)
-        x
-      }))
-      colnames(tax_mat) <- ranks
-      rownames(tax_mat) <- tax_df[[1]]
-      # Align with phyloseq ASV IDs
-      common <- intersect(taxa_names(ps), rownames(tax_mat))
-      if (length(common) > 0) {
-        tax_table(ps) <- tax_table(tax_mat[common, , drop=FALSE])
-      }
+    if (has_phyloseq) {
+      ps <- phyloseq(
+        otu_table(asv_mat, taxa_are_rows=TRUE),
+        tax_table(tax_mat)
+      )
+      cat(sprintf("  phyloseq object: %d ASVs × %d samples\n",
+                  ntaxa(ps), nsamples(ps)))
     }
-  }, error=function(e) cat(sprintf("[WARN] Taxonomy load error: %s\n", e$message)))
+  }, error=function(e) cat(sprintf("[WARN] Emu CSV load error: %s\n", e$message)))
+
+} else {
+  # ── QIIME2/DADA2 mode: load BIOM ──────────────────────────────────────────
+  cat("── Loading exported QIIME2 data ──────────────────────────────\n")
+
+  if (!file.exists(biom_file)) {
+    cat(sprintf("[ERROR] BIOM file not found: %s\n", biom_file))
+    quit(status=1)
+  }
+
+  if (has_phyloseq) {
+    tryCatch({
+      ps <- import_biom(biom_file)
+      cat(sprintf("  Loaded BIOM: %d ASVs × %d samples\n",
+                  ntaxa(ps), nsamples(ps)))
+    }, error=function(e) cat(sprintf("[WARN] BIOM import error: %s\n", e$message)))
+  }
+
+  # Load taxonomy TSV
+  if (file.exists(tax_file)) {
+    tryCatch({
+      tax_df <- read.table(tax_file, header=TRUE, sep="\t",
+                           comment.char="", quote="", stringsAsFactors=FALSE)
+      cat(sprintf("  Loaded taxonomy: %d features\n", nrow(tax_df)))
+
+      if (has_phyloseq && !is.null(ps)) {
+        tax_col    <- if ("Taxon" %in% colnames(tax_df)) "Taxon" else colnames(tax_df)[2]
+        tax_split  <- strsplit(tax_df[[tax_col]], ";\\s*")
+        max_ranks  <- max(sapply(tax_split, length))
+        ranks      <- c("Kingdom","Phylum","Class","Order","Family","Genus","Species")[seq_len(min(7, max_ranks))]
+        tax_mat2   <- do.call(rbind, lapply(tax_split, function(x) {
+          x <- sub("^[a-z]__", "", x)
+          x <- sub("^\\s+|\\s+$", "", x)
+          length(x) <- length(ranks); x
+        }))
+        colnames(tax_mat2) <- ranks
+        rownames(tax_mat2) <- tax_df[[1]]
+        common <- intersect(taxa_names(ps), rownames(tax_mat2))
+        if (length(common) > 0)
+          tax_table(ps) <- tax_table(tax_mat2[common, , drop=FALSE])
+      }
+    }, error=function(e) cat(sprintf("[WARN] Taxonomy load error: %s\n", e$message)))
+  }
 }
 
 # Load tree
