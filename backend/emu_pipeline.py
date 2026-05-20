@@ -76,10 +76,19 @@ def run_cmd(cmd: list, desc: str = "", env=None) -> bool:
         return False
     return True
 
+def _rev_comp(seq: str) -> str:
+    """Return the reverse complement of a DNA sequence (IUPAC aware)."""
+    table = str.maketrans(
+        "ACGTacgtMKRYWSBVHDNmkrywsbvhdn",
+        "TGCAtgcaKMYRWSVBDHNkmyrwsvbdhn"
+    )
+    return seq.translate(table)[::-1]
+
 # ── Step 1: Trim primers with cutadapt ─────────────────────────────────────────
 def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
                  threads: int) -> dict[str, Path]:
-    """Trim primers from each sample. Returns trimmed sample map."""
+    """Trim primers from ONT single-end reads with cutadapt.
+    Uses single-end mode only (-g / -a) — never -G/-A which trigger paired-end."""
     if not (primer_f or primer_r):
         log("  Primers not specified — skipping cutadapt trimming")
         return samples
@@ -96,11 +105,13 @@ def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
 
     for name, fq in samples.items():
         out_fq = trim_dir / fq.name
+        # ONT = single-end: forward primer at 5' end, RC(reverse primer) at 3' end
+        # NEVER use -G/-A — those flags trigger paired-end mode and require two files.
         cmd = [cutadapt, "-j", str(threads)]
         if primer_f:
-            cmd += ["-g", primer_f]
+            cmd += ["-g", primer_f]          # 5' forward primer
         if primer_r:
-            cmd += ["-a", f"rc_{primer_r}", "-G", primer_r, "-A", f"rc_{primer_f}"]
+            cmd += ["-a", _rev_comp(primer_r)]  # 3' reverse primer (as RC)
         cmd += ["--discard-untrimmed", "-m", "50",
                 "-o", str(out_fq), str(fq)]
         run_cmd(cmd, f"Trim {name}")
@@ -169,10 +180,17 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             str(fq),
         ]
         success = run_cmd(cmd, f"Emu: {name}", env=emu_env)
-        # Emu names output as <input_basename>_rel-abundance.tsv
-        tsv_candidates = list(sample_out.glob("*rel-abundance.tsv"))
-        if tsv_candidates:
-            results[name] = tsv_candidates[0]
+        # Prefer the thresholded file (already filtered by --min-abundance).
+        # Emu names: <basename>_rel-abundance-threshold-<N>.tsv (current)
+        #            <basename>_rel-abundance.tsv              (fallback / older)
+        tsv_thresh = list(sample_out.glob("*rel-abundance-threshold*.tsv"))
+        tsv_plain  = list(sample_out.glob("*rel-abundance.tsv"))
+        # Exclude threshold files from plain list
+        tsv_plain  = [p for p in tsv_plain if "threshold" not in p.name]
+        if tsv_thresh:
+            results[name] = tsv_thresh[0]
+        elif tsv_plain:
+            results[name] = tsv_plain[0]
         elif not success:
             log(f"  [WARN] Emu failed for sample: {name}")
 
@@ -209,9 +227,17 @@ def combine_emu_outputs(emu_results: dict[str, Path],
                         "kingdom":  row.get("superkingdom", "Bacteria"),
                         "counts":   {s: 0 for s in sample_names},
                     }
-                # Emu gives "estimated counts" as float
-                est_counts = float(row.get("estimated counts", row.get("count", 0)))
-                taxa_dict[tax_id]["counts"][sample] = round(est_counts)
+                # Emu outputs relative abundance (0–1).
+                # Try "estimated counts" (old Emu ≤2.x), then "abundance" (current).
+                raw = row.get("estimated counts") or row.get("estimated_counts") or row.get("abundance", "0")
+                val = float(raw) if raw else 0.0
+                # If value looks like relative abundance (≤ 1.0), scale to ppm
+                # so phyloseq and diversity tools get integer-like counts.
+                if val <= 1.0:
+                    est_counts = round(val * 1_000_000)
+                else:
+                    est_counts = round(val)
+                taxa_dict[tax_id]["counts"][sample] = est_counts
 
     return sample_names, taxa_dict
 
