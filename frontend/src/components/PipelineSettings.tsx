@@ -634,7 +634,7 @@ conda run -n emu emu build-database \\
             </div>
           )}
 
-          {/* TopN */}
+          {/* TopN + CPU Threads */}
           <div className="param-grid" style={{ marginTop: 12 }}>
             <div className="param-item">
               <label className="param-label">Top Taxa to Show in Plots</label>
@@ -645,6 +645,8 @@ conda run -n emu emu build-database \\
                 ))}
               </div>
             </div>
+            <ParamNumber label="CPU Threads" hint="Cores for cutadapt + Emu minimap2 (default 4)"
+              value={params.nThreads} min={1} max={128} onChange={v => set("nThreads", v)} />
           </div>
 
           {/* Pipeline summary */}

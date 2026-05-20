@@ -73,9 +73,14 @@ option_list <- list(
   make_option("--discard_untrimmed", type="logical",   default=FALSE,
               help="Discard reads where primer was not found"),
   make_option("--single_end",        type="logical",   default=FALSE,
-              help="Single-end mode: ONT R10.4+ reads (no R2, no merge step)")
+              help="Single-end mode: ONT R10.4+ reads (no R2, no merge step)"),
+  make_option("--threads",           type="integer",   default=4,
+              help="Number of CPU threads for DADA2 steps (default 4; TRUE=all cores)")
 )
 opt <- parse_args(OptionParser(option_list=option_list))
+
+# ── Thread count ──────────────────────────────────────────────
+THREADS <- if (!is.null(opt$threads) && opt$threads > 0) opt$threads else 4
 
 # ── Single-end flag (ONT mode) ────────────────────────────────
 is_single <- isTRUE(opt$single_end)
@@ -238,7 +243,7 @@ if (is_single) {
     truncLen = opt$truncLen_F,
     trimLeft = opt$trimLeft_F,
     maxN=0, maxEE=opt$maxEE_F,
-    truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=TRUE
+    truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=THREADS
   )
   filtRs <- character(0)
 } else {
@@ -250,7 +255,7 @@ if (is_single) {
     truncLen   = c(opt$truncLen_F, opt$truncLen_R),
     trimLeft   = c(opt$trimLeft_F, opt$trimLeft_R),
     maxN=0, maxEE=c(opt$maxEE_F, opt$maxEE_R),
-    truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=TRUE
+    truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=THREADS
   )
 }
 cat("  Done. Reads passing filter:", sum(out[,2]), "\n\n")
@@ -282,9 +287,9 @@ tryCatch({
 # ── Step 3: Learn Error Rates ─────────────────────────────────
 prog(32, "Step 2/8 — Learning error rates (this takes a while...)")
 cat("Step 2/5: Learning Error Rates...\n")
-errF <- learnErrors(filtFs, nbases=opt$nbases, multithread=TRUE)
+errF <- learnErrors(filtFs, nbases=opt$nbases, multithread=THREADS)
 if (!is_single) {
-  errR <- learnErrors(filtRs, nbases=opt$nbases, multithread=TRUE)
+  errR <- learnErrors(filtRs, nbases=opt$nbases, multithread=THREADS)
 }
 cat("  Done.\n\n")
 
@@ -314,14 +319,14 @@ pool_val <- if (opt$pool == "TRUE") TRUE else if (opt$pool == "FALSE") FALSE els
 derepFs  <- derepFastq(filtFs)
 if (!is.list(derepFs)) derepFs <- setNames(list(derepFs), sample_names)
 names(derepFs) <- sample_names
-dadaFs <- dada(derepFs, err=errF, pool=pool_val, multithread=TRUE)
+dadaFs <- dada(derepFs, err=errF, pool=pool_val, multithread=THREADS)
 if (inherits(dadaFs, "dada")) dadaFs <- setNames(list(dadaFs), sample_names)
 
 if (!is_single) {
   derepRs <- derepFastq(filtRs)
   if (!is.list(derepRs)) derepRs <- setNames(list(derepRs), sample_names)
   names(derepRs) <- sample_names
-  dadaRs <- dada(derepRs, err=errR, pool=pool_val, multithread=TRUE)
+  dadaRs <- dada(derepRs, err=errR, pool=pool_val, multithread=THREADS)
   if (inherits(dadaRs, "dada")) dadaRs <- setNames(list(dadaRs), sample_names)
 }
 cat("  Done.\n\n")
@@ -338,7 +343,7 @@ if (is_single) {
   if (is.data.frame(mergers)) mergers <- setNames(list(mergers), sample_names)
   seqtab <- makeSequenceTable(mergers)
 }
-seqtab_nochim <- removeBimeraDenovo(seqtab, method=opt$chimeraMethod, multithread=TRUE)
+seqtab_nochim <- removeBimeraDenovo(seqtab, method=opt$chimeraMethod, multithread=THREADS)
 cat("  ASVs after chimera removal:", ncol(seqtab_nochim), "\n\n")
 
 # ── Read tracking (early) for checkpoint evaluation ───────────

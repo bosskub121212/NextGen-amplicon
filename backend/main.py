@@ -176,6 +176,8 @@ class RunParams(BaseModel):
     customClassifierPath: str   = ""          # path to .qza (upload mode)
     trainAmpliconMinLen:  int   = 200         # min len for extract-reads (train mode)
     trainAmpliconMaxLen:  int   = 600         # max len for extract-reads (train mode)
+    # --- CPU threads (applies to all pipelines) ---
+    nThreads:      int   = 4
     # --- Shared db paths override ---
     db_paths_json: str   = ""
 
@@ -375,7 +377,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
             "--its_region", region,
             "--maxEE_f",    str(params.maxEE_F),
             "--maxEE_r",    str(params.maxEE_R),
-            "--threads",    str(4),
+            "--threads",    str(params.nThreads),
             "--job_name",   params.job_name or job_id,
             "--topN",       str(params.topN),
         ]
@@ -405,7 +407,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
             "--codon_table", str(params.codon_table),
             "--min_length",  str(params.cox1_min_len),
             "--max_length",  str(params.cox1_max_len),
-            "--threads",     str(4),
+            "--threads",     str(params.nThreads),
             "--job_name",    params.job_name or job_id,
             "--topN",        str(params.topN),
             "--lulu",        str(params.run_lulu).upper(),
@@ -457,7 +459,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
             "--input",         input_dir,
             "--output",        output_dir,
             "--db_path",       ont_db,
-            "--threads",       str(4),
+            "--threads",       str(params.nThreads),
             "--region",        params.ont_region,
             "--min_abundance", str(params.ont_min_abundance),
             "--topN",          str(params.topN),
@@ -480,7 +482,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
             "--min_length", str(params.pb_min_len),
             "--max_length", str(params.pb_max_len),
             "--maxEE",      str(params.pb_maxEE),
-            "--threads",    str(4),
+            "--threads",    str(params.nThreads),
             "--region",     params.pb_region,
             "--job_name",   params.job_name or job_id,
             "--pool",       params.pool,
@@ -515,6 +517,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
             "--dbPath",        db_path,
             "--minBoot",       str(params.minBoot),
             "--topN",          str(params.topN),
+            "--threads",       str(params.nThreads),
             "--metadata",      metadata_path,
             "--db_paths_json", db_paths_json,
         ]
