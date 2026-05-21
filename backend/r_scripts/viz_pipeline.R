@@ -247,7 +247,7 @@ if (is.null(ps) || ntaxa(ps) == 0) {
 }
 
 has_meta  <- !is.null(meta_df) && GROUP_COL %in% colnames(meta_df)
-has_tree  <- !is.null(phy_tree(ps)) && !inherits(tryCatch(phy_tree(ps), error=function(e) e), "error")
+has_tree  <- tryCatch(!is.null(phy_tree(ps)), error=function(e) FALSE)
 is_ITS    <- MARKER %in% c("ITS1", "ITS2")
 is_COX1   <- MARKER == "COX1"
 
