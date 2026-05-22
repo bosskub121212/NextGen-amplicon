@@ -44,13 +44,13 @@ interface FontConfig {
   titleSize: number; axisSize: number; legendSize: number;
   titleText: string; titleBold: boolean; titleItalic: boolean;
   chartType: "bar"|"bar100"|"line"; showGrid: boolean;
-  xItalic: boolean; xSize: number;
+  xItalic: boolean; xBold: boolean; xSize: number;
 }
 const defaultFont = (): FontConfig => ({
   titleSize: 16, axisSize: 12, legendSize: 11,
   titleText: "", titleBold: false, titleItalic: false,
   chartType: "bar", showGrid: true,
-  xItalic: false, xSize: 12,
+  xItalic: false, xBold: false, xSize: 12,
 });
 
 // ── CSV parser ────────────────────────────────────────────────
@@ -105,6 +105,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [showCustomize, setShowCustomize] = useState(true);
   const [loading, setLoading]     = useState(false);
   const [pdfPanel, setPdfPanel]   = useState(false);
+  const [saved, setSaved]         = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const plotted  = useRef(false);
 
@@ -117,7 +118,23 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // ── Load tables when job changes ──────────────────────────
   useEffect(() => {
     if (!selJob) return;
-    setTableInfo(null); setAvailTabs([]); setActiveTab(null); setCsvData(null); setSampleAliases({});
+    setTableInfo(null); setAvailTabs([]); setActiveTab(null); setCsvData(null);
+
+    // Restore saved settings for this job, or reset to defaults
+    try {
+      const saved = localStorage.getItem(`prev_settings_${selJob}`);
+      if (saved) {
+        const s = JSON.parse(saved);
+        if (s.font)         setFont({ ...defaultFont(), ...s.font });
+        if (s.colors)       setColors(s.colors);
+        if (s.sampleAliases) setSampleAliases(s.sampleAliases);
+      } else {
+        setFont(defaultFont());
+        setColors({});
+        setSampleAliases({});
+      }
+    } catch { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
+
     fetch(`${API}/results/${selJob}/tables`)
       .then(r => r.json())
       .then((info: TableInfo) => {
@@ -126,7 +143,9 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         setAvailTabs(avail);
         if (avail.length > 0) setActiveTab(avail[0]);
         if (info.summary?.job_name) {
-          setFont(f => ({ ...f, titleText: info.summary.job_name }));
+          // Only set title from summary if no saved settings exist
+          const saved = localStorage.getItem(`prev_settings_${selJob}`);
+          if (!saved) setFont(f => ({ ...f, titleText: info.summary.job_name }));
         }
       });
   }, [selJob]);
@@ -189,7 +208,11 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     const base = {
       title: { text: titleStr, font: { size: font.titleSize, family: "Arial" } },
       xaxis: {
-        tickfont: { size: font.xSize, style: font.xItalic ? "italic" : "normal" },
+        tickfont: {
+          size: font.xSize,
+          style: font.xItalic ? "italic" : "normal",
+          weight: font.xBold ? 700 : 400,
+        },
         showgrid: font.showGrid, tickangle: -35,
       },
       yaxis: { tickfont: { size: font.axisSize }, showgrid: font.showGrid },
@@ -331,28 +354,21 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     });
   };
 
-  // ── Export PDF (custom colors via print) ──────────────────
-  const exportPDF = async () => {
-    if (!chartRef.current) return;
-    const img = await Plotly.toImage(chartRef.current, { format: "png", width: 1400, height: 900, scale: 2 });
-    const job  = jobs.find(j => j.job_id === selJob);
-    const name = font.titleText || job?.job_name || selJob;
-    const win = window.open("", "_blank");
-    if (!win) return;
-    win.document.write(`<!DOCTYPE html><html><head>
-      <title>${name} — ${activeTab?.label}</title>
-      <style>
-        body { margin: 0; padding: 20px; font-family: Arial, sans-serif; }
-        h2   { font-size: 14px; color: #555; margin-bottom: 8px; }
-        img  { max-width: 100%; border: 1px solid #eee; }
-        @media print { @page { size: A4 landscape; margin: 10mm; } }
-      </style>
-    </head><body>
-      <h2>${name} — ${activeTab?.label || ""} (${new Date().toLocaleDateString()})</h2>
-      <img src="${img}"/>
-      <script>window.onload = () => { window.print(); }</script>
-    </body></html>`);
-    win.document.close();
+  // ── Save settings to localStorage ────────────────────────
+  const saveSettings = () => {
+    if (!selJob) return;
+    localStorage.setItem(`prev_settings_${selJob}`, JSON.stringify({ font, colors, sampleAliases }));
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  // ── Export full results as ZIP ────────────────────────────
+  const exportResults = () => {
+    if (!selJob) return;
+    const a = document.createElement("a");
+    a.href = `${API}/results/${selJob}/download`;
+    a.download = `${job?.job_name || selJob}_results.zip`;
+    a.click();
   };
 
   // ── Helpers ───────────────────────────────────────────────
@@ -439,8 +455,13 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                 <button className="prev-btn prev-btn-png" onClick={exportPNG}>
                   🖼 Save PNG
                 </button>
-                <button className="prev-btn prev-btn-export" onClick={exportPDF}>
-                  📥 Export PDF
+                <button
+                  className={`prev-btn prev-btn-save ${saved ? "saved" : ""}`}
+                  onClick={saveSettings}>
+                  {saved ? "✓ Saved!" : "💾 Save"}
+                </button>
+                <button className="prev-btn prev-btn-export" onClick={exportResults}>
+                  📦 Export Result
                 </button>
               </div>
             </div>
@@ -572,9 +593,13 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                         <div className="prev-cust-row">
                           <label>X label style</label>
                           <div className="prev-toggle-group">
+                            <button className={`prev-toggle ${font.xBold ? "on":""}`}
+                              onClick={() => setFont(f => ({ ...f, xBold: !f.xBold }))}>
+                              <b>B</b>
+                            </button>
                             <button className={`prev-toggle ${font.xItalic ? "on":""}`}
                               onClick={() => setFont(f => ({ ...f, xItalic: !f.xItalic }))}>
-                              <i>Italic</i>
+                              <i>I</i>
                             </button>
                           </div>
                         </div>

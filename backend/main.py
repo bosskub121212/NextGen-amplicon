@@ -1230,6 +1230,27 @@ def preview_plot_pdf(job_id: str, filename: str):
     return FileResponse(str(path), media_type="application/pdf",
                         headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
+@app.get("/results/{job_id}/download")
+def download_results(job_id: str):
+    """Zip the entire results directory and serve as download."""
+    import zipfile, io as _io
+    job_dir = RESULTS_DIR / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Results not found")
+    buf = _io.BytesIO()
+    skip_ext = {".log", ".tmp"}
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(job_dir.rglob("*")):
+            if f.is_file() and f.suffix not in skip_ext:
+                zf.write(f, f.relative_to(job_dir))
+    buf.seek(0)
+    safe_id = _re.sub(r'[^\w\-]', '_', job_id)
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_id}_results.zip"'},
+    )
+
 # -- 15. Serve frontend static files (SPA) ------------------------------------
 # Looks for dist/ next to the backend/ directory (i.e. ~/r16s-app/frontend/dist)
 from fastapi.staticfiles import StaticFiles

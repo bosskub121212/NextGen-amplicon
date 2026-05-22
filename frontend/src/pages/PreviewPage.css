@@ -176,6 +176,9 @@
 .prev-btn-pdf:hover { background: rgba(255,255,255,0.15); color: #e2e8f0; }
 .prev-btn-png    { background: #1d4ed8; color: #fff; }
 .prev-btn-png:hover { background: #2563eb; }
+.prev-btn-save   { background: #059669; color: #fff; transition: all 0.15s; }
+.prev-btn-save:hover { background: #10b981; }
+.prev-btn-save.saved { background: #065f46; color: #6ee7b7; cursor: default; }
 .prev-btn-export { background: #7c3aed; color: #fff; }
 .prev-btn-export:hover { background: #8b5cf6; }
 
