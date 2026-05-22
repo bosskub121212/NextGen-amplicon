@@ -205,14 +205,17 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     // alias: check raw name first, then shortName version
     const alias = (rawName: string) =>
       sampleAliases[rawName] || sampleAliases[shortName(rawName)] || shortName(rawName);
+    // Format x-axis tick label with bold/italic HTML (Plotly renders HTML in ticktext)
+    const xFmt = (name: string) => {
+      let t = name;
+      if (font.xBold)   t = `<b>${t}</b>`;
+      if (font.xItalic) t = `<i>${t}</i>`;
+      return t;
+    };
     const base = {
       title: { text: titleStr, font: { size: font.titleSize, family: "Arial" } },
       xaxis: {
-        tickfont: {
-          size: font.xSize,
-          style: font.xItalic ? "italic" : "normal",
-          weight: font.xBold ? 700 : 400,
-        },
+        tickfont: { size: font.xSize },
         showgrid: font.showGrid, tickangle: -35,
       },
       yaxis: { tickfont: { size: font.axisSize }, showgrid: font.showGrid },
@@ -243,6 +246,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }));
       return { data, layout: {
         ...base, barmode: "stack",
+        xaxis: { ...base.xaxis, tickmode: "array", tickvals: samples, ticktext: samples.map(xFmt) },
         yaxis: { ...base.yaxis, title: { text: is100 ? "Relative Abundance (%)" : "Abundance (%)" } },
       }};
     }
@@ -260,6 +264,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         text: values.map(v => v.toFixed(3)), textposition: "outside",
       }];
       return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, tickmode: "array", tickvals: samples, ticktext: samples.map(xFmt) },
         yaxis: { ...base.yaxis, title: { text: metric } },
       }};
     }
@@ -276,6 +281,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           marker: { color: samples.map((_,i) => colors["asvs_"+i] || DEFAULT_COLORS[(i+10) % DEFAULT_COLORS.length]) } },
       ];
       return { data, layout: { ...base, barmode: "group",
+        xaxis:  { ...base.xaxis, tickmode: "array", tickvals: samples, ticktext: samples.map(xFmt) },
         yaxis:  { ...base.yaxis, title: { text: "Reads" } },
         yaxis2: { title: { text: "ASVs" }, overlaying: "y", side: "right",
                   tickfont: { size: font.axisSize } },
@@ -324,6 +330,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         marker: { color: samples.map((s,i) => colors[s] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]) },
       }];
       return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, tickmode: "array", tickvals: samples, ticktext: samples.map(xFmt) },
         yaxis: { ...base.yaxis, title: { text: "Mean reads/OTU" } },
       }};
     }
