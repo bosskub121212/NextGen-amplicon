@@ -1192,6 +1192,44 @@ except ImportError as _q2_err:
 except Exception as _q2_err:
     print(f"[qiime2] Failed to load qiime2_pipeline: {_q2_err}")
 
+# -- 14b. Result Preview endpoints -------------------------------------------
+import re as _re
+from fastapi import HTTPException
+from fastapi.responses import Response
+
+@app.get("/results/{job_id}/tables")
+def preview_tables(job_id: str):
+    """List available r_tables CSVs, r_plots PDFs, and summary.json for a job."""
+    tables_dir   = RESULTS_DIR / job_id / "r_tables"
+    plots_dir    = RESULTS_DIR / job_id / "r_plots"
+    summary_file = RESULTS_DIR / job_id / "summary.json"
+    return {
+        "tables":  sorted([f.name for f in tables_dir.glob("*.csv")])  if tables_dir.exists()  else [],
+        "plots":   sorted([f.name for f in plots_dir.glob("*.pdf")])   if plots_dir.exists()   else [],
+        "summary": json.loads(summary_file.read_text()) if summary_file.exists() else None,
+    }
+
+@app.get("/results/{job_id}/table/{filename}")
+def preview_table(job_id: str, filename: str):
+    """Serve a single CSV table from r_tables/ as text/csv."""
+    if not _re.match(r'^[\w\-]+\.csv$', filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    path = RESULTS_DIR / job_id / "r_tables" / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Table not found")
+    return Response(content=path.read_text(encoding="utf-8"), media_type="text/csv")
+
+@app.get("/results/{job_id}/plot/{filename}")
+def preview_plot_pdf(job_id: str, filename: str):
+    """Serve a pre-generated PDF from r_plots/."""
+    if not _re.match(r'^[\w\-\.]+\.pdf$', filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    path = RESULTS_DIR / job_id / "r_plots" / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Plot not found")
+    return FileResponse(str(path), media_type="application/pdf",
+                        headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
 # -- 15. Serve frontend static files (SPA) ------------------------------------
 # Looks for dist/ next to the backend/ directory (i.e. ~/r16s-app/frontend/dist)
 from fastapi.staticfiles import StaticFiles

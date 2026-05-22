@@ -7,10 +7,11 @@ import MetadataEditor, { MetaRow } from "./components/MetadataEditor";
 import UpdateBanner from "./components/UpdateBanner";
 import LicenseModal, { LicenseStatus } from "./components/LicenseModal";
 import SettingsPanel, { ThemeId } from "./components/SettingsPanel";
+import PreviewPage from "./pages/PreviewPage";
 import "./App.css";
 
 const API = "http://localhost:8000";
-type Screen = "home" | "new-job" | "history";
+type Screen = "home" | "new-job" | "history" | "preview";
 
 const STATUS_COLOR: Record<string, string> = {
   uploaded: "#6b7280", queued: "#f59e0b", running: "#3b82f6",
@@ -76,6 +77,7 @@ const fmtSecs = (secs: number): string => {
 
 export default function App() {
   const [screen, setScreen]             = useState<Screen>("home");
+  const [previewJobId, setPreviewJobId] = useState<string>("");
   const [showSubmitPopup, setShowSubmitPopup] = useState(false);
 
   // Job form data
@@ -423,6 +425,10 @@ export default function App() {
           )}
           {j.status === "completed" && (
             <>
+              <button className="btn-view btn-preview"
+                onClick={() => { setPreviewJobId(j.job_id); setScreen("preview"); }}>
+                📊 Preview Results
+              </button>
               <button className="btn-view"
                 onClick={() => setShowColorPicker(showColorPicker === j.job_id ? null : j.job_id)}>
                 🎨 Taxonomy Colors
@@ -595,6 +601,18 @@ export default function App() {
   };
 
   // ══════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
+  //  PREVIEW SCREEN
+  // ══════════════════════════════════════════════════════════════
+  if (screen === "preview") {
+    return (
+      <PreviewPage
+        initialJobId={previewJobId}
+        onClose={() => setScreen("history")}
+      />
+    );
+  }
+
   //  HOME SCREEN
   // ══════════════════════════════════════════════════════════════
   if (screen === "home") {

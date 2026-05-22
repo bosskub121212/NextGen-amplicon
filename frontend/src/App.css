@@ -450,6 +450,12 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #1a202c;
   cursor: pointer; text-decoration: none; font-family: inherit; transition: all .15s;
 }
 .btn-view:hover { background: #e0f2fe; }
+.btn-preview {
+  background: linear-gradient(135deg, #7c3aed, #4f46e5) !important;
+  color: #fff !important;
+  border-color: #7c3aed !important;
+}
+.btn-preview:hover { opacity: 0.88; }
 
 /* Expanded job area */
 .job-dna-expand { border-top: 1px solid #f3f4f6; margin-top: 14px; padding-top: 14px; }
