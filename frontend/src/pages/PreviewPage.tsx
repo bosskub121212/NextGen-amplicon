@@ -44,11 +44,13 @@ interface FontConfig {
   titleSize: number; axisSize: number; legendSize: number;
   titleText: string; titleBold: boolean; titleItalic: boolean;
   chartType: "bar"|"bar100"|"line"; showGrid: boolean;
+  xItalic: boolean; xSize: number;
 }
 const defaultFont = (): FontConfig => ({
   titleSize: 16, axisSize: 12, legendSize: 11,
   titleText: "", titleBold: false, titleItalic: false,
   chartType: "bar", showGrid: true,
+  xItalic: false, xSize: 12,
 });
 
 // ── CSV parser ────────────────────────────────────────────────
@@ -70,6 +72,18 @@ function parseCSV(text: string): string[][] {
 const num = (v: string) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 const shortName = (s: string) => s.replace(/FBE\d+_pass_/i,"").replace(/_\w{8}_\w{8}_\d+/,"").slice(0,20);
 
+// ── Get raw sample names for x-axis (used in customize panel) ─
+function getUniqueSamples(tab: TabDef, rows: string[][]): string[] {
+  if (!rows.length) return [];
+  if (tab.type === "taxonomy") return rows[0].slice(1);
+  if (tab.type === "alpha") {
+    const sIdx = rows[0].indexOf("Sample");
+    return sIdx >= 0 ? rows.slice(1).map(r => r[sIdx]) : rows.slice(1).map(r => r[r.length - 1]);
+  }
+  if (tab.type === "bar" || tab.type === "box") return rows.slice(1).map(r => r[0]);
+  return [];
+}
+
 // ── Interfaces ────────────────────────────────────────────────
 interface Job { job_id: string; job_name: string; status: string; marker: string; }
 interface TableInfo { tables: string[]; plots: string[]; summary: any; }
@@ -87,6 +101,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [csvData, setCsvData]     = useState<string[][] | null>(null);
   const [colors, setColors]       = useState<Record<string, string>>({});
   const [font, setFont]           = useState<FontConfig>(defaultFont());
+  const [sampleAliases, setSampleAliases] = useState<Record<string, string>>({});
   const [showCustomize, setShowCustomize] = useState(true);
   const [loading, setLoading]     = useState(false);
   const [pdfPanel, setPdfPanel]   = useState(false);
@@ -102,7 +117,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // ── Load tables when job changes ──────────────────────────
   useEffect(() => {
     if (!selJob) return;
-    setTableInfo(null); setAvailTabs([]); setActiveTab(null); setCsvData(null);
+    setTableInfo(null); setAvailTabs([]); setActiveTab(null); setCsvData(null); setSampleAliases({});
     fetch(`${API}/results/${selJob}/tables`)
       .then(r => r.json())
       .then((info: TableInfo) => {
@@ -139,11 +154,11 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       .catch(() => setLoading(false));
   }, [activeTab, selJob]);
 
-  // ── Re-render chart when data / colors / font changes ────
+  // ── Re-render chart when data / colors / font / aliases changes ────
   useEffect(() => {
     if (!csvData || !chartRef.current || !activeTab || !window.Plotly) return;
     renderChart();
-  }, [csvData, colors, font]);
+  }, [csvData, colors, font, sampleAliases]);
 
   // ── Get series names for a tab ────────────────────────────
   function getSeries(tab: TabDef, rows: string[][]): string[] {
@@ -168,9 +183,15 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                      title +
                      (font.titleItalic ? "</i>" : "") +
                      (font.titleBold ? "</b>" : "");
+    // alias: check raw name first, then shortName version
+    const alias = (rawName: string) =>
+      sampleAliases[rawName] || sampleAliases[shortName(rawName)] || shortName(rawName);
     const base = {
       title: { text: titleStr, font: { size: font.titleSize, family: "Arial" } },
-      xaxis: { tickfont: { size: font.axisSize }, showgrid: font.showGrid, tickangle: -35 },
+      xaxis: {
+        tickfont: { size: font.xSize, style: font.xItalic ? "italic" : "normal" },
+        showgrid: font.showGrid, tickangle: -35,
+      },
       yaxis: { tickfont: { size: font.axisSize }, showgrid: font.showGrid },
       legend: { font: { size: font.legendSize }, orientation: "v" as const },
       paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff",
@@ -180,7 +201,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     // TAXONOMY — stacked bar (absolute %) or 100% normalized
     if (activeTab.type === "taxonomy" && rows.length > 1) {
       const headers = rows[0];
-      const samples = headers.slice(1).map(shortName);
+      const samples = headers.slice(1).map(alias);
       const taxaRows = rows.slice(1).slice(0, 30); // top 30
       const is100 = font.chartType === "bar100";
       // compute column sums for normalization
@@ -209,7 +230,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const mIdx   = rows[0].indexOf(metric);
       const sIdx   = rows[0].indexOf("Sample");
       if (mIdx < 0) return null;
-      const samples = rows.slice(1).map(r => shortName(sIdx >= 0 ? r[sIdx] : r[r.length-1]));
+      const samples = rows.slice(1).map(r => alias(sIdx >= 0 ? r[sIdx] : r[r.length-1]));
       const values  = rows.slice(1).map(r => num(r[mIdx]));
       const data = [{ x: samples, y: values, type: "bar",
         marker: { color: samples.map((s, i) => colors[s] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]) },
@@ -222,7 +243,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
     // BAR (read counts / asv summary)
     if (activeTab.type === "bar" && rows.length > 1) {
-      const samples = rows.slice(1).map(r => shortName(r[0]));
+      const samples = rows.slice(1).map(r => alias(r[0]));
       const reads   = rows.slice(1).map(r => num(r[1]));
       const asvs    = rows.slice(1).map(r => num(r[2]));
       const data = [
@@ -274,7 +295,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     // BOX (OTU distribution)
     if (activeTab.type === "box" && rows.length > 1) {
       // otu_distribution.csv: Sample, mean, median, ...
-      const samples = rows.slice(1).map(r => shortName(r[0]));
+      const samples = rows.slice(1).map(r => alias(r[0]));
       const means   = rows.slice(1).map(r => num(r[1]));
       const data = [{ x: samples, y: means, type: "bar",
         marker: { color: samples.map((s,i) => colors[s] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]) },
@@ -297,7 +318,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       Plotly.newPlot(chartRef.current, p.data, p.layout, { responsive: true });
       plotted.current = true;
     }
-  }, [csvData, colors, font, activeTab]);
+  }, [csvData, colors, font, activeTab, sampleAliases]);
 
   useEffect(() => { plotted.current = false; }, [activeTab, selJob]);
 
@@ -353,6 +374,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
   // Series for customization panel
   const series = csvData && activeTab ? getSeries(activeTab, csvData) : [];
+  // Unique sample names (raw) for alias editing panel
+  const uniqueSamples = csvData && activeTab ? getUniqueSamples(activeTab, csvData) : [];
 
   return (
     <div className="prev-root">
@@ -539,7 +562,53 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                             </div>
                           </div>
                         )}
+                        {/* X-axis label controls */}
+                        <div className="prev-cust-row">
+                          <label>X label size</label>
+                          <input type="range" min={7} max={20} value={font.xSize}
+                            onChange={e => setFont(f => ({ ...f, xSize: +e.target.value }))} />
+                          <span className="prev-cust-val">{font.xSize}px</span>
+                        </div>
+                        <div className="prev-cust-row">
+                          <label>X label style</label>
+                          <div className="prev-toggle-group">
+                            <button className={`prev-toggle ${font.xItalic ? "on":""}`}
+                              onClick={() => setFont(f => ({ ...f, xItalic: !f.xItalic }))}>
+                              <i>Italic</i>
+                            </button>
+                          </div>
+                        </div>
                       </div>
+
+                      {/* Sample name aliases */}
+                      {uniqueSamples.length > 0 && (
+                        <div className="prev-cust-section">
+                          <div className="prev-cust-section-title">Sample Names (X-axis)</div>
+                          <div className="prev-alias-list">
+                            {uniqueSamples.map(raw => (
+                              <div key={raw} className="prev-alias-row">
+                                <span className="prev-alias-orig" title={raw}>
+                                  {shortName(raw)}
+                                </span>
+                                <span className="prev-alias-arrow">→</span>
+                                <input
+                                  className="prev-alias-input"
+                                  value={sampleAliases[raw] ?? ""}
+                                  placeholder={shortName(raw)}
+                                  onChange={e => setSampleAliases(a => ({
+                                    ...a,
+                                    [raw]: e.target.value,
+                                  }))}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <button className="prev-btn-reset"
+                            onClick={() => setSampleAliases({})}>
+                            ↺ Reset names
+                          </button>
+                        </div>
+                      )}
 
                       {/* Color pickers */}
                       {series.length > 0 && (

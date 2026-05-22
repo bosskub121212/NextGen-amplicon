@@ -418,3 +418,48 @@
   transition: all 0.12s;
 }
 .prev-btn-reset:hover { border-color: #ef4444; color: #ef4444; }
+
+/* ── Sample alias editor ─────────────────────────────────────── */
+.prev-alias-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.prev-alias-list::-webkit-scrollbar { width: 4px; }
+.prev-alias-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+
+.prev-alias-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.prev-alias-orig {
+  min-width: 80px;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #64748b;
+  font-size: 11px;
+}
+.prev-alias-arrow {
+  color: #475569;
+  flex-shrink: 0;
+}
+.prev-alias-input {
+  flex: 1;
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 5px;
+  color: #e2e8f0;
+  font-size: 11px;
+  padding: 3px 7px;
+  outline: none;
+  min-width: 0;
+}
+.prev-alias-input:focus { border-color: #7c3aed; background: rgba(124,58,237,0.12); }
+.prev-alias-input::placeholder { color: #475569; font-style: italic; }
