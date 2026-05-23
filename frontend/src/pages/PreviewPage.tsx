@@ -108,6 +108,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [pdfPanel, setPdfPanel]   = useState(false);
   const [saved, setSaved]         = useState(false);
   const [rerunning, setRerunning] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const plotted  = useRef(false);
 
@@ -469,12 +470,24 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   };
 
   // ── Export full results as ZIP ────────────────────────────
-  const exportResults = () => {
-    if (!selJob) return;
-    const a = document.createElement("a");
-    a.href = `${API}/results/${selJob}/download`;
-    a.download = `${job?.job_name || selJob}_results.zip`;
-    a.click();
+  const exportResults = async () => {
+    if (!selJob || exporting) return;
+    setExporting(true);
+    try {
+      const resp = await fetch(`${API}/results/${selJob}/download`);
+      if (!resp.ok) throw new Error("Download failed");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${job?.job_name || selJob}_results.zip`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) {
+      alert("Export failed: " + String(e));
+    } finally {
+      setExporting(false);
+    }
   };
 
   // ── Helpers ───────────────────────────────────────────────
@@ -571,8 +584,11 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                   onClick={saveSettings}>
                   {saved ? "✓ Saved!" : "💾 Save"}
                 </button>
-                <button className="prev-btn prev-btn-export" onClick={exportResults}>
-                  📦 Export Result
+                <button
+                  className={`prev-btn prev-btn-export ${exporting ? "exporting" : ""}`}
+                  onClick={exportResults} disabled={exporting}
+                  title="Download full results folder as ZIP">
+                  {exporting ? "⏳ Packing ZIP…" : "📦 Export Result"}
                 </button>
               </div>
             </div>

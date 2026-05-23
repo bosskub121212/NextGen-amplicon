@@ -181,6 +181,8 @@
 .prev-btn-save.saved { background: #065f46; color: #6ee7b7; cursor: default; }
 .prev-btn-export { background: #7c3aed; color: #fff; }
 .prev-btn-export:hover { background: #8b5cf6; }
+.prev-btn-export.exporting { background: #4c1d95; color: #c4b5fd; cursor: wait; }
+.prev-btn-export:disabled { opacity: 0.75; cursor: wait; }
 .prev-btn-rerun  { background: #b45309; color: #fff; margin-left: 12px; }
 .prev-btn-rerun:hover { background: #d97706; }
 .prev-btn-rerun.running { background: #78350f; color: #fde68a; cursor: wait; }
