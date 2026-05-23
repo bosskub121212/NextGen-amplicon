@@ -109,6 +109,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [saved, setSaved]         = useState(false);
   const [rerunning, setRerunning] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportStep, setExportStep] = useState("");
   const chartRef = useRef<HTMLDivElement>(null);
   const plotted  = useRef(false);
 
@@ -242,10 +243,12 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   }
 
   // ── Build Plotly traces & layout ──────────────────────────
-  function buildPlotly(): { data: any[], layout: any } | null {
-    if (!csvData || !activeTab) return null;
-    const rows = csvData;
-    const title = font.titleText || activeTab.label;
+  // Accepts optional overrides so exportResults can render any tab without switching state
+  function buildPlotly(overrideData?: string[][], overrideTab?: TabDef): { data: any[], layout: any } | null {
+    const rows = overrideData ?? csvData;
+    const activeTab2 = overrideTab ?? activeTab;
+    if (!rows || !activeTab2) return null;
+    const title = font.titleText || activeTab2.label;
     const titleStr = (font.titleBold ? "<b>" : "") +
                      (font.titleItalic ? "<i>" : "") +
                      title +
@@ -274,7 +277,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     };
 
     // TAXONOMY — stacked bar (absolute %) or 100% normalized
-    if (activeTab.type === "taxonomy" && rows.length > 1) {
+    if (activeTab2.type === "taxonomy" && rows.length > 1) {
       const headers = rows[0];
       const samples = headers.slice(1).map(alias);
       const taxaRows = rows.slice(1).slice(0, 30); // top 30
@@ -301,8 +304,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     }
 
     // ALPHA DIVERSITY — bar per sample
-    if (activeTab.type === "alpha" && rows.length > 1) {
-      const metric = activeTab.metric || "Shannon";
+    if (activeTab2.type === "alpha" && rows.length > 1) {
+      const metric = activeTab2.metric || "Shannon";
       const mIdx   = rows[0].indexOf(metric);
       const sIdx   = rows[0].indexOf("Sample");
       if (mIdx < 0) return null;
@@ -319,7 +322,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     }
 
     // BAR (read counts / asv summary)
-    if (activeTab.type === "bar" && rows.length > 1) {
+    if (activeTab2.type === "bar" && rows.length > 1) {
       const samples = rows.slice(1).map(r => alias(r[0]));
       const reads   = rows.slice(1).map(r => num(r[1]));
       const asvs    = rows.slice(1).map(r => num(r[2]));
@@ -338,7 +341,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     }
 
     // LINE (rarefaction)
-    if (activeTab.type === "line" && rows.length > 1) {
+    if (activeTab2.type === "line" && rows.length > 1) {
       const depths  = rows.slice(1).map(r => num(r[0]));
       const samples = rows[0].slice(1);
       const data = samples.map((name, ci) => ({
@@ -355,7 +358,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     }
 
     // SCATTER (PCoA / PCA) — pca_scores.csv: Sample, PC1, PC2[, Group, PC1_var, PC2_var]
-    if (activeTab.type === "scatter" && rows.length > 1) {
+    if (activeTab2.type === "scatter" && rows.length > 1) {
       const hdr = rows[0];
       const pc1varIdx = hdr.indexOf("PC1_var");
       const pc2varIdx = hdr.indexOf("PC2_var");
@@ -389,7 +392,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     }
 
     // HEATMAP (beta_heatmap.csv: Sample, col1, col2, ...)
-    if (activeTab.type === "heatmap" && rows.length > 1) {
+    if (activeTab2.type === "heatmap" && rows.length > 1) {
       const sampleNames = rows.slice(1).map(r => alias(r[0]));
       const zValues = rows.slice(1).map(r => r.slice(1).map(v => num(v)));
       const data = [{ z: zValues, x: sampleNames, y: sampleNames,
@@ -407,7 +410,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     }
 
     // BOX (OTU distribution)
-    if (activeTab.type === "box" && rows.length > 1) {
+    if (activeTab2.type === "box" && rows.length > 1) {
       // otu_distribution.csv: Sample, mean, median, ...
       const samples = rows.slice(1).map(r => alias(r[0]));
       const means   = rows.slice(1).map(r => num(r[1]));
@@ -469,24 +472,63 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     setRerunning(false);
   };
 
-  // ── Export full results as ZIP ────────────────────────────
+  // ── Export full results as ZIP (with custom-named PNG charts) ──
   const exportResults = async () => {
     if (!selJob || exporting) return;
     setExporting(true);
+
+    // Hidden off-screen div for rendering charts
+    const tmpDiv = document.createElement("div");
+    tmpDiv.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1200px;height:700px;background:#fff;";
+    document.body.appendChild(tmpDiv);
+
     try {
+      // ── 1. Render each available tab as PNG ──────────────────
+      const pngFiles: { name: string; b64: string }[] = [];
+      for (let i = 0; i < availTabs.length; i++) {
+        const tab = availTabs[i];
+        setExportStep(`Rendering chart ${i + 1}/${availTabs.length}: ${tab.label}…`);
+        try {
+          const text = await fetch(`${API}/results/${selJob}/table/${tab.file}`).then(r => r.text());
+          const tabData = parseCSV(text);
+          const plotData = buildPlotly(tabData, tab);
+          if (!plotData) continue;
+          await Plotly.newPlot(tmpDiv, plotData.data, plotData.layout, { responsive: false, displayModeBar: false });
+          const imgUrl: string = await Plotly.toImage(tmpDiv, { format: "png", width: 1400, height: 900, scale: 2 });
+          pngFiles.push({ name: `${i + 1}_${tab.id}.png`, b64: imgUrl.split(",")[1] });
+        } catch { /* skip this tab — original PDFs still included */ }
+      }
+      Plotly.purge(tmpDiv);
+
+      // ── 2. Fetch server ZIP (original R outputs + settings) ──
+      setExportStep("Downloading results from server…");
       const resp = await fetch(`${API}/results/${selJob}/download`);
-      if (!resp.ok) throw new Error("Download failed");
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
+      if (!resp.ok) throw new Error("Server download failed");
+      const serverBuf = await resp.arrayBuffer();
+
+      // ── 3. Load server ZIP and inject PNG charts ─────────────
+      setExportStep("Assembling final ZIP…");
+      const JSZip = (window as any).JSZip;
+      const zip = await JSZip.loadAsync(serverBuf);
+      for (const { name, b64 } of pngFiles) {
+        zip.file(`preview_charts/${name}`, b64, { base64: true });
+      }
+
+      // ── 4. Download ───────────────────────────────────────────
+      const finalBlob: Blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(finalBlob);
       const a = document.createElement("a");
       a.href = url;
       a.download = `${job?.job_name || selJob}_results.zip`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
+
     } catch (e) {
       alert("Export failed: " + String(e));
     } finally {
+      document.body.removeChild(tmpDiv);
       setExporting(false);
+      setExportStep("");
     }
   };
 
@@ -587,8 +629,12 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                 <button
                   className={`prev-btn prev-btn-export ${exporting ? "exporting" : ""}`}
                   onClick={exportResults} disabled={exporting}
-                  title="Download full results folder as ZIP">
-                  {exporting ? "⏳ Packing ZIP…" : "📦 Export Result"}
+                  title={exporting ? exportStep : "Export results + custom-named PNG charts as ZIP"}>
+                  {exporting
+                    ? (exportStep.startsWith("Rendering")
+                        ? `⏳ Chart ${exportStep.match(/(\d+\/\d+)/)?.[1] ?? "…"}`
+                        : "⏳ Packing…")
+                    : "📦 Export Result"}
                 </button>
               </div>
             </div>
