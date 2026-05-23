@@ -1029,6 +1029,19 @@ export default function App() {
                       await axios.post(`${API}/config`, { max_workers: n });
                     }}>{n}</button>
                 ))}
+                <input
+                  type="number"
+                  className={`worker-custom-input ${![1,2,4,6,8].includes(maxWorkers) ? "active" : ""}`}
+                  min={1} max={256}
+                  value={maxWorkers}
+                  title="กำหนดจำนวน CPU เอง"
+                  placeholder="เอง"
+                  onChange={async (e) => {
+                    const v = Math.max(1, Math.min(256, parseInt(e.target.value) || 1));
+                    setMaxWorkers(v);
+                    await axios.post(`${API}/config`, { max_workers: v });
+                  }}
+                />
               </div>
               <p className="cpu-hint">
                 {runningCount}/{maxWorkers} running · {queuedCount} queued

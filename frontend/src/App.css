@@ -494,6 +494,23 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #1a202c;
 }
 .worker-btn.active { background: #eef2ff; border-color: #4f46e5; color: #4338ca; }
 .worker-btn:hover:not(.active) { background: #f3f4f6; border-color: #d1d5db; }
+.worker-custom-input {
+  width: 58px; height: 36px;
+  border: 1.5px solid #e5e7eb; border-radius: 10px;
+  background: #f9fafb; color: #374151;
+  font-size: 13px; font-weight: 700; font-family: inherit;
+  text-align: center; padding: 0 4px;
+  outline: none; cursor: text;
+  transition: border-color .15s, background .15s;
+}
+.worker-custom-input:hover { border-color: #d1d5db; background: #f3f4f6; }
+.worker-custom-input:focus { border-color: #4f46e5; background: #eef2ff; color: #4338ca; }
+.worker-custom-input.active { background: #eef2ff; border-color: #4f46e5; color: #4338ca; }
+.worker-custom-input::-webkit-inner-spin-button,
+.worker-custom-input::-webkit-outer-spin-button { opacity: 0.5; }
+[data-theme="purple"] .worker-custom-input { background: #1e1535; border-color: #3d2f6e; color: #b8a8e0; }
+[data-theme="purple"] .worker-custom-input.active { background: #2d1f5e; border-color: #7c6bc7; color: #c4b5fd; }
+[data-theme="purple"] .worker-custom-input:focus { border-color: #7c6bc7; color: #c4b5fd; }
 
 /* ══════════════════════════════════════════════════════════
    DNA PROGRESS
