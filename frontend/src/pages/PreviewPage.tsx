@@ -122,47 +122,57 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     if (!selJob) return;
     setTableInfo(null); setAvailTabs([]); setActiveTab(null); setCsvData(null);
 
-    // Restore saved settings: try server first, fall back to localStorage
-    const applySettings = (s: any) => {
-      if (s && Object.keys(s).length > 0) {
-        if (s.font)          setFont({ ...defaultFont(), ...s.font });
-        if (s.colors)        setColors(s.colors);
-        if (s.sampleAliases) setSampleAliases(s.sampleAliases);
-        return true;
-      }
+    // Load settings + tables in parallel; apply settings before activating first tab
+    const loadSettings = async (): Promise<boolean> => {
+      // Try server first
+      try {
+        const s = await fetch(`${API}/results/${selJob}/settings`).then(r => r.json());
+        if (s && Object.keys(s).length > 0) {
+          if (s.font)          setFont({ ...defaultFont(), ...s.font });
+          if (s.colors)        setColors(s.colors);
+          if (s.sampleAliases) setSampleAliases(s.sampleAliases);
+          return true;
+        }
+      } catch { /* fall through */ }
+      // Fall back to localStorage
+      try {
+        const local = localStorage.getItem(`prev_settings_${selJob}`);
+        if (local) {
+          const s = JSON.parse(local);
+          if (s.font)          setFont({ ...defaultFont(), ...s.font });
+          if (s.colors)        setColors(s.colors);
+          if (s.sampleAliases) setSampleAliases(s.sampleAliases);
+          return true;
+        }
+      } catch { /* ignore */ }
+      // No saved settings
+      setFont(defaultFont()); setColors({}); setSampleAliases({});
       return false;
     };
-    fetch(`${API}/results/${selJob}/settings`)
-      .then(r => r.json())
-      .then(s => {
-        if (!applySettings(s)) {
-          // Fall back to localStorage
-          try {
-            const local = localStorage.getItem(`prev_settings_${selJob}`);
-            if (local) applySettings(JSON.parse(local));
-            else { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
-          } catch { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
+
+    const loadTables = async () => {
+      const info: TableInfo = await fetch(`${API}/results/${selJob}/tables`).then(r => r.json());
+      setTableInfo(info);
+      const avail = ALL_TABS.filter(t => info.tables.includes(t.file));
+      setAvailTabs(avail);
+      return { info, avail };
+    };
+
+    // Run both in parallel, then activate the first tab
+    Promise.all([loadSettings(), loadTables()])
+      .then(([hadSettings, { info, avail }]) => {
+        if (avail.length > 0) setActiveTab(avail[0]);
+        if (info.summary?.job_name && !hadSettings) {
+          setFont(f => ({ ...f, titleText: info.summary.job_name }));
         }
       })
       .catch(() => {
-        try {
-          const local = localStorage.getItem(`prev_settings_${selJob}`);
-          if (local) applySettings(JSON.parse(local));
-          else { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
-        } catch { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
-      });
-
-    fetch(`${API}/results/${selJob}/tables`)
-      .then(r => r.json())
-      .then((info: TableInfo) => {
-        setTableInfo(info);
-        const avail = ALL_TABS.filter(t => info.tables.includes(t.file));
-        setAvailTabs(avail);
-        if (avail.length > 0) setActiveTab(avail[0]);
-        if (info.summary?.job_name) {
-          // Only apply summary title if no saved settings were found
-          setFont(f => f.titleText ? f : { ...f, titleText: info.summary.job_name });
-        }
+        fetch(`${API}/results/${selJob}/tables`).then(r => r.json()).then((info: TableInfo) => {
+          setTableInfo(info);
+          const avail = ALL_TABS.filter(t => info.tables.includes(t.file));
+          setAvailTabs(avail);
+          if (avail.length > 0) setActiveTab(avail[0]);
+        }).catch(() => {});
       });
   }, [selJob]);
 
@@ -190,10 +200,32 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   }, [activeTab, selJob]);
 
   // ── Re-render chart when data / colors / font / aliases changes ────
-  useEffect(() => {
-    if (!csvData || !chartRef.current || !activeTab || !window.Plotly) return;
-    renderChart();
-  }, [csvData, colors, font, sampleAliases]);
+  // (renderChart is declared below but useCallback deps already cover it)
+  const triggerRender = useCallback(() => {
+    if (!csvData || !chartRef.current || !activeTab) return;
+    if (!window.Plotly) {
+      // Plotly CDN not ready yet — retry in 500 ms
+      const el = chartRef.current;
+      setTimeout(() => {
+        if (window.Plotly && el) {
+          const p2 = buildPlotly();
+          if (p2) { Plotly.newPlot(el, p2.data, p2.layout, { responsive: true }); plotted.current = true; }
+        }
+      }, 500);
+      return;
+    }
+    const p = buildPlotly();
+    if (!p) return;
+    if (plotted.current) {
+      Plotly.react(chartRef.current, p.data, p.layout, { responsive: true });
+    } else {
+      Plotly.newPlot(chartRef.current, p.data, p.layout, { responsive: true });
+      plotted.current = true;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [csvData, colors, font, activeTab, sampleAliases]);
+
+  useEffect(() => { triggerRender(); }, [triggerRender]);
 
   // ── Get series names for a tab ────────────────────────────
   function getSeries(tab: TabDef, rows: string[][]): string[] {
@@ -390,18 +422,6 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     return null;
   }
 
-  // ── Render chart ──────────────────────────────────────────
-  const renderChart = useCallback(() => {
-    const p = buildPlotly();
-    if (!p || !chartRef.current) return;
-    if (plotted.current) {
-      Plotly.react(chartRef.current, p.data, p.layout, { responsive: true });
-    } else {
-      Plotly.newPlot(chartRef.current, p.data, p.layout, { responsive: true });
-      plotted.current = true;
-    }
-  }, [csvData, colors, font, activeTab, sampleAliases]);
-
   useEffect(() => { plotted.current = false; }, [activeTab, selJob]);
 
   // ── Export PNG ────────────────────────────────────────────
@@ -539,6 +559,10 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                   onClick={() => setPdfPanel(p => !p)}>
                   📄 Original PDFs
                 </button>
+                <button className={`prev-btn prev-btn-rerun ${rerunning ? "running" : ""}`}
+                  onClick={rerunViz} disabled={rerunning} title="Re-run R visualization to regenerate charts">
+                  {rerunning ? "⏳ Re-running…" : "🔄 Re-run Viz"}
+                </button>
                 <button className="prev-btn prev-btn-png" onClick={exportPNG}>
                   🖼 Save PNG
                 </button>
@@ -570,14 +594,10 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
             )}
 
             {/* Tab bar */}
-            {/* Re-run visualization for old/incomplete jobs */}
+            {/* Banner when no charts at all */}
             {tableInfo && availTabs.length === 0 && (
               <div className="prev-rerun-banner">
-                <span>⚠️ No chart tables found — this job may have been run before chart export was added.</span>
-                <button className={`prev-btn prev-btn-rerun ${rerunning ? "running" : ""}`}
-                  onClick={rerunViz} disabled={rerunning}>
-                  {rerunning ? "⏳ Running R…" : "🔄 Re-run Visualization"}
-                </button>
+                <span>⚠️ No chart tables found — click <b>🔄 Re-run Viz</b> (top-right) to regenerate from existing results.</span>
               </div>
             )}
 
