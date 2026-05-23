@@ -473,18 +473,19 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   };
 
   // ── Export full results as ZIP (with custom-named PNG charts) ──
+  // Flow: render PNGs → upload to server (saved in preview_charts/) → server ZIPs everything
   const exportResults = async () => {
     if (!selJob || exporting) return;
     setExporting(true);
 
-    // Hidden off-screen div for rendering charts
+    // Hidden off-screen div for rendering Plotly charts
     const tmpDiv = document.createElement("div");
     tmpDiv.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1200px;height:700px;background:#fff;";
     document.body.appendChild(tmpDiv);
 
     try {
       // ── 1. Render each available tab as PNG ──────────────────
-      const pngFiles: { name: string; b64: string }[] = [];
+      const charts: { name: string; b64: string }[] = [];
       for (let i = 0; i < availTabs.length; i++) {
         const tab = availTabs[i];
         setExportStep(`Rendering chart ${i + 1}/${availTabs.length}: ${tab.label}…`);
@@ -493,35 +494,34 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           const tabData = parseCSV(text);
           const plotData = buildPlotly(tabData, tab);
           if (!plotData) continue;
-          await Plotly.newPlot(tmpDiv, plotData.data, plotData.layout, { responsive: false, displayModeBar: false });
-          const imgUrl: string = await Plotly.toImage(tmpDiv, { format: "png", width: 1400, height: 900, scale: 2 });
-          pngFiles.push({ name: `${i + 1}_${tab.id}.png`, b64: imgUrl.split(",")[1] });
-        } catch { /* skip this tab — original PDFs still included */ }
+          await Plotly.newPlot(tmpDiv, plotData.data, plotData.layout,
+            { responsive: false, displayModeBar: false });
+          const imgUrl: string = await Plotly.toImage(tmpDiv,
+            { format: "png", width: 1400, height: 900, scale: 2 });
+          charts.push({ name: `${i + 1}_${tab.id}.png`, b64: imgUrl.split(",")[1] });
+        } catch { /* skip this tab */ }
       }
       Plotly.purge(tmpDiv);
 
-      // ── 2. Fetch server ZIP (original R outputs + settings) ──
-      setExportStep("Downloading results from server…");
+      // ── 2. Upload PNGs to server (saved into preview_charts/) ─
+      setExportStep("Uploading charts to server…");
+      await fetch(`${API}/results/${selJob}/preview-charts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ charts }),
+      });
+
+      // ── 3. Trigger server-side ZIP download (all files) ───────
+      setExportStep("Building ZIP…");
       const resp = await fetch(`${API}/results/${selJob}/download`);
-      if (!resp.ok) throw new Error("Server download failed");
-      const serverBuf = await resp.arrayBuffer();
-
-      // ── 3. Load server ZIP and inject PNG charts ─────────────
-      setExportStep("Assembling final ZIP…");
-      const JSZip = (window as any).JSZip;
-      const zip = await JSZip.loadAsync(serverBuf);
-      for (const { name, b64 } of pngFiles) {
-        zip.file(`preview_charts/${name}`, b64, { base64: true });
-      }
-
-      // ── 4. Download ───────────────────────────────────────────
-      const finalBlob: Blob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(finalBlob);
+      if (!resp.ok) throw new Error("Download failed");
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = `${job?.job_name || selJob}_results.zip`;
       a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
 
     } catch (e) {
       alert("Export failed: " + String(e));

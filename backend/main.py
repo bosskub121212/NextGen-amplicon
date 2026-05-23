@@ -1281,37 +1281,58 @@ def rerun_visualization(job_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/results/{job_id}/preview-charts")
+async def save_preview_charts(job_id: str, request: Request):
+    """Receive rendered PNG charts from frontend and save into job directory."""
+    import base64 as _b64
+    job_dir = RESULTS_DIR / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Results not found")
+    charts_dir = job_dir / "preview_charts"
+    charts_dir.mkdir(exist_ok=True)
+    body = await request.json()
+    saved = 0
+    for chart in body.get("charts", []):
+        name = chart.get("name", "")
+        b64  = chart.get("b64", "")
+        if not name or not b64:
+            continue
+        # Sanitise filename — allow only safe characters
+        safe_name = _re.sub(r'[^\w\-\.]', '_', name)
+        (charts_dir / safe_name).write_bytes(_b64.b64decode(b64))
+        saved += 1
+    return {"saved": saved}
+
+
 @app.get("/results/{job_id}/download")
 def download_results(job_id: str):
-    """Zip results (CSVs, PDFs, JSON) and serve as download — fast version."""
+    """Zip entire results directory and serve — all files included.
+    Pre-compressed formats (gz, pdf, png …) use ZIP_STORED to avoid
+    slow recompression; text files use ZIP_DEFLATED.
+    """
     import zipfile, io as _io
     job_dir = RESULTS_DIR / job_id
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail="Results not found")
 
-    # Extensions that are already compressed — store without re-compressing
-    store_exts  = {".pdf", ".gz", ".bz2", ".zip", ".qza", ".qzv", ".biom", ".fastq", ".fq"}
-    # Large raw-data folders/extensions to skip entirely
-    skip_dirs   = {"filtered", "demux", "raw", "trimmed"}
-    skip_exts   = {".fastq", ".fq", ".gz", ".bz2", ".tmp", ".lock"}
-    # Files we always want (regardless of extension)
-    keep_always = {".csv", ".tsv", ".json", ".txt", ".pdf", ".html", ".R", ".py"}
+    # Store (no re-compression) for already-compressed formats
+    store_exts = {
+        ".gz", ".bz2", ".zip", ".qza", ".qzv", ".biom",
+        ".fastq", ".fq", ".pdf", ".png", ".jpg", ".jpeg",
+        ".bam", ".cram",
+    }
+    # Skip only true temp/lock files
+    skip_exts = {".tmp", ".lock", ".part"}
 
     buf = _io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for f in sorted(job_dir.rglob("*")):
             if not f.is_file():
                 continue
-            # Skip raw-data directories (can be gigabytes)
             rel = f.relative_to(job_dir)
-            if any(part in skip_dirs for part in rel.parts[:-1]):
-                continue
             ext = f.suffix.lower()
             if ext in skip_exts:
                 continue
-            if ext not in keep_always:
-                continue  # skip unknown binary files
-            # Choose compression: store pre-compressed, deflate text files
             compress = zipfile.ZIP_STORED if ext in store_exts else zipfile.ZIP_DEFLATED
             zf.write(f, rel, compress_type=compress)
 
