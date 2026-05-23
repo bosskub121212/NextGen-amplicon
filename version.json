@@ -1,5 +1,5 @@
 {
-  "version": "2.3.0",
-  "release_date": "2026-05-22",
-  "changelog": "Result Preview page (interactive Plotly charts, per-series color pickers, sample name editing, x-axis italic/size, PDF/PNG export); Emu/ONT-16S pipeline fixes (ppm pseudo-counts, single-end cutadapt, threshold TSV selection, phy_tree safety); CPU threads selectable per job."
+  "version": "2.3.2",
+  "release_date": "2026-05-23",
+  "changelog": "fix: taxonomy bar chart X=samples series=taxa (was transposed); fix: Customize panel Colors shows taxon names; fix: SAMPLE NAMES section shows sample names; fix: DADA2 dbPath rejects EMU/auto-resolves SILVA; fix: Edit Charts tables fallback for DADA2 root CSVs; feat: CPU workers custom input"
 }

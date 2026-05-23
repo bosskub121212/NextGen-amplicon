@@ -91,7 +91,7 @@ const shortName = (s: string) => s.replace(/FBE\d+_pass_/i,"").replace(/_\w{8}_\
 // ── Get raw sample names for x-axis (used in customize panel) ─
 function getUniqueSamples(tab: TabDef, rows: string[][]): string[] {
   if (!rows.length) return [];
-  if (tab.type === "taxonomy") return rows[0].slice(1);
+  if (tab.type === "taxonomy") return rows.slice(1).map(r => r[0]);
   if (tab.type === "alpha") {
     const sIdx = rows[0].indexOf("Sample");
     return sIdx >= 0 ? rows.slice(1).map(r => r[sIdx]) : rows.slice(1).map(r => r[r.length - 1]);
@@ -252,7 +252,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // ── Get series names for a tab ────────────────────────────
   function getSeries(tab: TabDef, rows: string[][]): string[] {
     if (!rows.length) return [];
-    if (tab.type === "taxonomy")  return rows.slice(1).map(r => r[0] || "Unknown").slice(0, 30);
+    if (tab.type === "taxonomy")  return rows[0].slice(1).slice(0, 30);  // taxon names (columns) → for color assignment
     if (tab.type === "alpha")     return rows.length > 1 ? rows.slice(1).map(r => {
       const idx = rows[0].indexOf("Sample"); return idx >= 0 ? r[idx] : r[r.length-1];
     }) : [];
