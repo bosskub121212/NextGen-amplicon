@@ -181,6 +181,22 @@
 .prev-btn-save.saved { background: #065f46; color: #6ee7b7; cursor: default; }
 .prev-btn-export { background: #7c3aed; color: #fff; }
 .prev-btn-export:hover { background: #8b5cf6; }
+.prev-btn-rerun  { background: #b45309; color: #fff; margin-left: 12px; }
+.prev-btn-rerun:hover { background: #d97706; }
+.prev-btn-rerun.running { background: #78350f; color: #fde68a; cursor: wait; }
+.prev-btn-rerun:disabled { opacity: 0.6; cursor: wait; }
+
+/* ── Re-run banner ───────────────────────────────────────────── */
+.prev-rerun-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: rgba(180, 83, 9, 0.15);
+  border-bottom: 1px solid rgba(180, 83, 9, 0.35);
+  font-size: 13px;
+  color: #fcd34d;
+}
 
 /* ── PDF panel ───────────────────────────────────────────────── */
 .prev-pdf-panel {

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
@@ -1229,6 +1229,57 @@ def preview_plot_pdf(job_id: str, filename: str):
         raise HTTPException(status_code=404, detail="Plot not found")
     return FileResponse(str(path), media_type="application/pdf",
                         headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+@app.get("/results/{job_id}/settings")
+def get_preview_settings(job_id: str):
+    """Return saved preview customization settings (sample aliases, colors, font)."""
+    path = RESULTS_DIR / job_id / "preview_settings.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+@app.post("/results/{job_id}/settings")
+async def save_preview_settings(job_id: str, request: Request):
+    """Persist preview customization settings to disk so they're included in the ZIP export."""
+    body = await request.json()
+    path = RESULTS_DIR / job_id / "preview_settings.json"
+    path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True}
+
+@app.post("/results/{job_id}/rerun-viz")
+def rerun_visualization(job_id: str):
+    """Re-run viz_pipeline.R on an existing job's data to generate r_tables/ and r_plots/."""
+    import subprocess as _sp
+    job_dir = RESULTS_DIR / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Read job summary to get marker
+    summary_file = job_dir / "summary.json"
+    marker = "16S"
+    if summary_file.exists():
+        try:
+            marker = json.loads(summary_file.read_text()).get("marker", "16S")
+        except Exception:
+            pass
+
+    rscript = shutil.which("Rscript") or "Rscript"
+    viz_script = _BACKEND_DIR / "r_scripts" / "viz_pipeline.R"
+    cmd = [rscript, str(viz_script),
+           "--output_dir", str(job_dir),
+           "--marker", marker,
+           "--threads", "4"]
+
+    try:
+        result = _sp.run(cmd, capture_output=True, text=True, timeout=300)
+        return {"ok": True, "stdout": result.stdout[-3000:], "stderr": result.stderr[-2000:]}
+    except _sp.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Visualization timed out (>5 min)")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/results/{job_id}/download")
 def download_results(job_id: str):

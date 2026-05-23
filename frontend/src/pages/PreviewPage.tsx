@@ -20,23 +20,24 @@ const DEFAULT_COLORS = [
 // ── Chart tab definitions ─────────────────────────────────────
 interface TabDef {
   id: string; label: string; file: string;
-  type: "taxonomy"|"alpha"|"bar"|"line"|"scatter"|"box";
+  type: "taxonomy"|"alpha"|"bar"|"line"|"scatter"|"box"|"heatmap";
   metric?: string; group?: string;
 }
 const ALL_TABS: TabDef[] = [
-  { id:"phylum",   label:"Phylum",      file:"taxonomy_phylum.csv",  type:"taxonomy", group:"Taxonomy" },
-  { id:"class",    label:"Class",       file:"taxonomy_class.csv",   type:"taxonomy", group:"Taxonomy" },
-  { id:"order",    label:"Order",       file:"taxonomy_order.csv",   type:"taxonomy", group:"Taxonomy" },
-  { id:"family",   label:"Family",      file:"taxonomy_family.csv",  type:"taxonomy", group:"Taxonomy" },
-  { id:"genus",    label:"Genus",       file:"taxonomy_genus.csv",   type:"taxonomy", group:"Taxonomy" },
-  { id:"shannon",  label:"Shannon",     file:"alpha_diversity.csv",  type:"alpha", metric:"Shannon",  group:"Alpha" },
-  { id:"observed", label:"Observed",    file:"alpha_diversity.csv",  type:"alpha", metric:"Observed", group:"Alpha" },
-  { id:"chao1",    label:"Chao1",       file:"alpha_diversity.csv",  type:"alpha", metric:"Chao1",    group:"Alpha" },
-  { id:"simpson",  label:"Simpson",     file:"alpha_diversity.csv",  type:"alpha", metric:"Simpson",  group:"Alpha" },
-  { id:"reads",    label:"Read Counts", file:"asv_summary.csv",      type:"bar",                      group:"Other" },
-  { id:"rarefaction", label:"Rarefaction", file:"rarefaction.csv",   type:"line",                     group:"Other" },
-  { id:"pca",      label:"PCA",         file:"pca_scores.csv",       type:"scatter",                  group:"Beta" },
-  { id:"otu",      label:"OTU Dist",    file:"otu_distribution.csv", type:"box",                      group:"Other" },
+  { id:"phylum",      label:"Phylum",       file:"taxonomy_phylum.csv",   type:"taxonomy", group:"Taxonomy" },
+  { id:"class",       label:"Class",        file:"taxonomy_class.csv",    type:"taxonomy", group:"Taxonomy" },
+  { id:"order",       label:"Order",        file:"taxonomy_order.csv",    type:"taxonomy", group:"Taxonomy" },
+  { id:"family",      label:"Family",       file:"taxonomy_family.csv",   type:"taxonomy", group:"Taxonomy" },
+  { id:"genus",       label:"Genus",        file:"taxonomy_genus.csv",    type:"taxonomy", group:"Taxonomy" },
+  { id:"shannon",     label:"Shannon",      file:"alpha_diversity.csv",   type:"alpha", metric:"Shannon",  group:"Alpha" },
+  { id:"observed",    label:"Observed",     file:"alpha_diversity.csv",   type:"alpha", metric:"Observed", group:"Alpha" },
+  { id:"chao1",       label:"Chao1",        file:"alpha_diversity.csv",   type:"alpha", metric:"Chao1",    group:"Alpha" },
+  { id:"simpson",     label:"Simpson",      file:"alpha_diversity.csv",   type:"alpha", metric:"Simpson",  group:"Alpha" },
+  { id:"reads",       label:"Read Counts",  file:"asv_summary.csv",       type:"bar",                      group:"Other" },
+  { id:"rarefaction", label:"Rarefaction",  file:"rarefaction.csv",       type:"line",                     group:"Other" },
+  { id:"pca",         label:"PCoA",         file:"pca_scores.csv",        type:"scatter",                  group:"Beta" },
+  { id:"heatmap",     label:"Heatmap",      file:"beta_heatmap.csv",      type:"heatmap",                  group:"Beta" },
+  { id:"otu",         label:"OTU Dist",     file:"otu_distribution.csv",  type:"box",                      group:"Other" },
 ];
 
 // ── Font config ───────────────────────────────────────────────
@@ -106,6 +107,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [loading, setLoading]     = useState(false);
   const [pdfPanel, setPdfPanel]   = useState(false);
   const [saved, setSaved]         = useState(false);
+  const [rerunning, setRerunning] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const plotted  = useRef(false);
 
@@ -120,20 +122,35 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     if (!selJob) return;
     setTableInfo(null); setAvailTabs([]); setActiveTab(null); setCsvData(null);
 
-    // Restore saved settings for this job, or reset to defaults
-    try {
-      const saved = localStorage.getItem(`prev_settings_${selJob}`);
-      if (saved) {
-        const s = JSON.parse(saved);
-        if (s.font)         setFont({ ...defaultFont(), ...s.font });
-        if (s.colors)       setColors(s.colors);
+    // Restore saved settings: try server first, fall back to localStorage
+    const applySettings = (s: any) => {
+      if (s && Object.keys(s).length > 0) {
+        if (s.font)          setFont({ ...defaultFont(), ...s.font });
+        if (s.colors)        setColors(s.colors);
         if (s.sampleAliases) setSampleAliases(s.sampleAliases);
-      } else {
-        setFont(defaultFont());
-        setColors({});
-        setSampleAliases({});
+        return true;
       }
-    } catch { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
+      return false;
+    };
+    fetch(`${API}/results/${selJob}/settings`)
+      .then(r => r.json())
+      .then(s => {
+        if (!applySettings(s)) {
+          // Fall back to localStorage
+          try {
+            const local = localStorage.getItem(`prev_settings_${selJob}`);
+            if (local) applySettings(JSON.parse(local));
+            else { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
+          } catch { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
+        }
+      })
+      .catch(() => {
+        try {
+          const local = localStorage.getItem(`prev_settings_${selJob}`);
+          if (local) applySettings(JSON.parse(local));
+          else { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
+        } catch { setFont(defaultFont()); setColors({}); setSampleAliases({}); }
+      });
 
     fetch(`${API}/results/${selJob}/tables`)
       .then(r => r.json())
@@ -143,9 +160,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         setAvailTabs(avail);
         if (avail.length > 0) setActiveTab(avail[0]);
         if (info.summary?.job_name) {
-          // Only set title from summary if no saved settings exist
-          const saved = localStorage.getItem(`prev_settings_${selJob}`);
-          if (!saved) setFont(f => ({ ...f, titleText: info.summary.job_name }));
+          // Only apply summary title if no saved settings were found
+          setFont(f => f.titleText ? f : { ...f, titleText: info.summary.job_name });
         }
       });
   }, [selJob]);
@@ -305,19 +321,55 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }};
     }
 
-    // SCATTER (PCA)
+    // SCATTER (PCoA / PCA) — pca_scores.csv: Sample, PC1, PC2[, Group, PC1_var, PC2_var]
     if (activeTab.type === "scatter" && rows.length > 1) {
-      const samples = rows.slice(1).map(r => r[0]);
+      const hdr = rows[0];
+      const pc1varIdx = hdr.indexOf("PC1_var");
+      const pc2varIdx = hdr.indexOf("PC2_var");
+      const grpIdx    = hdr.indexOf("Group");
+      const pc1Var = pc1varIdx >= 0 ? num(rows[1][pc1varIdx]) : 0;
+      const pc2Var = pc2varIdx >= 0 ? num(rows[1][pc2varIdx]) : 0;
+      const samples = rows.slice(1).map(r => alias(r[0]));
       const pc1 = rows.slice(1).map(r => num(r[1]));
       const pc2 = rows.slice(1).map(r => num(r[2]));
-      const data = [{ x: pc1, y: pc2,
-        mode: "markers+text", type: "scatter",
-        text: samples.map(shortName), textposition: "top center",
-        marker: { size: 12, color: samples.map((s,i) => colors[s] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]) },
+      const groups = grpIdx >= 0 ? rows.slice(1).map(r => r[grpIdx] || "no group") : null;
+      const data = groups
+        ? Array.from(new Set(groups)).map(g => {
+            const idx = groups.map((gg,i) => gg === g ? i : -1).filter(i => i >= 0);
+            return {
+              name: g, x: idx.map(i => pc1[i]), y: idx.map(i => pc2[i]),
+              mode: "markers+text", type: "scatter",
+              text: idx.map(i => samples[i]), textposition: "top center",
+              marker: { size: 12, color: colors[g] || DEFAULT_COLORS[Array.from(new Set(groups)).indexOf(g) % DEFAULT_COLORS.length] },
+            };
+          })
+        : [{ x: pc1, y: pc2, mode: "markers+text", type: "scatter",
+             text: samples, textposition: "top center",
+             marker: { size: 12, color: samples.map((s,i) => colors[s] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]) },
+           }];
+      const pc1Label = pc1Var > 0 ? `PC1 [${pc1Var}%]` : "PC1";
+      const pc2Label = pc2Var > 0 ? `PC2 [${pc2Var}%]` : "PC2";
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, title: { text: pc1Label }, zeroline: true },
+        yaxis: { ...base.yaxis, title: { text: pc2Label }, zeroline: true },
+      }};
+    }
+
+    // HEATMAP (beta_heatmap.csv: Sample, col1, col2, ...)
+    if (activeTab.type === "heatmap" && rows.length > 1) {
+      const sampleNames = rows.slice(1).map(r => alias(r[0]));
+      const zValues = rows.slice(1).map(r => r.slice(1).map(v => num(v)));
+      const data = [{ z: zValues, x: sampleNames, y: sampleNames,
+        type: "heatmap",
+        colorscale: "Blues",
+        zmin: 0, zmax: 1,
+        hoverongaps: false,
+        colorbar: { title: "Similarity" },
       }];
       return { data, layout: { ...base,
-        xaxis: { ...base.xaxis, title: { text: "PC1" } },
-        yaxis: { ...base.yaxis, title: { text: "PC2" } },
+        xaxis: { ...base.xaxis, tickangle: -45, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
+        yaxis: { ...base.yaxis, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt), autorange: "reversed" },
+        margin: { l: 100, r: 20, t: 60, b: 120 },
       }};
     }
 
@@ -361,12 +413,39 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     });
   };
 
-  // ── Save settings to localStorage ────────────────────────
-  const saveSettings = () => {
+  // ── Save settings to localStorage + server ───────────────
+  const saveSettings = async () => {
     if (!selJob) return;
-    localStorage.setItem(`prev_settings_${selJob}`, JSON.stringify({ font, colors, sampleAliases }));
+    const payload = { font, colors, sampleAliases };
+    localStorage.setItem(`prev_settings_${selJob}`, JSON.stringify(payload));
+    // Also persist to server so the ZIP export includes the settings
+    try {
+      await fetch(`${API}/results/${selJob}/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch { /* non-fatal — localStorage backup still works */ }
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  // ── Re-run R visualization for old/missing charts ─────────
+  const rerunViz = async () => {
+    if (!selJob || rerunning) return;
+    setRerunning(true);
+    try {
+      const r = await fetch(`${API}/results/${selJob}/rerun-viz`, { method: "POST" });
+      if (r.ok) {
+        // Reload table info after re-run
+        const info: TableInfo = await fetch(`${API}/results/${selJob}/tables`).then(x => x.json());
+        setTableInfo(info);
+        const avail = ALL_TABS.filter(t => info.tables.includes(t.file));
+        setAvailTabs(avail);
+        if (avail.length > 0) setActiveTab(avail[0]);
+      }
+    } catch { /* ignore */ }
+    setRerunning(false);
   };
 
   // ── Export full results as ZIP ────────────────────────────
@@ -394,6 +473,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     tabGroups[g].push(t);
   });
   const GROUP_ORDER = ["Taxonomy","Alpha","Beta","Other"];
+  // Beta only shows when charts exist (needs ≥2 samples)
 
   // Series for customization panel
   const series = csvData && activeTab ? getSeries(activeTab, csvData) : [];
@@ -490,6 +570,17 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
             )}
 
             {/* Tab bar */}
+            {/* Re-run visualization for old/incomplete jobs */}
+            {tableInfo && availTabs.length === 0 && (
+              <div className="prev-rerun-banner">
+                <span>⚠️ No chart tables found — this job may have been run before chart export was added.</span>
+                <button className={`prev-btn prev-btn-rerun ${rerunning ? "running" : ""}`}
+                  onClick={rerunViz} disabled={rerunning}>
+                  {rerunning ? "⏳ Running R…" : "🔄 Re-run Visualization"}
+                </button>
+              </div>
+            )}
+
             {availTabs.length > 0 ? (
               <div className="prev-tabbar">
                 {GROUP_ORDER.filter(g => tabGroups[g]).map(g => (

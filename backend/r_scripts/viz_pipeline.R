@@ -411,10 +411,17 @@ tryCatch({
   rar_df <- do.call(rbind, Filter(Negate(is.null), rar_list))
 
   if (!is.null(rar_df) && nrow(rar_df) > 0) {
+    # Write WIDE format for Preview page: Depth | Sample1 | Sample2 | ...
+    rar_wide <- tidyr::pivot_wider(rar_df[, c("Sample","Depth","ASVs")],
+                                   names_from  = "Sample",
+                                   values_from = "ASVs",
+                                   values_fill = NA)
+    rar_wide <- rar_wide[order(rar_wide$Depth), ]
+    write.csv(rar_wide, file.path(TABLES_DIR, "rarefaction.csv"), row.names=FALSE)
+    cat("  ✓ Saved: rarefaction.csv (wide format)\n")
     if (has_meta && has_ggplot2) {
       rar_df[[GROUP_COL]] <- meta_df[rar_df$Sample, GROUP_COL]
     }
-    write.csv(rar_df, file.path(TABLES_DIR, "rarefaction.csv"), row.names=FALSE)
 
     if (has_ggplot2) {
       n_samp <- length(unique(rar_df$Sample))
@@ -646,6 +653,14 @@ tryCatch({
   pcoa_df$Sample <- rownames(pcoa_df)
   if (has_meta) pcoa_df[[GROUP_COL]] <- meta_df[pcoa_df$Sample, GROUP_COL]
 
+  # Save PCoA scores CSV for Preview page
+  pca_out <- pcoa_df[, c("Sample","PC1","PC2")]
+  if (has_meta && GROUP_COL %in% colnames(pcoa_df)) pca_out$Group <- pcoa_df[[GROUP_COL]]
+  pca_out$PC1_var <- round(var_e[1], 2)
+  pca_out$PC2_var <- round(var_e[2], 2)
+  write.csv(pca_out, file.path(TABLES_DIR, "pca_scores.csv"), row.names=FALSE)
+  cat("  ✓ Saved: pca_scores.csv\n")
+
   n_grp <- if (has_meta) length(unique(pcoa_df[[GROUP_COL]])) else nsamples(ps)
   pal   <- make_palette(n_grp)
 
@@ -717,6 +732,13 @@ tryCatch({
   # ── Heatmap (sample × sample distance) ──
   tryCatch({
     dist_mat <- as.matrix(dist_bc)
+    # Save similarity matrix CSV for Preview page
+    sim_mat <- 1 - dist_mat
+    sim_df  <- as.data.frame(sim_mat)
+    sim_df  <- cbind(Sample=rownames(sim_df), sim_df)
+    write.csv(sim_df, file.path(TABLES_DIR, "beta_heatmap.csv"), row.names=FALSE)
+    cat("  ✓ Saved: beta_heatmap.csv\n")
+
     if (requireNamespace("pheatmap", quietly=TRUE)) {
       annt <- if (has_meta && GROUP_COL %in% colnames(meta_df))
         data.frame(row.names=rownames(dist_mat),
