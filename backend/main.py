@@ -339,16 +339,27 @@ def run_r_pipeline(job_id: str, params: RunParams):
     # assignTaxonomy() which expects SILVA-format .fa.gz files.
     _is_dada2_marker = params.marker.upper() not in ("ONT-16S", "ONT16S", "ONT", "PACBIO",
                                                       "ITS1", "ITS2", "ITS", "COX1")
-    if _is_dada2_marker and db_path:
-        _emu_in_path = (
-            "species_taxid" in db_path
-            or any(seg.startswith("emu_") or seg == "emu"
-                   for seg in Path(db_path).parts)
-        )
-        _not_silva_fmt = not (db_path.endswith(".fa.gz") or db_path.endswith(".fasta.gz"))
-        if _emu_in_path or _not_silva_fmt:
-            print(f"[db] dbPath is not SILVA-compatible for DADA2 ({Path(db_path).name}) — resolving from db_paths.json")
-            db_path = ""  # reset to trigger SILVA lookup below
+    def _is_bad_dada2_db(p: str) -> bool:
+        """Return True if path is unsuitable as primary DADA2 assignTaxonomy database."""
+        if not p:
+            return False
+        n = Path(p).name.lower()
+        # EMU-style files/dirs
+        if "species_taxid" in p:
+            return True
+        if any(seg.startswith("emu_") or seg == "emu" for seg in Path(p).parts):
+            return True
+        # Not a FASTA archive
+        if not (p.endswith(".fa.gz") or p.endswith(".fasta.gz")):
+            return True
+        # assignSpecies files are for addSpecies() only, NOT for assignTaxonomy()
+        if "assignspecies" in n or "assign_species" in n:
+            return True
+        return False
+
+    if _is_dada2_marker and _is_bad_dada2_db(db_path):
+        print(f"[db] dbPath not suitable for DADA2 assignTaxonomy ({Path(db_path).name}) — resolving SILVA from db_paths.json")
+        db_path = ""  # reset to trigger SILVA lookup below
 
     # ── Resolve SILVA from db_paths.json when db_path is unset ─────────────
     if _is_dada2_marker and not db_path:
@@ -365,10 +376,13 @@ def run_r_pipeline(job_id: str, params: RunParams):
             }.get(_marker_up, ["SILVA_16S_sp", "SILVA_16S"])
             for _k in _key_prefs:
                 _v = _dp.get(_k, "")
-                if _v and Path(_v).exists():
+                # Skip if this db_paths entry is itself an assignSpecies-only file
+                if _v and Path(_v).exists() and not _is_bad_dada2_db(_v):
                     db_path = _v
                     print(f"[db] Resolved from db_paths.json [{_k}]: {Path(_v).name}")
                     break
+            if not db_path:
+                print(f"[db] WARNING: No suitable SILVA train_set found in db_paths.json for marker {_marker_up}")
         except Exception as _e:
             print(f"[db] db_paths.json lookup failed: {_e}")
 
@@ -705,6 +719,41 @@ def run_r_pipeline(job_id: str, params: RunParams):
             except Exception as e:
                 with jobs_lock:
                     jobs[job_id]["picrust2"] = {"success": False, "message": str(e)}
+
+        # ── Auto-run viz_pipeline.R for DADA2 pipelines ──────────────────────
+        # Generates r_tables/*.csv and r_plots/*.pdf used by Edit Charts.
+        _viz_script = R_SCRIPTS_DIR / "viz_pipeline.R"
+        if proc.returncode == 0 and _is_dada2_marker and _viz_script.exists():
+            try:
+                with jobs_lock:
+                    jobs[job_id]["step_label"] = "Building interactive charts (r_tables)..."
+                    jobs[job_id]["progress"]   = 97
+                _viz_cmd = [
+                    shutil.which("Rscript") or "Rscript",
+                    str(_viz_script),
+                    "--output_dir", output_dir,
+                    "--marker",     params.marker,
+                    "--threads",    str(params.nThreads),
+                ]
+                if metadata_path and Path(metadata_path).exists():
+                    _viz_cmd += ["--metadata", metadata_path]
+                _viz_proc = subprocess.run(
+                    _viz_cmd, capture_output=True, text=True, timeout=600
+                )
+                with open(log_file, "a") as _lf:
+                    _lf.write("\n--- viz_pipeline.R ---\n")
+                    if _viz_proc.stdout:
+                        _lf.write(_viz_proc.stdout)
+                    if _viz_proc.returncode != 0 and _viz_proc.stderr:
+                        _lf.write("\n[viz ERROR]\n" + _viz_proc.stderr[-1000:])
+                if _viz_proc.returncode == 0:
+                    print(f"[viz] r_tables/ populated for job {job_id}")
+                else:
+                    print(f"[viz] WARNING: viz_pipeline.R exited {_viz_proc.returncode} for job {job_id}")
+            except subprocess.TimeoutExpired:
+                print(f"[viz] WARNING: viz_pipeline.R timed out for job {job_id}")
+            except Exception as _ve:
+                print(f"[viz] WARNING: viz_pipeline.R failed: {_ve}")
 
         with jobs_lock:
             if proc.returncode == 0:
