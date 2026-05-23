@@ -1288,36 +1288,73 @@ from fastapi.responses import Response
 
 @app.get("/results/{job_id}/tables")
 def preview_tables(job_id: str):
-    """List available r_tables CSVs, r_plots PDFs, and summary.json for a job."""
-    tables_dir   = RESULTS_DIR / job_id / "r_tables"
-    plots_dir    = RESULTS_DIR / job_id / "r_plots"
-    summary_file = RESULTS_DIR / job_id / "summary.json"
+    """List available CSVs and PDFs for a job.
+    Priority: r_tables/ and r_plots/ subdirs first (viz_pipeline output).
+    Fallback: scan root dir for DADA2-generated taxonomy_*.csv and related files.
+    """
+    job_dir      = RESULTS_DIR / job_id
+    tables_dir   = job_dir / "r_tables"
+    plots_dir    = job_dir / "r_plots"
+    summary_file = job_dir / "summary.json"
+
+    tables = sorted([f.name for f in tables_dir.glob("*.csv")]) if tables_dir.exists() else []
+    plots  = sorted([f.name for f in plots_dir.glob("*.pdf")])  if plots_dir.exists()  else []
+
+    # ── DADA2 fallback: root-level CSVs (taxonomy_*.csv, alpha_diversity.csv, etc.) ──
+    # dada2_pipeline.R writes directly to job root; expose them as if they're in r_tables/
+    if not tables and job_dir.exists():
+        _dada2_csv_patterns = (
+            "taxonomy_phylum.csv", "taxonomy_class.csv", "taxonomy_order.csv",
+            "taxonomy_family.csv", "taxonomy_genus.csv", "taxonomy_species.csv",
+            "alpha_diversity.csv", "bray_curtis_distance_matrix.csv",
+            "rarefaction.csv", "shannon_rarefaction.csv", "rank_abundance.csv",
+            "specaccum.csv", "faiths_pd.csv", "pca_scores.csv",
+            "nmds_bray.csv", "nmds_jaccard.csv", "beta_heatmap.csv",
+            "jaccard_heatmap.csv", "pca_scree.csv",
+        )
+        tables = [p for p in _dada2_csv_patterns if (job_dir / p).exists()]
+
+    # ── DADA2 fallback: root-level PDFs for r_plots ──────────────────────────
+    if not plots and job_dir.exists():
+        _dada2_pdf_patterns = (
+            "05_beta_UPGMA.pdf", "beta_upgma.pdf",
+        )
+        plots = [p for p in _dada2_pdf_patterns if (job_dir / p).exists()]
+
     return {
-        "tables":  sorted([f.name for f in tables_dir.glob("*.csv")])  if tables_dir.exists()  else [],
-        "plots":   sorted([f.name for f in plots_dir.glob("*.pdf")])   if plots_dir.exists()   else [],
+        "tables":  tables,
+        "plots":   plots,
         "summary": json.loads(summary_file.read_text()) if summary_file.exists() else None,
     }
 
 @app.get("/results/{job_id}/table/{filename}")
 def preview_table(job_id: str, filename: str):
-    """Serve a single CSV table from r_tables/ as text/csv."""
+    """Serve a single CSV table as text/csv.
+    Looks in r_tables/ first, then falls back to job root (DADA2 output).
+    """
     if not _re.match(r'^[\w\-]+\.csv$', filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    path = RESULTS_DIR / job_id / "r_tables" / filename
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Table not found")
-    return Response(content=path.read_text(encoding="utf-8"), media_type="text/csv")
+    job_dir = RESULTS_DIR / job_id
+    # Try r_tables/ first, then root
+    for search_dir in (job_dir / "r_tables", job_dir):
+        path = search_dir / filename
+        if path.exists():
+            return Response(content=path.read_text(encoding="utf-8"), media_type="text/csv")
+    raise HTTPException(status_code=404, detail="Table not found")
 
 @app.get("/results/{job_id}/plot/{filename}")
 def preview_plot_pdf(job_id: str, filename: str):
-    """Serve a pre-generated PDF from r_plots/."""
+    """Serve a pre-generated PDF from r_plots/ or job root."""
     if not _re.match(r'^[\w\-\.]+\.pdf$', filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    path = RESULTS_DIR / job_id / "r_plots" / filename
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Plot not found")
-    return FileResponse(str(path), media_type="application/pdf",
-                        headers={"Content-Disposition": f'inline; filename="{filename}"'})
+    job_dir = RESULTS_DIR / job_id
+    # Try r_plots/ first, then root
+    for search_dir in (job_dir / "r_plots", job_dir):
+        path = search_dir / filename
+        if path.exists():
+            return FileResponse(str(path), media_type="application/pdf",
+                                headers={"Content-Disposition": f'inline; filename="{filename}"'})
+    raise HTTPException(status_code=404, detail="Plot not found")
 
 @app.get("/results/{job_id}/settings")
 def get_preview_settings(job_id: str):
