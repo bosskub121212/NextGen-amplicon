@@ -300,29 +300,27 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       margin: { l: 60, r: 20, t: 60, b: 120 },
     };
 
-    // TAXONOMY — stacked bar (absolute %) or 100% normalized
+    // TAXONOMY — stacked bar: X = samples, series = taxa (phylum/genus/etc.)
     if (activeTab2.type === "taxonomy" && rows.length > 1) {
-      const headers = rows[0];
-      const samples = headers.slice(1).map(alias);
-      const taxaRows = rows.slice(1).slice(0, 30); // top 30
+      const phylumNames = rows[0].slice(1);          // column headers = taxa names
+      const dataRows    = rows.slice(1);             // each row = one sample
+      const sampleNames = dataRows.map(r => alias(r[0]));
       const is100 = font.chartType === "bar100";
-      // compute column sums for normalization
-      const colSums = samples.map((_, ci) =>
-        taxaRows.reduce((s, r) => s + num(r[ci + 1]), 0)
-      );
-      const data = taxaRows.map(row => ({
-        name: row[0] || "Unknown",
-        x: samples,
-        y: samples.map((_, ci) => {
+      // normalize per row (sample) so each sample sums to 100%
+      const rowSums = dataRows.map(r => r.slice(1).reduce((s, v) => s + num(v), 0));
+      const data = phylumNames.map((taxon, ci) => ({
+        name: taxon || "Unknown",
+        x: sampleNames,
+        y: dataRows.map((row, ri) => {
           const v = num(row[ci + 1]);
-          return is100 && colSums[ci] > 0 ? (v / colSums[ci]) * 100 : v;
+          return is100 && rowSums[ri] > 0 ? (v / rowSums[ri]) * 100 : v;
         }),
         type: "bar",
-        marker: { color: colors[row[0]] || DEFAULT_COLORS[0] },
+        marker: { color: colors[taxon] || DEFAULT_COLORS[ci % DEFAULT_COLORS.length] },
       }));
       return { data, layout: {
         ...base, barmode: "stack",
-        xaxis: { ...base.xaxis, tickmode: "array", tickvals: samples, ticktext: samples.map(xFmt) },
+        xaxis: { ...base.xaxis, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
         yaxis: { ...base.yaxis, title: { text: is100 ? "Relative Abundance (%)" : "Abundance (%)" } },
       }};
     }
