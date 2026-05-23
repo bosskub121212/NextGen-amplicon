@@ -333,6 +333,46 @@ def run_r_pipeline(job_id: str, params: RunParams):
 
     # Auto-detect database path from databases/ folder if not specified
     db_path = params.dbPath
+
+    # ── For DADA2 pipelines: reject EMU paths and resolve SILVA from db_paths.json ──
+    # EMU databases (species_taxid.fasta / emu_* dirs) cannot be used by DADA2's
+    # assignTaxonomy() which expects SILVA-format .fa.gz files.
+    _is_dada2_marker = params.marker.upper() not in ("ONT-16S", "ONT16S", "ONT", "PACBIO",
+                                                      "ITS1", "ITS2", "ITS", "COX1")
+    if _is_dada2_marker and db_path:
+        _emu_in_path = (
+            "species_taxid" in db_path
+            or any(seg.startswith("emu_") or seg == "emu"
+                   for seg in Path(db_path).parts)
+        )
+        _not_silva_fmt = not (db_path.endswith(".fa.gz") or db_path.endswith(".fasta.gz"))
+        if _emu_in_path or _not_silva_fmt:
+            print(f"[db] dbPath is not SILVA-compatible for DADA2 ({Path(db_path).name}) — resolving from db_paths.json")
+            db_path = ""  # reset to trigger SILVA lookup below
+
+    # ── Resolve SILVA from db_paths.json when db_path is unset ─────────────
+    if _is_dada2_marker and not db_path:
+        _db_paths_file = params.db_paths_json or str(
+            Path.home() / "r16s-app" / "backend" / "databases" / "db_paths.json"
+        )
+        try:
+            _dp = json.loads(Path(_db_paths_file).read_text()) if Path(_db_paths_file).exists() else {}
+            _marker_up = params.marker.upper()
+            _key_prefs = {
+                "16S":      ["SILVA_16S_sp", "SILVA_16S"],
+                "12S":      ["PR2_18S", "SILVA_16S"],
+                "18S-NEMA": ["NemaBase_18S", "PR2_18S"],
+            }.get(_marker_up, ["SILVA_16S_sp", "SILVA_16S"])
+            for _k in _key_prefs:
+                _v = _dp.get(_k, "")
+                if _v and Path(_v).exists():
+                    db_path = _v
+                    print(f"[db] Resolved from db_paths.json [{_k}]: {Path(_v).name}")
+                    break
+        except Exception as _e:
+            print(f"[db] db_paths.json lookup failed: {_e}")
+
+    # ── Legacy fallback: scan root databases/ folder ─────────────────────
     if not db_path or not os.path.exists(db_path):
         db_dir = BASE_DIR / "databases"
         if db_dir.exists():
