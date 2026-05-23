@@ -20,24 +20,39 @@ const DEFAULT_COLORS = [
 // ── Chart tab definitions ─────────────────────────────────────
 interface TabDef {
   id: string; label: string; file: string;
-  type: "taxonomy"|"alpha"|"bar"|"line"|"scatter"|"box"|"heatmap";
+  type: "taxonomy"|"alpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"scree"|"longline"|"specaccum"|"pdf";
   metric?: string; group?: string;
+  pdfFile?: string;  // for type:"pdf" — filename inside r_plots/
 }
 const ALL_TABS: TabDef[] = [
-  { id:"phylum",      label:"Phylum",       file:"taxonomy_phylum.csv",   type:"taxonomy", group:"Taxonomy" },
-  { id:"class",       label:"Class",        file:"taxonomy_class.csv",    type:"taxonomy", group:"Taxonomy" },
-  { id:"order",       label:"Order",        file:"taxonomy_order.csv",    type:"taxonomy", group:"Taxonomy" },
-  { id:"family",      label:"Family",       file:"taxonomy_family.csv",   type:"taxonomy", group:"Taxonomy" },
-  { id:"genus",       label:"Genus",        file:"taxonomy_genus.csv",    type:"taxonomy", group:"Taxonomy" },
-  { id:"shannon",     label:"Shannon",      file:"alpha_diversity.csv",   type:"alpha", metric:"Shannon",  group:"Alpha" },
-  { id:"observed",    label:"Observed",     file:"alpha_diversity.csv",   type:"alpha", metric:"Observed", group:"Alpha" },
-  { id:"chao1",       label:"Chao1",        file:"alpha_diversity.csv",   type:"alpha", metric:"Chao1",    group:"Alpha" },
-  { id:"simpson",     label:"Simpson",      file:"alpha_diversity.csv",   type:"alpha", metric:"Simpson",  group:"Alpha" },
-  { id:"reads",       label:"Read Counts",  file:"asv_summary.csv",       type:"bar",                      group:"Other" },
-  { id:"rarefaction", label:"Rarefaction",  file:"rarefaction.csv",       type:"line",                     group:"Other" },
-  { id:"pca",         label:"PCoA",         file:"pca_scores.csv",        type:"scatter",                  group:"Beta" },
-  { id:"heatmap",     label:"Heatmap",      file:"beta_heatmap.csv",      type:"heatmap",                  group:"Beta" },
-  { id:"otu",         label:"OTU Dist",     file:"otu_distribution.csv",  type:"box",                      group:"Other" },
+  // ── Taxonomy ───────────────────────────────────────────────
+  { id:"phylum",      label:"Phylum",          file:"taxonomy_phylum.csv",    type:"taxonomy",  group:"Taxonomy" },
+  { id:"class",       label:"Class",           file:"taxonomy_class.csv",     type:"taxonomy",  group:"Taxonomy" },
+  { id:"order",       label:"Order",           file:"taxonomy_order.csv",     type:"taxonomy",  group:"Taxonomy" },
+  { id:"family",      label:"Family",          file:"taxonomy_family.csv",    type:"taxonomy",  group:"Taxonomy" },
+  { id:"genus",       label:"Genus",           file:"taxonomy_genus.csv",     type:"taxonomy",  group:"Taxonomy" },
+  // ── Alpha diversity ────────────────────────────────────────
+  { id:"shannon",     label:"Shannon",         file:"alpha_diversity.csv",    type:"alpha", metric:"Shannon",  group:"Alpha" },
+  { id:"observed",    label:"Observed",        file:"alpha_diversity.csv",    type:"alpha", metric:"Observed", group:"Alpha" },
+  { id:"chao1",       label:"Chao1",           file:"alpha_diversity.csv",    type:"alpha", metric:"Chao1",    group:"Alpha" },
+  { id:"simpson",     label:"Simpson",         file:"alpha_diversity.csv",    type:"alpha", metric:"Simpson",  group:"Alpha" },
+  { id:"faiths_pd",   label:"Faith's PD",      file:"faiths_pd.csv",         type:"alpha", metric:"PD",       group:"Alpha" },
+  { id:"shan_rar",    label:"Shannon Rar.",     file:"shannon_rarefaction.csv",type:"longline",                group:"Alpha" },
+  // ── Beta diversity ─────────────────────────────────────────
+  { id:"pca",         label:"PCoA",            file:"pca_scores.csv",         type:"scatter",   group:"Beta" },
+  { id:"pca_scree",   label:"PCA Scree",       file:"pca_scree.csv",          type:"scree",     group:"Beta" },
+  { id:"nmds_bray",   label:"NMDS Bray",       file:"nmds_bray.csv",          type:"scatter",   group:"Beta" },
+  { id:"nmds_jac",    label:"NMDS Jaccard",    file:"nmds_jaccard.csv",       type:"scatter",   group:"Beta" },
+  { id:"heatmap",     label:"Heatmap (Bray)",  file:"beta_heatmap.csv",       type:"heatmap",   group:"Beta" },
+  { id:"jac_heatmap", label:"Heatmap (Jac)",   file:"jaccard_heatmap.csv",    type:"heatmap",   group:"Beta" },
+  { id:"upgma_bray",  label:"UPGMA Bray",      file:"_pdf",                   type:"pdf", pdfFile:"05_beta_UPGMA.pdf",     group:"Beta" },
+  { id:"upgma_jac",   label:"UPGMA Jaccard",   file:"_pdf",                   type:"pdf", pdfFile:"12_upgma_jaccard.pdf",  group:"Beta" },
+  // ── Other ──────────────────────────────────────────────────
+  { id:"reads",       label:"Read Counts",     file:"asv_summary.csv",        type:"bar",       group:"Other" },
+  { id:"rarefaction", label:"Rarefaction",     file:"rarefaction.csv",        type:"line",      group:"Other" },
+  { id:"specaccum",   label:"Spec. Accum.",    file:"specaccum.csv",          type:"specaccum", group:"Other" },
+  { id:"rank_abund",  label:"Rank Abund.",     file:"rank_abundance.csv",     type:"longline",  group:"Other" },
+  { id:"otu",         label:"OTU Dist",        file:"otu_distribution.csv",   type:"box",       group:"Other" },
 ];
 
 // ── Font config ───────────────────────────────────────────────
@@ -155,7 +170,10 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     const loadTables = async () => {
       const info: TableInfo = await fetch(`${API}/results/${selJob}/tables`).then(r => r.json());
       setTableInfo(info);
-      const avail = ALL_TABS.filter(t => info.tables.includes(t.file));
+      const avail = ALL_TABS.filter(t => {
+        if (t.type === "pdf") return (info.plots || []).includes(t.pdfFile || "");
+        return info.tables.includes(t.file);
+      });
       setAvailTabs(avail);
       return { info, avail };
     };
@@ -181,6 +199,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // ── Load CSV when tab changes ─────────────────────────────
   useEffect(() => {
     if (!activeTab || !selJob) return;
+    if (activeTab.type === "pdf") { setCsvData(null); setLoading(false); return; }
     setLoading(true);
     fetch(`${API}/results/${selJob}/table/${activeTab.file}`)
       .then(r => r.text())
@@ -205,6 +224,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // (renderChart is declared below but useCallback deps already cover it)
   const triggerRender = useCallback(() => {
     if (!csvData || !chartRef.current || !activeTab) return;
+    if (activeTab.type === "pdf") return; // PDF tabs render inline, not via Plotly
     if (!window.Plotly) {
       // Plotly CDN not ready yet — retry in 500 ms
       const el = chartRef.current;
@@ -239,6 +259,10 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     if (tab.type === "line")      return rows[0]?.slice(1) || [];
     if (tab.type === "scatter")   return rows.slice(1).map(r => r[0]) || [];
     if (tab.type === "bar")       return rows.slice(1).map(r => shortName(r[0]));
+    if (tab.type === "longline")  {
+      const idx = rows[0].indexOf("Sample");
+      return idx >= 0 ? Array.from(new Set(rows.slice(1).map(r => r[idx]))) : [];
+    }
     return [];
   }
 
@@ -357,37 +381,129 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }};
     }
 
-    // SCATTER (PCoA / PCA) — pca_scores.csv: Sample, PC1, PC2[, Group, PC1_var, PC2_var]
+    // SCATTER — PCoA (pca_scores.csv) or NMDS (nmds_bray.csv / nmds_jaccard.csv)
+    // Columns: Sample, PC1/NMDS1, PC2/NMDS2[, PC3][, Group, PC1_var, PC2_var, Stress]
     if (activeTab2.type === "scatter" && rows.length > 1) {
       const hdr = rows[0];
-      const pc1varIdx = hdr.indexOf("PC1_var");
-      const pc2varIdx = hdr.indexOf("PC2_var");
-      const grpIdx    = hdr.indexOf("Group");
-      const pc1Var = pc1varIdx >= 0 ? num(rows[1][pc1varIdx]) : 0;
-      const pc2Var = pc2varIdx >= 0 ? num(rows[1][pc2varIdx]) : 0;
+      const axis1Name = hdr[1] || "PC1";   // e.g. "PC1" or "NMDS1"
+      const axis2Name = hdr[2] || "PC2";
+      const varIdx1 = hdr.indexOf(axis1Name + "_var");
+      const varIdx2 = hdr.indexOf(axis2Name + "_var");
+      const grpIdx   = hdr.indexOf("Group");
+      const stressIdx = hdr.indexOf("Stress");
+      const var1 = varIdx1 >= 0 ? num(rows[1][varIdx1]) : 0;
+      const var2 = varIdx2 >= 0 ? num(rows[1][varIdx2]) : 0;
+      const stress = stressIdx >= 0 ? num(rows[1][stressIdx]) : 0;
       const samples = rows.slice(1).map(r => alias(r[0]));
-      const pc1 = rows.slice(1).map(r => num(r[1]));
-      const pc2 = rows.slice(1).map(r => num(r[2]));
+      const xVals = rows.slice(1).map(r => num(r[1]));
+      const yVals = rows.slice(1).map(r => num(r[2]));
       const groups = grpIdx >= 0 ? rows.slice(1).map(r => r[grpIdx] || "no group") : null;
       const data = groups
         ? Array.from(new Set(groups)).map(g => {
             const idx = groups.map((gg,i) => gg === g ? i : -1).filter(i => i >= 0);
             return {
-              name: g, x: idx.map(i => pc1[i]), y: idx.map(i => pc2[i]),
+              name: g, x: idx.map(i => xVals[i]), y: idx.map(i => yVals[i]),
               mode: "markers+text", type: "scatter",
               text: idx.map(i => samples[i]), textposition: "top center",
               marker: { size: 12, color: colors[g] || DEFAULT_COLORS[Array.from(new Set(groups)).indexOf(g) % DEFAULT_COLORS.length] },
             };
           })
-        : [{ x: pc1, y: pc2, mode: "markers+text", type: "scatter",
+        : [{ x: xVals, y: yVals, mode: "markers+text", type: "scatter",
              text: samples, textposition: "top center",
              marker: { size: 12, color: samples.map((s,i) => colors[s] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]) },
            }];
-      const pc1Label = pc1Var > 0 ? `PC1 [${pc1Var}%]` : "PC1";
-      const pc2Label = pc2Var > 0 ? `PC2 [${pc2Var}%]` : "PC2";
+      const xLabel = var1 > 0 ? `${axis1Name} [${var1}%]` : axis1Name;
+      const yLabel = var2 > 0 ? `${axis2Name} [${var2}%]` : axis2Name;
+      const annotations = stress > 0
+        ? [{ text: `stress = ${stress.toFixed(4)}`, showarrow: false,
+             xref: "paper", yref: "paper", x: 0.02, y: 0.97,
+             font: { size: 11, color: "#64748b" }, align: "left" as const }]
+        : [];
       return { data, layout: { ...base,
-        xaxis: { ...base.xaxis, title: { text: pc1Label }, zeroline: true },
-        yaxis: { ...base.yaxis, title: { text: pc2Label }, zeroline: true },
+        xaxis: { ...base.xaxis, title: { text: xLabel }, zeroline: true },
+        yaxis: { ...base.yaxis, title: { text: yLabel }, zeroline: true },
+        annotations,
+      }};
+    }
+
+    // SCREE — pca_scree.csv: PC (integer), Variance (%)
+    if (activeTab2.type === "scree" && rows.length > 1) {
+      const pcs = rows.slice(1).map(r => `PC${r[0]}`);
+      const variances = rows.slice(1).map(r => num(r[1]));
+      const data = [{
+        x: pcs, y: variances, type: "bar",
+        marker: { color: "#3b82f6" },
+        text: variances.map(v => v.toFixed(1) + "%"),
+        textposition: "outside",
+      }];
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, title: { text: "Principal Component" } },
+        yaxis: { ...base.yaxis, title: { text: "Variance Explained (%)" }, rangemode: "tozero" },
+        margin: { l: 60, r: 20, t: 60, b: 80 },
+      }};
+    }
+
+    // LONGLINE — long-format line chart (Sample, x_col, y_col)
+    // Handles: shannon_rarefaction.csv (Depth, Shannon) and rank_abundance.csv (Rank, RelAbundance)
+    if (activeTab2.type === "longline" && rows.length > 1) {
+      const hdr = rows[0];
+      const sampleIdx = hdr.indexOf("Sample");
+      if (sampleIdx < 0) return null;
+      const isShannon = activeTab2.id === "shan_rar";
+      const isRank    = activeTab2.id === "rank_abund";
+      const xColName  = isShannon ? "Depth" : "Rank";
+      const yColName  = isShannon ? "Shannon" : "RelAbundance";
+      const xIdx = hdr.indexOf(xColName);
+      const yIdx = hdr.indexOf(yColName);
+      if (xIdx < 0 || yIdx < 0) return null;
+      // Group rows by sample
+      const sampleMap: Record<string, {x: number[], y: number[]}> = {};
+      for (const r of rows.slice(1)) {
+        const rawName = r[sampleIdx];
+        const sName = alias(rawName);
+        if (!sampleMap[sName]) sampleMap[sName] = {x:[], y:[]};
+        sampleMap[sName].x.push(num(r[xIdx]));
+        sampleMap[sName].y.push(num(r[yIdx]));
+      }
+      const entries = Object.entries(sampleMap);
+      const data = entries.map(([name, {x, y}], ci) => ({
+        name, x, y,
+        type: "scatter", mode: "lines",
+        line: { color: colors[name] || DEFAULT_COLORS[ci % DEFAULT_COLORS.length], width: 2 },
+      }));
+      const xTitle = isShannon ? "Sequencing Depth" : "ASV Rank";
+      const yTitle = isShannon ? "Shannon Index" : "Relative Abundance (%)";
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, title: { text: xTitle } },
+        yaxis: { ...base.yaxis, title: { text: yTitle }, ...(isRank ? {type: "log" as const} : {}) },
+      }};
+    }
+
+    // SPECACCUM — species accumulation curve: Sites, Richness, SD
+    if (activeTab2.type === "specaccum" && rows.length > 1) {
+      const sites    = rows.slice(1).map(r => num(r[0]));
+      const richness = rows.slice(1).map(r => num(r[1]));
+      const sd       = rows.slice(1).map(r => num(r[2]));
+      const upper    = richness.map((r,i) => r + sd[i]);
+      const lower    = richness.map((r,i) => Math.max(0, r - sd[i]));
+      const data = [
+        {
+          x: [...sites, ...sites.slice().reverse()],
+          y: [...upper, ...lower.slice().reverse()],
+          fill: "toself" as const, fillcolor: "rgba(59,130,246,0.15)",
+          line: { color: "transparent" }, type: "scatter" as const, mode: "lines" as const,
+          name: "± SD", showlegend: true,
+        },
+        {
+          x: sites, y: richness, type: "scatter" as const, mode: "lines+markers" as const,
+          line: { color: colors["Richness"] || "#3b82f6", width: 2 },
+          marker: { size: 6, color: colors["Richness"] || "#3b82f6" },
+          name: "Richness",
+        },
+      ];
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, title: { text: "Number of Samples" } },
+        yaxis: { ...base.yaxis, title: { text: "Cumulative ASV Richness" } },
       }};
     }
 
@@ -488,6 +604,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const charts: { name: string; b64: string }[] = [];
       for (let i = 0; i < availTabs.length; i++) {
         const tab = availTabs[i];
+        if (tab.type === "pdf") continue; // PDF tabs are already in r_plots/ — no Plotly render needed
         setExportStep(`Rendering chart ${i + 1}/${availTabs.length}: ${tab.label}…`);
         try {
           const text = await fetch(`${API}/results/${selJob}/table/${tab.file}`).then(r => r.text());
@@ -562,7 +679,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       <aside className="prev-sidebar">
         <div className="prev-sidebar-header">
           <button className="prev-back" onClick={onClose}>← Back</button>
-          <span className="prev-sidebar-title">Results</span>
+          <span className="prev-sidebar-title">Edit Charts</span>
         </div>
 
         <div className="prev-search-wrap">
@@ -687,13 +804,22 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
             {/* Chart area + Customize */}
             {activeTab && (
               <div className="prev-content">
-                {/* Chart */}
+                {/* Chart — Plotly for interactive types, iframe for PDF type */}
                 <div className="prev-chart-wrap">
                   {loading && <div className="prev-loading">⏳ Loading data…</div>}
-                  <div ref={chartRef} className="prev-chart" />
+                  {activeTab.type === "pdf" ? (
+                    <iframe
+                      key={activeTab.pdfFile}
+                      src={`${API}/results/${selJob}/plot/${activeTab.pdfFile}`}
+                      className="prev-pdf-iframe"
+                      title={activeTab.label}
+                    />
+                  ) : (
+                    <div ref={chartRef} className="prev-chart" />
+                  )}
                 </div>
 
-                {/* Customize panel */}
+                {/* Customize panel — hidden for PDF-only tabs */}
                 <div className="prev-customize">
                   <div className="prev-cust-header"
                     onClick={() => setShowCustomize(s => !s)}>
@@ -701,7 +827,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                     <span className="prev-cust-toggle">{showCustomize ? "▲" : "▼"}</span>
                   </div>
 
-                  {showCustomize && (
+                  {showCustomize && activeTab.type !== "pdf" && (
                     <div className="prev-cust-body">
 
                       {/* Chart style */}

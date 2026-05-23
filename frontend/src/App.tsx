@@ -427,7 +427,7 @@ export default function App() {
             <>
               <button className="btn-view btn-preview"
                 onClick={() => { setPreviewJobId(j.job_id); setScreen("preview"); }}>
-                📊 Preview Results
+                ✏️ Edit Charts
               </button>
               <button className="btn-view"
                 onClick={() => setShowColorPicker(showColorPicker === j.job_id ? null : j.job_id)}>

@@ -700,6 +700,10 @@ tryCatch({
       labs(title="Beta Diversity — NMDS (Bray-Curtis)") +
       theme_bw()
     save_pdf(p_nmds, "05_beta_NMDS.pdf")
+    # Save NMDS CSV for Edit Charts interactive view
+    nmds_df$Stress <- round(ord_nmds$stress, 6)
+    write.csv(nmds_df, file.path(TABLES_DIR, "nmds_bray.csv"), row.names=FALSE)
+    cat("  ✓ Saved: nmds_bray.csv\n")
   }, error=function(e) cat(sprintf("  [WARN] NMDS: %s\n", e$message)))
 
   # ── Weighted UniFrac PCoA (if tree available) ──
@@ -864,6 +868,15 @@ tryCatch({
         theme_bw()
       save_pdf(p_jacc, "05_beta_NMDS_Jaccard.pdf")
     }
+    # Save Jaccard NMDS CSV for Edit Charts interactive view
+    jdf$Stress <- round(ord_jacc$stress, 6)
+    write.csv(jdf, file.path(TABLES_DIR, "nmds_jaccard.csv"), row.names=FALSE)
+    cat("  ✓ Saved: nmds_jaccard.csv\n")
+    # Save Jaccard similarity matrix CSV (1 − Jaccard distance)
+    jac_sim <- 1 - as.matrix(dist_jacc)
+    jac_sim_df <- cbind(Sample=rownames(jac_sim), as.data.frame(jac_sim))
+    write.csv(jac_sim_df, file.path(TABLES_DIR, "jaccard_heatmap.csv"), row.names=FALSE)
+    cat("  ✓ Saved: jaccard_heatmap.csv\n")
   }, error=function(e) cat(sprintf("  [WARN] Jaccard NMDS: %s\n", e$message)))
 
 }, error=function(e) cat(sprintf("[WARN] Beta diversity: %s\n", e$message)))
@@ -928,7 +941,20 @@ if (has_ggplot2) {
       labs(title="PCA Scree Plot", x="Principal Component", y="Variance Explained (%)") +
       theme_bw()
     save_pdf(p_scree, "05b_PCA_scree.pdf", width=8, height=5)
-    write.csv(pca_sc, file.path(TABLES_DIR, "pca_scores.csv"), row.names=FALSE)
+
+    # Save pca_scores.csv with PC3 + variance % columns for Edit Charts
+    pca_out <- pca_sc[, c("Sample", "PC1", "PC2")]
+    if (n_pc >= 3 && "PC3" %in% colnames(pca_sc)) pca_out$PC3 <- pca_sc$PC3
+    if (has_meta && GROUP_COL %in% colnames(pca_sc)) pca_out$Group <- pca_sc[[GROUP_COL]]
+    pca_out$PC1_var <- round(var_exp[1], 2)
+    pca_out$PC2_var <- round(var_exp[2], 2)
+    if (n_pc >= 3) pca_out$PC3_var <- round(var_exp[3], 2)
+    write.csv(pca_out, file.path(TABLES_DIR, "pca_scores.csv"), row.names=FALSE)
+    cat("  ✓ Saved: pca_scores.csv\n")
+
+    # Save PCA scree CSV
+    write.csv(scree_df, file.path(TABLES_DIR, "pca_scree.csv"), row.names=FALSE)
+    cat("  ✓ Saved: pca_scree.csv\n")
 
   }, error=function(e) cat(sprintf("[WARN] PCA: %s\n", e$message)))
 }

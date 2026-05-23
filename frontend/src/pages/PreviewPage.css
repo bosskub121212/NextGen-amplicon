@@ -313,6 +313,14 @@
   border-radius: 0;
 }
 
+.prev-pdf-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #ffffff;
+  display: block;
+}
+
 /* ── Customize panel ─────────────────────────────────────────── */
 .prev-customize {
   flex-shrink: 0;
