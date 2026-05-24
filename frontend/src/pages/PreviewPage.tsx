@@ -20,7 +20,7 @@ const DEFAULT_COLORS = [
 // ── Chart tab definitions ─────────────────────────────────────
 interface TabDef {
   id: string; label: string; file: string;
-  type: "taxonomy"|"alpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack";
+  type: "taxonomy"|"alpha"|"multialpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack";
   metric?: string; group?: string;
   pdfFile?: string;   // for type:"pdf" — filename inside r_plots/ or job root
   altFile?: string;   // fallback CSV filename when primary doesn't exist
@@ -44,9 +44,10 @@ const ALL_TABS: TabDef[] = [
   { id:"simpson",     label:"Simpson",          file:"alpha_diversity.csv",    type:"alpha", metric:"Simpson",  group:"Alpha" },
   { id:"faiths_pd",   label:"Faith's PD",       file:"faiths_pd.csv",         type:"alpha", metric:"PD",       group:"Alpha" },
   { id:"shan_rar",    label:"Shannon Rar.",      file:"shannon_rarefaction.csv",type:"longline",                group:"Alpha" },
-  // PDFs — alpha (DADA2 root or r_plots/)
-  { id:"pdf_alpha",   label:"Alpha Div. (PDF)", file:"_pdf", type:"pdf", pdfFile:"alpha_diversity.pdf",    group:"Alpha" },
-  { id:"pdf_obs_pdf", label:"Observed (PDF)",   file:"_pdf", type:"pdf", pdfFile:"observed_asvs.pdf",      group:"Alpha" },
+  // All alpha metrics together — interactive 2×2 subplot
+  { id:"multialpha",  label:"All Alpha Metrics", file:"alpha_diversity.csv", type:"multialpha", group:"Alpha" },
+  // PDFs — alpha fallback (DADA2 root or r_plots/)
+  { id:"pdf_obs_pdf", label:"Observed (PDF)",    file:"_pdf", type:"pdf", pdfFile:"observed_asvs.pdf", group:"Alpha" },
   // ── Beta diversity ─────────────────────────────────────────
   { id:"pca",         label:"PCoA",             file:"pca_scores.csv",         type:"scatter", group:"Beta" },
   { id:"pca_scree",   label:"PCA Scree",        file:"pca_scree.csv",          type:"scree",   group:"Beta" },
@@ -145,6 +146,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [knownSamples, setKnownSamples]   = useState<string[]>([]);  // persists across PDF tabs
   const [showCustomize, setShowCustomize] = useState(true);
   const [legendPicker, setLegendPicker]   = useState<{name:string; x:number; y:number; color:string} | null>(null);
+  const lastMousePos = useRef({ x: 100, y: 100 });
   const [loading, setLoading]     = useState(false);
   const [pdfPanel, setPdfPanel]   = useState(false);
   const [saved, setSaved]         = useState(false);
@@ -282,13 +284,29 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
   useEffect(() => { triggerRender(); }, [triggerRender]);
 
-  // ── Close legend picker when clicking outside ─────────────
+  // ── Close legend picker when clicking outside (delayed to avoid self-close) ─
   useEffect(() => {
     if (!legendPicker) return;
-    const close = () => setLegendPicker(null);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
+    let cleanup: (() => void) | undefined;
+    // 200ms delay: legendclick fires a window-click too — don't catch it
+    const t = setTimeout(() => {
+      const close = (e: MouseEvent) => {
+        const target = e.target as HTMLElement;
+        if (target.closest?.(".prev-legend-picker")) return; // click inside → keep open
+        setLegendPicker(null);
+      };
+      window.addEventListener("click", close);
+      cleanup = () => window.removeEventListener("click", close);
+    }, 200);
+    return () => { clearTimeout(t); cleanup?.(); };
   }, [legendPicker]);
+
+  // ── Track mouse position for legend picker placement ─────────
+  useEffect(() => {
+    const track = (e: MouseEvent) => { lastMousePos.current = { x: e.clientX, y: e.clientY }; };
+    window.addEventListener("mousemove", track);
+    return () => window.removeEventListener("mousemove", track);
+  }, []);
 
   // ── Plotly legend click → floating color picker ────────────
   useEffect(() => {
@@ -297,11 +315,12 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
     const handler = (data: any) => {
       const traceName = data.data?.[data.curveNumber]?.name;
-      if (!traceName) return; // let Plotly handle it normally
-      const me = data.event as MouseEvent;
+      if (!traceName) return;
+      // Try data.event first; fall back to tracked mouse position
+      const ex = (data.event as any)?.clientX ?? lastMousePos.current.x;
+      const ey = (data.event as any)?.clientY ?? lastMousePos.current.y;
       const fallback = DEFAULT_COLORS[data.curveNumber % DEFAULT_COLORS.length];
-      setLegendPicker({ name: traceName, x: me.clientX, y: me.clientY,
-        color: colors[traceName] || fallback });
+      setLegendPicker({ name: traceName, x: ex, y: ey, color: colors[traceName] || fallback });
       return false; // prevents Plotly from toggling trace visibility
     };
     el.on?.("plotly_legendclick", handler);
@@ -564,6 +583,80 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       return { data, layout: { ...base,
         xaxis: { ...base.xaxis, title: { text: "Number of Samples" } },
         yaxis: { ...base.yaxis, title: { text: "Cumulative ASV Richness" } },
+      }};
+    }
+
+    // MULTIALPHA — alpha_diversity.csv: all metrics in a 2×2 interactive subplot grid
+    // Columns: Sample, TotalReads, Observed, Chao1, Shannon, Simpson (plus extras like Faith's PD)
+    if (activeTab2.type === "multialpha" && rows.length > 1) {
+      const ALL_METRICS = ["Observed", "Chao1", "Shannon", "Simpson", "PD"];
+      const presentMetrics = ALL_METRICS.filter(m => rows[0].indexOf(m) >= 0);
+      const sIdx = rows[0].indexOf("Sample");
+      const sampleNames = rows.slice(1).map(r => alias(sIdx >= 0 ? r[sIdx] : r[0]));
+      const rawNames    = rows.slice(1).map(r => sIdx >= 0 ? r[sIdx] : r[0]);
+
+      const cols = Math.min(presentMetrics.length, 2);
+      const rowsN = Math.ceil(presentMetrics.length / cols);
+      const gap = 0.06;
+      const cellW = (1 - gap * (cols - 1)) / cols;
+      const cellH = (1 - gap * (rowsN - 1)) / rowsN;
+
+      const data: any[] = [];
+      const axisLayout: any = {};
+      const annotations: any[] = [];
+
+      presentMetrics.forEach((metric, mi) => {
+        const mIdx = rows[0].indexOf(metric);
+        const values = rows.slice(1).map(r => num(r[mIdx]));
+        const col = mi % cols;
+        const row = Math.floor(mi / cols);
+
+        const xStart = col * (cellW + gap);
+        const yStart = 1 - (row + 1) * cellH - row * gap;
+        const axN = mi === 0 ? "" : String(mi + 1);
+
+        data.push({
+          y: values,
+          x: sampleNames,
+          type: "box",
+          boxpoints: "all",
+          jitter: 0.35,
+          pointpos: 0,
+          name: metric,
+          marker: {
+            size: 7,
+            color: rawNames.map((n, i) => colors[n] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]),
+            opacity: 0.8,
+          },
+          line: { color: "#64748b", width: 1 },
+          fillcolor: "rgba(100,116,139,0.15)",
+          xaxis: `x${axN}`, yaxis: `y${axN}`,
+          showlegend: false,
+        });
+
+        axisLayout[`xaxis${axN}`] = {
+          domain: [xStart, xStart + cellW], anchor: `y${axN}`,
+          showticklabels: false, showgrid: false, zeroline: false,
+        };
+        axisLayout[`yaxis${axN}`] = {
+          domain: [yStart, yStart + cellH], anchor: `x${axN}`,
+          title: { text: metric, font: { size: font.axisSize } },
+          showgrid: font.showGrid, gridcolor: "rgba(148,163,184,0.15)",
+          zeroline: false, tickfont: { size: font.axisSize - 1 },
+        };
+        annotations.push({
+          text: `<b>${metric}</b>`,
+          xref: "paper", yref: "paper",
+          x: xStart + cellW / 2, y: yStart + cellH + 0.01,
+          xanchor: "center", yanchor: "bottom", showarrow: false,
+          font: { size: font.axisSize + 1, color: "#e2e8f0" },
+        });
+      });
+
+      return { data, layout: {
+        ...base, ...axisLayout,
+        annotations, showlegend: false,
+        margin: { l: 60, r: 20, t: 60, b: 20 },
       }};
     }
 
