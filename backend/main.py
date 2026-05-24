@@ -1307,6 +1307,7 @@ def preview_tables(job_id: str):
             "taxonomy_phylum.csv", "taxonomy_class.csv", "taxonomy_order.csv",
             "taxonomy_family.csv", "taxonomy_genus.csv", "taxonomy_species.csv",
             "alpha_diversity.csv", "bray_curtis_distance_matrix.csv",
+            "read_tracking.csv",
             "rarefaction.csv", "shannon_rarefaction.csv", "rank_abundance.csv",
             "specaccum.csv", "faiths_pd.csv", "pca_scores.csv",
             "nmds_bray.csv", "nmds_jaccard.csv", "beta_heatmap.csv",
@@ -1317,7 +1318,18 @@ def preview_tables(job_id: str):
     # ── DADA2 fallback: root-level PDFs for r_plots ──────────────────────────
     if not plots and job_dir.exists():
         _dada2_pdf_patterns = (
-            "05_beta_UPGMA.pdf", "beta_upgma.pdf",
+            # viz_pipeline.R naming (r_plots-style)
+            "05_beta_UPGMA.pdf", "12_upgma_jaccard.pdf",
+            # DADA2 root naming (dada2_pipeline.R direct output)
+            "alpha_diversity.pdf", "observed_asvs.pdf",
+            "asv_length_distribution.pdf", "rarefaction_curves.pdf",
+            "prevalence_abundance.pdf", "qc_readcount_boxplot.pdf",
+            "read_tracking_plot.pdf",
+            "beta_pcoa.pdf", "beta_upgma.pdf",
+            "beta_heatmap.pdf", "beta_heatmap_jaccard.pdf",
+            "beta_nmds_jaccard.pdf",
+            "taxonomy_heatmap_phylum.pdf", "taxonomy_heatmap_family.pdf",
+            "taxonomy_heatmap_genus.pdf",
         )
         plots = [p for p in _dada2_pdf_patterns if (job_dir / p).exists()]
 

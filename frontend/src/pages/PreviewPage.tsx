@@ -20,39 +20,63 @@ const DEFAULT_COLORS = [
 // ── Chart tab definitions ─────────────────────────────────────
 interface TabDef {
   id: string; label: string; file: string;
-  type: "taxonomy"|"alpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"scree"|"longline"|"specaccum"|"pdf";
+  type: "taxonomy"|"alpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack";
   metric?: string; group?: string;
-  pdfFile?: string;  // for type:"pdf" — filename inside r_plots/
+  pdfFile?: string;   // for type:"pdf" — filename inside r_plots/ or job root
+  altFile?: string;   // fallback CSV filename when primary doesn't exist
 }
 const ALL_TABS: TabDef[] = [
   // ── Taxonomy ───────────────────────────────────────────────
-  { id:"phylum",      label:"Phylum",          file:"taxonomy_phylum.csv",    type:"taxonomy",  group:"Taxonomy" },
-  { id:"class",       label:"Class",           file:"taxonomy_class.csv",     type:"taxonomy",  group:"Taxonomy" },
-  { id:"order",       label:"Order",           file:"taxonomy_order.csv",     type:"taxonomy",  group:"Taxonomy" },
-  { id:"family",      label:"Family",          file:"taxonomy_family.csv",    type:"taxonomy",  group:"Taxonomy" },
-  { id:"genus",       label:"Genus",           file:"taxonomy_genus.csv",     type:"taxonomy",  group:"Taxonomy" },
+  { id:"phylum",      label:"Phylum",           file:"taxonomy_phylum.csv",    type:"taxonomy", group:"Taxonomy" },
+  { id:"class",       label:"Class",            file:"taxonomy_class.csv",     type:"taxonomy", group:"Taxonomy" },
+  { id:"order",       label:"Order",            file:"taxonomy_order.csv",     type:"taxonomy", group:"Taxonomy" },
+  { id:"family",      label:"Family",           file:"taxonomy_family.csv",    type:"taxonomy", group:"Taxonomy" },
+  { id:"genus",       label:"Genus",            file:"taxonomy_genus.csv",     type:"taxonomy", group:"Taxonomy" },
+  { id:"species",     label:"Species",          file:"taxonomy_species.csv",   type:"taxonomy", group:"Taxonomy" },
+  // PDFs — taxonomy heatmaps (DADA2 root or r_plots/)
+  { id:"pdf_tx_phy",  label:"Tax. Heatmap Phylum", file:"_pdf", type:"pdf", pdfFile:"taxonomy_heatmap_phylum.pdf", group:"Taxonomy" },
+  { id:"pdf_tx_fam",  label:"Tax. Heatmap Family", file:"_pdf", type:"pdf", pdfFile:"taxonomy_heatmap_family.pdf", group:"Taxonomy" },
+  { id:"pdf_tx_gen",  label:"Tax. Heatmap Genus",  file:"_pdf", type:"pdf", pdfFile:"taxonomy_heatmap_genus.pdf",  group:"Taxonomy" },
   // ── Alpha diversity ────────────────────────────────────────
-  { id:"shannon",     label:"Shannon",         file:"alpha_diversity.csv",    type:"alpha", metric:"Shannon",  group:"Alpha" },
-  { id:"observed",    label:"Observed",        file:"alpha_diversity.csv",    type:"alpha", metric:"Observed", group:"Alpha" },
-  { id:"chao1",       label:"Chao1",           file:"alpha_diversity.csv",    type:"alpha", metric:"Chao1",    group:"Alpha" },
-  { id:"simpson",     label:"Simpson",         file:"alpha_diversity.csv",    type:"alpha", metric:"Simpson",  group:"Alpha" },
-  { id:"faiths_pd",   label:"Faith's PD",      file:"faiths_pd.csv",         type:"alpha", metric:"PD",       group:"Alpha" },
-  { id:"shan_rar",    label:"Shannon Rar.",     file:"shannon_rarefaction.csv",type:"longline",                group:"Alpha" },
+  { id:"shannon",     label:"Shannon",          file:"alpha_diversity.csv",    type:"alpha", metric:"Shannon",  group:"Alpha" },
+  { id:"observed",    label:"Observed",         file:"alpha_diversity.csv",    type:"alpha", metric:"Observed", group:"Alpha" },
+  { id:"chao1",       label:"Chao1",            file:"alpha_diversity.csv",    type:"alpha", metric:"Chao1",    group:"Alpha" },
+  { id:"simpson",     label:"Simpson",          file:"alpha_diversity.csv",    type:"alpha", metric:"Simpson",  group:"Alpha" },
+  { id:"faiths_pd",   label:"Faith's PD",       file:"faiths_pd.csv",         type:"alpha", metric:"PD",       group:"Alpha" },
+  { id:"shan_rar",    label:"Shannon Rar.",      file:"shannon_rarefaction.csv",type:"longline",                group:"Alpha" },
+  // PDFs — alpha (DADA2 root or r_plots/)
+  { id:"pdf_alpha",   label:"Alpha Div. (PDF)", file:"_pdf", type:"pdf", pdfFile:"alpha_diversity.pdf",    group:"Alpha" },
+  { id:"pdf_obs_pdf", label:"Observed (PDF)",   file:"_pdf", type:"pdf", pdfFile:"observed_asvs.pdf",      group:"Alpha" },
   // ── Beta diversity ─────────────────────────────────────────
-  { id:"pca",         label:"PCoA",            file:"pca_scores.csv",         type:"scatter",   group:"Beta" },
-  { id:"pca_scree",   label:"PCA Scree",       file:"pca_scree.csv",          type:"scree",     group:"Beta" },
-  { id:"nmds_bray",   label:"NMDS Bray",       file:"nmds_bray.csv",          type:"scatter",   group:"Beta" },
-  { id:"nmds_jac",    label:"NMDS Jaccard",    file:"nmds_jaccard.csv",       type:"scatter",   group:"Beta" },
-  { id:"heatmap",     label:"Heatmap (Bray)",  file:"beta_heatmap.csv",       type:"heatmap",   group:"Beta" },
-  { id:"jac_heatmap", label:"Heatmap (Jac)",   file:"jaccard_heatmap.csv",    type:"heatmap",   group:"Beta" },
-  { id:"upgma_bray",  label:"UPGMA Bray",      file:"_pdf",                   type:"pdf", pdfFile:"05_beta_UPGMA.pdf",     group:"Beta" },
-  { id:"upgma_jac",   label:"UPGMA Jaccard",   file:"_pdf",                   type:"pdf", pdfFile:"12_upgma_jaccard.pdf",  group:"Beta" },
+  { id:"pca",         label:"PCoA",             file:"pca_scores.csv",         type:"scatter", group:"Beta" },
+  { id:"pca_scree",   label:"PCA Scree",        file:"pca_scree.csv",          type:"scree",   group:"Beta" },
+  { id:"nmds_bray",   label:"NMDS Bray",        file:"nmds_bray.csv",          type:"scatter", group:"Beta" },
+  { id:"nmds_jac",    label:"NMDS Jaccard",     file:"nmds_jaccard.csv",       type:"scatter", group:"Beta" },
+  // Heatmap: viz_pipeline → beta_heatmap.csv (similarity); DADA2 → bray_curtis_distance_matrix.csv (distance)
+  { id:"heatmap",     label:"Heatmap (Bray)",   file:"beta_heatmap.csv",       type:"heatmap", altFile:"bray_curtis_distance_matrix.csv", group:"Beta" },
+  { id:"jac_heatmap", label:"Heatmap (Jac)",    file:"jaccard_heatmap.csv",    type:"heatmap", group:"Beta" },
+  // PDFs — beta (viz_pipeline r_plots/ names)
+  { id:"upgma_bray",  label:"UPGMA Bray",       file:"_pdf", type:"pdf", pdfFile:"05_beta_UPGMA.pdf",           group:"Beta" },
+  { id:"upgma_jac",   label:"UPGMA Jaccard",    file:"_pdf", type:"pdf", pdfFile:"12_upgma_jaccard.pdf",        group:"Beta" },
+  // PDFs — beta (DADA2 root names)
+  { id:"pdf_pcoa",    label:"PCoA (PDF)",        file:"_pdf", type:"pdf", pdfFile:"beta_pcoa.pdf",              group:"Beta" },
+  { id:"pdf_upgma_d", label:"UPGMA (PDF)",       file:"_pdf", type:"pdf", pdfFile:"beta_upgma.pdf",            group:"Beta" },
+  { id:"pdf_hm_bray", label:"Heatmap Bray (PDF)",file:"_pdf", type:"pdf", pdfFile:"beta_heatmap.pdf",          group:"Beta" },
+  { id:"pdf_hm_jac",  label:"Heatmap Jac (PDF)", file:"_pdf", type:"pdf", pdfFile:"beta_heatmap_jaccard.pdf",  group:"Beta" },
+  { id:"pdf_nmds_jac",label:"NMDS Jac (PDF)",    file:"_pdf", type:"pdf", pdfFile:"beta_nmds_jaccard.pdf",     group:"Beta" },
   // ── Other ──────────────────────────────────────────────────
-  { id:"reads",       label:"Read Counts",     file:"asv_summary.csv",        type:"bar",       group:"Other" },
-  { id:"rarefaction", label:"Rarefaction",     file:"rarefaction.csv",        type:"line",      group:"Other" },
-  { id:"specaccum",   label:"Spec. Accum.",    file:"specaccum.csv",          type:"specaccum", group:"Other" },
-  { id:"rank_abund",  label:"Rank Abund.",     file:"rank_abundance.csv",     type:"longline",  group:"Other" },
-  { id:"otu",         label:"OTU Dist",        file:"otu_distribution.csv",   type:"box",       group:"Other" },
+  { id:"reads",       label:"Read Counts",      file:"asv_summary.csv",        type:"bar",       group:"Other" },
+  { id:"read_track",  label:"Read Tracking",    file:"read_tracking.csv",      type:"readtrack", group:"Other" },
+  { id:"rarefaction", label:"Rarefaction",      file:"rarefaction.csv",        type:"line",      group:"Other" },
+  { id:"specaccum",   label:"Spec. Accum.",     file:"specaccum.csv",          type:"specaccum", group:"Other" },
+  { id:"rank_abund",  label:"Rank Abund.",      file:"rank_abundance.csv",     type:"longline",  group:"Other" },
+  { id:"otu",         label:"OTU Dist",         file:"otu_distribution.csv",   type:"box",       group:"Other" },
+  // PDFs — other (DADA2 root)
+  { id:"pdf_rar",     label:"Rarefaction (PDF)",file:"_pdf", type:"pdf", pdfFile:"rarefaction_curves.pdf",      group:"Other" },
+  { id:"pdf_asv_len", label:"ASV Length (PDF)", file:"_pdf", type:"pdf", pdfFile:"asv_length_distribution.pdf", group:"Other" },
+  { id:"pdf_prev",    label:"Prevalence (PDF)", file:"_pdf", type:"pdf", pdfFile:"prevalence_abundance.pdf",    group:"Other" },
+  { id:"pdf_qc",      label:"QC Read Count (PDF)",file:"_pdf",type:"pdf", pdfFile:"qc_readcount_boxplot.pdf",  group:"Other" },
+  { id:"pdf_rtrack",  label:"Read Tracking (PDF)",file:"_pdf",type:"pdf", pdfFile:"read_tracking_plot.pdf",    group:"Other" },
 ];
 
 // ── Font config ───────────────────────────────────────────────
@@ -172,7 +196,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       setTableInfo(info);
       const avail = ALL_TABS.filter(t => {
         if (t.type === "pdf") return (info.plots || []).includes(t.pdfFile || "");
-        return info.tables.includes(t.file);
+        return info.tables.includes(t.file) || (!!t.altFile && info.tables.includes(t.altFile));
       });
       setAvailTabs(avail);
       return { info, avail };
@@ -189,7 +213,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       .catch(() => {
         fetch(`${API}/results/${selJob}/tables`).then(r => r.json()).then((info: TableInfo) => {
           setTableInfo(info);
-          const avail = ALL_TABS.filter(t => info.tables.includes(t.file));
+          const avail = ALL_TABS.filter(t => info.tables.includes(t.file) || (!!t.altFile && info.tables.includes(t.altFile)));
           setAvailTabs(avail);
           if (avail.length > 0) setActiveTab(avail[0]);
         }).catch(() => {});
@@ -201,7 +225,11 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     if (!activeTab || !selJob) return;
     if (activeTab.type === "pdf") { setCsvData(null); setLoading(false); return; }
     setLoading(true);
-    fetch(`${API}/results/${selJob}/table/${activeTab.file}`)
+    // Use altFile when primary doesn't exist in tableInfo
+    const fileToLoad = (tableInfo?.tables || []).includes(activeTab.file)
+      ? activeTab.file
+      : (activeTab.altFile || activeTab.file);
+    fetch(`${API}/results/${selJob}/table/${fileToLoad}`)
       .then(r => r.text())
       .then(text => {
         const rows = parseCSV(text);
@@ -253,6 +281,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   function getSeries(tab: TabDef, rows: string[][]): string[] {
     if (!rows.length) return [];
     if (tab.type === "taxonomy")  return rows[0].slice(1).slice(0, 30);  // taxon names (columns) → for color assignment
+    if (tab.type === "readtrack") return rows.slice(1).map(r => r[0]);   // sample names → for color per line
     if (tab.type === "alpha")     return rows.length > 1 ? rows.slice(1).map(r => {
       const idx = rows[0].indexOf("Sample"); return idx >= 0 ? r[idx] : r[r.length-1];
     }) : [];
@@ -505,21 +534,44 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }};
     }
 
-    // HEATMAP (beta_heatmap.csv: Sample, col1, col2, ...)
+    // HEATMAP (beta_heatmap.csv: similarity; bray_curtis_distance_matrix.csv: distance)
     if (activeTab2.type === "heatmap" && rows.length > 1) {
       const sampleNames = rows.slice(1).map(r => alias(r[0]));
       const zValues = rows.slice(1).map(r => r.slice(1).map(v => num(v)));
+      // Auto-detect: diagonal ≈ 0 → distance matrix; diagonal ≈ 1 → similarity
+      const diag0 = zValues[0] ? zValues[0][0] : 1;
+      const isDist = diag0 < 0.1;
       const data = [{ z: zValues, x: sampleNames, y: sampleNames,
         type: "heatmap",
-        colorscale: "Blues",
+        colorscale: isDist ? "Reds" : "Blues",
         zmin: 0, zmax: 1,
         hoverongaps: false,
-        colorbar: { title: "Similarity" },
+        colorbar: { title: isDist ? "Distance" : "Similarity" },
+        reversescale: !isDist,  // Blues: dark=high similarity; Reds: dark=high distance (natural)
       }];
       return { data, layout: { ...base,
         xaxis: { ...base.xaxis, tickangle: -45, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
         yaxis: { ...base.yaxis, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt), autorange: "reversed" },
         margin: { l: 100, r: 20, t: 60, b: 120 },
+      }};
+    }
+
+    // READ TRACKING — read_tracking.csv: "","input","filtered","denoised[FR]","merged","nonchim"
+    // Shows read retention through each pipeline step as lines per sample
+    if (activeTab2.type === "readtrack" && rows.length > 1) {
+      const steps   = rows[0].slice(1);     // pipeline step names (variable per pipeline)
+      const data = rows.slice(1).map((row, ri) => ({
+        name: alias(row[0]),
+        x: steps,
+        y: steps.map((_, si) => num(row[si + 1])),
+        type: "scatter" as const,
+        mode: "lines+markers" as const,
+        line: { color: colors[row[0]] || DEFAULT_COLORS[ri % DEFAULT_COLORS.length], width: 2 },
+        marker: { size: 7, color: colors[row[0]] || DEFAULT_COLORS[ri % DEFAULT_COLORS.length] },
+      }));
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, title: { text: "Pipeline Step" } },
+        yaxis: { ...base.yaxis, title: { text: "Read Count" }, rangemode: "tozero" as const },
       }};
     }
 
