@@ -1,5 +1,5 @@
 {
-  "version": "2.3.9",
+  "version": "2.4.0",
   "release_date": "2026-05-24",
-  "changelog": "feat: All Alpha Metrics show sample name label on every dot; fix: Read Tracking legend click → color picker popup"
+  "changelog": "feat: dada2_extra_viz.R — PCoA, NMDS Bray, Jaccard heatmap+NMDS, Rarefaction, ASV Lengths interactive from DADA2 output; Re-run Viz generates all extra CSVs for old jobs"
 }

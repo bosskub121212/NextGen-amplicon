@@ -2008,6 +2008,20 @@ if (isTRUE(opt$tax4fun)) {
 }
 
 # =============================================================
+#  EXTRA VIZ — interactive chart CSVs for Edit Charts
+#  PCoA, NMDS, Jaccard, Rarefaction, ASV lengths
+# =============================================================
+tryCatch({
+  extra_script <- file.path(dirname(sub("--file=", "",
+    grep("--file=", commandArgs(trailingOnly=FALSE), value=TRUE)[1])),
+    "dada2_extra_viz.R")
+  if (!is.na(extra_script) && file.exists(extra_script)) {
+    source(extra_script)
+    dada2_extra_viz(opt$output_dir)
+  }
+}, error=function(e) cat("  [skip] Extra viz:", e$message, "\n"))
+
+# =============================================================
 #  DONE
 # =============================================================
 cat("\n========================================\n")

@@ -20,7 +20,7 @@ const DEFAULT_COLORS = [
 // ── Chart tab definitions ─────────────────────────────────────
 interface TabDef {
   id: string; label: string; file: string;
-  type: "taxonomy"|"alpha"|"multialpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack";
+  type: "taxonomy"|"alpha"|"multialpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack"|"hist"|"readtrackbox";
   metric?: string; group?: string;
   pdfFile?: string;   // for type:"pdf" — filename inside r_plots/ or job root
   altFile?: string;   // fallback CSV filename when primary doesn't exist
@@ -78,6 +78,9 @@ const ALL_TABS: TabDef[] = [
   { id:"pdf_prev",    label:"Prevalence (PDF)", file:"_pdf", type:"pdf", pdfFile:"prevalence_abundance.pdf",    group:"Other" },
   { id:"pdf_qc",      label:"QC Read Count (PDF)",file:"_pdf",type:"pdf", pdfFile:"qc_readcount_boxplot.pdf",  group:"Other" },
   { id:"pdf_rtrack",  label:"Read Tracking (PDF)",file:"_pdf",type:"pdf", pdfFile:"read_tracking_plot.pdf",    group:"Other" },
+  // Interactive tabs from dada2_extra_viz.R CSVs
+  { id:"asv_lengths",  label:"ASV Lengths",    file:"asv_lengths.csv",    type:"hist",         group:"Other" },
+  { id:"qc_readcount", label:"QC Read Count",  file:"read_tracking.csv",  type:"readtrackbox", group:"Other" },
 ];
 
 // ── Font config ───────────────────────────────────────────────
@@ -767,6 +770,56 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       return { data, layout: { ...base,
         xaxis: { ...base.xaxis, tickmode: "array", tickvals: samples, ticktext: samples.map(xFmt) },
         yaxis: { ...base.yaxis, title: { text: "Mean reads/OTU" } },
+      }};
+    }
+
+    // HIST — asv_lengths.csv: Length (bp), Count
+    // Bar chart showing distribution of ASV sequence lengths
+    if (activeTab2.type === "hist" && rows.length > 1) {
+      const xLabel = rows[0][0] || "Length (bp)";
+      const yLabel = rows[0][1] || "Count";
+      const xVals  = rows.slice(1).map(r => num(r[0]));
+      const yVals  = rows.slice(1).map(r => num(r[1]));
+      const data = [{
+        x: xVals, y: yVals,
+        type: "bar",
+        marker: { color: "#3b82f6", opacity: 0.85 },
+        width: 1.2,
+        hovertemplate: `${xLabel}: %{x} bp<br>${yLabel}: %{y:,}<extra></extra>`,
+      }];
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, title: { text: xLabel }, tickangle: 0 },
+        yaxis: { ...base.yaxis, title: { text: yLabel }, rangemode: "tozero" as const },
+        bargap: 0.02,
+        margin: { l: 60, r: 20, t: 60, b: 80 },
+      }};
+    }
+
+    // READTRACKBOX — read_tracking.csv: boxplot per pipeline step across all samples
+    // Shows distribution of read counts at each step (spread across 24 samples)
+    if (activeTab2.type === "readtrackbox" && rows.length > 1) {
+      const steps = rows[0].slice(1);
+      const data = steps.map((step, si) => {
+        const vals = rows.slice(1).map(r => num(r[si + 1]));
+        const color = DEFAULT_COLORS[si % DEFAULT_COLORS.length];
+        return {
+          name: step,
+          y: vals,
+          type: "box",
+          boxpoints: "all",
+          jitter: 0.4,
+          pointpos: 0,
+          marker: { size: 5, color, opacity: 0.7 },
+          line:  { color, width: 1.5 },
+          fillcolor: color + "30",
+          showlegend: false,
+        };
+      });
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, title: { text: "Pipeline Step" } },
+        yaxis: { ...base.yaxis, title: { text: "Read Count" }, rangemode: "tozero" as const },
+        showlegend: false,
+        margin: { l: 60, r: 20, t: 60, b: 80 },
       }};
     }
 
