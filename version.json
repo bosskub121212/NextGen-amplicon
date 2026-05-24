@@ -1,5 +1,5 @@
 {
   "version": "2.4.1",
   "release_date": "2026-05-24",
-  "changelog": "fix: QC Read Count legend click → color picker popup; fix: Rarefaction line trace name matches colors key; feat: readtrackbox showlegend with color per step"
+  "changelog": "fix: dada2_extra_viz.R no longer requires bray_curtis to exist — rarefaction+ASV lengths run independently; fix QC Read Count legend→color picker; fix Rarefaction line trace name"
 }

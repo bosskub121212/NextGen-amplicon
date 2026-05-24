@@ -13,17 +13,21 @@ dada2_extra_viz <- function(out_dir) {
   asv_file  <- file.path(out_dir, "asv_table.csv")
   tax_file  <- file.path(out_dir, "taxonomy_table.csv")
 
-  if (!file.exists(bray_file)) return(invisible(NULL))
+  # Check: at least one usable input must exist
+  have_any <- file.exists(bray_file) || file.exists(asv_file) || file.exists(tax_file)
+  if (!have_any) return(invisible(NULL))
 
   cat("\n── DADA2 Extra Viz ─────────────────────────────────────────────\n")
   cat("  Directory:", out_dir, "\n")
 
   have_vegan <- suppressPackageStartupMessages(
     tryCatch({ library(vegan); TRUE }, error=function(e) {
-      cat("  [skip all beta/rarefaction] vegan not available\n"); FALSE }))
+      cat("  [skip beta/rarefaction] vegan not available\n"); FALSE }))
 
   # ── 1. PCoA from Bray-Curtis ────────────────────────────────────────────────
-  tryCatch({
+  if (!file.exists(bray_file)) {
+    cat("  (bray_curtis_distance_matrix.csv missing — skip PCoA + NMDS Bray)\n")
+  } else tryCatch({
     pca_out <- file.path(out_dir, "pca_scores.csv")
     if (file.exists(pca_out)) {
       cat("  (pca_scores.csv exists — skip)\n")
@@ -56,7 +60,7 @@ dada2_extra_viz <- function(out_dir) {
   }, error=function(e) cat("  [skip] PCoA:", e$message, "\n"))
 
   # ── 2. NMDS Bray-Curtis ─────────────────────────────────────────────────────
-  if (have_vegan) tryCatch({
+  if (have_vegan && file.exists(bray_file)) tryCatch({
     nmds_bray_out <- file.path(out_dir, "nmds_bray.csv")
     if (file.exists(nmds_bray_out)) {
       cat("  (nmds_bray.csv exists — skip)\n")
