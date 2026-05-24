@@ -1370,22 +1370,71 @@ def preview_plot_pdf(job_id: str, filename: str):
 
 @app.get("/results/{job_id}/settings")
 def get_preview_settings(job_id: str):
-    """Return saved preview customization settings (sample aliases, colors, font)."""
-    path = RESULTS_DIR / job_id / "preview_settings.json"
+    """Return saved preview customization settings — legacy endpoint (checks both locations)."""
+    # Try new edit_charts/ location first, then legacy root
+    for candidate in (
+        RESULTS_DIR / job_id / "edit_charts" / "settings.json",
+        RESULTS_DIR / job_id / "preview_settings.json",
+    ):
+        if candidate.exists():
+            try:
+                return json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+    return {}
+
+@app.post("/results/{job_id}/settings")
+async def save_preview_settings(job_id: str, request: Request):
+    """Legacy save — redirects to edit_charts/settings.json."""
+    body = await request.json()
+    ec_dir = RESULTS_DIR / job_id / "edit_charts"
+    ec_dir.mkdir(parents=True, exist_ok=True)
+    (ec_dir / "settings.json").write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True}
+
+# ── Edit Charts folder endpoints ──────────────────────────────────────────────
+
+@app.get("/results/{job_id}/edit_charts/settings")
+def get_edit_charts_settings(job_id: str):
+    """Return saved Edit Charts settings from edit_charts/settings.json."""
+    path = RESULTS_DIR / job_id / "edit_charts" / "settings.json"
     if not path.exists():
+        # Fall back to legacy location
+        legacy = RESULTS_DIR / job_id / "preview_settings.json"
+        if legacy.exists():
+            try:
+                return json.loads(legacy.read_text(encoding="utf-8"))
+            except Exception:
+                pass
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
-@app.post("/results/{job_id}/settings")
-async def save_preview_settings(job_id: str, request: Request):
-    """Persist preview customization settings to disk so they're included in the ZIP export."""
+@app.post("/results/{job_id}/edit_charts/settings")
+async def save_edit_charts_settings(job_id: str, request: Request):
+    """Save Edit Charts customization to edit_charts/settings.json (included in ZIP export)."""
     body = await request.json()
-    path = RESULTS_DIR / job_id / "preview_settings.json"
-    path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+    ec_dir = RESULTS_DIR / job_id / "edit_charts"
+    ec_dir.mkdir(parents=True, exist_ok=True)
+    (ec_dir / "settings.json").write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True}
+
+@app.post("/results/{job_id}/edit_charts/png")
+async def save_edit_charts_png(job_id: str, request: Request):
+    """Save a chart PNG to edit_charts/{tab_id}.png (included in ZIP export)."""
+    import base64 as _b64
+    body = await request.json()
+    tab_id = _re.sub(r'[^\w\-]', '_', body.get("tab_id", "chart"))
+    b64    = body.get("b64", "")
+    if not b64:
+        raise HTTPException(status_code=400, detail="Missing b64 image data")
+    ec_dir = RESULTS_DIR / job_id / "edit_charts"
+    ec_dir.mkdir(parents=True, exist_ok=True)
+    png_bytes = _b64.b64decode(b64)
+    (ec_dir / f"{tab_id}.png").write_bytes(png_bytes)
+    return {"ok": True, "path": f"edit_charts/{tab_id}.png"}
 
 @app.post("/results/{job_id}/rerun-viz")
 def rerun_visualization(job_id: str):

@@ -20,7 +20,7 @@ const DEFAULT_COLORS = [
 // ── Chart tab definitions ─────────────────────────────────────
 interface TabDef {
   id: string; label: string; file: string;
-  type: "taxonomy"|"alpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack";
+  type: "taxonomy"|"alpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack";
   metric?: string; group?: string;
   pdfFile?: string;   // for type:"pdf" — filename inside r_plots/ or job root
   altFile?: string;   // fallback CSV filename when primary doesn't exist
@@ -33,10 +33,10 @@ const ALL_TABS: TabDef[] = [
   { id:"family",      label:"Family",           file:"taxonomy_family.csv",    type:"taxonomy", group:"Taxonomy" },
   { id:"genus",       label:"Genus",            file:"taxonomy_genus.csv",     type:"taxonomy", group:"Taxonomy" },
   { id:"species",     label:"Species",          file:"taxonomy_species.csv",   type:"taxonomy", group:"Taxonomy" },
-  // PDFs — taxonomy heatmaps (DADA2 root or r_plots/)
-  { id:"pdf_tx_phy",  label:"Tax. Heatmap Phylum", file:"_pdf", type:"pdf", pdfFile:"taxonomy_heatmap_phylum.pdf", group:"Taxonomy" },
-  { id:"pdf_tx_fam",  label:"Tax. Heatmap Family", file:"_pdf", type:"pdf", pdfFile:"taxonomy_heatmap_family.pdf", group:"Taxonomy" },
-  { id:"pdf_tx_gen",  label:"Tax. Heatmap Genus",  file:"_pdf", type:"pdf", pdfFile:"taxonomy_heatmap_genus.pdf",  group:"Taxonomy" },
+  // Taxonomy heatmaps — interactive (sample × taxon abundance heatmap)
+  { id:"tax_hm_phy",  label:"Tax. Heatmap Phylum", file:"taxonomy_phylum.csv", type:"taxheatmap", group:"Taxonomy" },
+  { id:"tax_hm_fam",  label:"Tax. Heatmap Family", file:"taxonomy_family.csv", type:"taxheatmap", group:"Taxonomy" },
+  { id:"tax_hm_gen",  label:"Tax. Heatmap Genus",  file:"taxonomy_genus.csv",  type:"taxheatmap", group:"Taxonomy" },
   // ── Alpha diversity ────────────────────────────────────────
   { id:"shannon",     label:"Shannon",          file:"alpha_diversity.csv",    type:"alpha", metric:"Shannon",  group:"Alpha" },
   { id:"observed",    label:"Observed",         file:"alpha_diversity.csv",    type:"alpha", metric:"Observed", group:"Alpha" },
@@ -115,7 +115,7 @@ const shortName = (s: string) => s.replace(/FBE\d+_pass_/i,"").replace(/_\w{8}_\
 // ── Get raw sample names for x-axis (used in customize panel) ─
 function getUniqueSamples(tab: TabDef, rows: string[][]): string[] {
   if (!rows.length) return [];
-  if (tab.type === "taxonomy") return rows.slice(1).map(r => r[0]);
+  if (tab.type === "taxonomy" || tab.type === "taxheatmap") return rows.slice(1).map(r => r[0]);
   if (tab.type === "alpha") {
     const sIdx = rows[0].indexOf("Sample");
     return sIdx >= 0 ? rows.slice(1).map(r => r[sIdx]) : rows.slice(1).map(r => r[r.length - 1]);
@@ -166,9 +166,9 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
     // Load settings + tables in parallel; apply settings before activating first tab
     const loadSettings = async (): Promise<boolean> => {
-      // Try server first
+      // Try server first — check edit_charts/settings then legacy preview_settings
       try {
-        const s = await fetch(`${API}/results/${selJob}/settings`).then(r => r.json());
+        const s = await fetch(`${API}/results/${selJob}/edit_charts/settings`).then(r => r.json());
         if (s && Object.keys(s).length > 0) {
           if (s.font)          setFont({ ...defaultFont(), ...s.font });
           if (s.colors)        setColors(s.colors);
@@ -284,8 +284,9 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // ── Get series names for a tab ────────────────────────────
   function getSeries(tab: TabDef, rows: string[][]): string[] {
     if (!rows.length) return [];
-    if (tab.type === "taxonomy")  return rows[0].slice(1).slice(0, 30);  // taxon names (columns) → for color assignment
-    if (tab.type === "readtrack") return rows.slice(1).map(r => r[0]);   // sample names → for color per line
+    if (tab.type === "taxonomy")    return rows[0].slice(1).slice(0, 30);  // taxon names → color assignment
+    if (tab.type === "taxheatmap") return rows.slice(1).map(r => r[0]);   // sample names → for color (unused but consistent)
+    if (tab.type === "readtrack")  return rows.slice(1).map(r => r[0]);   // sample names → color per line
     if (tab.type === "alpha")     return rows.length > 1 ? rows.slice(1).map(r => {
       const idx = rows[0].indexOf("Sample"); return idx >= 0 ? r[idx] : r[r.length-1];
     }) : [];
@@ -560,6 +561,34 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }};
     }
 
+    // TAXHEATMAP — taxonomy_phylum/family/genus.csv: rows=samples, cols=taxa
+    // Renders as sample × taxon abundance heatmap (interactive, editable)
+    if (activeTab2.type === "taxheatmap" && rows.length > 1) {
+      const taxonNames  = rows[0].slice(1);
+      const sampleNames = rows.slice(1).map(r => alias(r[0]));
+      const zValues     = rows.slice(1).map(r => r.slice(1).map(v => num(v)));
+      // Sort taxa by total abundance (descending) so most dominant are first
+      const totals = taxonNames.map((_, ci) =>
+        zValues.reduce((s, row) => s + (row[ci] || 0), 0));
+      const order = totals.map((_, i) => i).sort((a, b) => totals[b] - totals[a]);
+      const sortedTaxa   = order.map(i => taxonNames[i]);
+      const sortedZ      = zValues.map(row => order.map(i => row[i]));
+      const level = activeTab2.label.replace("Tax. Heatmap ", "");
+      const data = [{
+        z: sortedZ, x: sortedTaxa, y: sampleNames,
+        type: "heatmap" as const,
+        colorscale: "Viridis",
+        hoverongaps: false,
+        colorbar: { title: "Abundance (%)", thickness: 16 },
+        hovertemplate: `<b>%{y}</b><br>${level}: %{x}<br>Abundance: %{z:.2f}%<extra></extra>`,
+      }];
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, tickangle: -50, title: { text: level } },
+        yaxis: { ...base.yaxis, title: { text: "Sample" }, autorange: "reversed" as const },
+        margin: { l: 110, r: 60, t: 60, b: 160 },
+      }};
+    }
+
     // READ TRACKING — read_tracking.csv: "","input","filtered","denoised[FR]","merged","nonchim"
     // Shows read retention through each pipeline step as lines per sample
     if (activeTab2.type === "readtrack" && rows.length > 1) {
@@ -598,23 +627,35 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
   useEffect(() => { plotted.current = false; }, [activeTab, selJob]);
 
-  // ── Export PNG ────────────────────────────────────────────
-  const exportPNG = () => {
-    if (!chartRef.current) return;
+  // ── Export PNG (download + save to edit_charts/ on server) ──
+  const exportPNG = async () => {
+    if (!chartRef.current || !activeTab) return;
+    // Download to browser
     Plotly.downloadImage(chartRef.current, {
-      format: "png", filename: `${selJob}_${activeTab?.id || "chart"}`,
+      format: "png", filename: `${selJob}_${activeTab.id}`,
       width: 1400, height: 900, scale: 2,
     });
+    // Also upload to server → edit_charts/{tab_id}.png (included in ZIP)
+    try {
+      const imgUrl: string = await Plotly.toImage(chartRef.current,
+        { format: "png", width: 1400, height: 900, scale: 2 });
+      const b64 = imgUrl.split(",")[1];
+      await fetch(`${API}/results/${selJob}/edit_charts/png`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tab_id: activeTab.id, b64 }),
+      });
+    } catch { /* non-fatal — local download still works */ }
   };
 
-  // ── Save settings to localStorage + server ───────────────
+  // ── Save settings → edit_charts/settings.json on server ──
   const saveSettings = async () => {
     if (!selJob) return;
     const payload = { font, colors, sampleAliases };
     localStorage.setItem(`prev_settings_${selJob}`, JSON.stringify(payload));
-    // Also persist to server so the ZIP export includes the settings
+    // Persist to server inside edit_charts/ folder (included in ZIP export)
     try {
-      await fetch(`${API}/results/${selJob}/settings`, {
+      await fetch(`${API}/results/${selJob}/edit_charts/settings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
