@@ -142,6 +142,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [colors, setColors]       = useState<Record<string, string>>({});
   const [font, setFont]           = useState<FontConfig>(defaultFont());
   const [sampleAliases, setSampleAliases] = useState<Record<string, string>>({});
+  const [knownSamples, setKnownSamples]   = useState<string[]>([]);  // persists across PDF tabs
   const [showCustomize, setShowCustomize] = useState(true);
   const [loading, setLoading]     = useState(false);
   const [pdfPanel, setPdfPanel]   = useState(false);
@@ -243,6 +244,9 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           });
           return next;
         });
+        // Persist sample names for use when viewing PDF tabs
+        const samplesFromRows = getUniqueSamples(activeTab, rows);
+        if (samplesFromRows.length > 0) setKnownSamples(samplesFromRows);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -718,9 +722,14 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // Beta only shows when charts exist (needs ≥2 samples)
 
   // Series for customization panel
-  const series = csvData && activeTab ? getSeries(activeTab, csvData) : [];
+  // For PDF tabs csvData is null — fall back to knownSamples for color assignment
+  const series = csvData && activeTab
+    ? getSeries(activeTab, csvData)
+    : (activeTab?.type === "pdf" ? knownSamples : []);
   // Unique sample names (raw) for alias editing panel
-  const uniqueSamples = csvData && activeTab ? getUniqueSamples(activeTab, csvData) : [];
+  const uniqueSamples = csvData && activeTab
+    ? getUniqueSamples(activeTab, csvData)
+    : (activeTab?.type === "pdf" ? knownSamples : []);
 
   return (
     <div className="prev-root">
@@ -869,7 +878,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                   )}
                 </div>
 
-                {/* Customize panel — hidden for PDF-only tabs */}
+                {/* Customize panel — available for all tab types */}
                 <div className="prev-customize">
                   <div className="prev-cust-header"
                     onClick={() => setShowCustomize(s => !s)}>
@@ -877,12 +886,17 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                     <span className="prev-cust-toggle">{showCustomize ? "▲" : "▼"}</span>
                   </div>
 
-                  {showCustomize && activeTab.type !== "pdf" && (
+                  {showCustomize && (
                     <div className="prev-cust-body">
 
                       {/* Chart style */}
                       <div className="prev-cust-section">
                         <div className="prev-cust-section-title">Chart Style</div>
+                        {activeTab.type === "pdf" && (
+                          <div className="prev-cust-pdf-note">
+                            ℹ️ Style settings apply to interactive chart tabs (not PDF). Sample name aliases and colors are saved globally for this job.
+                          </div>
+                        )}
                         <div className="prev-cust-row">
                           <label>Title</label>
                           <input className="prev-cust-input"
