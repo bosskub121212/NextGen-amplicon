@@ -610,9 +610,9 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
       const cols  = Math.min(presentMetrics.length, 2);
       const rowsN = Math.ceil(presentMetrics.length / cols);
-      const gap   = 0.08;
+      const gap   = 0.10;
       const cellW = (1 - gap * (cols - 1)) / cols;
-      const cellH = (1 - gap * (rowsN - 1) - 0.04) / rowsN;
+      const cellH = (1 - gap * (rowsN - 1) - 0.06) / rowsN;
 
       const data: any[] = [];
       const axisLayout: any = {};
@@ -629,15 +629,20 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         // One trace per sample for this subplot — enables per-sample legend + color picker
         rawNames.forEach((rawName, si) => {
           const sampleLabel = alias(rawName);
+          const shortLabel  = shortName(rawName);
           const color = colors[rawName] || DEFAULT_COLORS[si % DEFAULT_COLORS.length];
           data.push({
             x: [sampleLabel],
             y: [num(rows[si + 1][mIdx])],
-            type: "scatter", mode: "markers",
+            type: "scatter", mode: "markers+text",
+            text: [shortLabel],                          // label shown on every dot
+            textposition: "top center",
+            textfont: { size: 8, color: "#475569" },
+            hovertemplate: `<b>${shortLabel}</b><br>${metric}: %{y:.4f}<extra></extra>`,
             name: rawName,              // raw name so legendclick can look up colors[rawName]
             legendgroup: rawName,       // same group across all subplots → appears once in legend
             showlegend: mi === 0,       // show legend entry only for first subplot
-            marker: { size: 11, color, opacity: 0.9, line: { width: 1, color: "rgba(255,255,255,0.4)" } },
+            marker: { size: 10, color, opacity: 0.9, line: { width: 1, color: "rgba(255,255,255,0.4)" } },
             xaxis: `x${axN}`, yaxis: `y${axN}`,
           });
         });
@@ -727,20 +732,27 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
     // READ TRACKING — read_tracking.csv: "","input","filtered","denoised[FR]","merged","nonchim"
     // Shows read retention through each pipeline step as lines per sample
+    // name = row[0] (raw) so legendclick fires with the key used in `colors`
     if (activeTab2.type === "readtrack" && rows.length > 1) {
       const steps   = rows[0].slice(1);     // pipeline step names (variable per pipeline)
-      const data = rows.slice(1).map((row, ri) => ({
-        name: alias(row[0]),
-        x: steps,
-        y: steps.map((_, si) => num(row[si + 1])),
-        type: "scatter" as const,
-        mode: "lines+markers" as const,
-        line: { color: colors[row[0]] || DEFAULT_COLORS[ri % DEFAULT_COLORS.length], width: 2 },
-        marker: { size: 7, color: colors[row[0]] || DEFAULT_COLORS[ri % DEFAULT_COLORS.length] },
-      }));
+      const data = rows.slice(1).map((row, ri) => {
+        const rawName = row[0];
+        const color   = colors[rawName] || DEFAULT_COLORS[ri % DEFAULT_COLORS.length];
+        return {
+          name: rawName,                  // raw name → legendclick works for color picker
+          x: steps,
+          y: steps.map((_, si) => num(row[si + 1])),
+          type: "scatter" as const,
+          mode: "lines+markers" as const,
+          line: { color, width: 2 },
+          marker: { size: 7, color },
+          hovertemplate: `<b>${alias(rawName)}</b><br>%{x}: %{y:,}<extra></extra>`,
+        };
+      });
       return { data, layout: { ...base,
         xaxis: { ...base.xaxis, title: { text: "Pipeline Step" } },
         yaxis: { ...base.yaxis, title: { text: "Read Count" }, rangemode: "tozero" as const },
+        legend: { font: { size: font.legendSize } },
       }};
     }
 

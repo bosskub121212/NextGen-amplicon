@@ -1,5 +1,5 @@
 {
-  "version": "2.3.8",
+  "version": "2.3.9",
   "release_date": "2026-05-24",
-  "changelog": "feat: colorscale picker for Tax.Heatmap/Beta Heatmap tabs; feat: All Alpha Metrics per-sample colored scatter with legend click-to-change-color"
+  "changelog": "feat: All Alpha Metrics show sample name label on every dot; fix: Read Tracking legend click → color picker popup"
 }
