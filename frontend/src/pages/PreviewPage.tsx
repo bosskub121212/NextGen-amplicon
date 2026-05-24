@@ -144,6 +144,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [sampleAliases, setSampleAliases] = useState<Record<string, string>>({});
   const [knownSamples, setKnownSamples]   = useState<string[]>([]);  // persists across PDF tabs
   const [showCustomize, setShowCustomize] = useState(true);
+  const [legendPicker, setLegendPicker]   = useState<{name:string; x:number; y:number; color:string} | null>(null);
   const [loading, setLoading]     = useState(false);
   const [pdfPanel, setPdfPanel]   = useState(false);
   const [saved, setSaved]         = useState(false);
@@ -280,6 +281,33 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   }, [csvData, colors, font, activeTab, sampleAliases]);
 
   useEffect(() => { triggerRender(); }, [triggerRender]);
+
+  // ── Close legend picker when clicking outside ─────────────
+  useEffect(() => {
+    if (!legendPicker) return;
+    const close = () => setLegendPicker(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [legendPicker]);
+
+  // ── Plotly legend click → floating color picker ────────────
+  useEffect(() => {
+    const el = chartRef.current as any;
+    if (!el || !activeTab || activeTab.type === "pdf") return;
+
+    const handler = (data: any) => {
+      const traceName = data.data?.[data.curveNumber]?.name;
+      if (!traceName) return; // let Plotly handle it normally
+      const me = data.event as MouseEvent;
+      const fallback = DEFAULT_COLORS[data.curveNumber % DEFAULT_COLORS.length];
+      setLegendPicker({ name: traceName, x: me.clientX, y: me.clientY,
+        color: colors[traceName] || fallback });
+      return false; // prevents Plotly from toggling trace visibility
+    };
+    el.on?.("plotly_legendclick", handler);
+    return () => { try { el.removeAllListeners?.("plotly_legendclick"); } catch {} };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [csvData, activeTab, colors]);
 
   // ── Get series names for a tab ────────────────────────────
   function getSeries(tab: TabDef, rows: string[][]): string[] {
@@ -1046,25 +1074,15 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                         </div>
                       )}
 
-                      {/* Color pickers */}
-                      {series.length > 0 && (
-                        <div className="prev-cust-section">
+                      {/* Colors — click legend items on the chart to change colors */}
+                      {activeTab.type !== "pdf" && (
+                        <div className="prev-cust-section prev-cust-color-hint">
                           <div className="prev-cust-section-title">Colors</div>
-                          <div className="prev-color-grid">
-                            {series.slice(0,30).map((name, i) => (
-                              <div key={name} className="prev-color-row">
-                                <input type="color"
-                                  value={colors[name] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]}
-                                  onChange={e => setColors(c => ({ ...c, [name]: e.target.value }))} />
-                                <span className="prev-color-label" title={name}>
-                                  {name.length > 22 ? name.slice(0,22)+"…" : name}
-                                </span>
-                              </div>
-                            ))}
+                          <div className="prev-color-hint-msg">
+                            🎨 Click any item in the chart legend to change its color
                           </div>
-                          <button className="prev-btn-reset"
-                            onClick={() => setColors({})}>
-                            ↺ Reset to defaults
+                          <button className="prev-btn-reset" onClick={() => setColors({})}>
+                            ↺ Reset all colors to defaults
                           </button>
                         </div>
                       )}
@@ -1076,6 +1094,29 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           </>
         )}
       </main>
+
+      {/* ── Floating legend color picker ────────────────────── */}
+      {legendPicker && (
+        <div className="prev-legend-picker"
+          style={{ left: legendPicker.x + 12, top: legendPicker.y - 8 }}
+          onMouseDown={e => e.stopPropagation()}>
+          <input
+            type="color"
+            className="prev-lp-swatch"
+            autoFocus
+            value={legendPicker.color}
+            onChange={e => {
+              const c = e.target.value;
+              setLegendPicker(s => s ? { ...s, color: c } : null);
+              setColors(prev => ({ ...prev, [legendPicker.name]: c }));
+            }}
+          />
+          <span className="prev-lp-name" title={legendPicker.name}>
+            {legendPicker.name.length > 26 ? legendPicker.name.slice(0, 26) + "…" : legendPicker.name}
+          </span>
+          <button className="prev-lp-close" onClick={() => setLegendPicker(null)}>✕</button>
+        </div>
+      )}
     </div>
   );
 }

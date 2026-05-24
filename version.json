@@ -1,5 +1,5 @@
 {
-  "version": "2.3.5",
+  "version": "2.3.6",
   "release_date": "2026-05-24",
   "changelog": "feat: 30+ chart tabs (Species, Tax.Heatmap PDFs, Read Tracking, Beta PDFs, QC PDFs); feat: altFile fallback (Heatmap Bray → bray_curtis_distance_matrix.csv); feat: readtrack renderer; fix: heatmap auto-detect distance vs similarity; fix: DADA2 PDF fallback in /tables endpoint"
 }
