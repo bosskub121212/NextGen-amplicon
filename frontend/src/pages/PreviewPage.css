@@ -534,3 +534,38 @@
 }
 .prev-alias-input:focus { border-color: #7c3aed; background: rgba(124,58,237,0.12); }
 .prev-alias-input::placeholder { color: #475569; font-style: italic; }
+
+/* ── Colorscale selector ─────────────────────────────── */
+.prev-cs-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.prev-cs-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  padding: 6px 4px 5px;
+  cursor: pointer;
+  transition: all 0.12s;
+  color: #94a3b8;
+  font-size: 10px;
+  font-family: inherit;
+}
+.prev-cs-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2); color: #e2e8f0; }
+.prev-cs-btn.active {
+  background: rgba(124,58,237,0.25);
+  border-color: #7c3aed;
+  color: #c4b5fd;
+  font-weight: 600;
+}
+.prev-cs-swatch {
+  width: 100%;
+  height: 14px;
+  border-radius: 3px;
+}

@@ -86,13 +86,27 @@ interface FontConfig {
   titleText: string; titleBold: boolean; titleItalic: boolean;
   chartType: "bar"|"bar100"|"line"; showGrid: boolean;
   xItalic: boolean; xBold: boolean; xSize: number;
+  colorscale: string;  // for heatmap/taxheatmap
 }
 const defaultFont = (): FontConfig => ({
   titleSize: 16, axisSize: 12, legendSize: 11,
   titleText: "", titleBold: false, titleItalic: false,
   chartType: "bar", showGrid: true,
   xItalic: false, xBold: false, xSize: 12,
+  colorscale: "Viridis",
 });
+
+// ── Colorscale options for heatmap tabs ──────────────────────
+const COLORSCALES = [
+  { name:"Viridis", gradient:"linear-gradient(to right,#440154,#31688e,#35b779,#fde725)" },
+  { name:"Plasma",  gradient:"linear-gradient(to right,#0d0887,#7e03a8,#f89540,#f0f921)" },
+  { name:"Blues",   gradient:"linear-gradient(to right,#f7fbff,#6baed6,#08306b)" },
+  { name:"Reds",    gradient:"linear-gradient(to right,#fff5f0,#fc8d59,#67000d)" },
+  { name:"YlOrRd",  gradient:"linear-gradient(to right,#ffffcc,#fd8d3c,#800026)" },
+  { name:"RdYlGn",  gradient:"linear-gradient(to right,#d73027,#ffffbf,#1a9850)" },
+  { name:"Hot",     gradient:"linear-gradient(to right,#000,#f00,#ff0,#fff)" },
+  { name:"Greens",  gradient:"linear-gradient(to right,#f7fcf5,#74c476,#00441b)" },
+];
 
 // ── CSV parser ────────────────────────────────────────────────
 function parseCSV(text: string): string[][] {
@@ -117,7 +131,7 @@ const shortName = (s: string) => s.replace(/FBE\d+_pass_/i,"").replace(/_\w{8}_\
 function getUniqueSamples(tab: TabDef, rows: string[][]): string[] {
   if (!rows.length) return [];
   if (tab.type === "taxonomy" || tab.type === "taxheatmap") return rows.slice(1).map(r => r[0]);
-  if (tab.type === "alpha") {
+  if (tab.type === "alpha" || tab.type === "multialpha") {
     const sIdx = rows[0].indexOf("Sample");
     return sIdx >= 0 ? rows.slice(1).map(r => r[sIdx]) : rows.slice(1).map(r => r[r.length - 1]);
   }
@@ -334,7 +348,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     if (tab.type === "taxonomy")    return rows[0].slice(1).slice(0, 30);  // taxon names → color assignment
     if (tab.type === "taxheatmap") return rows.slice(1).map(r => r[0]);   // sample names → for color (unused but consistent)
     if (tab.type === "readtrack")  return rows.slice(1).map(r => r[0]);   // sample names → color per line
-    if (tab.type === "alpha")     return rows.length > 1 ? rows.slice(1).map(r => {
+    if (tab.type === "alpha" || tab.type === "multialpha") return rows.length > 1 ? rows.slice(1).map(r => {
       const idx = rows[0].indexOf("Sample"); return idx >= 0 ? r[idx] : r[r.length-1];
     }) : [];
     if (tab.type === "line")      return rows[0]?.slice(1) || [];
@@ -586,52 +600,46 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }};
     }
 
-    // MULTIALPHA — alpha_diversity.csv: all metrics in a 2×2 interactive subplot grid
-    // Columns: Sample, TotalReads, Observed, Chao1, Shannon, Simpson (plus extras like Faith's PD)
+    // MULTIALPHA — alpha_diversity.csv: all metrics in 2×N subplot grid, one scatter trace per sample
+    // Each sample gets a colored dot in each subplot; legend shows sample names → click to change color
     if (activeTab2.type === "multialpha" && rows.length > 1) {
       const ALL_METRICS = ["Observed", "Chao1", "Shannon", "Simpson", "PD"];
       const presentMetrics = ALL_METRICS.filter(m => rows[0].indexOf(m) >= 0);
-      const sIdx = rows[0].indexOf("Sample");
-      const sampleNames = rows.slice(1).map(r => alias(sIdx >= 0 ? r[sIdx] : r[0]));
-      const rawNames    = rows.slice(1).map(r => sIdx >= 0 ? r[sIdx] : r[0]);
+      const sIdx    = rows[0].indexOf("Sample");
+      const rawNames = rows.slice(1).map(r => sIdx >= 0 ? r[sIdx] : r[0]);
 
-      const cols = Math.min(presentMetrics.length, 2);
+      const cols  = Math.min(presentMetrics.length, 2);
       const rowsN = Math.ceil(presentMetrics.length / cols);
-      const gap = 0.06;
+      const gap   = 0.08;
       const cellW = (1 - gap * (cols - 1)) / cols;
-      const cellH = (1 - gap * (rowsN - 1)) / rowsN;
+      const cellH = (1 - gap * (rowsN - 1) - 0.04) / rowsN;
 
       const data: any[] = [];
       const axisLayout: any = {};
       const annotations: any[] = [];
 
       presentMetrics.forEach((metric, mi) => {
-        const mIdx = rows[0].indexOf(metric);
-        const values = rows.slice(1).map(r => num(r[mIdx]));
-        const col = mi % cols;
-        const row = Math.floor(mi / cols);
-
+        const mIdx   = rows[0].indexOf(metric);
+        const col    = mi % cols;
+        const row    = Math.floor(mi / cols);
         const xStart = col * (cellW + gap);
         const yStart = 1 - (row + 1) * cellH - row * gap;
-        const axN = mi === 0 ? "" : String(mi + 1);
+        const axN    = mi === 0 ? "" : String(mi + 1);
 
-        data.push({
-          y: values,
-          x: sampleNames,
-          type: "box",
-          boxpoints: "all",
-          jitter: 0.35,
-          pointpos: 0,
-          name: metric,
-          marker: {
-            size: 7,
-            color: rawNames.map((n, i) => colors[n] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]),
-            opacity: 0.8,
-          },
-          line: { color: "#64748b", width: 1 },
-          fillcolor: "rgba(100,116,139,0.15)",
-          xaxis: `x${axN}`, yaxis: `y${axN}`,
-          showlegend: false,
+        // One trace per sample for this subplot — enables per-sample legend + color picker
+        rawNames.forEach((rawName, si) => {
+          const sampleLabel = alias(rawName);
+          const color = colors[rawName] || DEFAULT_COLORS[si % DEFAULT_COLORS.length];
+          data.push({
+            x: [sampleLabel],
+            y: [num(rows[si + 1][mIdx])],
+            type: "scatter", mode: "markers",
+            name: rawName,              // raw name so legendclick can look up colors[rawName]
+            legendgroup: rawName,       // same group across all subplots → appears once in legend
+            showlegend: mi === 0,       // show legend entry only for first subplot
+            marker: { size: 11, color, opacity: 0.9, line: { width: 1, color: "rgba(255,255,255,0.4)" } },
+            xaxis: `x${axN}`, yaxis: `y${axN}`,
+          });
         });
 
         axisLayout[`xaxis${axN}`] = {
@@ -643,20 +651,23 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           title: { text: metric, font: { size: font.axisSize } },
           showgrid: font.showGrid, gridcolor: "rgba(148,163,184,0.15)",
           zeroline: false, tickfont: { size: font.axisSize - 1 },
+          rangemode: "tozero" as const,
         };
         annotations.push({
           text: `<b>${metric}</b>`,
           xref: "paper", yref: "paper",
           x: xStart + cellW / 2, y: yStart + cellH + 0.01,
           xanchor: "center", yanchor: "bottom", showarrow: false,
-          font: { size: font.axisSize + 1, color: "#e2e8f0" },
+          font: { size: font.axisSize + 1, color: "#475569" },
         });
       });
 
       return { data, layout: {
         ...base, ...axisLayout,
-        annotations, showlegend: false,
-        margin: { l: 60, r: 20, t: 60, b: 20 },
+        annotations, showlegend: true,
+        legend: { font: { size: font.legendSize }, orientation: "v" as const,
+                  x: 1.01, y: 1, xanchor: "left" },
+        margin: { l: 60, r: 140, t: 50, b: 20 },
       }};
     }
 
@@ -667,13 +678,17 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       // Auto-detect: diagonal ≈ 0 → distance matrix; diagonal ≈ 1 → similarity
       const diag0 = zValues[0] ? zValues[0][0] : 1;
       const isDist = diag0 < 0.1;
+      // Use user-selected colorscale if set, otherwise auto-select by type
+      const cs = font.colorscale && font.colorscale !== "Viridis"
+        ? font.colorscale
+        : (isDist ? "Reds" : "Blues");
       const data = [{ z: zValues, x: sampleNames, y: sampleNames,
         type: "heatmap",
-        colorscale: isDist ? "Reds" : "Blues",
+        colorscale: cs,
         zmin: 0, zmax: 1,
         hoverongaps: false,
         colorbar: { title: isDist ? "Distance" : "Similarity" },
-        reversescale: !isDist,  // Blues: dark=high similarity; Reds: dark=high distance (natural)
+        reversescale: cs === "Blues",  // Blues: dark=high similarity
       }];
       return { data, layout: { ...base,
         xaxis: { ...base.xaxis, tickangle: -45, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
@@ -698,7 +713,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const data = [{
         z: sortedZ, x: sortedTaxa, y: sampleNames,
         type: "heatmap" as const,
-        colorscale: "Viridis",
+        colorscale: font.colorscale || "Viridis",
         hoverongaps: false,
         colorbar: { title: "Abundance (%)", thickness: 16 },
         hovertemplate: `<b>%{y}</b><br>${level}: %{x}<br>Abundance: %{z:.2f}%<extra></extra>`,
@@ -1136,6 +1151,23 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                           </div>
                         </div>
                       </div>
+
+                      {/* Colorscale picker — for heatmap and taxheatmap tabs */}
+                      {(activeTab.type === "taxheatmap" || activeTab.type === "heatmap") && (
+                        <div className="prev-cust-section">
+                          <div className="prev-cust-section-title">Color Scale</div>
+                          <div className="prev-cs-grid">
+                            {COLORSCALES.map(cs => (
+                              <button key={cs.name}
+                                className={`prev-cs-btn${(font.colorscale || "Viridis") === cs.name ? " active" : ""}`}
+                                onClick={() => setFont(f => ({ ...f, colorscale: cs.name }))}>
+                                <div className="prev-cs-swatch" style={{ background: cs.gradient }} />
+                                <span>{cs.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       {/* Sample name aliases */}
                       {uniqueSamples.length > 0 && (
