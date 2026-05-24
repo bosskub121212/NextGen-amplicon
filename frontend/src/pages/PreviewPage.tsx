@@ -354,7 +354,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     if (tab.type === "alpha" || tab.type === "multialpha") return rows.length > 1 ? rows.slice(1).map(r => {
       const idx = rows[0].indexOf("Sample"); return idx >= 0 ? r[idx] : r[r.length-1];
     }) : [];
-    if (tab.type === "line")      return rows[0]?.slice(1) || [];
+    if (tab.type === "line")         return rows[0]?.slice(1) || [];
+    if (tab.type === "readtrackbox") return rows[0]?.slice(1) || [];  // step names → color per box
     if (tab.type === "scatter")   return rows.slice(1).map(r => r[0]) || [];
     if (tab.type === "bar")       return rows.slice(1).map(r => shortName(r[0]));
     if (tab.type === "longline")  {
@@ -465,11 +466,12 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const depths  = rows.slice(1).map(r => num(r[0]));
       const samples = rows[0].slice(1);
       const data = samples.map((name, ci) => ({
-        name: shortName(name),
+        name: name,                                   // raw name → legendclick key matches colors[name]
         x: depths,
         y: rows.slice(1).map(r => num(r[ci + 1])),
         type: "scatter", mode: "lines",
         line: { color: colors[name] || DEFAULT_COLORS[ci % DEFAULT_COLORS.length], width: 2 },
+        hovertemplate: `<b>${shortName(name)}</b><br>Depth: %{x:,}<br>OTUs: %{y:,}<extra></extra>`,
       }));
       return { data, layout: { ...base,
         xaxis: { ...base.xaxis, title: { text: "Sequencing Depth" } },
@@ -801,7 +803,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const steps = rows[0].slice(1);
       const data = steps.map((step, si) => {
         const vals = rows.slice(1).map(r => num(r[si + 1]));
-        const color = DEFAULT_COLORS[si % DEFAULT_COLORS.length];
+        const color = colors[step] || DEFAULT_COLORS[si % DEFAULT_COLORS.length];
         return {
           name: step,
           y: vals,
@@ -812,14 +814,16 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           marker: { size: 5, color, opacity: 0.7 },
           line:  { color, width: 1.5 },
           fillcolor: color + "30",
-          showlegend: false,
+          showlegend: true,
+          hovertemplate: `<b>${step}</b><br>Count: %{y:,}<extra></extra>`,
         };
       });
       return { data, layout: { ...base,
         xaxis: { ...base.xaxis, title: { text: "Pipeline Step" } },
         yaxis: { ...base.yaxis, title: { text: "Read Count" }, rangemode: "tozero" as const },
-        showlegend: false,
-        margin: { l: 60, r: 20, t: 60, b: 80 },
+        showlegend: true,
+        legend: { x: 1.01, y: 1, xanchor: "left" as const, font: { size: font.legendSize } },
+        margin: { l: 60, r: 140, t: 60, b: 80 },
       }};
     }
 
