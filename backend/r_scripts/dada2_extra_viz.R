@@ -112,16 +112,35 @@ dada2_extra_viz <- function(out_dir) {
   }, error=function(e) cat("  [skip] Jaccard:", e$message, "\n"))
 
   # ── 4. Rarefaction curves (wide format: Depth, Sample1, Sample2, ...) ───────
-  if (have_vegan && file.exists(asv_file)) tryCatch({
+  # Uses vegan::rarefy if available, otherwise base-R exact formula (no dependency)
+  rarefy_exact <- function(counts, depth) {
+    counts <- as.integer(counts[counts > 0])
+    total  <- sum(counts)
+    if (depth >= total) return(sum(counts > 0))
+    # Hurlbert exact: E[S] = sum(1 - C(N-ni, n)/C(N, n))  via log-gamma
+    log_denom <- lgamma(total - depth + 1) - lgamma(total + 1) + lgamma(depth + 1)
+    expected  <- 0
+    for (ni in counts) {
+      if (ni > total - depth) {
+        expected <- expected + 1          # always present
+      } else {
+        lp_absent <- lgamma(total - ni - depth + 1) - lgamma(total - ni + 1) - log_denom
+        expected  <- expected + (1 - exp(lp_absent))
+      }
+    }
+    round(expected, 1)
+  }
+
+  if (file.exists(asv_file)) tryCatch({
     rar_out <- file.path(out_dir, "rarefaction.csv")
     if (file.exists(rar_out)) {
       cat("  (rarefaction.csv exists — skip)\n")
     } else {
-      if (is.null(asv_t_cached)) {
-        asv_t_cached <- load_asv_matrix()
-      }
-      row_sums  <- rowSums(asv_t_cached)
+      mat <- if (!is.null(asv_t_cached)) asv_t_cached else load_asv_matrix()
+
+      row_sums  <- rowSums(mat)
       min_reads <- min(row_sums)
+      if (min_reads < 10) stop("min sample reads too low for rarefaction")
       n_steps   <- min(25, min_reads)
       depths    <- unique(sort(c(
         round(seq(max(100, min_reads / n_steps), min_reads, length.out=n_steps)),
@@ -129,14 +148,19 @@ dada2_extra_viz <- function(out_dir) {
       depths <- depths[depths >= 1 & depths <= min_reads]
 
       wide_df <- data.frame(Depth=depths)
-      for (i in seq_len(nrow(asv_t_cached))) {
-        sname <- rownames(asv_t_cached)[i]
-        rich  <- suppressWarnings(rarefy(asv_t_cached[i, , drop=FALSE], sample=depths))
-        wide_df[[sname]] <- round(as.numeric(rich), 1)
+      for (i in seq_len(nrow(mat))) {
+        sname <- rownames(mat)[i]
+        if (have_vegan) {
+          rich <- suppressWarnings(rarefy(mat[i, , drop=FALSE], sample=depths))
+          wide_df[[sname]] <- round(as.numeric(rich), 1)
+        } else {
+          wide_df[[sname]] <- sapply(depths, function(d) rarefy_exact(mat[i, ], d))
+        }
       }
       write.csv(wide_df, rar_out, row.names=FALSE)
-      cat("  ✓ rarefaction.csv  (", nrow(asv_t_cached), "samples,",
-          length(depths), "depths, min =", min_reads, "reads)\n")
+      method <- if (have_vegan) "vegan" else "base-R"
+      cat("  ✓ rarefaction.csv  (", nrow(mat), "samples,",
+          length(depths), "depths, min =", min_reads, "reads,", method, ")\n")
     }
   }, error=function(e) cat("  [skip] Rarefaction:", e$message, "\n"))
 
