@@ -409,7 +409,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       // normalize per row (sample) so each sample sums to 100%
       const rowSums = dataRows.map(r => r.slice(1).reduce((s, v) => s + num(v), 0));
       const data = phylumNames.map((taxon, ci) => ({
-        name: taxon || "Unknown",
+        name: alias(taxon) || taxon || "Unknown",
         x: sampleNames,
         y: dataRows.map((row, ri) => {
           const v = num(row[ci + 1]);
