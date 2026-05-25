@@ -1,5 +1,5 @@
 {
-  "version": "2.4.2",
+  "version": "2.4.3",
   "release_date": "2026-05-25",
-  "changelog": "fix: taxonomy legend rename — alias() on taxon names; fix: Tax. Heatmap x-axis (column names) now aliasable via Customize panel — sample IDs in ONT-16S transposed CSV can be renamed"
+  "changelog": "feat: Tax. Heatmap — Top N taxa selector (Top 20/30/50/100/All) in Customize panel; default Top 50 to prevent label overlap"
 }

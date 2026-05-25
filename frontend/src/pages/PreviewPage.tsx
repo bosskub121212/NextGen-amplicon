@@ -89,7 +89,8 @@ interface FontConfig {
   titleText: string; titleBold: boolean; titleItalic: boolean;
   chartType: "bar"|"bar100"|"line"; showGrid: boolean;
   xItalic: boolean; xBold: boolean; xSize: number;
-  colorscale: string;  // for heatmap/taxheatmap
+  colorscale: string;   // for heatmap/taxheatmap
+  taxHeatmapN: number;  // max taxa to show in taxheatmap (0 = all)
 }
 const defaultFont = (): FontConfig => ({
   titleSize: 16, axisSize: 12, legendSize: 11,
@@ -97,6 +98,7 @@ const defaultFont = (): FontConfig => ({
   chartType: "bar", showGrid: true,
   xItalic: false, xBold: false, xSize: 12,
   colorscale: "Viridis",
+  taxHeatmapN: 50,
 });
 
 // ── Colorscale options for heatmap tabs ──────────────────────
@@ -754,7 +756,9 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       // Sort taxa by total abundance (descending) so most dominant are first
       const totals = taxonNames.map((_, ci) =>
         zValues.reduce((s, row) => s + (row[ci] || 0), 0));
-      const order = totals.map((_, i) => i).sort((a, b) => totals[b] - totals[a]);
+      const fullOrder = totals.map((_, i) => i).sort((a, b) => totals[b] - totals[a]);
+      const maxN  = font.taxHeatmapN > 0 ? font.taxHeatmapN : fullOrder.length;
+      const order = fullOrder.slice(0, maxN);
       // Apply alias to column labels too (x-axis) — handles ONT-16S transposed CSV
       // where column headers are sample IDs. Fallback to raw (not shortName) so taxa display unchanged.
       const sortedTaxa   = order.map(i => {
@@ -1277,6 +1281,22 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                                 onClick={() => setFont(f => ({ ...f, colorscale: cs.name }))}>
                                 <div className="prev-cs-swatch" style={{ background: cs.gradient }} />
                                 <span>{cs.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Top N taxa selector — taxheatmap only */}
+                      {activeTab.type === "taxheatmap" && (
+                        <div className="prev-cust-section">
+                          <div className="prev-cust-section-title">Show Top Taxa</div>
+                          <div className="prev-topn-row">
+                            {[20, 30, 50, 100, 0].map(n => (
+                              <button key={n}
+                                className={`prev-topn-btn${(font.taxHeatmapN ?? 50) === n ? " active" : ""}`}
+                                onClick={() => setFont(f => ({ ...f, taxHeatmapN: n }))}>
+                                {n === 0 ? "All" : `Top ${n}`}
                               </button>
                             ))}
                           </div>
