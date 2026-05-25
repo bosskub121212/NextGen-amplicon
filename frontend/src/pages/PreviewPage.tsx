@@ -772,8 +772,10 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         hovertemplate: `<b>%{y}</b><br>${level}: %{x}<br>Abundance: %{z:.2f}%<extra></extra>`,
       }];
       return { data, layout: { ...base,
-        xaxis: { ...base.xaxis, tickangle: -50, title: { text: level } },
-        yaxis: { ...base.yaxis, title: { text: "Sample" }, autorange: "reversed" as const },
+        xaxis: { ...base.xaxis, tickangle: -50, title: { text: level },
+          tickmode: "array", tickvals: sortedTaxa, ticktext: sortedTaxa.map(xFmt) },
+        yaxis: { ...base.yaxis, title: { text: "Sample" }, autorange: "reversed" as const,
+          tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
         margin: { l: 110, r: 60, t: 60, b: 160 },
       }};
     }
