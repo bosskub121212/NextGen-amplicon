@@ -1322,7 +1322,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       {/* ── Floating legend color picker ────────────────────── */}
       {legendPicker && (
         <div className="prev-legend-picker"
-          style={{ left: legendPicker.x + 12, top: legendPicker.y - 8 }}
+          style={{ left: legendPicker.x - 8, top: legendPicker.y - 8, transform: "translateX(-100%)" }}
           onMouseDown={e => e.stopPropagation()}>
           {/* Row 1: color + raw name label + close */}
           <div className="prev-lp-row">
