@@ -333,11 +333,12 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     const handler = (data: any) => {
       const traceName = data.data?.[data.curveNumber]?.name;
       if (!traceName) return;
-      // Try data.event first; fall back to tracked mouse position
+      // Reverse-lookup: if trace shows an alias, find the underlying raw name for colors/rename
+      const rawName = Object.entries(sampleAliases).find(([, v]) => v === traceName)?.[0] ?? traceName;
       const ex = (data.event as any)?.clientX ?? lastMousePos.current.x;
       const ey = (data.event as any)?.clientY ?? lastMousePos.current.y;
       const fallback = DEFAULT_COLORS[data.curveNumber % DEFAULT_COLORS.length];
-      setLegendPicker({ name: traceName, x: ex, y: ey, color: colors[traceName] || fallback });
+      setLegendPicker({ name: rawName, x: ex, y: ey, color: colors[rawName] || fallback });
       return false; // prevents Plotly from toggling trace visibility
     };
     el.on?.("plotly_legendclick", handler);
@@ -466,12 +467,12 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const depths  = rows.slice(1).map(r => num(r[0]));
       const samples = rows[0].slice(1);
       const data = samples.map((name, ci) => ({
-        name: name,                                   // raw name → legendclick key matches colors[name]
+        name: alias(name),                            // show alias in legend; legendclick reverse-lookup finds raw
         x: depths,
         y: rows.slice(1).map(r => num(r[ci + 1])),
         type: "scatter", mode: "lines",
         line: { color: colors[name] || DEFAULT_COLORS[ci % DEFAULT_COLORS.length], width: 2 },
-        hovertemplate: `<b>${shortName(name)}</b><br>Depth: %{x:,}<br>OTUs: %{y:,}<extra></extra>`,
+        hovertemplate: `<b>${alias(name)}</b><br>Depth: %{x:,}<br>OTUs: %{y:,}<extra></extra>`,
       }));
       return { data, layout: { ...base,
         xaxis: { ...base.xaxis, title: { text: "Sequencing Depth" } },
@@ -522,7 +523,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           const color = colors[rawName] || DEFAULT_COLORS[i % DEFAULT_COLORS.length];
           const label = alias(rawName);
           return {
-            name: rawName,          // raw name → legendclick key matches colors[rawName]
+            name: label,            // alias shown in legend; legendclick reverse-lookup finds rawName
             x: [xVals[i]],
             y: [yVals[i]],
             mode: "markers+text", type: "scatter",
@@ -673,8 +674,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
             textposition: "top center",
             textfont: { size: 8, color: "#475569" },
             hovertemplate: `<b>${shortLabel}</b><br>${metric}: %{y:.4f}<extra></extra>`,
-            name: rawName,              // raw name so legendclick can look up colors[rawName]
-            legendgroup: rawName,       // same group across all subplots → appears once in legend
+            name: sampleLabel,          // alias shown in legend; legendclick reverse-lookup finds rawName
+            legendgroup: rawName,       // group key stays as rawName across all subplots
             showlegend: mi === 0,       // show legend entry only for first subplot
             marker: { size: 10, color, opacity: 0.9, line: { width: 1, color: "rgba(255,255,255,0.4)" } },
             xaxis: `x${axN}`, yaxis: `y${axN}`,
@@ -1350,6 +1351,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
               placeholder={legendPicker.name}
               value={sampleAliases[legendPicker.name] ?? ""}
               onChange={e => setSampleAliases(prev => ({ ...prev, [legendPicker.name]: e.target.value }))}
+              onKeyDown={e => { if (e.key === "Enter") setLegendPicker(null); }}
+              title="กด Enter เพื่อปิด • ชื่อบันทึกอัตโนมัติ"
             />
           </div>
         </div>
