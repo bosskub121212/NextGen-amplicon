@@ -483,33 +483,59 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     // Columns: Sample, PC1/NMDS1, PC2/NMDS2[, PC3][, Group, PC1_var, PC2_var, Stress]
     if (activeTab2.type === "scatter" && rows.length > 1) {
       const hdr = rows[0];
-      const axis1Name = hdr[1] || "PC1";   // e.g. "PC1" or "NMDS1"
+      const axis1Name = hdr[1] || "PC1";
       const axis2Name = hdr[2] || "PC2";
-      const varIdx1 = hdr.indexOf(axis1Name + "_var");
-      const varIdx2 = hdr.indexOf(axis2Name + "_var");
-      const grpIdx   = hdr.indexOf("Group");
+      const varIdx1   = hdr.indexOf(axis1Name + "_var");
+      const varIdx2   = hdr.indexOf(axis2Name + "_var");
+      const grpIdx    = hdr.indexOf("Group");
       const stressIdx = hdr.indexOf("Stress");
-      const var1 = varIdx1 >= 0 ? num(rows[1][varIdx1]) : 0;
-      const var2 = varIdx2 >= 0 ? num(rows[1][varIdx2]) : 0;
+      const var1   = varIdx1 >= 0 ? num(rows[1][varIdx1]) : 0;
+      const var2   = varIdx2 >= 0 ? num(rows[1][varIdx2]) : 0;
       const stress = stressIdx >= 0 ? num(rows[1][stressIdx]) : 0;
-      const samples = rows.slice(1).map(r => alias(r[0]));
-      const xVals = rows.slice(1).map(r => num(r[1]));
-      const yVals = rows.slice(1).map(r => num(r[2]));
-      const groups = grpIdx >= 0 ? rows.slice(1).map(r => r[grpIdx] || "no group") : null;
-      const data = groups
-        ? Array.from(new Set(groups)).map(g => {
-            const idx = groups.map((gg,i) => gg === g ? i : -1).filter(i => i >= 0);
-            return {
-              name: g, x: idx.map(i => xVals[i]), y: idx.map(i => yVals[i]),
-              mode: "markers+text", type: "scatter",
-              text: idx.map(i => samples[i]), textposition: "top center",
-              marker: { size: 12, color: colors[g] || DEFAULT_COLORS[Array.from(new Set(groups)).indexOf(g) % DEFAULT_COLORS.length] },
-            };
-          })
-        : [{ x: xVals, y: yVals, mode: "markers+text", type: "scatter",
-             text: samples, textposition: "top center",
-             marker: { size: 12, color: samples.map((s,i) => colors[s] || DEFAULT_COLORS[i % DEFAULT_COLORS.length]) },
-           }];
+      const rawNames  = rows.slice(1).map(r => r[0]);          // raw sample names
+      const xVals     = rows.slice(1).map(r => num(r[1]));
+      const yVals     = rows.slice(1).map(r => num(r[2]));
+      const groups    = grpIdx >= 0 ? rows.slice(1).map(r => r[grpIdx] || "no group") : null;
+
+      let data: any[];
+      if (groups) {
+        // Group mode: 1 trace per group, color by group name
+        const uniqGroups = Array.from(new Set(groups));
+        data = uniqGroups.map(g => {
+          const idx = groups.map((gg, i) => gg === g ? i : -1).filter(i => i >= 0);
+          const color = colors[g] || DEFAULT_COLORS[uniqGroups.indexOf(g) % DEFAULT_COLORS.length];
+          return {
+            name: g,
+            x: idx.map(i => xVals[i]),
+            y: idx.map(i => yVals[i]),
+            mode: "markers+text", type: "scatter",
+            text: idx.map(i => alias(rawNames[i])),
+            textposition: "top center",
+            textfont: { size: 9, color: "#475569" },
+            hovertemplate: `<b>%{text}</b><br>${axis1Name}: %{x:.4f}<br>${axis2Name}: %{y:.4f}<extra></extra>`,
+            marker: { size: 12, color },
+          };
+        });
+      } else {
+        // No group: 1 trace per sample → legend shows each sample with color + click to rename/recolor
+        data = rawNames.map((rawName, i) => {
+          const color = colors[rawName] || DEFAULT_COLORS[i % DEFAULT_COLORS.length];
+          const label = alias(rawName);
+          return {
+            name: rawName,          // raw name → legendclick key matches colors[rawName]
+            x: [xVals[i]],
+            y: [yVals[i]],
+            mode: "markers+text", type: "scatter",
+            text: [shortName(label)],
+            textposition: "top center",
+            textfont: { size: 9, color: "#475569" },
+            hovertemplate: `<b>${label}</b><br>${axis1Name}: %{x:.4f}<br>${axis2Name}: %{y:.4f}<extra></extra>`,
+            marker: { size: 12, color, line: { width: 1, color: "rgba(255,255,255,0.4)" } },
+            showlegend: true,
+          };
+        });
+      }
+
       const xLabel = var1 > 0 ? `${axis1Name} [${var1}%]` : axis1Name;
       const yLabel = var2 > 0 ? `${axis2Name} [${var2}%]` : axis2Name;
       const annotations = stress > 0
@@ -520,6 +546,9 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       return { data, layout: { ...base,
         xaxis: { ...base.xaxis, title: { text: xLabel }, zeroline: true },
         yaxis: { ...base.yaxis, title: { text: yLabel }, zeroline: true },
+        showlegend: true,
+        legend: { x: 1.01, y: 1, xanchor: "left" as const, font: { size: font.legendSize } },
+        margin: { ...((base as any).margin || {}), r: 150 },
         annotations,
       }};
     }
