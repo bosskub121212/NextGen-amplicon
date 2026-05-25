@@ -77,12 +77,20 @@ dada2_extra_viz <- function(out_dir) {
     }
   }, error=function(e) cat("  [skip] NMDS Bray:", e$message, "\n"))
 
+  # ── Helper: load asv_table.csv → samples × ASVs matrix (drops "sequence" col)
+  load_asv_matrix <- function() {
+    raw <- read.csv(asv_file, check.names=FALSE)
+    seq_col <- which(colnames(raw) == "sequence")
+    if (length(seq_col) > 0) raw <- raw[, -seq_col, drop=FALSE]
+    mat <- t(as.matrix(raw))  # samples × ASVs
+    storage.mode(mat) <- "numeric"
+    mat
+  }
+
   # ── 3. Jaccard heatmap + NMDS Jaccard ───────────────────────────────────────
   asv_t_cached <- NULL
   if (have_vegan && file.exists(asv_file)) tryCatch({
-    asv_raw      <- read.csv(asv_file, check.names=FALSE)
-    asv_t_cached <- t(as.matrix(asv_raw))
-    rownames(asv_t_cached) <- colnames(asv_raw)
+    asv_t_cached <- load_asv_matrix()
 
     jac_out <- file.path(out_dir, "jaccard_heatmap.csv")
     if (file.exists(jac_out)) {
@@ -110,9 +118,7 @@ dada2_extra_viz <- function(out_dir) {
       cat("  (rarefaction.csv exists — skip)\n")
     } else {
       if (is.null(asv_t_cached)) {
-        asv_raw      <- read.csv(asv_file, check.names=FALSE)
-        asv_t_cached <- t(as.matrix(asv_raw))
-        rownames(asv_t_cached) <- colnames(asv_raw)
+        asv_t_cached <- load_asv_matrix()
       }
       row_sums  <- rowSums(asv_t_cached)
       min_reads <- min(row_sums)
