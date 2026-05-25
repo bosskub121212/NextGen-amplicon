@@ -1464,11 +1464,26 @@ def rerun_visualization(job_id: str):
 
     try:
         result = _sp.run(cmd, capture_output=True, text=True, timeout=300)
-        return {"ok": True, "stdout": result.stdout[-3000:], "stderr": result.stderr[-2000:]}
     except _sp.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Visualization timed out (>5 min)")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    # ── Also run dada2_extra_viz.R directly for any job with asv_table.csv ──
+    # This generates rarefaction.csv, pca_scores.csv, etc. for DADA2 16S jobs
+    # even if viz_pipeline.R exited early (no QIIME2 artifacts present).
+    extra_viz_script = _BACKEND_DIR / "r_scripts" / "run_extra_viz.R"
+    asv_table        = job_dir / "asv_table.csv"
+    if extra_viz_script.exists() and asv_table.exists():
+        try:
+            _sp.run(
+                [rscript, str(extra_viz_script), str(job_dir)],
+                capture_output=True, text=True, timeout=180
+            )
+        except Exception:
+            pass  # non-fatal — extra viz is best-effort
+
+    return {"ok": True, "stdout": result.stdout[-3000:], "stderr": result.stderr[-2000:]}
 
 @app.post("/results/{job_id}/preview-charts")
 async def save_preview_charts(job_id: str, request: Request):
