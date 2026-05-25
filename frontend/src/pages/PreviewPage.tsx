@@ -89,8 +89,8 @@ interface FontConfig {
   titleText: string; titleBold: boolean; titleItalic: boolean;
   chartType: "bar"|"bar100"|"line"; showGrid: boolean;
   xItalic: boolean; xBold: boolean; xSize: number;
-  colorscale: string;   // for heatmap/taxheatmap
-  taxHeatmapN: number;  // max taxa to show in taxheatmap (0 = all)
+  colorscale: string;  // for heatmap/taxheatmap
+  topNTaxa: number;    // max taxa to show in taxonomy/taxheatmap (0 = all)
 }
 const defaultFont = (): FontConfig => ({
   titleSize: 16, axisSize: 12, legendSize: 11,
@@ -98,7 +98,7 @@ const defaultFont = (): FontConfig => ({
   chartType: "bar", showGrid: true,
   xItalic: false, xBold: false, xSize: 12,
   colorscale: "Viridis",
-  taxHeatmapN: 50,
+  topNTaxa: 50,
 });
 
 // ── Colorscale options for heatmap tabs ──────────────────────
@@ -412,11 +412,31 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
     // TAXONOMY — stacked bar: X = samples, series = taxa (phylum/genus/etc.)
     if (activeTab2.type === "taxonomy" && rows.length > 1) {
-      const phylumNames = rows[0].slice(1);          // column headers = taxa names
-      const dataRows    = rows.slice(1);             // each row = one sample
+      const allCols  = rows[0].slice(1);   // column headers
+      const allRows  = rows.slice(1);      // data rows
+      const maxTaxa  = (font.topNTaxa ?? 50) > 0 ? (font.topNTaxa ?? 50) : Infinity;
+      const nCols    = allCols.length;
+      const nDataRows = allRows.length;
+      // Detect orientation: many cols = taxa-as-columns (regular 16S); many rows = taxa-as-rows (ONT-16S)
+      const taxaAsCols = nCols >= nDataRows;
+
+      let phylumNames: string[];
+      let dataRows: string[][];
+      if (taxaAsCols) {
+        // Regular 16S: limit columns (taxa) by total abundance
+        const colTotals = allCols.map((_, ci) => allRows.reduce((s, r) => s + num(r[ci + 1]), 0));
+        const topCols = colTotals.map((_, i) => i).sort((a, b) => colTotals[b] - colTotals[a]).slice(0, maxTaxa);
+        phylumNames = topCols.map(i => allCols[i]);
+        dataRows    = allRows.map(row => [row[0], ...topCols.map(i => row[i + 1])]);
+      } else {
+        // ONT-16S transposed: limit rows (taxa) by total abundance
+        const rowTotals = allRows.map(row => row.slice(1).reduce((s, v) => s + num(v), 0));
+        const topRows = rowTotals.map((_, i) => i).sort((a, b) => rowTotals[b] - rowTotals[a]).slice(0, maxTaxa);
+        phylumNames = allCols;          // cols = sample IDs (few)
+        dataRows    = topRows.map(i => allRows[i]);
+      }
       const sampleNames = dataRows.map(r => alias(r[0]));
       const is100 = font.chartType === "bar100";
-      // normalize per row (sample) so each sample sums to 100%
       const rowSums = dataRows.map(r => r.slice(1).reduce((s, v) => s + num(v), 0));
       const data = phylumNames.map((taxon, ci) => ({
         name: alias(taxon) || taxon || "Unknown",
@@ -747,28 +767,43 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }};
     }
 
-    // TAXHEATMAP — taxonomy_phylum/family/genus.csv: rows=samples, cols=taxa
-    // Renders as sample × taxon abundance heatmap (interactive, editable)
+    // TAXHEATMAP — taxonomy_phylum/family/genus.csv
+    // Detect orientation: many cols → taxa-as-cols (regular 16S); many rows → taxa-as-rows (ONT-16S)
     if (activeTab2.type === "taxheatmap" && rows.length > 1) {
-      const taxonNames  = rows[0].slice(1);
-      const sampleNames = rows.slice(1).map(r => alias(r[0]));
-      const zValues     = rows.slice(1).map(r => r.slice(1).map(v => num(v)));
-      // Sort taxa by total abundance (descending) so most dominant are first
-      const totals = taxonNames.map((_, ci) =>
-        zValues.reduce((s, row) => s + (row[ci] || 0), 0));
-      const fullOrder = totals.map((_, i) => i).sort((a, b) => totals[b] - totals[a]);
-      const maxN  = font.taxHeatmapN > 0 ? font.taxHeatmapN : fullOrder.length;
-      const order = fullOrder.slice(0, maxN);
-      // Apply alias to column labels too (x-axis) — handles ONT-16S transposed CSV
-      // where column headers are sample IDs. Fallback to raw (not shortName) so taxa display unchanged.
-      const sortedTaxa   = order.map(i => {
-        const raw = taxonNames[i];
+      const allColNames = rows[0].slice(1);
+      const allDataRows = rows.slice(1);
+      const nCols = allColNames.length;
+      const nRowItems = allDataRows.length;
+      const maxN = (font.topNTaxa ?? 50) > 0 ? (font.topNTaxa ?? 50) : Infinity;
+      const taxaAsCols = nCols >= nRowItems;
+
+      // Col totals (for sorting/limiting columns)
+      const colTotals = allColNames.map((_, ci) =>
+        allDataRows.reduce((s, row) => s + num(row[ci + 1]), 0));
+      const sortedColIdx = colTotals.map((_, i) => i).sort((a, b) => colTotals[b] - colTotals[a]);
+
+      // Row totals (for sorting/limiting rows)
+      const rowTotals = allDataRows.map(row => row.slice(1).reduce((s, v) => s + num(v), 0));
+      const sortedRowIdx = rowTotals.map((_, i) => i).sort((a, b) => rowTotals[b] - rowTotals[a]);
+
+      // Choose which dimension to limit (the taxa dimension)
+      const colIdx = taxaAsCols ? sortedColIdx.slice(0, maxN) : sortedColIdx;
+      const rowIdx = taxaAsCols ? sortedRowIdx : sortedRowIdx.slice(0, maxN);
+
+      // Build display labels with alias
+      const displayXLabels = colIdx.map(i => {
+        const raw = allColNames[i];
         return sampleAliases[raw] || sampleAliases[shortName(raw)] || raw;
       });
-      const sortedZ      = zValues.map(row => order.map(i => row[i]));
+      const displayYLabels = rowIdx.map(i => {
+        const raw = allDataRows[i][0];
+        return sampleAliases[raw] || sampleAliases[shortName(raw)] || shortName(raw);
+      });
+      const displayZ = rowIdx.map(ri => colIdx.map(ci => num(allDataRows[ri][ci + 1])));
+
       const level = activeTab2.label.replace("Tax. Heatmap ", "");
       const data = [{
-        z: sortedZ, x: sortedTaxa, y: sampleNames,
+        z: displayZ, x: displayXLabels, y: displayYLabels,
         type: "heatmap" as const,
         colorscale: font.colorscale || "Viridis",
         hoverongaps: false,
@@ -776,11 +811,12 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         hovertemplate: `<b>%{y}</b><br>${level}: %{x}<br>Abundance: %{z:.2f}%<extra></extra>`,
       }];
       return { data, layout: { ...base,
-        xaxis: { ...base.xaxis, tickangle: -50, title: { text: level },
-          tickmode: "array", tickvals: sortedTaxa, ticktext: sortedTaxa.map(xFmt) },
-        yaxis: { ...base.yaxis, title: { text: "Sample" }, autorange: "reversed" as const,
-          tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
-        margin: { l: 110, r: 60, t: 60, b: 160 },
+        xaxis: { ...base.xaxis, tickangle: -50, title: { text: taxaAsCols ? level : "Sample" },
+          tickmode: "array", tickvals: displayXLabels, ticktext: displayXLabels.map(xFmt) },
+        yaxis: { ...base.yaxis, title: { text: taxaAsCols ? "Sample" : level },
+          autorange: "reversed" as const,
+          tickmode: "array", tickvals: displayYLabels, ticktext: displayYLabels.map(xFmt) },
+        margin: { l: 130, r: 60, t: 60, b: 160 },
       }};
     }
 
@@ -1287,15 +1323,15 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                         </div>
                       )}
 
-                      {/* Top N taxa selector — taxheatmap only */}
-                      {activeTab.type === "taxheatmap" && (
+                      {/* Top N taxa selector — taxonomy bar charts + taxheatmap */}
+                      {(activeTab.type === "taxheatmap" || activeTab.type === "taxonomy") && (
                         <div className="prev-cust-section">
                           <div className="prev-cust-section-title">Show Top Taxa</div>
                           <div className="prev-topn-row">
                             {[20, 30, 50, 100, 0].map(n => (
                               <button key={n}
-                                className={`prev-topn-btn${(font.taxHeatmapN ?? 50) === n ? " active" : ""}`}
-                                onClick={() => setFont(f => ({ ...f, taxHeatmapN: n }))}>
+                                className={`prev-topn-btn${(font.topNTaxa ?? 50) === n ? " active" : ""}`}
+                                onClick={() => setFont(f => ({ ...f, topNTaxa: n }))}>
                                 {n === 0 ? "All" : `Top ${n}`}
                               </button>
                             ))}

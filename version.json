@@ -1,5 +1,5 @@
 {
   "version": "2.4.3",
   "release_date": "2026-05-25",
-  "changelog": "feat: Tax. Heatmap — Top N taxa selector (Top 20/30/50/100/All) in Customize panel; default Top 50 to prevent label overlap"
+  "changelog": "feat: Show Top Taxa selector (Top 20/30/50/100/All) for Taxonomy bar charts + Tax. Heatmap; auto-detects ONT-16S transposed CSV orientation to limit correct axis"
 }
