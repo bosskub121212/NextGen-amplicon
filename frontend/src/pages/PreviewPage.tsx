@@ -172,7 +172,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [sampleAliases, setSampleAliases] = useState<Record<string, string>>({});
   const [knownSamples, setKnownSamples]   = useState<string[]>([]);  // persists across PDF tabs
   const [showCustomize, setShowCustomize] = useState(true);
-  const [legendPicker, setLegendPicker]   = useState<{name:string; x:number; y:number; color:string} | null>(null);
+  const [legendPicker, setLegendPicker]   = useState<{name:string; x:number; y:number; color:string; curveNumber:number} | null>(null);
   const lastMousePos = useRef({ x: 100, y: 100 });
   const [loading, setLoading]     = useState(false);
   const [pdfPanel, setPdfPanel]   = useState(false);
@@ -348,7 +348,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const ex = (data.event as any)?.clientX ?? lastMousePos.current.x;
       const ey = (data.event as any)?.clientY ?? lastMousePos.current.y;
       const fallback = DEFAULT_COLORS[data.curveNumber % DEFAULT_COLORS.length];
-      setLegendPicker({ name: rawName, x: ex, y: ey, color: colors[rawName] || fallback });
+      setLegendPicker({ name: rawName, x: ex, y: ey, color: colors[rawName] || fallback, curveNumber: data.curveNumber });
       return false; // prevents Plotly from toggling trace visibility
     };
     el.on?.("plotly_legendclick", handler);
@@ -1405,6 +1405,19 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                 const c = e.target.value;
                 setLegendPicker(s => s ? { ...s, color: c } : null);
                 setColors(prev => ({ ...prev, [legendPicker.name]: c }));
+                // Plotly.react sometimes misses marker.color diffs — use restyle for immediate update
+                if (chartRef.current && legendPicker.curveNumber !== undefined) {
+                  try {
+                    const cn = legendPicker.curveNumber;
+                    // Update marker.color (bar/scatter/box points), line.color (line/box border),
+                    // and fillcolor (box fill = color+"30" alpha)
+                    (window as any).Plotly?.restyle(chartRef.current, {
+                      'marker.color': c,
+                      'line.color':   c,
+                      'fillcolor':    c + "30",
+                    }, [cn]);
+                  } catch {}
+                }
               }}
             />
             <span className="prev-lp-name" title={legendPicker.name}>

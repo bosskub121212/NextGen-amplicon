@@ -1,5 +1,5 @@
 {
-  "version": "2.4.4",
+  "version": "2.4.5",
   "release_date": "2026-05-25",
-  "changelog": "fix: Re-run Viz now generates rarefaction.csv for regular 16S DADA2 jobs via run_extra_viz.R; feat: Top N taxa selector for Taxonomy + Tax.Heatmap tabs"
+  "changelog": "fix: legend color picker not updating chart — use Plotly.restyle() for immediate marker.color+line.color+fillcolor update across all chart types"
 }
