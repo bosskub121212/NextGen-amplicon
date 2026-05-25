@@ -133,7 +133,15 @@ const shortName = (s: string) => s.replace(/FBE\d+_pass_/i,"").replace(/_\w{8}_\
 // ── Get raw sample names for x-axis (used in customize panel) ─
 function getUniqueSamples(tab: TabDef, rows: string[][]): string[] {
   if (!rows.length) return [];
-  if (tab.type === "taxonomy" || tab.type === "taxheatmap") return rows.slice(1).map(r => r[0]);
+  if (tab.type === "taxonomy") return rows.slice(1).map(r => r[0]);
+  if (tab.type === "taxheatmap") {
+    // Return BOTH col headers (x-axis) and row labels (y-axis) — either could be sample IDs
+    // depending on CSV orientation (regular 16S vs ONT-16S transposed)
+    const colNames = rows[0].slice(1);
+    const rowNames = rows.slice(1).map(r => r[0]);
+    return Array.from(new Set([...colNames, ...rowNames]));
+  }
+  if (tab.type === "heatmap") return rows.slice(1).map(r => r[0]);  // symmetric matrix, row=col names
   if (tab.type === "alpha" || tab.type === "multialpha") {
     const sIdx = rows[0].indexOf("Sample");
     return sIdx >= 0 ? rows.slice(1).map(r => r[sIdx]) : rows.slice(1).map(r => r[r.length - 1]);
@@ -747,7 +755,12 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const totals = taxonNames.map((_, ci) =>
         zValues.reduce((s, row) => s + (row[ci] || 0), 0));
       const order = totals.map((_, i) => i).sort((a, b) => totals[b] - totals[a]);
-      const sortedTaxa   = order.map(i => taxonNames[i]);
+      // Apply alias to column labels too (x-axis) — handles ONT-16S transposed CSV
+      // where column headers are sample IDs. Fallback to raw (not shortName) so taxa display unchanged.
+      const sortedTaxa   = order.map(i => {
+        const raw = taxonNames[i];
+        return sampleAliases[raw] || sampleAliases[shortName(raw)] || raw;
+      });
       const sortedZ      = zValues.map(row => order.map(i => row[i]));
       const level = activeTab2.label.replace("Tax. Heatmap ", "");
       const data = [{

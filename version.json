@@ -1,5 +1,5 @@
 {
   "version": "2.4.2",
   "release_date": "2026-05-25",
-  "changelog": "fix: taxonomy legend rename — alias() applied to taxon names so ONT-16S transposed CSV sample names in legend respond to rename popup"
+  "changelog": "fix: taxonomy legend rename — alias() on taxon names; fix: Tax. Heatmap x-axis (column names) now aliasable via Customize panel — sample IDs in ONT-16S transposed CSV can be renamed"
 }
