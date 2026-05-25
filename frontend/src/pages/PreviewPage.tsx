@@ -1294,21 +1294,35 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         <div className="prev-legend-picker"
           style={{ left: legendPicker.x + 12, top: legendPicker.y - 8 }}
           onMouseDown={e => e.stopPropagation()}>
-          <input
-            type="color"
-            className="prev-lp-swatch"
-            autoFocus
-            value={legendPicker.color}
-            onChange={e => {
-              const c = e.target.value;
-              setLegendPicker(s => s ? { ...s, color: c } : null);
-              setColors(prev => ({ ...prev, [legendPicker.name]: c }));
-            }}
-          />
-          <span className="prev-lp-name" title={legendPicker.name}>
-            {legendPicker.name.length > 26 ? legendPicker.name.slice(0, 26) + "…" : legendPicker.name}
-          </span>
-          <button className="prev-lp-close" onClick={() => setLegendPicker(null)}>✕</button>
+          {/* Row 1: color + raw name label + close */}
+          <div className="prev-lp-row">
+            <input
+              type="color"
+              className="prev-lp-swatch"
+              value={legendPicker.color}
+              onChange={e => {
+                const c = e.target.value;
+                setLegendPicker(s => s ? { ...s, color: c } : null);
+                setColors(prev => ({ ...prev, [legendPicker.name]: c }));
+              }}
+            />
+            <span className="prev-lp-name" title={legendPicker.name}>
+              {legendPicker.name.length > 28 ? legendPicker.name.slice(0, 28) + "…" : legendPicker.name}
+            </span>
+            <button className="prev-lp-close" onClick={() => setLegendPicker(null)}>✕</button>
+          </div>
+          {/* Row 2: rename input */}
+          <div className="prev-lp-row">
+            <span className="prev-lp-label">Name</span>
+            <input
+              type="text"
+              className="prev-lp-rename"
+              autoFocus
+              placeholder={legendPicker.name}
+              value={sampleAliases[legendPicker.name] ?? ""}
+              onChange={e => setSampleAliases(prev => ({ ...prev, [legendPicker.name]: e.target.value }))}
+            />
+          </div>
         </div>
       )}
     </div>

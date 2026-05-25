@@ -114,18 +114,19 @@ dada2_extra_viz <- function(out_dir) {
   # ── 4. Rarefaction curves (wide format: Depth, Sample1, Sample2, ...) ───────
   # Uses vegan::rarefy if available, otherwise base-R exact formula (no dependency)
   rarefy_exact <- function(counts, depth) {
+    # Hurlbert (1971) exact rarefaction: E[S] = sum_i(1 - C(N-ni, n) / C(N, n))
     counts <- as.integer(counts[counts > 0])
     total  <- sum(counts)
     if (depth >= total) return(sum(counts > 0))
-    # Hurlbert exact: E[S] = sum(1 - C(N-ni, n)/C(N, n))  via log-gamma
-    log_denom <- lgamma(total - depth + 1) - lgamma(total + 1) + lgamma(depth + 1)
+    # log C(N, n) = lgamma(N+1) - lgamma(n+1) - lgamma(N-n+1)
+    log_CN_n  <- lgamma(total + 1) - lgamma(depth + 1) - lgamma(total - depth + 1)
     expected  <- 0
     for (ni in counts) {
       if (ni > total - depth) {
-        expected <- expected + 1          # always present
+        expected <- expected + 1          # ASV always sampled
       } else {
-        lp_absent <- lgamma(total - ni - depth + 1) - lgamma(total - ni + 1) - log_denom
-        expected  <- expected + (1 - exp(lp_absent))
+        log_CNni_n <- lgamma(total - ni + 1) - lgamma(depth + 1) - lgamma(total - ni - depth + 1)
+        expected   <- expected + (1 - exp(log_CNni_n - log_CN_n))
       }
     }
     round(expected, 1)

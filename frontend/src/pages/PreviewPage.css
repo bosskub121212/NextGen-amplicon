@@ -395,29 +395,51 @@
   position: fixed;
   z-index: 9999;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   background: #1e293b;
   border: 1px solid #475569;
   border-radius: 10px;
-  padding: 7px 12px;
+  padding: 8px 12px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.55);
   pointer-events: all;
+  min-width: 260px;
+}
+.prev-lp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .prev-lp-swatch {
-  width: 36px; height: 36px;
+  width: 32px; height: 32px;
   border: none; border-radius: 6px; cursor: pointer;
-  padding: 2px; background: transparent;
+  padding: 2px; background: transparent; flex-shrink: 0;
 }
 .prev-lp-name {
-  font-size: 12px; color: #e2e8f0;
-  max-width: 200px; overflow: hidden;
+  font-size: 12px; color: #94a3b8;
+  flex: 1; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
 }
+.prev-lp-label {
+  font-size: 11px; color: #64748b;
+  flex-shrink: 0; width: 36px;
+}
+.prev-lp-rename {
+  flex: 1;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+}
+.prev-lp-rename:focus { border-color: #7c3aed; }
+.prev-lp-rename::placeholder { color: #475569; font-style: italic; }
 .prev-lp-close {
   background: none; border: none; color: #64748b;
   font-size: 14px; cursor: pointer; padding: 2px 4px;
-  border-radius: 4px; line-height: 1;
+  border-radius: 4px; line-height: 1; flex-shrink: 0;
 }
 .prev-lp-close:hover { color: #e2e8f0; background: rgba(255,255,255,0.08); }
 
