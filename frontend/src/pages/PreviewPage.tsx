@@ -347,8 +347,10 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const rawName = Object.entries(sampleAliases).find(([, v]) => v === traceName)?.[0] ?? traceName;
       const ex = (data.event as any)?.clientX ?? lastMousePos.current.x;
       const ey = (data.event as any)?.clientY ?? lastMousePos.current.y;
-      const fallback = DEFAULT_COLORS[data.curveNumber % DEFAULT_COLORS.length];
-      setLegendPicker({ name: rawName, x: ex, y: ey, color: colors[rawName] || fallback, curveNumber: data.curveNumber });
+      // Sanitise curveNumber (Plotly can return undefined/NaN in some layouts)
+      const cn = Number.isFinite(data.curveNumber) ? data.curveNumber : 0;
+      const fallback = DEFAULT_COLORS[cn % DEFAULT_COLORS.length];
+      setLegendPicker({ name: rawName, x: ex, y: ey, color: colors[rawName] || fallback, curveNumber: cn });
       return false; // prevents Plotly from toggling trace visibility
     };
     el.on?.("plotly_legendclick", handler);
@@ -1403,20 +1405,35 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
               value={legendPicker.color}
               onChange={e => {
                 const c = e.target.value;
+                const cn = legendPicker.curveNumber;
+                const name = legendPicker.name;
                 setLegendPicker(s => s ? { ...s, color: c } : null);
-                setColors(prev => ({ ...prev, [legendPicker.name]: c }));
-                // Plotly.react sometimes misses marker.color diffs — use restyle for immediate update
-                if (chartRef.current && legendPicker.curveNumber !== undefined) {
+                setColors(prev => ({ ...prev, [name]: c }));
+                // ── Immediate chart update (bypasses React async state + Plotly.react diff issues) ──
+                // Strategy: read Plotly's own stored trace data, patch the color, then react.
+                // This is more reliable than restyle alone (which can silently fail for ONT-16S
+                // stacked bars with long x-arrays, or when fillcolor format is rejected).
+                const el = chartRef.current as any;
+                if (el && Number.isFinite(cn)) {
                   try {
-                    const cn = legendPicker.curveNumber;
-                    // Update marker.color (bar/scatter/box points), line.color (line/box border),
-                    // and fillcolor (box fill = color+"30" alpha)
-                    (window as any).Plotly?.restyle(chartRef.current, {
-                      'marker.color': c,
-                      'line.color':   c,
-                      'fillcolor':    c + "30",
-                    }, [cn]);
-                  } catch {}
+                    const elData: any[] = el.data || [];
+                    if (elData.length > cn) {
+                      const newData = elData.map((trace: any, i: number) =>
+                        i === cn ? {
+                          ...trace,
+                          marker:    { ...trace.marker,    color: c },
+                          line:      { ...(trace.line || {}), color: c },
+                          fillcolor: c + "40",   // for area / box traces
+                        } : trace
+                      );
+                      Plotly.react(el, newData, el.layout, { responsive: true });
+                    }
+                  } catch {
+                    // Fallback: restyle (fast but less reliable for some chart types)
+                    try {
+                      Plotly.restyle(el, { 'marker.color': c, 'line.color': c }, [cn]);
+                    } catch {}
+                  }
                 }
               }}
             />

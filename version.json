@@ -1,5 +1,5 @@
 {
-  "version": "2.4.5",
+  "version": "2.4.6",
   "release_date": "2026-05-25",
-  "changelog": "fix: legend color picker not updating chart — use Plotly.restyle() for immediate marker.color+line.color+fillcolor update across all chart types"
+  "changelog": "fix: legend color picker not updating chart in ONT-16S — read el.data from Plotly directly and react immediately, bypasses React diff issues with long x-arrays"
 }
