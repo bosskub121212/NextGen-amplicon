@@ -2022,6 +2022,93 @@ tryCatch({
 }, error=function(e) cat("  [skip] Extra viz:", e$message, "\n"))
 
 # =============================================================
+#  PHYLOGENETIC TREE — export ASV FASTA + build NJ/ML tree
+#  Produces phylo_tree.nwk for circular tree visualization
+# =============================================================
+tryCatch({
+  cat("\n── Phylogenetic Tree ────────────────────────────────────────────\n")
+  asv_seqs <- colnames(seqtab_nochim)
+  n_asvs   <- length(asv_seqs)
+  cat("  ASVs to align:", n_asvs, "\n")
+
+  # Limit to top 500 ASVs by total reads (performance)
+  if (n_asvs > 500) {
+    asv_totals <- colSums(seqtab_nochim)
+    top_idx    <- order(asv_totals, decreasing=TRUE)[1:500]
+    asv_seqs   <- asv_seqs[top_idx]
+    cat("  Limiting to top 500 ASVs by abundance\n")
+  }
+
+  # Write FASTA file
+  fasta_out <- file.path(opt$output_dir, "asvs.fasta")
+  asv_ids   <- paste0("ASV", seq_along(asv_seqs))
+  fasta_lines <- character(length(asv_seqs) * 2)
+  for (i in seq_along(asv_seqs)) {
+    fasta_lines[2*i - 1] <- paste0(">", asv_ids[i])
+    fasta_lines[2*i]     <- asv_seqs[i]
+  }
+  writeLines(fasta_lines, fasta_out)
+  cat("  ✓ asvs.fasta written (", length(asv_seqs), "sequences)\n")
+
+  # ── Try MAFFT + FastTree (if installed) ──────────────────────────────────
+  mafft_bin    <- Sys.which("mafft")
+  fasttree_bin <- Sys.which("FastTree")
+  if (nchar(fasttree_bin) == 0) fasttree_bin <- Sys.which("fasttree")
+
+  tree_nwk <- file.path(opt$output_dir, "phylo_tree.nwk")
+
+  if (nchar(mafft_bin) > 0 && nchar(fasttree_bin) > 0) {
+    aln_out <- file.path(opt$output_dir, "asvs_aligned.fasta")
+    cat("  Running MAFFT alignment...\n")
+    ret_mafft <- system2(mafft_bin,
+                         args = c("--auto", "--thread", "-1", "--quiet", fasta_out),
+                         stdout = aln_out, stderr = FALSE)
+    if (ret_mafft == 0 && file.exists(aln_out)) {
+      cat("  ✓ MAFFT alignment done\n")
+      cat("  Running FastTree...\n")
+      ret_ft <- system2(fasttree_bin,
+                        args = c("-nt", "-gtr", "-quiet", aln_out),
+                        stdout = tree_nwk, stderr = FALSE)
+      if (ret_ft == 0 && file.exists(tree_nwk)) {
+        cat("  ✓ FastTree phylogenetic tree built:", tree_nwk, "\n")
+      } else {
+        cat("  [warn] FastTree failed — falling back to NJ\n")
+        file.remove(tree_nwk)
+      }
+    } else {
+      cat("  [warn] MAFFT failed — falling back to NJ\n")
+    }
+  }
+
+  # ── Fallback: NJ tree from k-mer distances (no external tools needed) ─────
+  if (!file.exists(tree_nwk) && has_ape) {
+    cat("  Building NJ tree from k-mer distances (ape)...\n")
+    # Use ape::dist.dna requires DNAbin — compute simple edit distance instead
+    # Build character matrix from ASV sequences
+    seqs_char <- strsplit(asv_seqs, "")
+    maxlen    <- max(sapply(seqs_char, length))
+    # Pad shorter sequences
+    seqs_pad  <- lapply(seqs_char, function(s) c(s, rep("-", maxlen - length(s))))
+    seq_mat   <- do.call(rbind, seqs_pad)
+    rownames(seq_mat) <- asv_ids
+    # Convert to DNAbin
+    dna_bin   <- as.DNAbin(seq_mat)
+    # Compute distance
+    d_mat     <- tryCatch(dist.dna(dna_bin, model="K80", pairwise.deletion=TRUE),
+                          error=function(e) dist.dna(dna_bin, model="raw",
+                                                     pairwise.deletion=TRUE))
+    d_mat[!is.finite(d_mat)] <- 0.5
+    nj_tree   <- nj(d_mat)
+    write.tree(nj_tree, file=tree_nwk)
+    cat("  ✓ NJ phylogenetic tree built (k-mer distance):", tree_nwk, "\n")
+  }
+
+  if (!file.exists(tree_nwk))
+    cat("  [skip] Could not build phylogenetic tree\n")
+
+}, error=function(e) cat("  [skip] Tree building failed:", e$message, "\n"))
+
+# =============================================================
 #  DONE
 # =============================================================
 cat("\n========================================\n")

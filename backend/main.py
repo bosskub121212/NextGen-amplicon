@@ -1438,6 +1438,61 @@ async def save_edit_charts_png(job_id: str, request: Request):
     (ec_dir / f"{tab_id}.png").write_bytes(png_bytes)
     return {"ok": True, "path": f"edit_charts/{tab_id}.png"}
 
+# ── Metadata endpoints ────────────────────────────────────────────────────────
+
+@app.get("/results/{job_id}/metadata")
+def get_metadata(job_id: str):
+    """Return metadata.csv for a job as JSON array of {SampleID, Group, ...}."""
+    path = RESULTS_DIR / job_id / "metadata.csv"
+    if not path.exists():
+        return {"rows": [], "columns": []}
+    try:
+        import csv as _csv
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = _csv.DictReader(f)
+            rows   = list(reader)
+            cols   = reader.fieldnames or []
+        return {"rows": rows, "columns": list(cols)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/results/{job_id}/metadata")
+async def save_metadata(job_id: str, request: Request):
+    """Save metadata.csv (CSV text) to the job results directory."""
+    job_dir = RESULTS_DIR / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+    body = await request.body()
+    # Accept both JSON {"csv": "..."} and raw CSV text
+    try:
+        parsed = json.loads(body)
+        csv_text = parsed.get("csv", "")
+    except Exception:
+        csv_text = body.decode("utf-8", errors="replace")
+    if not csv_text.strip():
+        raise HTTPException(status_code=400, detail="Empty metadata")
+    (job_dir / "metadata.csv").write_text(csv_text, encoding="utf-8")
+    return {"ok": True, "path": "metadata.csv"}
+
+@app.post("/results/{job_id}/metadata/json")
+async def save_metadata_json(job_id: str, request: Request):
+    """Save metadata from JSON array [{SampleID, Group, ...}] → metadata.csv."""
+    import csv as _csv, io as _io
+    job_dir = RESULTS_DIR / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+    body = await request.json()
+    rows = body.get("rows", [])
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows provided")
+    cols = list(rows[0].keys())
+    buf  = _io.StringIO()
+    w    = _csv.DictWriter(buf, fieldnames=cols)
+    w.writeheader()
+    w.writerows(rows)
+    (job_dir / "metadata.csv").write_text(buf.getvalue(), encoding="utf-8")
+    return {"ok": True, "rows": len(rows)}
+
 @app.post("/results/{job_id}/rerun-viz")
 def rerun_visualization(job_id: str):
     """Re-run viz_pipeline.R on an existing job's data to generate r_tables/ and r_plots/."""
@@ -1482,6 +1537,17 @@ def rerun_visualization(job_id: str):
             )
         except Exception:
             pass  # non-fatal — extra viz is best-effort
+
+    # ── Run advanced visualizations (clustering heatmap, Venn, phylo tree) ──
+    adv_viz_script = _BACKEND_DIR / "r_scripts" / "run_advanced_viz.R"
+    if adv_viz_script.exists():
+        try:
+            _sp.run(
+                [rscript, str(adv_viz_script), str(job_dir)],
+                capture_output=True, text=True, timeout=300
+            )
+        except Exception:
+            pass  # non-fatal
 
     return {"ok": True, "stdout": result.stdout[-3000:], "stderr": result.stderr[-2000:]}
 

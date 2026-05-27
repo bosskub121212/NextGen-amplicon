@@ -1,5 +1,5 @@
 {
-  "version": "2.4.6",
-  "release_date": "2026-05-25",
-  "changelog": "fix: legend color picker not updating chart in ONT-16S — read el.data from Plotly directly and react immediately, bypasses React diff issues with long x-arrays"
+  "version": "2.5.0",
+  "release_date": "2026-05-27",
+  "changelog": "feat: Hierarchical Clustering Heatmap, Venn Diagram, Phylogenetic Tree (circular) — new R scripts + interactive clustheatmap tab + Sample Groups metadata panel for group-aware visualizations"
 }

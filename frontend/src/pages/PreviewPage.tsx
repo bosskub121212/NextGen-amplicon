@@ -20,7 +20,7 @@ const DEFAULT_COLORS = [
 // ── Chart tab definitions ─────────────────────────────────────
 interface TabDef {
   id: string; label: string; file: string;
-  type: "taxonomy"|"alpha"|"multialpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack"|"hist"|"readtrackbox";
+  type: "taxonomy"|"alpha"|"multialpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack"|"hist"|"readtrackbox"|"clustheatmap";
   metric?: string; group?: string;
   pdfFile?: string;   // for type:"pdf" — filename inside r_plots/ or job root
   altFile?: string;   // fallback CSV filename when primary doesn't exist
@@ -81,6 +81,10 @@ const ALL_TABS: TabDef[] = [
   // Interactive tabs from dada2_extra_viz.R CSVs
   { id:"asv_lengths",  label:"ASV Lengths",    file:"asv_lengths.csv",    type:"hist",         group:"Other" },
   { id:"qc_readcount", label:"QC Read Count",  file:"read_tracking.csv",  type:"readtrackbox", group:"Other" },
+  // ── Advanced visualizations (v2.5.0) ──────────────────────
+  { id:"clust_heatmap", label:"Clust. Heatmap", file:"clustering_heatmap.csv", type:"clustheatmap", group:"Other" },
+  { id:"venn",          label:"Venn Diagram",   file:"_pdf", type:"pdf", pdfFile:"venn_diagram.pdf",   group:"Other" },
+  { id:"phylo_tree",    label:"Phylo Tree",     file:"_pdf", type:"pdf", pdfFile:"phylo_tree.pdf",     group:"Other" },
 ];
 
 // ── Font config ───────────────────────────────────────────────
@@ -143,7 +147,7 @@ function getUniqueSamples(tab: TabDef, rows: string[][]): string[] {
     const rowNames = rows.slice(1).map(r => r[0]);
     return Array.from(new Set([...colNames, ...rowNames]));
   }
-  if (tab.type === "heatmap") return rows.slice(1).map(r => r[0]);  // symmetric matrix, row=col names
+  if (tab.type === "heatmap" || tab.type === "clustheatmap") return rows.slice(1).map(r => r[0]);
   if (tab.type === "alpha" || tab.type === "multialpha") {
     const sIdx = rows[0].indexOf("Sample");
     return sIdx >= 0 ? rows.slice(1).map(r => r[sIdx]) : rows.slice(1).map(r => r[r.length - 1]);
@@ -174,6 +178,9 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [showCustomize, setShowCustomize] = useState(true);
   const [legendPicker, setLegendPicker]   = useState<{name:string; x:number; y:number; color:string; curveNumber:number} | null>(null);
   const lastMousePos = useRef({ x: 100, y: 100 });
+  const [metaRows, setMetaRows]   = useState<{SampleID:string; Group:string}[]>([]);
+  const [metaSaved, setMetaSaved] = useState(false);
+  const [metaExpand, setMetaExpand] = useState(false);
   const [loading, setLoading]     = useState(false);
   const [pdfPanel, setPdfPanel]   = useState(false);
   const [saved, setSaved]         = useState(false);
@@ -193,6 +200,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   useEffect(() => {
     if (!selJob) return;
     setTableInfo(null); setAvailTabs([]); setActiveTab(null); setCsvData(null);
+    setMetaRows([]); setMetaExpand(false);
 
     // Load settings + tables in parallel; apply settings before activating first tab
     const loadSettings = async (): Promise<boolean> => {
@@ -232,6 +240,11 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       setAvailTabs(avail);
       return { info, avail };
     };
+
+    // Load metadata (non-fatal)
+    fetch(`${API}/results/${selJob}/metadata`).then(r => r.json())
+      .then(d => { if (Array.isArray(d.rows)) setMetaRows(d.rows); })
+      .catch(() => {});
 
     // Run both in parallel, then activate the first tab
     Promise.all([loadSettings(), loadTables()])
@@ -362,7 +375,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   function getSeries(tab: TabDef, rows: string[][]): string[] {
     if (!rows.length) return [];
     if (tab.type === "taxonomy")    return rows[0].slice(1).slice(0, 30);  // taxon names → color assignment
-    if (tab.type === "taxheatmap") return rows.slice(1).map(r => r[0]);   // sample names → for color (unused but consistent)
+    if (tab.type === "taxheatmap" || tab.type === "clustheatmap") return rows.slice(1).map(r => r[0]);
     if (tab.type === "readtrack")  return rows.slice(1).map(r => r[0]);   // sample names → color per line
     if (tab.type === "alpha" || tab.type === "multialpha") return rows.length > 1 ? rows.slice(1).map(r => {
       const idx = rows[0].indexOf("Sample"); return idx >= 0 ? r[idx] : r[r.length-1];
@@ -884,6 +897,35 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }};
     }
 
+    // CLUSTHEATMAP — clustering_heatmap.csv: sample × taxon z-score matrix (from pheatmap)
+    // Rows = samples, cols = taxa (top 80 by abundance, z-score scaled)
+    if (activeTab2.type === "clustheatmap" && rows.length > 1) {
+      const taxaNames   = rows[0].slice(1);
+      const sampleNames = rows.slice(1).map(r => alias(r[0]));
+      const zValues     = rows.slice(1).map(r => r.slice(1).map(v => num(v)));
+      const maxAbsZ = zValues.flat().reduce((m, v) => Math.max(m, Math.abs(v)), 3);
+      const cs = font.colorscale && font.colorscale !== "Viridis" ? font.colorscale : "RdBu";
+      const data = [{
+        z: zValues, x: taxaNames, y: sampleNames,
+        type: "heatmap" as const,
+        colorscale: cs,
+        reversescale: true,
+        zmid: 0, zmin: -maxAbsZ, zmax: maxAbsZ,
+        hoverongaps: false,
+        colorbar: { title: "Z-score", thickness: 16 },
+        hovertemplate: `<b>%{y}</b><br>%{x}<br>Z-score: %{z:.3f}<extra></extra>`,
+      }];
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, tickangle: -50,
+          title: { text: "Taxon" },
+          tickmode: "array" as const, tickvals: taxaNames, ticktext: taxaNames.map(xFmt) },
+        yaxis: { ...base.yaxis, title: { text: "Sample" },
+          autorange: "reversed" as const,
+          tickmode: "array" as const, tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
+        margin: { l: 140, r: 60, t: 60, b: 180 },
+      }};
+    }
+
     // READTRACKBOX — read_tracking.csv: boxplot per pipeline step across all samples
     // Shows distribution of read counts at each step (spread across 24 samples)
     if (activeTab2.type === "readtrackbox" && rows.length > 1) {
@@ -967,12 +1009,39 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         // Reload table info after re-run
         const info: TableInfo = await fetch(`${API}/results/${selJob}/tables`).then(x => x.json());
         setTableInfo(info);
-        const avail = ALL_TABS.filter(t => info.tables.includes(t.file));
+        const avail = ALL_TABS.filter(t => {
+          if (t.type === "pdf") return (info.plots || []).includes(t.pdfFile || "");
+          return info.tables.includes(t.file) || (!!t.altFile && info.tables.includes(t.altFile));
+        });
         setAvailTabs(avail);
         if (avail.length > 0) setActiveTab(avail[0]);
       }
     } catch { /* ignore */ }
     setRerunning(false);
+  };
+
+  // ── Save metadata.csv → server ───────────────────────────────
+  const saveMetadata = async () => {
+    if (!selJob || metaRows.length === 0) return;
+    const csvText = "SampleID,Group\n" + metaRows.map(r => `${r.SampleID},${r.Group}`).join("\n");
+    await fetch(`${API}/results/${selJob}/metadata`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv: csvText }),
+    });
+    setMetaSaved(true);
+    setTimeout(() => setMetaSaved(false), 2000);
+  };
+
+  // ── Init metaRows from known samples when no metadata yet loaded ──
+  const initMetaFromSamples = () => {
+    if (metaRows.length > 0) return; // already have data
+    // knownSamples persists across tab changes; csvData gives current tab's samples
+    const samplesFromCsv = csvData && activeTab ? getUniqueSamples(activeTab, csvData) : [];
+    const samples = knownSamples.length > 0 ? knownSamples : samplesFromCsv;
+    if (samples.length > 0) {
+      setMetaRows(samples.map(s => ({ SampleID: s, Group: "" })));
+    }
   };
 
   // ── Export full results as ZIP (with custom-named PNG charts) ──
@@ -1308,8 +1377,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                         </div>
                       </div>
 
-                      {/* Colorscale picker — for heatmap and taxheatmap tabs */}
-                      {(activeTab.type === "taxheatmap" || activeTab.type === "heatmap") && (
+                      {/* Colorscale picker — for heatmap, taxheatmap and clustheatmap tabs */}
+                      {(activeTab.type === "taxheatmap" || activeTab.type === "heatmap" || activeTab.type === "clustheatmap") && (
                         <div className="prev-cust-section">
                           <div className="prev-cust-section-title">Color Scale</div>
                           <div className="prev-cs-grid">
@@ -1383,6 +1452,101 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                           </button>
                         </div>
                       )}
+
+                      {/* ── Sample Groups (metadata for Venn / Heatmap / Tree) ── */}
+                      <div className="prev-cust-section">
+                        <div className="prev-cust-section-title prev-meta-header"
+                          onClick={() => { setMetaExpand(s => !s); if (!metaExpand) initMetaFromSamples(); }}>
+                          🏷 Sample Groups
+                          <span style={{fontSize:10, color:"#94a3b8", marginLeft:6}}>
+                            for Venn / Clust. Heatmap / Phylo Tree
+                          </span>
+                          <span className="prev-cust-toggle">{metaExpand ? "▲" : "▼"}</span>
+                        </div>
+                        {metaExpand && (
+                          <div className="prev-meta-body">
+                            <div className="prev-meta-hint">
+                              Assign a Group label to each sample. Used by Venn Diagram, Clustering Heatmap annotation, and Phylogenetic Tree.
+                            </div>
+
+                            {/* CSV file upload */}
+                            <div className="prev-meta-upload-row">
+                              <label className="prev-btn-reset prev-meta-file-label">
+                                📂 Upload CSV
+                                <input type="file" accept=".csv" style={{display:"none"}}
+                                  onChange={e => {
+                                    const f = e.target.files?.[0];
+                                    if (!f) return;
+                                    f.text().then(txt => {
+                                      const lines = txt.trim().split(/\r?\n/);
+                                      const hdr = lines[0].split(",").map(h => h.trim());
+                                      const sidIdx = hdr.findIndex(h => /sampleid|sample/i.test(h));
+                                      const grpIdx = hdr.findIndex(h => /group/i.test(h));
+                                      if (sidIdx < 0) return alert("CSV must have a SampleID column");
+                                      const parsed = lines.slice(1).filter(l => l.trim()).map(l => {
+                                        const cols = l.split(",").map(c => c.trim());
+                                        return { SampleID: cols[sidIdx] || "", Group: grpIdx >= 0 ? (cols[grpIdx] || "") : "" };
+                                      });
+                                      setMetaRows(parsed);
+                                    });
+                                    e.target.value = "";
+                                  }} />
+                              </label>
+                              <span className="prev-meta-format-hint">
+                                Format: SampleID,Group (one row per sample)
+                              </span>
+                            </div>
+
+                            {/* Auto-fill from samples button */}
+                            {metaRows.length === 0 && (
+                              <button className="prev-btn-reset" onClick={initMetaFromSamples}>
+                                + Add rows from current samples
+                              </button>
+                            )}
+
+                            {/* Editable rows */}
+                            {metaRows.length > 0 && (
+                              <>
+                                <div className="prev-meta-table">
+                                  <div className="prev-meta-row prev-meta-row-hdr">
+                                    <span>SampleID</span>
+                                    <span>Group</span>
+                                  </div>
+                                  {metaRows.map((r, i) => (
+                                    <div key={i} className="prev-meta-row">
+                                      <span className="prev-meta-sid" title={r.SampleID}>
+                                        {shortName(r.SampleID)}
+                                      </span>
+                                      <input
+                                        className="prev-meta-grp-input"
+                                        value={r.Group}
+                                        placeholder="e.g. Control"
+                                        onChange={e => setMetaRows(rows => rows.map((row, j) =>
+                                          j === i ? { ...row, Group: e.target.value } : row))} />
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="prev-meta-actions">
+                                  <button
+                                    className={`prev-btn prev-btn-save ${metaSaved ? "saved" : ""}`}
+                                    style={{padding:"4px 10px", fontSize:12}}
+                                    onClick={saveMetadata}>
+                                    {metaSaved ? "✓ Saved!" : "💾 Save Groups"}
+                                  </button>
+                                  <button className="prev-btn-reset" style={{marginLeft:8}}
+                                    onClick={() => setMetaRows([])}>
+                                    ↺ Clear
+                                  </button>
+                                </div>
+                                <div className="prev-meta-hint" style={{marginTop:6}}>
+                                  After saving, click <b>🔄 Re-run Viz</b> to regenerate Venn / Tree / Heatmap with group labels.
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
                     </div>
                   )}
                 </div>

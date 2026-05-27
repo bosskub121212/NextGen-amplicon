@@ -849,6 +849,16 @@ async def _run_full_pipeline(p: Q2RunParams):
                     must_succeed=False
                 )
 
+        # Copy rooted tree to job root as phylo_tree.nwk (for phylo_tree.R)
+        for tree_candidate in [
+            exp / "tree" / "tree.nwk",
+            exp / "tree" / "tree-rooted.nwk",
+        ]:
+            if tree_candidate.exists():
+                import shutil as _shutil
+                _shutil.copy2(str(tree_candidate), str(Path(p.output_dir) / "phylo_tree.nwk"))
+                break
+
         # Convert BIOM → TSV
         biom_path = exp / "feature-table" / "feature-table.biom"
         if biom_path.exists():
