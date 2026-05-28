@@ -150,12 +150,12 @@ function parseCSV(text: string): string[][] {
   return rows;
 }
 const num = (v: string) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
-const shortName = (s: string) => s.replace(/FBE\d+_pass_/i,"").replace(/_\w{8}_\w{8}_\d+/,"").slice(0,20);
+const shortName = (s: string) => (s || '').replace(/FBE\d+_pass_/i,"").replace(/_\w{8}_\w{8}_\d+/,"").slice(0,20);
 
 // ── Get raw sample names for x-axis (used in customize panel) ─
 function getUniqueSamples(tab: TabDef, rows: string[][]): string[] {
   if (!rows.length) return [];
-  if (tab.type === "taxonomy") return rows.slice(1).map(r => r[0]);
+  if (tab.type === "taxonomy") return rows.slice(1).map(r => r[0]).filter(Boolean);
   if (tab.type === "taxheatmap") {
     // Return BOTH col headers (x-axis) and row labels (y-axis) — either could be sample IDs
     // depending on CSV orientation (regular 16S vs ONT-16S transposed)
