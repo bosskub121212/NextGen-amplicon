@@ -21,7 +21,7 @@ const DEFAULT_COLORS = [
 interface TabDef {
   id: string; label: string; file: string;
   type: "taxonomy"|"alpha"|"multialpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack"|"hist"|"readtrackbox"|"clustheatmap"
-      |"pcaellipse"|"dendrobar"|"anovabar"|"lefselda"|"forestplot"|"faprotaxbar";
+      |"pcaellipse"|"dendrobar"|"anovabar"|"lefselda"|"forestplot"|"faprotaxbar"|"phylotree";
   metric?: string; group?: string;
   pdfFile?: string;   // for type:"pdf" — filename inside r_plots/ or job root
   altFile?: string;   // fallback CSV filename when primary doesn't exist
@@ -84,8 +84,9 @@ const ALL_TABS: TabDef[] = [
   { id:"qc_readcount", label:"QC Read Count",  file:"read_tracking.csv",  type:"readtrackbox", group:"Other" },
   // ── Advanced visualizations (v2.5.0) ──────────────────────
   { id:"clust_heatmap", label:"Clust. Heatmap", file:"clustering_heatmap.csv", type:"clustheatmap", group:"Other" },
-  { id:"venn",          label:"Venn Diagram",   file:"_pdf", type:"pdf", pdfFile:"venn_diagram.pdf",   group:"Other" },
-  { id:"phylo_tree",    label:"Phylo Tree",     file:"_pdf", type:"pdf", pdfFile:"phylo_tree.pdf",     group:"Other" },
+  { id:"venn",          label:"Venn Diagram",   file:"_pdf", type:"pdf",      pdfFile:"venn_diagram.pdf", group:"Other" },
+  { id:"phylo_tree_i",  label:"Phylo Tree",     file:"phylo_tree_plot.csv", type:"phylotree",           group:"Other" },
+  { id:"phylo_tree",    label:"Phylo Tree (PDF)",file:"_pdf", type:"pdf",  pdfFile:"phylo_tree.pdf",   group:"Other" },
   { id:"clust_dendro",  label:"Dendro + Bars",  file:"clust_dendro_bars.csv", type:"dendrobar",         group:"Other" },
   { id:"pdf_dendro",    label:"Dendro (PDF)",   file:"_pdf", type:"pdf", pdfFile:"clust_dendro.pdf",   group:"Other" },
   // ── Beta advanced (v2.6.0) ──────────────────────────────
@@ -1299,6 +1300,80 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           margin: { l: 240, r: 80, t: 60, b: 160 },
         }};
       }
+    }
+
+    // PHYLOTREE — phylo_tree_plot.csv: rectangular phylogram layout
+    // Rows: row_type (edge|tip), x0, y0, x1, y1, label, phylum
+    // Renders as L-shaped branch lines (edges) + colored tip dots by phylum
+    if (activeTab2.type === "phylotree" && rows.length > 1) {
+      const hdr    = rows[0];
+      const rtIdx  = hdr.indexOf("row_type");
+      const x0Idx  = hdr.indexOf("x0");
+      const y0Idx  = hdr.indexOf("y0");
+      const x1Idx  = hdr.indexOf("x1");
+      const y1Idx  = hdr.indexOf("y1");
+      const lblIdx = hdr.indexOf("label");
+      const phyIdx = hdr.indexOf("phylum");
+      if (rtIdx < 0 || x0Idx < 0) return null;
+
+      const edgeRows = rows.slice(1).filter(r => r[rtIdx] === "edge");
+      const tipRows  = rows.slice(1).filter(r => r[rtIdx] === "tip");
+      if (tipRows.length === 0) return null;
+
+      // Build all edge segments into one trace with null breaks (efficient rendering)
+      const edgeX: (number | null)[] = [];
+      const edgeY: (number | null)[] = [];
+      edgeRows.forEach(r => {
+        edgeX.push(num(r[x0Idx]), num(r[x1Idx]), null);
+        edgeY.push(num(r[y0Idx]), num(r[y1Idx]), null);
+      });
+
+      const branchColor = colors["_branch"] || "#64748b";
+      const data: any[] = [{
+        x: edgeX, y: edgeY,
+        type: "scatter" as const, mode: "lines" as const,
+        line: { color: branchColor, width: 1 },
+        hoverinfo: "skip" as const,
+        showlegend: false,
+        name: "",
+      }];
+
+      // Tip dots + text colored by phylum (1 trace per phylum → legend + color picker)
+      const phyla = Array.from(new Set(tipRows.map(r => r[phyIdx] || "Unknown")));
+      phyla.forEach((phy, pi) => {
+        const pts   = tipRows.filter(r => (r[phyIdx] || "Unknown") === phy);
+        const color = colors[phy] || DEFAULT_COLORS[pi % DEFAULT_COLORS.length];
+        const tipX  = pts.map(r => num(r[x1Idx]));
+        const tipY  = pts.map(r => num(r[y1Idx]));
+        const labels = pts.map(r => alias(r[lblIdx]));
+        data.push({
+          name: phy,
+          x: tipX, y: tipY,
+          text: labels,
+          mode: "markers+text" as const, type: "scatter" as const,
+          textposition: "middle right" as const,
+          textfont: { size: Math.min(9, font.axisSize), color: "#334155", family: "monospace" },
+          marker: { size: 8, color, symbol: "circle" },
+          hovertemplate: `<b>%{text}</b><br>Phylum: ${phy}<extra></extra>`,
+        });
+      });
+
+      // Dynamic right margin: enough room for the longest label
+      const maxLblLen = Math.max(...tipRows.map(r => alias(r[lblIdx]).length));
+      const rightMargin = Math.min(350, Math.max(140, maxLblLen * 7 + 40));
+      const chartH = Math.max(400, tipRows.length * 18 + 80);
+
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, title: { text: "Branch Length" }, zeroline: false,
+                 showgrid: font.showGrid, tickangle: 0 },
+        yaxis: { ...base.yaxis, showticklabels: false, zeroline: false,
+                 showgrid: false, fixedrange: false },
+        showlegend: true,
+        legend: { x: 1.01, y: 1, xanchor: "left" as const, font: { size: font.legendSize },
+                  title: { text: "Phylum" } },
+        margin: { l: 40, r: rightMargin, t: 60, b: 60 },
+        height: chartH,
+      }};
     }
 
     // READTRACKBOX — read_tracking.csv: boxplot per pipeline step across all samples

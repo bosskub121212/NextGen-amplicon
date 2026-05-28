@@ -218,4 +218,58 @@ if (has_ggtree && has_ggplot) {
   }, error = function(e) cat("  [error]", e$message, "\n"))
 }
 
+# ── Export interactive plot data (phylo_tree_plot.csv) ───────────────────────
+# Rectangular/phylogram layout via ape::plot.phylo
+# Outputs: row_type (edge|tip), x0, y0, x1, y1, label, phylum
+plot_csv <- file.path(out_dir, "phylo_tree_plot.csv")
+tryCatch({
+  n_tips  <- length(tree$tip.label)
+  # Render to temp device just to extract coordinates from ape
+  tmp_pdf <- tempfile(fileext = ".pdf")
+  pdf(tmp_pdf, width = 10, height = max(6, n_tips * 0.25))
+  pp <- plot.phylo(tree, type = "phylogram", use.edge.length = TRUE,
+                   show.tip.label = FALSE, plot = TRUE)
+  dev.off()
+  try(file.remove(tmp_pdf), silent = TRUE)
+
+  coords_x <- pp$xx   # length = n_tips + n_internal
+  coords_y <- pp$yy
+
+  if (length(coords_x) == 0) stop("no coordinates from plot.phylo")
+
+  # ── Build edge segments (2 L-shaped segments per edge) ──
+  edge_list <- vector("list", nrow(tree$edge) * 2)
+  ei <- 0L
+  for (i in seq_len(nrow(tree$edge))) {
+    p_idx <- tree$edge[i, 1]; c_idx <- tree$edge[i, 2]
+    px <- coords_x[p_idx]; py <- coords_y[p_idx]
+    cx <- coords_x[c_idx]; cy <- coords_y[c_idx]
+    ei <- ei + 1L
+    edge_list[[ei]] <- data.frame(row_type="edge", x0=px, y0=py, x1=cx, y1=py,
+                                   label="", phylum="", stringsAsFactors=FALSE)
+    ei <- ei + 1L
+    edge_list[[ei]] <- data.frame(row_type="edge", x0=cx, y0=py, x1=cx, y1=cy,
+                                   label="", phylum="", stringsAsFactors=FALSE)
+  }
+  edges_df <- do.call(rbind, edge_list[seq_len(ei)])
+
+  # ── Build tip node rows ──────────────────────────────────
+  tip_phyla <- tip_meta$Phylum[match(tree$tip.label, tip_meta$label)]
+  tip_phyla[is.na(tip_phyla)] <- "Unknown"
+  tips_df <- data.frame(
+    row_type = "tip",
+    x0       = coords_x[seq_len(n_tips)],
+    y0       = coords_y[seq_len(n_tips)],
+    x1       = coords_x[seq_len(n_tips)],
+    y1       = coords_y[seq_len(n_tips)],
+    label    = tree$tip.label,
+    phylum   = tip_phyla,
+    stringsAsFactors = FALSE
+  )
+
+  plot_data <- rbind(edges_df, tips_df)
+  write.csv(plot_data, plot_csv, row.names = FALSE)
+  cat("  ✓ phylo_tree_plot.csv  (", n_tips, "tips,", nrow(edges_df), "segments)\n")
+}, error = function(e) cat("  [warn] phylo_tree_plot.csv skipped:", e$message, "\n"))
+
 cat("── Phylogenetic Tree done ──────────────────────────────────────────\n\n")
