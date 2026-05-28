@@ -20,7 +20,8 @@ const DEFAULT_COLORS = [
 // ── Chart tab definitions ─────────────────────────────────────
 interface TabDef {
   id: string; label: string; file: string;
-  type: "taxonomy"|"alpha"|"multialpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack"|"hist"|"readtrackbox"|"clustheatmap";
+  type: "taxonomy"|"alpha"|"multialpha"|"bar"|"line"|"scatter"|"box"|"heatmap"|"taxheatmap"|"scree"|"longline"|"specaccum"|"pdf"|"readtrack"|"hist"|"readtrackbox"|"clustheatmap"
+      |"pcaellipse"|"dendrobar"|"anovabar"|"lefselda"|"forestplot"|"faprotaxbar";
   metric?: string; group?: string;
   pdfFile?: string;   // for type:"pdf" — filename inside r_plots/ or job root
   altFile?: string;   // fallback CSV filename when primary doesn't exist
@@ -85,6 +86,20 @@ const ALL_TABS: TabDef[] = [
   { id:"clust_heatmap", label:"Clust. Heatmap", file:"clustering_heatmap.csv", type:"clustheatmap", group:"Other" },
   { id:"venn",          label:"Venn Diagram",   file:"_pdf", type:"pdf", pdfFile:"venn_diagram.pdf",   group:"Other" },
   { id:"phylo_tree",    label:"Phylo Tree",     file:"_pdf", type:"pdf", pdfFile:"phylo_tree.pdf",     group:"Other" },
+  { id:"clust_dendro",  label:"Dendro + Bars",  file:"clust_dendro_bars.csv", type:"dendrobar",         group:"Other" },
+  { id:"pdf_dendro",    label:"Dendro (PDF)",   file:"_pdf", type:"pdf", pdfFile:"clust_dendro.pdf",   group:"Other" },
+  // ── Beta advanced (v2.6.0) ──────────────────────────────
+  { id:"pca_ellipse",   label:"PCoA + Ellipses",file:"pca_scores.csv",        type:"pcaellipse",        group:"Beta" },
+  // ── Differential analysis (v2.6.0) ─────────────────────
+  { id:"anova_bar",     label:"ANOVA / KW",     file:"anova_results.csv",     type:"anovabar",          group:"Diff" },
+  { id:"lefse_lda",     label:"LEfSe LDA",      file:"lefse_lda.csv",         type:"lefselda",          group:"Diff" },
+  { id:"metastats",     label:"Metastats",      file:"_pair",                 type:"forestplot",         group:"Diff" },
+  { id:"pdf_lefse",     label:"LEfSe LDA (PDF)",file:"_pdf", type:"pdf", pdfFile:"lefse_lda.pdf",       group:"Diff" },
+  { id:"pdf_cladogram", label:"Cladogram (PDF)",file:"_pdf", type:"pdf", pdfFile:"cladogram.pdf",       group:"Diff" },
+  { id:"pdf_anova",     label:"ANOVA (PDF)",    file:"_pdf", type:"pdf", pdfFile:"anova_bar.pdf",       group:"Diff" },
+  // ── Functional prediction (v2.6.0) ─────────────────────
+  { id:"faprotax",      label:"FAPROTAX",       file:"faprotax_results.csv",  type:"faprotaxbar",       group:"Functional" },
+  { id:"pdf_faprotax",  label:"FAPROTAX (PDF)", file:"_pdf", type:"pdf", pdfFile:"faprotax_bar.pdf",    group:"Functional" },
 ];
 
 // ── Font config ───────────────────────────────────────────────
@@ -181,6 +196,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [metaRows, setMetaRows]   = useState<{SampleID:string; Group:string}[]>([]);
   const [metaSaved, setMetaSaved] = useState(false);
   const [metaExpand, setMetaExpand] = useState(false);
+  const [ellipseData, setEllipseData] = useState<string[][] | null>(null); // pca_ellipse.csv for pcaellipse
+  const [pairFile, setPairFile]   = useState<string>("");   // selected pairwise CSV (empty = all-groups)
   const [loading, setLoading]     = useState(false);
   const [pdfPanel, setPdfPanel]   = useState(false);
   const [saved, setSaved]         = useState(false);
@@ -235,6 +252,11 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       setTableInfo(info);
       const avail = ALL_TABS.filter(t => {
         if (t.type === "pdf") return (info.plots || []).includes(t.pdfFile || "");
+        if (t.file === "_pair") {
+          // "_pair" tabs depend on dynamically-named pairwise CSVs
+          if (t.type === "forestplot")  return info.tables.some(f => f.startsWith("metastats_") && f.includes("_vs_"));
+          return false;
+        }
         return info.tables.includes(t.file) || (!!t.altFile && info.tables.includes(t.altFile));
       });
       setAvailTabs(avail);
@@ -269,6 +291,24 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     if (!activeTab || !selJob) return;
     if (activeTab.type === "pdf") { setCsvData(null); setLoading(false); return; }
     setLoading(true);
+    setEllipseData(null);
+    setPairFile("");
+
+    // ── forestplot tab: auto-select first available pairwise file ──
+    if (activeTab.type === "forestplot") {
+      const pairFiles = (tableInfo?.tables || [])
+        .filter(f => f.startsWith("metastats_") && f.includes("_vs_")).sort();
+      const first = pairFiles[0] || "";
+      if (first) {
+        setPairFile(first);
+        fetch(`${API}/results/${selJob}/table/${first}`)
+          .then(r => r.text())
+          .then(text => { setCsvData(parseCSV(text)); setLoading(false); })
+          .catch(() => setLoading(false));
+      } else { setCsvData(null); setLoading(false); }
+      return;
+    }
+
     // Use altFile when primary doesn't exist in tableInfo
     const fileToLoad = (tableInfo?.tables || []).includes(activeTab.file)
       ? activeTab.file
@@ -291,6 +331,14 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         const samplesFromRows = getUniqueSamples(activeTab, rows);
         if (samplesFromRows.length > 0) setKnownSamples(samplesFromRows);
         setLoading(false);
+
+        // ── Load ellipse polygons for pcaellipse tab ───────────
+        if (activeTab.type === "pcaellipse") {
+          fetch(`${API}/results/${selJob}/table/pca_ellipse.csv`)
+            .then(r => r.text())
+            .then(et => setEllipseData(parseCSV(et)))
+            .catch(() => setEllipseData(null));
+        }
       })
       .catch(() => setLoading(false));
   }, [activeTab, selJob]);
@@ -320,7 +368,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       plotted.current = true;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [csvData, colors, font, activeTab, sampleAliases]);
+  }, [csvData, colors, font, activeTab, sampleAliases, ellipseData, metaRows]);
 
   useEffect(() => { triggerRender(); }, [triggerRender]);
 
@@ -926,6 +974,333 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }};
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────
+    // v2.6.0 RENDERERS
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    // PCAELLIPSE — pca_scores.csv with Group column + pca_ellipse.csv polygons
+    // Same as scatter but adds one filled polygon trace per group from ellipseData
+    if (activeTab2.type === "pcaellipse" && rows.length > 1) {
+      const hdr = rows[0];
+      const axis1Name = hdr[1] || "PC1";
+      const axis2Name = hdr[2] || "PC2";
+      const varIdx1   = hdr.indexOf(axis1Name + "_var");
+      const varIdx2   = hdr.indexOf(axis2Name + "_var");
+      const grpIdx    = hdr.indexOf("Group");
+      const var1 = varIdx1 >= 0 ? num(rows[1][varIdx1]) : 0;
+      const var2 = varIdx2 >= 0 ? num(rows[1][varIdx2]) : 0;
+      const rawNames = rows.slice(1).map(r => r[0]);
+      const xVals    = rows.slice(1).map(r => num(r[1]));
+      const yVals    = rows.slice(1).map(r => num(r[2]));
+      const groups   = grpIdx >= 0 ? rows.slice(1).map(r => r[grpIdx] || "Unknown") : null;
+      const uniqGroups = groups ? Array.from(new Set(groups)) : [];
+
+      const data: any[] = [];
+
+      // ── Ellipse polygon traces (filled, no legend entry) ──
+      if (ellipseData && ellipseData.length > 1) {
+        const eHdr     = ellipseData[0]; // x, y, Group
+        const eGrpIdx  = eHdr.indexOf("Group");
+        const eXIdx    = eHdr.indexOf("x");
+        const eYIdx    = eHdr.indexOf("y");
+        if (eGrpIdx >= 0 && eXIdx >= 0 && eYIdx >= 0) {
+          uniqGroups.forEach((g, gi) => {
+            const pts = ellipseData.slice(1).filter(r => r[eGrpIdx] === g);
+            if (pts.length < 3) return;
+            const color = colors[g] || DEFAULT_COLORS[gi % DEFAULT_COLORS.length];
+            data.push({
+              name: g, legendgroup: g, showlegend: false,
+              x: [...pts.map(r => num(r[eXIdx])), num(pts[0][eXIdx])],
+              y: [...pts.map(r => num(r[eYIdx])), num(pts[0][eYIdx])],
+              type: "scatter", mode: "lines",
+              line: { color, width: 1.5, dash: "dot" },
+              fill: "toself", fillcolor: color + "22",
+              hoverinfo: "skip",
+            });
+          });
+        }
+      }
+
+      // ── Scatter traces 1 per group ──
+      uniqGroups.forEach((g, gi) => {
+        const idx = groups!.map((gg, i) => gg === g ? i : -1).filter(i => i >= 0);
+        const color = colors[g] || DEFAULT_COLORS[gi % DEFAULT_COLORS.length];
+        data.push({
+          name: g, legendgroup: g, showlegend: true,
+          x: idx.map(i => xVals[i]),
+          y: idx.map(i => yVals[i]),
+          mode: "markers+text", type: "scatter",
+          text: idx.map(i => alias(rawNames[i])),
+          textposition: "top center",
+          textfont: { size: 9, color: "#475569" },
+          marker: { size: 12, color },
+          hovertemplate: `<b>%{text}</b><br>${axis1Name}: %{x:.4f}<br>${axis2Name}: %{y:.4f}<extra></extra>`,
+        });
+      });
+
+      // Fallback: no Group column — scatter all samples
+      if (uniqGroups.length === 0) {
+        rawNames.forEach((rawName, i) => {
+          const color = colors[rawName] || DEFAULT_COLORS[i % DEFAULT_COLORS.length];
+          const label = alias(rawName);
+          data.push({
+            name: label, x: [xVals[i]], y: [yVals[i]],
+            mode: "markers+text", type: "scatter",
+            text: [shortName(label)], textposition: "top center",
+            textfont: { size: 9, color: "#475569" },
+            marker: { size: 12, color },
+            hovertemplate: `<b>${label}</b><br>${axis1Name}: %{x:.4f}<br>${axis2Name}: %{y:.4f}<extra></extra>`,
+          });
+        });
+      }
+
+      const xLabel = var1 > 0 ? `${axis1Name} [${var1}%]` : axis1Name;
+      const yLabel = var2 > 0 ? `${axis2Name} [${var2}%]` : axis2Name;
+      return { data, layout: { ...base,
+        xaxis: { ...base.xaxis, title: { text: xLabel }, zeroline: true },
+        yaxis: { ...base.yaxis, title: { text: yLabel }, zeroline: true },
+        showlegend: true,
+        legend: { x: 1.01, y: 1, xanchor: "left" as const, font: { size: font.legendSize } },
+        margin: { l: 60, r: 150, t: 60, b: 80 },
+      }};
+    }
+
+    // DENDROBAR — clust_dendro_bars.csv: Sample × taxon stacked composition
+    // Same concept as "taxonomy" stacked bar but reads a pre-clustered/sorted sample order
+    if (activeTab2.type === "dendrobar" && rows.length > 1) {
+      const taxaNames  = rows[0].slice(1);
+      const sampleNames = rows.slice(1).map(r => alias(r[0]));
+      const is100 = font.chartType === "bar100";
+      const rowSums = rows.slice(1).map(r => r.slice(1).reduce((s, v) => s + num(v), 0));
+      const maxTaxa = (font.topNTaxa ?? 20) > 0 ? (font.topNTaxa ?? 20) : Infinity;
+      const colTotals = taxaNames.map((_, ci) =>
+        rows.slice(1).reduce((s, r) => s + num(r[ci + 1]), 0));
+      const topIdx = colTotals.map((_, i) => i)
+        .sort((a, b) => colTotals[b] - colTotals[a])
+        .slice(0, maxTaxa);
+      const data = topIdx.map((ci, rank) => ({
+        name: taxaNames[ci] || "Unknown",
+        x: sampleNames,
+        y: rows.slice(1).map((row, ri) => {
+          const v = num(row[ci + 1]);
+          return is100 && rowSums[ri] > 0 ? (v / rowSums[ri]) * 100 : v;
+        }),
+        type: "bar",
+        marker: { color: colors[taxaNames[ci]] || DEFAULT_COLORS[rank % DEFAULT_COLORS.length] },
+        hovertemplate: `<b>${taxaNames[ci]}</b><br>%{x}<br>%{y:.2f}%<extra></extra>`,
+      }));
+      return { data, layout: { ...base, barmode: "stack",
+        xaxis: { ...base.xaxis, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
+        yaxis: { ...base.yaxis, title: { text: is100 ? "Relative Abundance (%)" : "Abundance (%)" } },
+      }};
+    }
+
+    // ANOVABAR — anova_results.csv: grouped bar + error bars for Kruskal-Wallis
+    // Columns: Taxon, G1_mean, G1_se, G2_mean, G2_se, ..., p_kruskal, sig
+    if (activeTab2.type === "anovabar" && rows.length > 1) {
+      const hdr = rows[0];
+      const pIdx = hdr.indexOf("p_kruskal");
+      // Detect group columns: any header ending with _mean
+      const meanCols  = hdr.filter(h => h.endsWith("_mean"));
+      const groupNames = meanCols.map(h => h.replace(/_mean$/, ""));
+      // Sort rows by p-value ascending (most significant first), take top 25
+      const dataRows = rows.slice(1)
+        .filter(r => r[0])
+        .sort((a, b) => (pIdx >= 0 ? num(a[pIdx]) - num(b[pIdx]) : 0))
+        .slice(0, 25);
+      const taxaNames = dataRows.map(r => r[0]);
+      const data: any[] = groupNames.map((g, gi) => {
+        const meanIdx = hdr.indexOf(`${g}_mean`);
+        const seIdx   = hdr.indexOf(`${g}_se`);
+        const color   = colors[g] || DEFAULT_COLORS[gi % DEFAULT_COLORS.length];
+        return {
+          name: g,
+          x: taxaNames,
+          y: dataRows.map(r => num(r[meanIdx])),
+          error_y: seIdx >= 0 ? {
+            type: "data", array: dataRows.map(r => num(r[seIdx])),
+            visible: true, color, thickness: 1.5, width: 4,
+          } : undefined,
+          type: "bar",
+          marker: { color },
+          hovertemplate: `<b>%{x}</b><br>${g}: %{y:.3f}%<extra></extra>`,
+        };
+      });
+      return { data, layout: { ...base, barmode: "group",
+        xaxis: { ...base.xaxis, tickangle: -45, tickmode: "array", tickvals: taxaNames, ticktext: taxaNames.map(xFmt) },
+        yaxis: { ...base.yaxis, title: { text: "Mean Relative Abundance (%)" }, rangemode: "tozero" as const },
+        margin: { l: 60, r: 20, t: 60, b: 160 },
+      }};
+    }
+
+    // LEFSELDA — lefse_lda.csv (all groups) or lefse_{G1}_vs_{G2}.csv (pairwise)
+    // Columns: Taxon, lda_score, group, level
+    // Horizontal bar chart colored by group
+    if (activeTab2.type === "lefselda" && rows.length > 1) {
+      const hdr      = rows[0];
+      const taxonIdx = hdr.indexOf("Taxon");
+      const scoreIdx = hdr.indexOf("lda_score");
+      const groupIdx = hdr.indexOf("group");
+      if (taxonIdx < 0 || scoreIdx < 0) return null;
+      const dataRows = rows.slice(1)
+        .filter(r => r[taxonIdx] && num(r[scoreIdx]) > 0)
+        .sort((a, b) => num(b[scoreIdx]) - num(a[scoreIdx]))
+        .slice(0, 35);
+      if (dataRows.length === 0) return null;
+      const uniqGroups = Array.from(new Set(dataRows.map(r => groupIdx >= 0 ? r[groupIdx] : "All")));
+      const data: any[] = uniqGroups.map((g, gi) => {
+        const gRows = dataRows.filter(r => (groupIdx >= 0 ? r[groupIdx] : "All") === g);
+        return {
+          name: g,
+          x: gRows.map(r => num(r[scoreIdx])),
+          y: gRows.map(r => r[taxonIdx]),
+          type: "bar",
+          orientation: "h" as const,
+          marker: { color: colors[g] || DEFAULT_COLORS[gi % DEFAULT_COLORS.length] },
+          hovertemplate: `<b>%{y}</b><br>LDA: %{x:.3f}<br>Group: ${g}<extra></extra>`,
+        };
+      });
+      const chartH = Math.max(420, dataRows.length * 22 + 120);
+      return { data, layout: { ...base,
+        barmode: "overlay" as const,
+        xaxis: { ...base.xaxis, title: { text: "LDA Score (log10)" }, zeroline: true, tickangle: 0 },
+        yaxis: { ...base.yaxis, automargin: true, tickfont: { size: Math.min(10, font.axisSize), family: "monospace" } },
+        showlegend: true,
+        legend: { x: 1.01, y: 1, xanchor: "left" as const, font: { size: font.legendSize } },
+        margin: { l: 220, r: 140, t: 60, b: 60 },
+        height: chartH,
+      }};
+    }
+
+    // FORESTPLOT — metastats_{G1}_vs_{G2}.csv pairwise differential
+    // Columns: Taxon, G1_mean, G1_se, G2_mean, G2_se, diff_mean, CI_low, CI_high, p_value, q_value
+    // Shows horizontal CI plot (dot = diff_mean, whiskers = CI_low/CI_high)
+    if (activeTab2.type === "forestplot" && rows.length > 1) {
+      const hdr      = rows[0];
+      const diffIdx  = hdr.indexOf("diff_mean");
+      const ciLowIdx = hdr.indexOf("CI_low");
+      const ciHiIdx  = hdr.indexOf("CI_high");
+      const qIdx     = hdr.indexOf("q_value");
+      const pIdx     = hdr.indexOf("p_value");
+      if (diffIdx < 0) return null;
+      // Sort by |diff|, take top 30
+      const dataRows = rows.slice(1)
+        .filter(r => r[0])
+        .sort((a, b) => Math.abs(num(b[diffIdx])) - Math.abs(num(a[diffIdx])))
+        .slice(0, 30);
+      if (dataRows.length === 0) return null;
+      const taxa   = dataRows.map(r => r[0]);
+      const diff   = dataRows.map(r => num(r[diffIdx]));
+      const ciLow  = dataRows.map(r => num(r[ciLowIdx >= 0 ? ciLowIdx : diffIdx]));
+      const ciHigh = dataRows.map(r => num(r[ciHiIdx  >= 0 ? ciHiIdx  : diffIdx]));
+      const sigIdx = qIdx >= 0 ? qIdx : pIdx;
+      const isSig  = dataRows.map(r => sigIdx >= 0 ? num(r[sigIdx]) < 0.05 : false);
+      // Derive group names from current pair filename
+      const gNames = pairFile.replace("metastats_","").replace(".csv","").split("_vs_").map(s => s.replace(/_/g," "));
+      const g1 = gNames[0] || "G1", g2 = gNames[1] || "G2";
+      const col1 = colors[g1] || DEFAULT_COLORS[0];
+      const col2 = colors[g2] || DEFAULT_COLORS[1];
+      const data = [{
+        type: "scatter" as const,
+        mode: "markers" as const,
+        x: diff,
+        y: taxa,
+        error_x: {
+          type: "data" as const,
+          symmetric: false,
+          array:      diff.map((d, i) => Math.max(0, ciHigh[i] - d)),
+          arrayminus: diff.map((d, i) => Math.max(0, d - ciLow[i])),
+          visible: true,
+          color: "#64748b",
+          thickness: 1.5, width: 5,
+        },
+        marker: {
+          color: diff.map(d => d >= 0 ? col1 : col2),
+          size:   isSig.map(s => s ? 13 : 8),
+          symbol: isSig.map(s => s ? "circle" : "circle-open"),
+          line: { width: 2, color: diff.map(d => d >= 0 ? col1 : col2) },
+        },
+        hovertemplate: taxa.map((t, i) =>
+          `<b>${t}</b><br>Δ: ${diff[i].toFixed(3)}<br>CI: [${ciLow[i].toFixed(3)}, ${ciHigh[i].toFixed(3)}]<br>` +
+          `${sigIdx >= 0 ? (qIdx >= 0 ? "q" : "p") + ": " + num(dataRows[i][sigIdx]).toFixed(4) : ""}<extra></extra>`
+        ),
+        showlegend: false,
+      }];
+      const chartH = Math.max(420, dataRows.length * 22 + 140);
+      return { data, layout: { ...base,
+        shapes: [{ type: "line" as const, x0: 0, x1: 0, y0: -0.5, y1: taxa.length - 0.5,
+                   xref: "x", yref: "y", line: { color: "#ef4444", dash: "dash" as const, width: 1.5 } }],
+        annotations: [{
+          text: `← enriched in ${g2}   |   enriched in ${g1} →`,
+          xref: "paper", yref: "paper", x: 0.5, y: -0.08,
+          showarrow: false, font: { size: 10, color: "#64748b" },
+          xanchor: "center", yanchor: "top",
+        }],
+        xaxis: { ...base.xaxis, title: { text: "Difference in Mean Relative Abundance (%)" }, zeroline: false, tickangle: 0 },
+        yaxis: { ...base.yaxis, automargin: true, tickfont: { size: Math.min(10, font.axisSize), family: "monospace" } },
+        margin: { l: 220, r: 40, t: 60, b: 100 },
+        height: chartH,
+      }};
+    }
+
+    // FAPROTAXBAR — faprotax_results.csv: ecological function × sample matrix
+    // If metadata (metaRows) available: show group-mean grouped bar chart
+    // Otherwise: show function × sample heatmap
+    if (activeTab2.type === "faprotaxbar" && rows.length > 1) {
+      const hdr = rows[0]; // ["", "Sample1", "Sample2", ...]  or ["Function", ...]
+      const sampleCols = hdr.slice(1);
+      const funcNames  = rows.slice(1).map(r => r[0]).filter(Boolean);
+      const dataRows   = rows.slice(1).filter(r => r[0]);
+
+      // Build SampleID → Group lookup from metaRows state
+      const grpLookup: Record<string, string> = {};
+      metaRows.forEach(mr => { grpLookup[mr.SampleID] = mr.Group; });
+      const hasGroups = sampleCols.some(s => grpLookup[s] && grpLookup[s].trim() !== "");
+
+      if (hasGroups) {
+        // Grouped bar chart: x = function, traces = groups
+        const groups = Array.from(new Set(sampleCols.map(s => grpLookup[s] || "").filter(g => g)));
+        const data: any[] = groups.map((g, gi) => {
+          const gSamples = sampleCols.filter(s => grpLookup[s] === g);
+          return {
+            name: g,
+            x: funcNames,
+            y: dataRows.map(row => {
+              const vals = gSamples.map(s => {
+                const ci = hdr.indexOf(s);
+                return ci >= 0 ? num(row[ci]) : 0;
+              });
+              return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+            }),
+            type: "bar",
+            marker: { color: colors[g] || DEFAULT_COLORS[gi % DEFAULT_COLORS.length] },
+            hovertemplate: `<b>%{x}</b><br>${g}: %{y:.4f}%<extra></extra>`,
+          };
+        });
+        return { data, layout: { ...base, barmode: "group",
+          xaxis: { ...base.xaxis, tickangle: -40, automargin: true },
+          yaxis: { ...base.yaxis, title: { text: "Mean Relative Abundance (%)" }, rangemode: "tozero" as const },
+          margin: { l: 60, r: 20, t: 60, b: 200 },
+        }};
+      } else {
+        // Heatmap: function (y) × sample (x)
+        const zValues = dataRows.map(row => sampleCols.map((_, ci) => num(row[ci + 1])));
+        const data = [{ z: zValues, x: sampleCols.map(s => alias(s)), y: funcNames,
+          type: "heatmap" as const,
+          colorscale: font.colorscale || "Viridis",
+          hoverongaps: false,
+          colorbar: { title: "Abund.(%)", thickness: 16 },
+          hovertemplate: `<b>%{y}</b><br>%{x}: %{z:.4f}%<extra></extra>`,
+        }];
+        return { data, layout: { ...base,
+          xaxis: { ...base.xaxis, tickangle: -45, title: { text: "Sample" },
+            tickmode: "array", tickvals: sampleCols.map(s => alias(s)), ticktext: sampleCols.map(s => xFmt(alias(s))) },
+          yaxis: { ...base.yaxis, autorange: "reversed" as const, automargin: true },
+          margin: { l: 240, r: 80, t: 60, b: 160 },
+        }};
+      }
+    }
+
     // READTRACKBOX — read_tracking.csv: boxplot per pipeline step across all samples
     // Shows distribution of read counts at each step (spread across 24 samples)
     if (activeTab2.type === "readtrackbox" && rows.length > 1) {
@@ -1011,6 +1386,10 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         setTableInfo(info);
         const avail = ALL_TABS.filter(t => {
           if (t.type === "pdf") return (info.plots || []).includes(t.pdfFile || "");
+          if (t.file === "_pair") {
+            if (t.type === "forestplot") return info.tables.some(f => f.startsWith("metastats_") && f.includes("_vs_"));
+            return false;
+          }
           return info.tables.includes(t.file) || (!!t.altFile && info.tables.includes(t.altFile));
         });
         setAvailTabs(avail);
@@ -1042,6 +1421,32 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     if (samples.length > 0) {
       setMetaRows(samples.map(s => ({ SampleID: s, Group: "" })));
     }
+  };
+
+  // ── Load a specific pairwise CSV file (pair selector handler) ──
+  const loadPairFile = async (filename: string) => {
+    if (!selJob) return;
+    setPairFile(filename);
+    setLoading(true);
+    try {
+      const text = await fetch(`${API}/results/${selJob}/table/${filename}`).then(r => r.text());
+      setCsvData(parseCSV(text));
+    } catch { /* ignore */ }
+    setLoading(false);
+  };
+
+  // ── Reset pairwise tab to all-groups view ─────────────────
+  const resetToAllGroups = async () => {
+    if (!activeTab || !selJob) return;
+    setPairFile("");
+    setLoading(true);
+    try {
+      const fileToLoad = (tableInfo?.tables || []).includes(activeTab.file)
+        ? activeTab.file : (activeTab.altFile || activeTab.file);
+      const text = await fetch(`${API}/results/${selJob}/table/${fileToLoad}`).then(r => r.text());
+      setCsvData(parseCSV(text));
+    } catch { /* ignore */ }
+    setLoading(false);
   };
 
   // ── Export full results as ZIP (with custom-named PNG charts) ──
@@ -1120,7 +1525,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
     if (!tabGroups[g]) tabGroups[g] = [];
     tabGroups[g].push(t);
   });
-  const GROUP_ORDER = ["Taxonomy","Alpha","Beta","Other"];
+  const GROUP_ORDER = ["Taxonomy","Alpha","Beta","Other","Diff","Functional"];
   // Beta only shows when charts exist (needs ≥2 samples)
 
   // Series for customization panel
@@ -1265,6 +1670,38 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
             {/* Chart area + Customize */}
             {activeTab && (
               <div className="prev-content">
+                {/* Pair selector — for LEfSe / Metastats / FAPROTAX pairwise tabs */}
+                {["lefselda","forestplot","faprotaxbar"].includes(activeTab.type) && (() => {
+                  const prefixMap: Record<string, string> = {
+                    lefselda: "lefse_", forestplot: "metastats_", faprotaxbar: "faprotax_",
+                  };
+                  const prefix = prefixMap[activeTab.type] || "";
+                  const pairFiles = (tableInfo?.tables || [])
+                    .filter(f => f.startsWith(prefix) && f.includes("_vs_") && f.endsWith(".csv"))
+                    .sort();
+                  const hasAllGroups = activeTab.type === "lefselda" || activeTab.type === "faprotaxbar";
+                  if (pairFiles.length === 0) return null;
+                  const makePairLabel = (f: string) =>
+                    f.replace(prefix,"").replace(".csv","").replace(/_vs_/," vs ").replace(/_/g," ");
+                  return (
+                    <div className="prev-pair-bar">
+                      <span className="prev-pair-bar-label">Compare:</span>
+                      {hasAllGroups && (
+                        <button
+                          className={`prev-pair-btn${pairFile === "" ? " active" : ""}`}
+                          onClick={resetToAllGroups}>All Groups</button>
+                      )}
+                      {pairFiles.map(f => (
+                        <button key={f}
+                          className={`prev-pair-btn${pairFile === f ? " active" : ""}`}
+                          onClick={() => loadPairFile(f)}>
+                          {makePairLabel(f)}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+
                 {/* Chart — Plotly for interactive types, iframe for PDF type */}
                 <div className="prev-chart-wrap">
                   {loading && <div className="prev-loading">⏳ Loading data…</div>}
@@ -1377,8 +1814,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                         </div>
                       </div>
 
-                      {/* Colorscale picker — for heatmap, taxheatmap and clustheatmap tabs */}
-                      {(activeTab.type === "taxheatmap" || activeTab.type === "heatmap" || activeTab.type === "clustheatmap") && (
+                      {/* Colorscale picker — for heatmap, taxheatmap, clustheatmap and faprotaxbar tabs */}
+                      {(activeTab.type === "taxheatmap" || activeTab.type === "heatmap" || activeTab.type === "clustheatmap" || activeTab.type === "faprotaxbar") && (
                         <div className="prev-cust-section">
                           <div className="prev-cust-section-title">Color Scale</div>
                           <div className="prev-cs-grid">
@@ -1394,8 +1831,8 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                         </div>
                       )}
 
-                      {/* Top N taxa selector — taxonomy bar charts + taxheatmap */}
-                      {(activeTab.type === "taxheatmap" || activeTab.type === "taxonomy") && (
+                      {/* Top N taxa selector — taxonomy bar charts + taxheatmap + dendrobar */}
+                      {(activeTab.type === "taxheatmap" || activeTab.type === "taxonomy" || activeTab.type === "dendrobar") && (
                         <div className="prev-cust-section">
                           <div className="prev-cust-section-title">Show Top Taxa</div>
                           <div className="prev-topn-row">
@@ -1459,7 +1896,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                           onClick={() => { setMetaExpand(s => !s); if (!metaExpand) initMetaFromSamples(); }}>
                           🏷 Sample Groups
                           <span style={{fontSize:10, color:"#94a3b8", marginLeft:6}}>
-                            for Venn / Clust. Heatmap / Phylo Tree
+                            for Diff. Analysis / Venn / Tree
                           </span>
                           <span className="prev-cust-toggle">{metaExpand ? "▲" : "▼"}</span>
                         </div>
@@ -1539,7 +1976,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                                   </button>
                                 </div>
                                 <div className="prev-meta-hint" style={{marginTop:6}}>
-                                  After saving, click <b>🔄 Re-run Viz</b> to regenerate Venn / Tree / Heatmap with group labels.
+                                  After saving, click <b>🔄 Re-run Viz</b> to regenerate differential analysis, Venn, Tree, and FAPROTAX charts with group labels.
                                 </div>
                               </>
                             )}

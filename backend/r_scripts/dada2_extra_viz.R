@@ -24,6 +24,36 @@ dada2_extra_viz <- function(out_dir) {
     tryCatch({ library(vegan); TRUE }, error=function(e) {
       cat("  [skip beta/rarefaction] vegan not available\n"); FALSE }))
 
+  # ── Helper: load metadata.csv → named vector SampleID → Group ────────────────
+  meta_groups <- local({
+    mf <- file.path(out_dir, "metadata.csv")
+    if (!file.exists(mf)) return(NULL)
+    tryCatch({
+      m <- read.csv(mf, stringsAsFactors=FALSE)
+      sid_col <- grep("sampleid|sample_id|sample", colnames(m), ignore.case=TRUE, value=TRUE)[1]
+      grp_col <- grep("^group$", colnames(m), ignore.case=TRUE, value=TRUE)[1]
+      if (is.na(sid_col) || is.na(grp_col)) return(NULL)
+      setNames(m[[grp_col]], m[[sid_col]])
+    }, error=function(e) NULL)
+  })
+
+  # ── Helper: compute 95% confidence ellipse polygon for a group of points ──────
+  compute_ellipse <- function(x, y, conf=0.95, n_pts=100) {
+    if (length(x) < 3) return(NULL)
+    tryCatch({
+      cov_m  <- cov(cbind(x, y))
+      center <- c(mean(x), mean(y))
+      chisq  <- qchisq(conf, df=2)
+      eig    <- eigen(cov_m)
+      vals   <- sqrt(pmax(eig$values, 0) * chisq)
+      vecs   <- eig$vectors
+      theta  <- seq(0, 2*pi, length.out=n_pts)
+      pts    <- t(vecs %*% (vals * rbind(cos(theta), sin(theta)))) +
+                matrix(rep(center, n_pts), nrow=n_pts, byrow=TRUE)
+      data.frame(x=pts[,1], y=pts[,2])
+    }, error=function(e) NULL)
+  }
+
   # ── 1. PCoA from Bray-Curtis ────────────────────────────────────────────────
   if (!file.exists(bray_file)) {
     cat("  (bray_curtis_distance_matrix.csv missing — skip PCoA + NMDS Bray)\n")
@@ -49,15 +79,68 @@ dada2_extra_viz <- function(out_dir) {
         PC2_var = round(var_p[2], 1),
         PC3_var = if (length(var_p) >= 3) round(var_p[3], 1) else 0,
         stringsAsFactors = FALSE)
+      # Attach Group from metadata if available
+      if (!is.null(meta_groups)) {
+        pc_df$Group <- meta_groups[pc_df$Sample]
+        pc_df$Group[is.na(pc_df$Group)] <- "Unknown"
+      }
       write.csv(pc_df, pca_out, row.names=FALSE)
-      cat("  ✓ pca_scores.csv\n")
+      cat("  ✓ pca_scores.csv", if (!is.null(meta_groups)) "(+Group)" else "", "\n")
 
       n_sc  <- min(10, sum(eig_p > 0))
       sc_df <- data.frame(PC=seq_len(n_sc), Variance=round(var_p[seq_len(n_sc)], 2))
       write.csv(sc_df, file.path(out_dir, "pca_scree.csv"), row.names=FALSE)
       cat("  ✓ pca_scree.csv\n")
+
+      # ── PCoA ellipse coordinates per group ──────────────────────────────────
+      if (!is.null(meta_groups)) tryCatch({
+        ellipse_rows <- list()
+        for (grp in unique(pc_df$Group)) {
+          idx <- which(pc_df$Group == grp)
+          ell <- compute_ellipse(pc_df$PC1[idx], pc_df$PC2[idx])
+          if (!is.null(ell)) {
+            ell$Group <- grp
+            ellipse_rows[[grp]] <- ell
+          }
+        }
+        if (length(ellipse_rows) > 0) {
+          ell_df <- do.call(rbind, ellipse_rows)
+          rownames(ell_df) <- NULL
+          write.csv(ell_df, file.path(out_dir, "pca_ellipse.csv"), row.names=FALSE)
+          cat("  ✓ pca_ellipse.csv  (", length(ellipse_rows), "groups)\n")
+        }
+      }, error=function(e) cat("  [skip] PCoA ellipse:", e$message, "\n"))
     }
   }, error=function(e) cat("  [skip] PCoA:", e$message, "\n"))
+
+  # ── 1b. NMDS Bray: add Group column from metadata ────────────────────────────
+  # (only if nmds_bray.csv was already generated; patch it with Group column)
+  if (!is.null(meta_groups)) {
+    nmds_bray_out <- file.path(out_dir, "nmds_bray.csv")
+    if (file.exists(nmds_bray_out)) tryCatch({
+      nb <- read.csv(nmds_bray_out, stringsAsFactors=FALSE)
+      if (!"Group" %in% colnames(nb)) {
+        nb$Group <- meta_groups[nb$Sample]
+        nb$Group[is.na(nb$Group)] <- "Unknown"
+        write.csv(nb, nmds_bray_out, row.names=FALSE)
+        cat("  ✓ nmds_bray.csv patched with Group\n")
+        # Compute NMDS ellipse
+        tryCatch({
+          ellipse_rows <- list()
+          for (grp in unique(nb$Group)) {
+            idx <- which(nb$Group == grp)
+            ell <- compute_ellipse(nb$NMDS1[idx], nb$NMDS2[idx])
+            if (!is.null(ell)) { ell$Group <- grp; ellipse_rows[[grp]] <- ell }
+          }
+          if (length(ellipse_rows) > 0) {
+            ell_df <- do.call(rbind, ellipse_rows); rownames(ell_df) <- NULL
+            write.csv(ell_df, file.path(out_dir, "nmds_ellipse.csv"), row.names=FALSE)
+            cat("  ✓ nmds_ellipse.csv\n")
+          }
+        }, error=function(e) NULL)
+      }
+    }, error=function(e) NULL)
+  }
 
   # ── 2. NMDS Bray-Curtis ─────────────────────────────────────────────────────
   if (have_vegan && file.exists(bray_file)) tryCatch({

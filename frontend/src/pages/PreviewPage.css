@@ -699,3 +699,44 @@
   gap: 6px;
   margin-top: 4px;
 }
+
+/* ── Pairwise comparison selector bar ────────────────────────── */
+.prev-pair-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 6px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+.prev-pair-bar-label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 600;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+.prev-pair-btn {
+  padding: 4px 11px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  color: #94a3b8;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.prev-pair-btn:hover {
+  background: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.22);
+  color: #e2e8f0;
+}
+.prev-pair-btn.active {
+  background: rgba(59,130,246,0.25);
+  border-color: #3b82f6;
+  color: #93c5fd;
+  font-weight: 600;
+}

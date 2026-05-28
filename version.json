@@ -1,5 +1,5 @@
 {
-  "version": "2.5.0",
-  "release_date": "2026-05-27",
-  "changelog": "feat: Hierarchical Clustering Heatmap, Venn Diagram, Phylogenetic Tree (circular) — new R scripts + interactive clustheatmap tab + Sample Groups metadata panel for group-aware visualizations"
+  "version": "2.6.0",
+  "release_date": "2026-05-28",
+  "changelog": "feat: PCoA + group ellipses, Dendrogram + composition bars, ANOVA/KW differential analysis, LEfSe LDA, Metastats forest plot, FAPROTAX ecological function prediction — all with interactive chart editing and pairwise comparison selector"
 }

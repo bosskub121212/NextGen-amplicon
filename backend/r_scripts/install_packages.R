@@ -82,7 +82,9 @@ bioc_pkgs <- c(
   "DECIPHER",            # Multiple sequence alignment (for NJ tree)
   "Biostrings",          # DNA sequence handling
   "ggtree",              # Phylogenetic tree visualization
-  "treeio"               # Tree I/O (ggtree dependency)
+  "treeio",              # Tree I/O (ggtree dependency)
+  # v2.6.0 additions
+  "microbiomeMarker"     # LEfSe cladogram (optional, falls back gracefully)
 )
 for (p in bioc_pkgs) install_if_missing(p, bioc=TRUE)
 
