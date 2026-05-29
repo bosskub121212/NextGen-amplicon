@@ -493,11 +493,15 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         phylumNames = topCols.map(i => allCols[i]);
         dataRows    = allRows.map(row => [row[0], ...topCols.map(i => row[i + 1])]);
       } else {
-        // ONT-16S transposed: limit rows (taxa) by total abundance
+        // ONT-16S: rows=taxa, cols=samples → transpose so rows=samples, cols=taxa
         const rowTotals = allRows.map(row => row.slice(1).reduce((s, v) => s + num(v), 0));
         const topRows = rowTotals.map((_, i) => i).sort((a, b) => rowTotals[b] - rowTotals[a]).slice(0, maxTaxa);
-        phylumNames = allCols;          // cols = sample IDs (few)
-        dataRows    = topRows.map(i => allRows[i]);
+        phylumNames = topRows.map(i => allRows[i][0]);   // taxon names (legend)
+        // Build transposed dataRows: each row = [sampleID, taxon0_abund, taxon1_abund, ...]
+        dataRows = allCols.map((sampleId, si) => [
+          sampleId,
+          ...topRows.map(ti => allRows[ti][si + 1] ?? "0"),
+        ]);
       }
       const sampleNames = dataRows.map(r => alias(r[0]));
       const is100 = font.chartType === "bar100";
