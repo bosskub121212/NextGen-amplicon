@@ -155,7 +155,14 @@ const shortName = (s: string) => (s || '').replace(/FBE\d+_pass_/i,"").replace(/
 // ── Get raw sample names for x-axis (used in customize panel) ─
 function getUniqueSamples(tab: TabDef, rows: string[][]): string[] {
   if (!rows.length) return [];
-  if (tab.type === "taxonomy") return rows.slice(1).map(r => r[0]).filter(Boolean);
+  if (tab.type === "taxonomy") {
+    // Detect orientation: many cols = taxa-as-cols (regular 16S, rows=samples)
+    //                     many rows = taxa-as-rows (ONT-16S, cols=samples)
+    const nCols = rows[0].slice(1).length;
+    const nDataRows = rows.slice(1).length;
+    if (nCols >= nDataRows) return rows.slice(1).map(r => r[0]).filter(Boolean);  // rows = samples
+    else                    return rows[0].slice(1).filter(Boolean);               // cols = samples
+  }
   if (tab.type === "taxheatmap") {
     // Return BOTH col headers (x-axis) and row labels (y-axis) — either could be sample IDs
     // depending on CSV orientation (regular 16S vs ONT-16S transposed)
@@ -519,7 +526,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       return { data, layout: {
         ...base, barmode: "stack",
         xaxis: { ...base.xaxis, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
-        yaxis: { ...base.yaxis, title: { text: is100 ? "Relative Abundance (%)" : "Abundance (%)" } },
+        yaxis: { ...base.yaxis, title: { text: is100 ? "Relative Abundance (%)" : "Abundance (%)" }, range: [0, 100] },
       }};
     }
 
