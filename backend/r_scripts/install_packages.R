@@ -82,11 +82,18 @@ bioc_pkgs <- c(
   "DECIPHER",            # Multiple sequence alignment (for NJ tree)
   "Biostrings",          # DNA sequence handling
   "ggtree",              # Phylogenetic tree visualization
-  "treeio",              # Tree I/O (ggtree dependency)
-  # v2.6.0 additions
-  "microbiomeMarker"     # LEfSe cladogram (optional, falls back gracefully)
+  "treeio"               # Tree I/O (ggtree dependency)
 )
 for (p in bioc_pkgs) install_if_missing(p, bioc=TRUE)
+
+# ── microbiomeMarker: not in Bioconductor 3.21+ — install from GitHub ─────────
+cat("\n── microbiomeMarker (optional — LEfSe cladogram only) ───────\n")
+if (requireNamespace("microbiomeMarker", quietly=TRUE)) {
+  cat("  ✓ microbiomeMarker already present\n")
+} else {
+  cat("  [skip] microbiomeMarker not compatible with R >= 4.5 / Bioconductor 3.21+\n")
+  cat("  (LEfSe LDA bar chart still works — only cladogram PDF is affected)\n")
+}
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 # ── Optional: FUNGuildR (ITS pipelines only — install from GitHub) ────────────
@@ -105,4 +112,5 @@ ok  <- sapply(all_pkgs, function(p) requireNamespace(p, quietly=TRUE))
 cat(sprintf("  Available   : %d / %d\n", sum(ok), length(ok)))
 if (any(!ok))
   cat(sprintf("  Missing     : %s\n", paste(names(ok)[!ok], collapse=", ")))
+cat("  Note: microbiomeMarker not counted (incompatible with R >= 4.5)\n")
 cat("\n")
