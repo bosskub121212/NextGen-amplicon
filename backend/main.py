@@ -223,15 +223,35 @@ def root():
 # ── 1. Upload ─────────────────────────────────────────────────────────────────
 @app.post("/upload")
 async def upload_files(files: list[UploadFile] = File(...)):
+    import zipfile as _zf, io as _io
     job_id  = str(uuid.uuid4())[:8]
     job_dir = UPLOAD_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     saved = []
+    FASTQ_EXTS = (".fastq", ".fastq.gz", ".fq", ".fq.gz")
     for file in files:
-        path = job_dir / file.filename
-        with open(path, "wb") as f:
-            f.write(await file.read())
-        saved.append(file.filename)
+        content = await file.read()
+        fname = file.filename or ""
+        if fname.lower().endswith(".zip"):
+            # Extract FASTQ files from ZIP
+            try:
+                with _zf.ZipFile(_io.BytesIO(content)) as zf:
+                    for member in zf.namelist():
+                        bname = Path(member).name
+                        if not bname:
+                            continue
+                        if any(bname.lower().endswith(ext) for ext in FASTQ_EXTS):
+                            out_path = job_dir / bname
+                            with zf.open(member) as src, open(out_path, "wb") as dst:
+                                dst.write(src.read())
+                            saved.append(bname)
+            except Exception as e:
+                logging.warning(f"ZIP extract failed for {fname}: {e}")
+        else:
+            path = job_dir / fname
+            with open(path, "wb") as f:
+                f.write(content)
+            saved.append(fname)
     with jobs_lock:
         jobs[job_id] = {
             "status": "uploaded", "files": saved,

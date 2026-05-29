@@ -84,7 +84,7 @@ export default function App() {
   const [jobName, setJobName]           = useState("");
   const [marker, setMarker]             = useState<MarkerType>("16S");
   const [params, setParams]             = useState<PipelineParams>(defaultParams);
-  const [selectedFiles, setSelectedFiles] = useState<FileList|null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [pendingJobId, setPendingJobId] = useState<string|null>(null);
   const [sampleNames, setSampleNames]   = useState<string[]>([]);
   const [metadata, setMetadata]         = useState<MetaRow[]>([]);
@@ -251,18 +251,19 @@ export default function App() {
     return () => { if (progRef.current) clearInterval(progRef.current); };
   }, [focusJob]);
 
-  // ── Upload ────────────────────────────────────────────────────────
-  const handleUpload = async () => {
-    if (!selectedFiles?.length) { alert("Please select FASTQ files first."); return; }
-    setLoading(true);
-    const form = new FormData();
-    Array.from(selectedFiles).forEach(f => form.append("files", f));
-    try {
-      const res = await axios.post(`${API}/upload`, form);
-      setPendingJobId(res.data.job_id);
+  // ── Add files helper (accumulate, deduplicate by name) ───────────
+  const addFiles = (incoming: FileList | File[]) => {
+    const newArr = Array.from(incoming);
+    setSelectedFiles(prev => {
+      const merged = [...prev];
+      for (const f of newArr) {
+        if (!merged.some(m => m.name === f.name)) merged.push(f);
+      }
+      // Recompute sample names from non-ZIP files
       const isONT = marker === "ONT-16S";
-      const r1   = isONT ? [] : Array.from(selectedFiles).filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
-      const base = r1.length > 0 ? r1 : Array.from(selectedFiles);
+      const nonZip = merged.filter(f => !f.name.toLowerCase().endsWith(".zip"));
+      const r1 = isONT ? [] : nonZip.filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
+      const base = r1.length > 0 ? r1 : nonZip;
       const names = base.map(f =>
         isONT
           ? f.name.replace(/\.(fastq|fq)(\.gz)?$/i, "")
@@ -270,6 +271,33 @@ export default function App() {
       );
       setSampleNames(names);
       setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
+      return merged;
+    });
+  };
+
+  // ── Upload ────────────────────────────────────────────────────────
+  const handleUpload = async () => {
+    if (!selectedFiles.length) { alert("Please select FASTQ or ZIP files first."); return; }
+    setLoading(true);
+    const form = new FormData();
+    selectedFiles.forEach(f => form.append("files", f));
+    try {
+      const res = await axios.post(`${API}/upload`, form);
+      setPendingJobId(res.data.job_id);
+      // Use server-returned file list (ZIPs were extracted server-side)
+      const serverFiles: string[] = res.data.files || [];
+      const isONT = marker === "ONT-16S";
+      const r1 = isONT ? [] : serverFiles.filter(n => /_R1|_1\.(fq|fastq)/i.test(n));
+      const base = r1.length > 0 ? r1 : serverFiles.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
+      const names = base.map(n =>
+        isONT
+          ? n.replace(/\.(fastq|fq)(\.gz)?$/i, "")
+          : n.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "")
+      );
+      if (names.length > 0) {
+        setSampleNames(names);
+        setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
+      }
     } catch { alert("Upload failed — is the backend running?"); }
     setLoading(false);
   };
@@ -295,7 +323,7 @@ export default function App() {
 
   // ── Reset ─────────────────────────────────────────────────────────
   const resetWizard = () => {
-    setJobName(""); setSelectedFiles(null); setPendingJobId(null);
+    setJobName(""); setSelectedFiles([]); setPendingJobId(null);
     setSampleNames([]); setMetadata([]);
     setShowAdvanced(false); setShowSubmitPopup(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -1003,7 +1031,7 @@ export default function App() {
               </div>
               <div className="confirm-row">
                 <span>Files uploaded</span>
-                <strong>{selectedFiles?.length ?? 0} file(s)</strong>
+                <strong>{selectedFiles.length} file(s)</strong>
               </div>
               <div className="confirm-row">
                 <span>Samples</span><strong>{sampleNames.length}</strong>
@@ -1119,52 +1147,54 @@ export default function App() {
             className={`drop-zone ${dragOver ? "drag-over" : ""}`}
             onDragOver={e => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
-            onDrop={e => {
-              e.preventDefault(); setDragOver(false);
-              const dt = e.dataTransfer.files;
-              if (dt.length) {
-                setSelectedFiles(dt);
-                const isONT = marker === "ONT-16S";
-                const r1 = isONT ? [] : Array.from(dt).filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
-                const base = r1.length > 0 ? r1 : Array.from(dt);
-                const names = base.map(f =>
-                  isONT
-                    ? f.name.replace(/\.(fastq|fq)(\.gz)?$/i,"")
-                    : f.name.replace(/_R1.*|_1\.(fq|fastq).*/i,"").replace(/\.(fastq|fq)(\.gz)?$/i,"")
-                );
-                setSampleNames(names);
-                setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
-              }
-            }}
+            onDrop={e => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files); }}
             onClick={() => fileInputRef.current?.click()}
           >
-            {selectedFiles?.length
-              ? <>📁 <strong>{selectedFiles.length} file(s)</strong> selected — click to change</>
+            {selectedFiles.length
+              ? <>➕ <strong>{selectedFiles.length} file(s)</strong> selected — click/drop to add more</>
               : marker === "ONT-16S"
-                ? <>🧫 Drop ONT .fastq / .fastq.gz files here (one per sample), or <u>click to browse</u></>
-                : <>📂 Drop .fastq / .fastq.gz files here, or <u>click to browse</u></>
+                ? <>🧫 Drop ONT .fastq / .fastq.gz / .zip here, or <u>click to browse</u></>
+                : <>📂 Drop .fastq / .fastq.gz / .zip here, or <u>click to browse</u></>
             }
           </div>
           <input
-            ref={fileInputRef} type="file" multiple accept=".fastq,.fastq.gz,.fq,.fq.gz"
+            ref={fileInputRef} type="file" multiple
+            accept=".fastq,.fastq.gz,.fq,.fq.gz,.zip"
             style={{ display: "none" }}
-            onChange={e => {
-              const files = e.target.files;
-              if (files?.length) {
-                setSelectedFiles(files);
-                const isONT = marker === "ONT-16S";
-                const r1 = isONT ? [] : Array.from(files).filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
-                const base = r1.length > 0 ? r1 : Array.from(files);
-                const names = base.map(f =>
-                  isONT
-                    ? f.name.replace(/\.(fastq|fq)(\.gz)?$/i,"")
-                    : f.name.replace(/_R1.*|_1\.(fq|fastq).*/i,"").replace(/\.(fastq|fq)(\.gz)?$/i,"")
-                );
-                setSampleNames(names);
-                setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
-              }
-            }}
+            onChange={e => { if (e.target.files?.length) { addFiles(e.target.files); e.target.value = ""; } }}
           />
+          {selectedFiles.length > 0 && (
+            <div className="sample-list" style={{ marginTop: 8 }}>
+              <div className="sample-list-title" style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span>📁 Selected files ({selectedFiles.length})</span>
+                <button className="prev-btn-reset" style={{ fontSize:11, padding:"2px 8px" }}
+                  onClick={() => { setSelectedFiles([]); setSampleNames([]); setMetadata([]); }}>
+                  ✕ Clear all
+                </button>
+              </div>
+              <div className="sample-chips" style={{ marginTop: 4 }}>
+                {selectedFiles.map(f => (
+                  <span key={f.name} className="sample-chip" style={{ display:"inline-flex", alignItems:"center", gap:4 }}>
+                    {f.name.toLowerCase().endsWith(".zip") ? "📦 " : ""}{f.name}
+                    <button style={{ background:"none", border:"none", cursor:"pointer", color:"#94a3b8", fontSize:12, padding:0, lineHeight:1 }}
+                      onClick={ev => { ev.stopPropagation();
+                        setSelectedFiles(prev => {
+                          const next = prev.filter(x => x.name !== f.name);
+                          const isONT = marker === "ONT-16S";
+                          const nonZip = next.filter(x => !x.name.toLowerCase().endsWith(".zip"));
+                          const r1 = isONT ? [] : nonZip.filter(x => /_R1|_1\.(fq|fastq)/i.test(x.name));
+                          const base = r1.length > 0 ? r1 : nonZip;
+                          const names = base.map(x => isONT ? x.name.replace(/\.(fastq|fq)(\.gz)?$/i,"") : x.name.replace(/_R1.*|_1\.(fq|fastq).*/i,"").replace(/\.(fastq|fq)(\.gz)?$/i,""));
+                          setSampleNames(names);
+                          setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
+                          return next;
+                        });
+                      }}>✕</button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           {sampleNames.length > 0 && (
             <div className="sample-list">
