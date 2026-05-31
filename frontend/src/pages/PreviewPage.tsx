@@ -156,12 +156,11 @@ const shortName = (s: string) => (s || '').replace(/FBE\d+_pass_/i,"").replace(/
 function getUniqueSamples(tab: TabDef, rows: string[][]): string[] {
   if (!rows.length) return [];
   if (tab.type === "taxonomy") {
-    // Detect orientation: many cols = taxa-as-cols (regular 16S, rows=samples)
-    //                     many rows = taxa-as-rows (ONT-16S, cols=samples)
-    const nCols = rows[0].slice(1).length;
-    const nDataRows = rows.slice(1).length;
-    if (nCols >= nDataRows) return rows.slice(1).map(r => r[0]).filter(Boolean);  // rows = samples
-    else                    return rows[0].slice(1).filter(Boolean);               // cols = samples
+    // If header[0] is a taxonomy rank name → viz_pipeline.R format: rows=taxa, cols=samples
+    const TAX_RANKS = new Set(["phylum","class","order","family","genus","species"]);
+    const taxaAsRows = TAX_RANKS.has((rows[0][0] || "").toLowerCase().trim());
+    if (taxaAsRows) return rows[0].slice(1).filter(Boolean);   // cols = samples
+    else            return rows.slice(1).map(r => r[0]).filter(Boolean);  // rows = samples
   }
   if (tab.type === "taxheatmap") {
     // Return BOTH col headers (x-axis) and row labels (y-axis) — either could be sample IDs
@@ -486,10 +485,11 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const allCols  = rows[0].slice(1);   // column headers
       const allRows  = rows.slice(1);      // data rows
       const maxTaxa  = (font.topNTaxa ?? 50) > 0 ? (font.topNTaxa ?? 50) : Infinity;
-      const nCols    = allCols.length;
-      const nDataRows = allRows.length;
-      // Detect orientation: many cols = taxa-as-columns (regular 16S); many rows = taxa-as-rows (ONT-16S)
-      const taxaAsCols = nCols >= nDataRows;
+      // Detect orientation: if header[0] is a taxonomy rank name → viz_pipeline.R format
+      // (rows=taxa, cols=samples). Otherwise rows=samples, cols=taxa.
+      const TAX_RANKS = new Set(["phylum","class","order","family","genus","species"]);
+      const taxaAsRows = TAX_RANKS.has((rows[0][0] || "").toLowerCase().trim());
+      const taxaAsCols = !taxaAsRows;
 
       let phylumNames: string[];
       let dataRows: string[][];
