@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 export interface MetaRow {
   sampleId: string;
@@ -13,9 +13,21 @@ interface Props {
 }
 
 export default function MetadataEditor({ sampleNames, onChange }: Props) {
-  const [rows, setRows]             = useState<MetaRow[]>(() =>
-    sampleNames.map((s) => ({ sampleId: s, group: "", description: "" }))
-  );
+  const [rows, setRows] = useState<MetaRow[]>([]);
+
+  // ── Keep rows in sync with sampleNames prop ────────────────────
+  // (files can now be added/renamed in multiple batches — e.g. manual
+  // sample/file pairing — so this must re-sync, not just run once at mount)
+  const sampleNamesKey = sampleNames.join("");
+  useEffect(() => {
+    setRows((prev) => {
+      const prevMap = new Map(prev.map((r) => [r.sampleId, r]));
+      const next = sampleNames.map((s) => prevMap.get(s) ?? { sampleId: s, group: "", description: "" });
+      onChange(next);
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sampleNamesKey]);
   const [customCols, setCustomCols] = useState<string[]>([]);
   // Display labels for editable headers (key → display label)
   const [colLabels, setColLabels]   = useState<Record<string, string>>({

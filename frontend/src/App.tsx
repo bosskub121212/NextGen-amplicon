@@ -97,6 +97,29 @@ export default function App() {
   const [pairReadMode, setPairReadMode] = useState<"single"|"paired">("paired");
   const [fileMap, setFileMap] = useState<{sample:string; file1:string; file2:string}[]>([]);
 
+  // Keep "Detected samples" / Sample Metadata in sync with manual pairing edits
+  useEffect(() => {
+    if (!useManualPairing) return;
+    const names = fileMap.map(r => r.sample.trim()).filter(Boolean);
+    if (names.length > 0) setSampleNames(names);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useManualPairing, fileMap.map(r => r.sample).join("|")]);
+
+  // Revert "Detected samples" back to filename auto-detect when manual pairing is turned off
+  useEffect(() => {
+    if (useManualPairing || serverFileList.length === 0) return;
+    const isONT = marker === "ONT-16S";
+    const r1 = isONT ? [] : serverFileList.filter(n => /_R1|_1\.(fq|fastq)/i.test(n));
+    const base = r1.length > 0 ? r1 : serverFileList.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
+    const names = base.map(n =>
+      isONT
+        ? n.replace(/\.(fastq|fq)(\.gz)?$/i, "")
+        : n.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "")
+    );
+    if (names.length > 0) setSampleNames(names);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useManualPairing]);
+
   // System / jobs
   const [allJobs, setAllJobs]           = useState<JobSummary[]>([]);
   const [maxWorkers, setMaxWorkers]     = useState(2);
