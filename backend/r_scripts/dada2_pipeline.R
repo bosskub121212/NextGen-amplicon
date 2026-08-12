@@ -126,6 +126,21 @@ if (is_single) {
   sample_names[still_long] <- sub("_[0-9]+$", "", raw_names[still_long])
   cat("Found (single-end):", length(fnFs), "files\n")
   cat("Sample names:", paste(sample_names, collapse=", "), "\n\n")
+
+  # ── Guard: duplicate sample names usually mean this is actually
+  #    paired-end data (R1/R2 pairs) mistakenly run in ONT/single-end mode ──
+  dup_names <- unique(sample_names[duplicated(sample_names)])
+  if (length(dup_names) > 0) {
+    cat("ERROR: Duplicate sample names after parsing:", paste(dup_names, collapse=", "), "\n")
+    cat("This usually means the uploaded files are PAIRED-END (R1/R2 pairs,\n")
+    cat("e.g. SampleA_1.fastq.gz + SampleA_2.fastq.gz) but the job was run in\n")
+    cat("ONT / single-end mode, which strips the trailing _1/_2 as if it were\n")
+    cat("noise and collapses both mates into one sample name.\n\n")
+    cat("Fix: create a new job WITHOUT the ONT/single-end option for this data\n")
+    cat("(use standard paired-end 16S mode instead). Only enable ONT mode for\n")
+    cat("true single-read Nanopore FASTQ files (one file per sample).\n")
+    stop("Duplicate sample names in single-end mode — see message above.")
+  }
 } else {
   # ── Paired-end (Illumina): require R1/R2 ───────────────────
   patterns <- list(
