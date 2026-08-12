@@ -171,6 +171,11 @@ class RunParams(BaseModel):
     run_picrust2:  bool  = False
     # --- Sequencer type (for DADA2 16S/12S pipelines) ---
     sequencerType: str   = "illumina"   # illumina | ont
+    # --- Manual sample↔file pairing (overrides filename auto-detection) ---
+    # Each entry: {"sample": "AC", "file1": "AC_1.fastq.gz", "file2": "AC_2.fastq.gz"}
+    # file2 blank/omitted → that sample is treated as single-end/long-read.
+    # If any entry has a non-empty file2, ALL entries must (fully paired job).
+    sampleFileMap: list[dict] = []
     # --- Custom classifier (QIIME2) ---
     customClassifierMode: str   = "default"  # default | train | upload
     customClassifierPath: str   = ""          # path to .qza (upload mode)
@@ -323,6 +328,17 @@ def run_r_pipeline(job_id: str, params: RunParams):
     output_dir = str(RESULTS_DIR / job_id)
     os.makedirs(output_dir, exist_ok=True)
     log_file = Path(output_dir) / "pipeline.log"
+
+    # ── Manual sample↔file manifest (from frontend pairing UI) ────────────────
+    # Written into input_dir so dada2_pipeline.R picks it up and skips
+    # filename-based auto-detection entirely (fixes ONT-vs-paired-end mixups).
+    if params.sampleFileMap:
+        try:
+            manifest_path = Path(input_dir) / "sample_manifest.json"
+            manifest_path.write_text(json.dumps(params.sampleFileMap, ensure_ascii=False, indent=2))
+            print(f"[manifest] Wrote sample_manifest.json ({len(params.sampleFileMap)} samples) for job {job_id}")
+        except Exception as _me:
+            print(f"[manifest] WARNING: failed to write sample_manifest.json: {_me}")
 
     # Persist output_dir so replot endpoint can find it
     with jobs_lock:

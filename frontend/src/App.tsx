@@ -91,6 +91,11 @@ export default function App() {
   const [loading, setLoading]           = useState(false);
   const [dragOver, setDragOver]         = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // Manual sample↔file pairing (bypasses filename auto-detection)
+  const [serverFileList, setServerFileList] = useState<string[]>([]);
+  const [useManualPairing, setUseManualPairing] = useState(false);
+  const [pairReadMode, setPairReadMode] = useState<"single"|"paired">("paired");
+  const [fileMap, setFileMap] = useState<{sample:string; file1:string; file2:string}[]>([]);
 
   // System / jobs
   const [allJobs, setAllJobs]           = useState<JobSummary[]>([]);
@@ -286,6 +291,7 @@ export default function App() {
       setPendingJobId(res.data.job_id);
       // Use server-returned file list (ZIPs were extracted server-side)
       const serverFiles: string[] = res.data.files || [];
+      setServerFileList(serverFiles);
       const isONT = marker === "ONT-16S";
       const r1 = isONT ? [] : serverFiles.filter(n => /_R1|_1\.(fq|fastq)/i.test(n));
       const base = r1.length > 0 ? r1 : serverFiles.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
@@ -298,13 +304,57 @@ export default function App() {
         setSampleNames(names);
         setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
       }
+      setPairReadMode(isONT ? "single" : "paired");
+      setFileMap(buildFileMapGuess(serverFiles));
     } catch { alert("Upload failed — is the backend running?"); }
     setLoading(false);
+  };
+
+  // ── Guess sample↔file pairs from filenames (starting point for manual editing) ──
+  const buildFileMapGuess = (files: string[]): {sample:string; file1:string; file2:string}[] => {
+    const fastq = files.filter(f => /\.(fastq|fq)(\.gz)?$/i.test(f)).sort();
+    const used = new Set<string>();
+    const rows: {sample:string; file1:string; file2:string}[] = [];
+    for (const f of fastq) {
+      if (used.has(f)) continue;
+      // Try to find this file's mate via common R1/R2 or _1/_2 conventions
+      let mate = "";
+      let sample = f.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "");
+      if (/_R1|_1\.(fq|fastq)/i.test(f)) {
+        const candidate = f.replace(/_R1/i, "_R2").replace(/_1\.(fq|fastq)/i, "_2.$1");
+        if (fastq.includes(candidate)) mate = candidate;
+      }
+      if (mate) { used.add(f); used.add(mate); rows.push({ sample, file1: f, file2: mate }); }
+      else {
+        sample = f.replace(/\.(fastq|fq)(\.gz)?$/i, "");
+        used.add(f);
+        rows.push({ sample, file1: f, file2: "" });
+      }
+    }
+    return rows;
   };
 
   // ── Run ───────────────────────────────────────────────────────────
   const handleRun = async () => {
     if (!pendingJobId) return;
+
+    // Validate manual pairing table before submit
+    let sampleFileMap: {sample:string; file1:string; file2:string}[] = [];
+    if (useManualPairing) {
+      const rows = fileMap.filter(r => r.sample.trim() || r.file1);
+      if (rows.length === 0) { alert("Add at least one sample row, or turn off manual pairing."); return; }
+      for (const r of rows) {
+        if (!r.sample.trim()) { alert("Every row needs a sample name."); return; }
+        if (!r.file1)         { alert(`Sample "${r.sample}" is missing File 1.`); return; }
+        if (pairReadMode === "paired" && !r.file2) {
+          alert(`Sample "${r.sample}" is missing File 2 (required for Paired-end mode).`); return;
+        }
+      }
+      const dupes = rows.map(r => r.sample).filter((s, i, a) => a.indexOf(s) !== i);
+      if (dupes.length > 0) { alert(`Duplicate sample name(s): ${Array.from(new Set(dupes)).join(", ")}`); return; }
+      sampleFileMap = rows.map(r => ({ sample: r.sample.trim(), file1: r.file1, file2: pairReadMode === "paired" ? r.file2 : "" }));
+    }
+
     setLoading(true);
     try {
       await axios.post(`${API}/run/${pendingJobId}`, {
@@ -312,6 +362,7 @@ export default function App() {
         marker,
         ...params,
         metadata,
+        sampleFileMap,
       });
       resetWizard();
       setShowSubmitPopup(false);
@@ -326,6 +377,7 @@ export default function App() {
     setJobName(""); setSelectedFiles([]); setPendingJobId(null);
     setSampleNames([]); setMetadata([]);
     setShowAdvanced(false); setShowSubmitPopup(false);
+    setServerFileList([]); setUseManualPairing(false); setFileMap([]); setPairReadMode("paired");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -1202,6 +1254,106 @@ export default function App() {
               <div className="sample-chips">
                 {sampleNames.map(s => <span key={s} className="sample-chip">{s}</span>)}
               </div>
+            </div>
+          )}
+
+          {/* ── Manual sample↔file pairing (advanced) ─────────────────────── */}
+          {pendingJobId && serverFileList.length > 0 && (
+            <div style={{ marginTop: 14, borderTop: "1px solid #334155", paddingTop: 12 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                <input type="checkbox" checked={useManualPairing}
+                  onChange={e => setUseManualPairing(e.target.checked)} />
+                ✏️ <strong>Manually assign files per sample</strong>
+                <span style={{ color: "#94a3b8", fontWeight: 400 }}>
+                  (fixes auto-detect mistakes — e.g. ONT vs paired-end mix-ups)
+                </span>
+              </label>
+
+              {useManualPairing && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    <button type="button"
+                      style={{
+                        padding: "5px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                        border: pairReadMode === "single" ? "2px solid #f59e0b" : "1px solid #334155",
+                        background: pairReadMode === "single" ? "#1c1200" : "#1e293b",
+                        color: pairReadMode === "single" ? "#fcd34d" : "#94a3b8",
+                        fontWeight: pairReadMode === "single" ? 600 : 400,
+                      }}
+                      onClick={() => setPairReadMode("single")}>
+                      🧬 Single-end / long-read (1 file/sample)
+                    </button>
+                    <button type="button"
+                      style={{
+                        padding: "5px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                        border: pairReadMode === "paired" ? "2px solid #6366f1" : "1px solid #334155",
+                        background: pairReadMode === "paired" ? "#1e1b4b" : "#1e293b",
+                        color: pairReadMode === "paired" ? "#a5b4fc" : "#94a3b8",
+                        fontWeight: pairReadMode === "paired" ? 600 : 400,
+                      }}
+                      onClick={() => setPairReadMode("paired")}>
+                      🔗 Paired-end (merge 2 files/sample)
+                    </button>
+                    <button type="button" className="prev-btn-reset" style={{ fontSize: 12 }}
+                      onClick={() => setFileMap(buildFileMapGuess(serverFileList))}>
+                      ↺ Re-guess from filenames
+                    </button>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ display: "grid",
+                      gridTemplateColumns: pairReadMode === "paired" ? "1fr 1.4fr 1.4fr 28px" : "1fr 1.4fr 28px",
+                      gap: 6, fontSize: 11, color: "#94a3b8", fontWeight: 600, padding: "0 4px" }}>
+                      <span>Sample Name</span>
+                      <span>File 1{pairReadMode === "single" ? "" : " (Forward)"}</span>
+                      {pairReadMode === "paired" && <span>File 2 (Reverse)</span>}
+                      <span></span>
+                    </div>
+                    {fileMap.map((row, i) => (
+                      <div key={i} style={{ display: "grid",
+                        gridTemplateColumns: pairReadMode === "paired" ? "1fr 1.4fr 1.4fr 28px" : "1fr 1.4fr 28px",
+                        gap: 6, alignItems: "center" }}>
+                        <input value={row.sample}
+                          onChange={e => setFileMap(prev => prev.map((r, j) => j === i ? { ...r, sample: e.target.value } : r))}
+                          style={{ padding: "5px 8px", borderRadius: 5, border: "1px solid #334155",
+                                   background: "#0f172a", color: "#e2e8f0", fontSize: 12 }} />
+                        <select value={row.file1}
+                          onChange={e => setFileMap(prev => prev.map((r, j) => j === i ? { ...r, file1: e.target.value } : r))}
+                          style={{ padding: "5px 8px", borderRadius: 5, border: "1px solid #334155",
+                                   background: "#0f172a", color: "#e2e8f0", fontSize: 12 }}>
+                          <option value="">— select file —</option>
+                          {serverFileList.map(f => <option key={f} value={f}>{f}</option>)}
+                        </select>
+                        {pairReadMode === "paired" && (
+                          <select value={row.file2}
+                            onChange={e => setFileMap(prev => prev.map((r, j) => j === i ? { ...r, file2: e.target.value } : r))}
+                            style={{ padding: "5px 8px", borderRadius: 5, border: "1px solid #334155",
+                                     background: "#0f172a", color: "#e2e8f0", fontSize: 12 }}>
+                            <option value="">— select file —</option>
+                            {serverFileList.map(f => <option key={f} value={f}>{f}</option>)}
+                          </select>
+                        )}
+                        <button type="button" title="Remove row"
+                          onClick={() => setFileMap(prev => prev.filter((_, j) => j !== i))}
+                          style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 14 }}>
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button type="button" className="prev-btn-reset" style={{ marginTop: 8, fontSize: 12 }}
+                    onClick={() => setFileMap(prev => [...prev, { sample: "", file1: "", file2: "" }])}>
+                    + Add sample row
+                  </button>
+
+                  <div style={{ marginTop: 8, fontSize: 11.5, color: "#94a3b8", lineHeight: 1.5 }}>
+                    💡 This overrides filename auto-detection. {pairReadMode === "paired"
+                      ? "Every row needs both File 1 and File 2 — they'll be merged with DADA2's paired-end workflow."
+                      : "Only File 1 is needed per row — reads are analyzed as single/long reads (no merge step)."}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

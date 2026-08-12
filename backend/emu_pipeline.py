@@ -45,7 +45,35 @@ def parse_args():
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 def find_fastq(input_dir: Path) -> dict[str, Path]:
-    """Find FASTQ files and map sample_name → path."""
+    """Find FASTQ files and map sample_name → path.
+
+    If sample_manifest.json exists in input_dir (written by the frontend's
+    manual sample/file pairing UI), use it as the source of truth for sample
+    names instead of raw filenames. Each entry: {"sample": "...", "file1": "..."}.
+    (file2 is ignored here — Emu/ONT reads are inherently single, long reads.)
+    """
+    manifest_path = input_dir / "sample_manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            samples = {}
+            for row in manifest:
+                sample = row.get("sample", "").strip()
+                file1  = row.get("file1", "").strip()
+                if not sample or not file1:
+                    continue
+                fpath = input_dir / file1
+                if not fpath.exists():
+                    log(f"  [WARN] manifest file not found, skipping: {file1}")
+                    continue
+                samples[sample] = fpath
+            if samples:
+                log(f"  Using sample_manifest.json ({len(samples)} sample(s))")
+                return samples
+            log("  [WARN] sample_manifest.json present but yielded no valid samples — falling back to filename scan")
+        except Exception as e:
+            log(f"  [WARN] Failed to read sample_manifest.json: {e} — falling back to filename scan")
+
     samples = {}
     for ext in ("*.fastq.gz", "*.fastq", "*.fq.gz", "*.fq"):
         for f in sorted(input_dir.glob(ext)):

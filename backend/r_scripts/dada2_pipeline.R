@@ -88,7 +88,7 @@ is_single <- isTRUE(opt$single_end)
 cat("=== DADA2 Pipeline Starting ===\n")
 cat("Marker   :", opt$marker, "\n")
 cat("Database :", opt$taxDatabase, "\n")
-cat("Mode     :", if (is_single) "single-end (ONT)" else "paired-end (Illumina)", "\n\n")
+cat("Mode     :", if (is_single) "single-end (ONT)" else "paired-end (Illumina)", "(initial — may be overridden by manifest)\n\n")
 
 dir.create(opt$output, showWarnings=FALSE, recursive=TRUE)
 
@@ -109,7 +109,51 @@ findFASTQ <- function(dir, pats) {
   return(character(0))
 }
 
-if (is_single) {
+manifest_file <- file.path(opt$input, "sample_manifest.json")
+use_manifest  <- file.exists(manifest_file)
+
+if (use_manifest) {
+  # ── Manual sample↔file assignment (from frontend pairing UI) ─────────────
+  # manifest.json: [{ "sample": "AC", "file1": "AC_1.fastq.gz", "file2": "AC_2.fastq.gz" }, ...]
+  # file2 == "" (or absent) for that row → treated as single-end for that row.
+  # Overrides --single_end / filename auto-detection entirely.
+  cat("── Using manual sample/file manifest (sample_manifest.json) ──\n")
+  manifest <- fromJSON(manifest_file, simplifyDataFrame = TRUE)
+  if (!is.data.frame(manifest)) manifest <- as.data.frame(manifest, stringsAsFactors = FALSE)
+  if (nrow(manifest) == 0) stop("sample_manifest.json is empty")
+
+  sample_names <- as.character(manifest$sample)
+  file1        <- as.character(manifest$file1)
+  file2        <- if ("file2" %in% colnames(manifest)) as.character(manifest$file2) else rep("", length(file1))
+  file2[is.na(file2)] <- ""
+
+  dup_names <- unique(sample_names[duplicated(sample_names)])
+  if (length(dup_names) > 0)
+    stop("Duplicate sample names in manifest: ", paste(dup_names, collapse=", "))
+
+  fnFs <- file.path(opt$input, file1)
+  missing_f <- !file.exists(fnFs)
+  if (any(missing_f))
+    stop("Manifest file1 not found: ", paste(file1[missing_f], collapse=", "))
+
+  has_pairs <- any(file2 != "")
+  if (has_pairs) {
+    if (!all(file2 != ""))
+      stop("Manifest has a mix of paired and unpaired samples — either give every ",
+           "sample a file2, or none. Samples missing file2: ",
+           paste(sample_names[file2 == ""], collapse=", "))
+    fnRs <- file.path(opt$input, file2)
+    missing_r <- !file.exists(fnRs)
+    if (any(missing_r))
+      stop("Manifest file2 not found: ", paste(file2[missing_r], collapse=", "))
+    is_single <- FALSE
+    cat(sprintf("  %d sample(s), paired-end merge (manual manifest)\n\n", length(sample_names)))
+  } else {
+    fnRs <- character(0)
+    is_single <- TRUE
+    cat(sprintf("  %d sample(s), single-end / long-read (manual manifest)\n\n", length(sample_names)))
+  }
+} else if (is_single) {
   # ── Single-end (ONT): accept any .fastq / .fastq.gz file ───
   fnFs <- sort(list.files(opt$input,
     pattern="\\.f(q|astq)(\\.gz)?$", full.names=TRUE))
@@ -136,9 +180,9 @@ if (is_single) {
     cat("e.g. SampleA_1.fastq.gz + SampleA_2.fastq.gz) but the job was run in\n")
     cat("ONT / single-end mode, which strips the trailing _1/_2 as if it were\n")
     cat("noise and collapses both mates into one sample name.\n\n")
-    cat("Fix: create a new job WITHOUT the ONT/single-end option for this data\n")
-    cat("(use standard paired-end 16S mode instead). Only enable ONT mode for\n")
-    cat("true single-read Nanopore FASTQ files (one file per sample).\n")
+    cat("Fix: use the manual sample/file pairing option on the upload screen\n")
+    cat("to assign File 1 + File 2 per sample and merge as paired-end, or\n")
+    cat("create a new job WITHOUT the ONT/single-end option for this data.\n")
     stop("Duplicate sample names in single-end mode — see message above.")
   }
 } else {
@@ -154,6 +198,7 @@ if (is_single) {
   cat("Found R2:", length(fnRs), "files\n\n")
   sample_names <- sub("_R1.*|_1\\.(fq|fastq).*", "", basename(fnFs))
 }
+cat("Mode (resolved):", if (is_single) "single-end" else "paired-end", "\n\n")
 prog(8, sprintf("Found %d sample(s) — ready to process", length(fnFs)))
 
 # ── Step 1b (optional): Cutadapt Primer Trimming ─────────────
