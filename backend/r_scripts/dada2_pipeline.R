@@ -74,6 +74,10 @@ option_list <- list(
               help="Discard reads where primer was not found"),
   make_option("--single_end",        type="logical",   default=FALSE,
               help="Single-end mode: ONT R10.4+ reads (no R2, no merge step)"),
+  make_option("--ont_minLen",        type="integer",   default=0,
+              help="ONT mode: minimum read length to keep after filtering (bp)"),
+  make_option("--ont_maxLen",        type="integer",   default=0,
+              help="ONT mode: maximum read length to keep after filtering (bp)"),
   make_option("--threads",           type="integer",   default=4,
               help="Number of CPU threads for DADA2 steps (default 4; TRUE=all cores)")
 )
@@ -305,13 +309,23 @@ filtFs <- file.path(opt$output, "filtered", paste0(sample_names, "_F_filt.fastq.
 names(filtFs) <- sample_names
 
 if (is_single) {
-  # ── Single-end filterAndTrim ─────────────────────────────────
+  # ── Single-end filterAndTrim (ONT long-read mode) ─────────────
+  # ONT amplicon reads vary in length and carry far higher (mostly
+  # indel-driven) error rates than Illumina, so a hard truncLen cutoff
+  # combined with a strict Illumina-style maxEE throws away almost all
+  # reads. Instead: filter by expected length range (minLen/maxLen) and
+  # do NOT truncate to a fixed position. Indel-heavy errors are handled
+  # later at the dada() step via BAND_SIZE/HOMOPOLYMER_GAP_PENALTY.
+  ont_minLen <- if (!is.null(opt$ont_minLen) && opt$ont_minLen > 0) opt$ont_minLen else 50
+  ont_maxLen <- if (!is.null(opt$ont_maxLen) && opt$ont_maxLen > 0) opt$ont_maxLen else Inf
+  cat(sprintf("  [ONT mode] length filter: %d-%d bp (no truncLen), maxEE=%.1f\n",
+              ont_minLen, ont_maxLen, opt$maxEE_F))
   out <- filterAndTrim(
     fnFs, filtFs,
-    truncLen = opt$truncLen_F,
+    minLen = ont_minLen, maxLen = ont_maxLen,
     trimLeft = opt$trimLeft_F,
     maxN=0, maxEE=opt$maxEE_F,
-    truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=THREADS
+    truncQ=2, rm.phix=FALSE, compress=TRUE, multithread=THREADS
   )
   filtRs <- character(0)
 } else {
@@ -387,7 +401,17 @@ pool_val <- if (opt$pool == "TRUE") TRUE else if (opt$pool == "FALSE") FALSE els
 derepFs  <- derepFastq(filtFs)
 if (!is.list(derepFs)) derepFs <- setNames(list(derepFs), sample_names)
 names(derepFs) <- sample_names
-dadaFs <- dada(derepFs, err=errF, pool=pool_val, multithread=THREADS)
+if (is_single) {
+  # ONT reads: BAND_SIZE widens the alignment band and
+  # HOMOPOLYMER_GAP_PENALTY=-1 relaxes the indel penalty in homopolymer
+  # runs — both needed because ONT errors are predominantly indels,
+  # unlike Illumina's substitution-dominated error profile.
+  cat("  [ONT mode] dada() using BAND_SIZE=32, HOMOPOLYMER_GAP_PENALTY=-1 (indel-tolerant)\n")
+  dadaFs <- dada(derepFs, err=errF, pool=pool_val, multithread=THREADS,
+                 BAND_SIZE=32, HOMOPOLYMER_GAP_PENALTY=-1)
+} else {
+  dadaFs <- dada(derepFs, err=errF, pool=pool_val, multithread=THREADS)
+}
 if (inherits(dadaFs, "dada")) dadaFs <- setNames(list(dadaFs), sample_names)
 
 if (!is_single) {

@@ -66,6 +66,7 @@ interface JobDetail {
 const PARAM_LABELS: Record<string, string> = {
   marker: "Marker", sequencerType: "Sequencer Type",
   truncLen_F: "Truncate Fwd (bp)", truncLen_R: "Truncate Rev (bp)",
+  ontMinLen: "ONT Min Length (bp)", ontMaxLen: "ONT Max Length (bp)",
   maxEE_F: "Max EE Fwd", maxEE_R: "Max EE Rev",
   trimLeft_F: "Trim Left Fwd", trimLeft_R: "Trim Left Rev",
   pool: "Pooling", chimeraMethod: "Chimera Method",

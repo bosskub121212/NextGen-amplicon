@@ -78,6 +78,9 @@ export interface PipelineParams {
   trainAmpliconMaxLen:  number;
   // Sequencer type (for DADA2 pipelines)
   sequencerType: "illumina" | "ont";
+  // ONT long-read length filter (used instead of truncLen_F when sequencerType === "ont")
+  ontMinLen: number;
+  ontMaxLen: number;
 }
 
 export const defaultParams: PipelineParams = {
@@ -121,6 +124,7 @@ export const defaultParams: PipelineParams = {
   trainAmpliconMinLen: 200,
   trainAmpliconMaxLen: 600,
   sequencerType: "illumina",
+  ontMinLen: 300, ontMaxLen: 600,
 };
 
 export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio" | "ONT-16S";
@@ -847,7 +851,10 @@ conda run -n emu emu build-database \\
                             color: params.sequencerType === "ont" ? "#fcd34d" : "#94a3b8",
                             fontWeight: params.sequencerType === "ont" ? 600 : 400,
                           }}
-                          onClick={() => set("sequencerType", "ont")}>
+                          onClick={() => onChange({
+                            ...params, sequencerType: "ont",
+                            maxEE_F: params.maxEE_F < 5 ? 5 : params.maxEE_F,
+                          })}>
                           🧬 ONT R10.4+ (single-end)
                         </button>
                       </div>
@@ -857,9 +864,13 @@ conda run -n emu emu build-database \\
                           borderRadius: 6, padding: "8px 12px", marginBottom: 12, fontSize: 12,
                           color: "#fcd34d", lineHeight: 1.6,
                         }}>
-                          ⚠️ <strong>ONT mode</strong> — reads processed as single-end (no R2, no merge step).
+                          ⚠️ <strong>ONT mode</strong> — reads processed as single-end (no R2, no merge step),
+                          filtered by <strong>length range</strong> instead of truncLen (ONT reads vary in length),
+                          and denoised with indel-tolerant settings (BAND_SIZE=32, homopolymer-lenient).
                           Requires <strong>R10.4.1 flowcell</strong> + <strong>Q20+ basecalling</strong>.
-                          Recommended for short amplicons ≤500 bp (e.g. V7–V8 ~337 bp).
+                          Recommended for short amplicons ≤500 bp (e.g. V7–V8 ~337 bp). DADA2 still expects
+                          much lower error rates than raw ONT reads — for best accuracy prefer the
+                          <strong> ONT 16S (Emu)</strong> marker instead when available.
                         </div>
                       )}
 
@@ -872,6 +883,7 @@ conda run -n emu emu build-database \\
                             onClick={() => selectPreset(pr.f, pr.r, {
                               ...(pr.truncF    !== undefined ? { truncLen_F: pr.truncF, truncLen_R: pr.truncR ?? params.truncLen_R } : {}),
                               ...(pr.ampMinLen !== undefined ? { trainAmpliconMinLen: pr.ampMinLen, trainAmpliconMaxLen: pr.ampMaxLen ?? params.trainAmpliconMaxLen } : {}),
+                              ...(pr.ampMinLen !== undefined ? { ontMinLen: pr.ampMinLen, ontMaxLen: pr.ampMaxLen ?? params.ontMaxLen } : {}),
                             })}>
                             <div className="ps-primer-name">{pr.label}</div>
                             <div className="ps-primer-seq">F: {pr.f.length > 18 ? pr.f.slice(0, 18) + "…" : pr.f}</div>
@@ -978,11 +990,11 @@ conda run -n emu emu build-database \\
                       <div className="ps-demux-tips">
                         {params.sequencerType === "ont" ? (
                           <>
-                            <div className="ps-tip">🧬 <strong>ONT single-end</strong> — only forward read quality shown</div>
-                            <div className="ps-tip">💡 ONT R10.4.1 reads: set truncLen_F near amplicon length (e.g. 280–300 for V7–V8)</div>
-                            <div className="ps-tip">💡 Recommend <strong>Max EE ≥ 3</strong> for ONT (more lenient than Illumina)</div>
+                            <div className="ps-tip">🧬 <strong>ONT single-end</strong> — only forward read quality shown, no truncLen (length-range filter instead)</div>
+                            <div className="ps-tip">💡 Set Min/Max Length to the expected amplicon size (e.g. 300–400 bp for V7–V8)</div>
+                            <div className="ps-tip">💡 Recommend <strong>Max EE ≥ 5</strong> for ONT (more lenient than Illumina — raw ONT error is much higher)</div>
                             <div className="ps-tip" style={{ color: "#fcd34d" }}>
-                              Current: truncLen_F = {params.truncLen_F} bp (single-end, no merge needed)
+                              Current: length filter = {params.ontMinLen}–{params.ontMaxLen} bp (single-end, no merge needed)
                             </div>
                           </>
                         ) : (
@@ -1012,17 +1024,26 @@ conda run -n emu emu build-database \\
                           border: "1px solid #92400e", borderRadius: 6,
                           padding: "8px 12px", marginBottom: 4, fontSize: 12, color: "#fcd34d",
                         }}>
-                          🧬 <strong>ONT single-end mode</strong> — R2 settings are disabled. Only forward read settings apply.
+                          🧬 <strong>ONT single-end mode</strong> — R2 settings are disabled. Length-range filter replaces truncLen (ONT reads vary in length).
                         </div>
                       )}
-                      <ParamNumber label="Truncate Forward (bp)" hint="Truncate at this position (set 0 to disable)"
-                        value={params.truncLen_F} min={0} max={500} onChange={v => set("truncLen_F", v)} />
-                      {params.sequencerType !== "ont" && (
-                        <ParamNumber label="Truncate Reverse (bp)" hint="Truncate at this position (set 0 to disable)"
-                          value={params.truncLen_R} min={0} max={350} onChange={v => set("truncLen_R", v)} />
+                      {params.sequencerType === "ont" ? (
+                        <>
+                          <ParamNumber label="Min Length (bp)" hint="Discard reads shorter than this (expected amplicon size)"
+                            value={params.ontMinLen} min={50} max={2000} onChange={v => set("ontMinLen", v)} />
+                          <ParamNumber label="Max Length (bp)" hint="Discard reads longer than this (expected amplicon size)"
+                            value={params.ontMaxLen} min={50} max={2000} onChange={v => set("ontMaxLen", v)} />
+                        </>
+                      ) : (
+                        <>
+                          <ParamNumber label="Truncate Forward (bp)" hint="Truncate at this position (set 0 to disable)"
+                            value={params.truncLen_F} min={0} max={500} onChange={v => set("truncLen_F", v)} />
+                          <ParamNumber label="Truncate Reverse (bp)" hint="Truncate at this position (set 0 to disable)"
+                            value={params.truncLen_R} min={0} max={350} onChange={v => set("truncLen_R", v)} />
+                        </>
                       )}
                       <ParamNumber label="Max EE Forward" hint="Maximum expected errors — forward reads"
-                        value={params.maxEE_F} min={1} max={10} step={0.5} onChange={v => set("maxEE_F", v)} />
+                        value={params.maxEE_F} min={1} max={params.sequencerType === "ont" ? 30 : 10} step={0.5} onChange={v => set("maxEE_F", v)} />
                       {params.sequencerType !== "ont" && (
                         <ParamNumber label="Max EE Reverse" hint="Maximum expected errors — reverse reads"
                           value={params.maxEE_R} min={1} max={10} step={0.5} onChange={v => set("maxEE_R", v)} />

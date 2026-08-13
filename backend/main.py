@@ -171,6 +171,13 @@ class RunParams(BaseModel):
     run_picrust2:  bool  = False
     # --- Sequencer type (for DADA2 16S/12S pipelines) ---
     sequencerType: str   = "illumina"   # illumina | ont
+    # --- ONT long-read filtering for DADA2 (used when sequencerType == "ont") ---
+    # DADA2 was built for short, high-accuracy Illumina reads with a hard truncLen.
+    # ONT reads vary in length and have far higher (mostly indel) error rates, so
+    # instead of truncLen we filter by length range; BAND_SIZE/HOMOPOLYMER_GAP_PENALTY
+    # in the R script's dada() call compensate for indel-heavy errors at denoising time.
+    ontMinLen: int = 300   # minimum read length to keep (bp)
+    ontMaxLen: int = 600   # maximum read length to keep (bp)
     # --- Manual sample↔file pairing (overrides filename auto-detection) ---
     # Each entry: {"sample": "AC", "file1": "AC_1.fastq.gz", "file2": "AC_2.fastq.gz"}
     # file2 blank/omitted → that sample is treated as single-end/long-read.
@@ -644,6 +651,8 @@ def run_r_pipeline(job_id: str, params: RunParams):
                 cmd += ["--tax4fun_ref", ""]  # will be auto-detected from db_paths.json
         if params.sequencerType == "ont":
             cmd += ["--single_end", "TRUE"]
+            cmd += ["--ont_minLen", str(params.ontMinLen),
+                    "--ont_maxLen", str(params.ontMaxLen)]
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
