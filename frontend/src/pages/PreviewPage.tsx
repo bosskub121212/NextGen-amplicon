@@ -493,12 +493,14 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
 
       let phylumNames: string[];
       let dataRows: string[][];
+      let fullTotals: number[];   // true per-sample total across ALL taxa (not just the shown top-N)
       if (taxaAsCols) {
         // Regular 16S: limit columns (taxa) by total abundance
         const colTotals = allCols.map((_, ci) => allRows.reduce((s, r) => s + num(r[ci + 1]), 0));
         const topCols = colTotals.map((_, i) => i).sort((a, b) => colTotals[b] - colTotals[a]).slice(0, maxTaxa);
         phylumNames = topCols.map(i => allCols[i]);
         dataRows    = allRows.map(row => [row[0], ...topCols.map(i => row[i + 1])]);
+        fullTotals  = allRows.map(row => row.slice(1).reduce((s, v) => s + num(v), 0));
       } else {
         // ONT-16S: rows=taxa, cols=samples → transpose so rows=samples, cols=taxa
         const rowTotals = allRows.map(row => row.slice(1).reduce((s, v) => s + num(v), 0));
@@ -509,20 +511,35 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           sampleId,
           ...topRows.map(ti => allRows[ti][si + 1] ?? "0"),
         ]);
+        fullTotals = allCols.map((_, si) => allRows.reduce((s, row) => s + num(row[si + 1]), 0));
       }
       const sampleNames = dataRows.map(r => alias(r[0]));
       const is100 = font.chartType === "bar100";
-      const rowSums = dataRows.map(r => r.slice(1).reduce((s, v) => s + num(v), 0));
+      // "Other" = leftover abundance from taxa not in the shown Top-N (mirrors the PDF report,
+      // which always buckets the remainder into "Other" so bars always reach 100%).
+      const shownSums  = dataRows.map(r => r.slice(1).reduce((s, v) => s + num(v), 0));
+      const otherRaw   = dataRows.map((_, ri) => Math.max(0, fullTotals[ri] - shownSums[ri]));
+      const hasOther   = Number.isFinite(maxTaxa) && otherRaw.some(v => v > 1e-6);
+      // Denominator for % scaling: true total (shownSums + Other), not just the visible taxa —
+      // otherwise leftover diversity gets silently redistributed into the shown taxa's share.
+      const denom = dataRows.map((_, ri) => shownSums[ri] + otherRaw[ri]);
+      const scale = (v: number, ri: number) => (is100 && denom[ri] > 0 ? (v / denom[ri]) * 100 : v);
       const data = phylumNames.map((taxon, ci) => ({
         name: alias(taxon) || taxon || "Unknown",
         x: sampleNames,
-        y: dataRows.map((row, ri) => {
-          const v = num(row[ci + 1]);
-          return is100 && rowSums[ri] > 0 ? (v / rowSums[ri]) * 100 : v;
-        }),
+        y: dataRows.map((row, ri) => scale(num(row[ci + 1]), ri)),
         type: "bar",
         marker: { color: colors[taxon] || DEFAULT_COLORS[ci % DEFAULT_COLORS.length] },
       }));
+      if (hasOther) {
+        data.push({
+          name: "Other",
+          x: sampleNames,
+          y: otherRaw.map((v, ri) => scale(v, ri)),
+          type: "bar",
+          marker: { color: colors["Other"] || "#9ca3af" },
+        });
+      }
       return { data, layout: {
         ...base, barmode: "stack",
         xaxis: { ...base.xaxis, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },

@@ -103,8 +103,8 @@ if (has_ggplot2) {
   load_pkg("ggrepel")
   load_pkg("patchwork")
   load_pkg("cowplot")
-  load_pkg("pheatmap")
 }
+has_pheatmap <- load_pkg("pheatmap")
 
 # ── Color palette helper ──────────────────────────────────────────────────────
 make_palette <- function(n) {
@@ -589,6 +589,89 @@ tryCatch({
     }, error=function(e) cat(sprintf("  [WARN] %s barplot: %s\n", rank, e$message)))
   }
 }, error=function(e) cat(sprintf("[WARN] Taxonomy barplots: %s\n", e$message)))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 4b — Taxonomy Heatmaps (taxa × samples, clustered, top taxa)
+# ═══════════════════════════════════════════════════════════════════════════════
+cat("\n── Section 4b: Taxonomy Heatmaps ──────────────────────────────\n")
+if (has_pheatmap && has_ggplot2 && has_dplyr && has_tidyr) {
+  tax_ranks_avail3 <- rank_names(ps)
+  hm_ranks <- intersect(c("Phylum","Family","Genus"), tax_ranks_avail3)
+
+  ann_col_hm    <- NULL
+  ann_colors_hm <- list()
+  if (has_meta) {
+    ann_col_hm <- data.frame(Group = factor(meta_df[sample_names(ps), GROUP_COL]),
+                              row.names = sample_names(ps))
+    colnames(ann_col_hm) <- GROUP_COL
+    grp_levels_hm <- levels(ann_col_hm[[GROUP_COL]])
+    grp_pal_hm    <- make_palette(length(grp_levels_hm))
+    names(grp_pal_hm) <- grp_levels_hm
+    ann_colors_hm[[GROUP_COL]] <- grp_pal_hm
+  }
+
+  for (hm_lvl in hm_ranks) {
+    tryCatch({
+      ps_glom_hm <- tax_glom(ps, taxrank=hm_lvl, NArm=FALSE)
+      ps_rel_hm  <- transform_sample_counts(ps_glom_hm, function(x) x / sum(x) * 100)
+      melt_hm    <- psmelt(ps_rel_hm)
+      melt_hm[[hm_lvl]][is.na(melt_hm[[hm_lvl]])] <- "Unclassified"
+
+      top_n_hm    <- min(20, length(unique(melt_hm[[hm_lvl]])))
+      top_taxa_hm <- melt_hm %>%
+        dplyr::group_by(.data[[hm_lvl]]) %>%
+        dplyr::summarise(mean_abund = mean(Abundance, na.rm=TRUE), .groups="drop") %>%
+        dplyr::arrange(dplyr::desc(mean_abund)) %>%
+        dplyr::slice_head(n=top_n_hm) %>%
+        dplyr::pull(.data[[hm_lvl]])
+
+      wide_hm <- melt_hm %>%
+        dplyr::filter(.data[[hm_lvl]] %in% top_taxa_hm) %>%
+        dplyr::select(Sample, !!hm_lvl, Abundance) %>%
+        tidyr::pivot_wider(names_from="Sample", values_from="Abundance",
+                            values_fn=mean, values_fill=0)
+
+      mat_hm <- as.matrix(wide_hm[, -1, drop=FALSE])
+      rownames(mat_hm) <- wide_hm[[hm_lvl]]
+      mat_hm <- mat_hm[order(rowMeans(mat_hm), decreasing=TRUE), , drop=FALSE]
+      # Drop zero-variance rows (all-equal, e.g. all-zero) — row scaling would divide by 0
+      mat_hm <- mat_hm[apply(mat_hm, 1, function(r) sd(r) > 0), , drop=FALSE]
+      if (nrow(mat_hm) < 2) stop("fewer than 2 taxa with non-zero variance")
+
+      hm_colors <- switch(hm_lvl,
+        Genus  = colorRampPalette(c("#f0f4ff","#3b82f6","#1e1b4b"))(100),
+        Family = colorRampPalette(c("#fff7ed","#f97316","#431407"))(100),
+        Phylum = colorRampPalette(c("#f0fff4","#22c55e","#14532d"))(100)
+      )
+      hm_title <- sprintf("Top %d %s — Relative Abundance Heatmap", nrow(mat_hm), hm_lvl)
+      hm_file  <- file.path(PLOTS_DIR, sprintf("04b_taxonomy_heatmap_%s.pdf", tolower(hm_lvl)))
+      hm_w <- max(8, ncol(mat_hm) * 0.6 + 4)
+      hm_h <- max(6, nrow(mat_hm) * 0.35 + 3)
+
+      pheatmap::pheatmap(
+        mat_hm,
+        annotation_col    = ann_col_hm,
+        annotation_colors = if (length(ann_colors_hm) > 0) ann_colors_hm else NULL,
+        color             = hm_colors,
+        scale             = "row",
+        clustering_distance_rows = "euclidean",
+        clustering_distance_cols = "euclidean",
+        main              = hm_title,
+        fontsize_row      = max(5, min(9, 200/nrow(mat_hm))),
+        fontsize_col      = 8,
+        filename          = hm_file,
+        width             = hm_w,
+        height            = hm_h
+      )
+      cat(sprintf("  ✓ Saved: %s\n", basename(hm_file)))
+
+      write.csv(wide_hm, file.path(TABLES_DIR, sprintf("taxonomy_heatmap_%s.csv", tolower(hm_lvl))),
+                row.names=FALSE)
+    }, error=function(e) cat(sprintf("  [WARN] %s heatmap: %s\n", hm_lvl, e$message)))
+  }
+} else {
+  cat("  Skipped (requires pheatmap + ggplot2 + dplyr + tidyr)\n")
+}
 
 # ── Group-level taxonomy bar charts ──────────────────────────────────────────
 if (has_meta && has_ggplot2) {
