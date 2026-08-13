@@ -88,6 +88,30 @@ const PARAM_LABELS: Record<string, string> = {
 };
 const PARAM_KEY_ORDER = Object.keys(PARAM_LABELS);
 
+// Keys that only make sense for certain markers/pipelines — shown in Job Detail
+// only when they were actually consulted by the pipeline that ran this job.
+// (e.g. sequencerType/truncLen/maxEE only apply to the DADA2 branch — an
+// ONT-16S/Emu job never reads sequencerType, so showing "illumina" there is
+// just a leftover default value, not something that affected the run.)
+const DADA2_ONLY_KEYS = new Set([
+  "sequencerType", "truncLen_F", "truncLen_R", "ontMinLen", "ontMaxLen",
+  "maxEE_F", "maxEE_R", "trimLeft_F", "trimLeft_R", "pool", "chimeraMethod",
+]);
+const ITS_ONLY_KEYS    = new Set(["its_region", "run_lulu"]);
+const COX1_ONLY_KEYS   = new Set(["truncLen_cox1_f", "truncLen_cox1_r", "codon_table", "cox1_min_len", "cox1_max_len", "run_lulu"]);
+const PACBIO_ONLY_KEYS = new Set(["pb_min_len", "pb_max_len", "pb_maxEE", "pb_region"]);
+const ONT16S_ONLY_KEYS = new Set(["ont_region", "ont_min_abundance", "ont_db_path"]);
+
+function isParamRelevantForMarker(key: string, marker: string): boolean {
+  const m = (marker || "").toUpperCase();
+  if (DADA2_ONLY_KEYS.has(key))  return m === "16S" || m === "12S" || m === "18S-NEMA";
+  if (ITS_ONLY_KEYS.has(key))    return m === "ITS1" || m === "ITS2" || m === "ITS";
+  if (COX1_ONLY_KEYS.has(key))   return m === "COX1";
+  if (PACBIO_ONLY_KEYS.has(key)) return m === "PACBIO";
+  if (ONT16S_ONLY_KEYS.has(key)) return m === "ONT-16S" || m === "ONT16S" || m === "ONT";
+  return true; // shared/common keys (marker, taxDatabase, dbPath, primers, threads, etc.)
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 const formatElapsed = (startedAt?: number): string => {
   if (!startedAt) return "—";
@@ -716,7 +740,9 @@ export default function App() {
                       </div>
                       {PARAM_KEY_ORDER.filter(k => {
                         const v = d.params![k];
-                        return v !== undefined && v !== null && v !== "" && v !== 0 && !(Array.isArray(v) && v.length === 0);
+                        if (v === undefined || v === null || v === "" || v === 0) return false;
+                        if (Array.isArray(v) && v.length === 0) return false;
+                        return isParamRelevantForMarker(k, d.params!.marker);
                       }).map(k => (
                         <div key={k} className="detail-step-row" style={{ gridTemplateColumns: "1fr 1fr" }}>
                           <span className="detail-step-name">{PARAM_LABELS[k]}</span>
