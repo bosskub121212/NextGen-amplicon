@@ -304,6 +304,13 @@ async def run_analysis(job_id: str, params: RunParams):
     except ImportError:
         pass  # license module not available → allow all
 
+    # Snapshot the exact settings this run was submitted with, so it can be
+    # reviewed later from Job Detail — regardless of outcome (success/error).
+    try:
+        params_snapshot = params.model_dump()   # pydantic v2
+    except AttributeError:
+        params_snapshot = params.dict()         # pydantic v1 fallback
+
     running = sum(1 for j in jobs.values() if j["status"] == "running")
     with jobs_lock:
         jobs[job_id]["status"]     = "queued" if running >= MAX_WORKERS else "running"
@@ -311,7 +318,18 @@ async def run_analysis(job_id: str, params: RunParams):
         jobs[job_id]["marker"]     = params.marker
         jobs[job_id]["database"]   = params.taxDatabase
         jobs[job_id]["job_name"]   = params.job_name
+        jobs[job_id]["params"]     = params_snapshot
+        jobs[job_id]["run_at"]     = time.time()
         save_jobs()
+
+    # Also persist to disk in the results folder — survives jobs.json pruning
+    try:
+        run_params_file = RESULTS_DIR / job_id
+        run_params_file.mkdir(parents=True, exist_ok=True)
+        (run_params_file / "run_params.json").write_text(
+            json.dumps(params_snapshot, indent=2, ensure_ascii=False))
+    except Exception as _pe:
+        print(f"[params] WARNING: failed to write run_params.json: {_pe}")
 
     executor.submit(run_r_pipeline, job_id, params)
     return {"job_id": job_id, "status": jobs[job_id]["status"]}
@@ -927,6 +945,8 @@ def get_detail(job_id: str):
         "total_secs":   total_secs,
         "step_history": j.get("step_history", []),
         "error":        j.get("error", ""),
+        "params":       j.get("params", {}),
+        "run_at":       j.get("run_at"),
     }
 
 # ── 5b. All jobs dashboard ────────────────────────────────────────────────────

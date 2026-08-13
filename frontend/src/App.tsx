@@ -57,7 +57,35 @@ interface JobDetail {
   total_secs:   number | null;
   step_history: StepRecord[];
   error:        string;
+  params?:      Record<string, any>;
+  run_at?:      number | null;
 }
+
+// ── Friendly labels + which param keys to surface in Job Detail ────────
+// (only shown when the value is non-empty/meaningful for that job's marker)
+const PARAM_LABELS: Record<string, string> = {
+  marker: "Marker", sequencerType: "Sequencer Type",
+  truncLen_F: "Truncate Fwd (bp)", truncLen_R: "Truncate Rev (bp)",
+  maxEE_F: "Max EE Fwd", maxEE_R: "Max EE Rev",
+  trimLeft_F: "Trim Left Fwd", trimLeft_R: "Trim Left Rev",
+  pool: "Pooling", chimeraMethod: "Chimera Method",
+  taxDatabase: "Taxonomy DB", dbPath: "DB Path", minBoot: "Min Bootstrap",
+  primer_f: "Forward Primer", primer_r: "Reverse Primer",
+  cutadaptErrorRate: "Cutadapt Error Rate", cutadaptOverlap: "Cutadapt Min Overlap",
+  discardUntrimmed: "Discard Untrimmed",
+  its_region: "ITS Region",
+  truncLen_cox1_f: "COX1 Truncate Fwd", truncLen_cox1_r: "COX1 Truncate Rev",
+  codon_table: "Codon Table", cox1_min_len: "COX1 Min Len", cox1_max_len: "COX1 Max Len",
+  run_lulu: "LULU Curation",
+  pb_min_len: "PacBio Min Len", pb_max_len: "PacBio Max Len",
+  pb_maxEE: "PacBio Max EE", pb_region: "PacBio Region",
+  ont_region: "16S Region (ONT)", ont_min_abundance: "Min Abundance Filter",
+  ont_db_path: "Emu Database",
+  run_tax4fun: "Tax4Fun2", run_picrust2: "PICRUSt2",
+  customClassifierMode: "Classifier Mode", customClassifierPath: "Classifier Path",
+  nThreads: "CPU Threads",
+};
+const PARAM_KEY_ORDER = Object.keys(PARAM_LABELS);
 
 // ── Helpers ──────────────────────────────────────────────────────────
 const formatElapsed = (startedAt?: number): string => {
@@ -677,6 +705,34 @@ export default function App() {
                     <p className="detail-no-steps">
                       ℹ️ Step breakdown not available — re-run this job to capture step details.
                     </p>
+                  )}
+
+                  {d.params && Object.keys(d.params).length > 0 && (
+                    <div className="detail-step-list" style={{ marginTop: 12 }}>
+                      <div className="detail-step-header" style={{ gridTemplateColumns: "1fr 1fr" }}>
+                        <span>⚙️ Setting</span>
+                        <span>Value</span>
+                      </div>
+                      {PARAM_KEY_ORDER.filter(k => {
+                        const v = d.params![k];
+                        return v !== undefined && v !== null && v !== "" && v !== 0 && !(Array.isArray(v) && v.length === 0);
+                      }).map(k => (
+                        <div key={k} className="detail-step-row" style={{ gridTemplateColumns: "1fr 1fr" }}>
+                          <span className="detail-step-name">{PARAM_LABELS[k]}</span>
+                          <span style={{ wordBreak: "break-all", fontSize: 12 }}>
+                            {typeof d.params![k] === "boolean" ? (d.params![k] ? "✅ Yes" : "✕ No") : String(d.params![k])}
+                          </span>
+                        </div>
+                      ))}
+                      {Array.isArray(d.params!.sampleFileMap) && d.params!.sampleFileMap.length > 0 && (
+                        <div className="detail-step-row" style={{ gridTemplateColumns: "1fr 1fr" }}>
+                          <span className="detail-step-name">Manual Sample/File Pairing</span>
+                          <span style={{ fontSize: 12 }}>
+                            {d.params!.sampleFileMap.map((r: any) => r.sample).join(", ")}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   {d.error && (
