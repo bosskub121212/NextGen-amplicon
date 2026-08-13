@@ -514,11 +514,11 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
             <label className="param-label">Primer Pair</label>
             <div className="primer-presets">
               <button className={`primer-preset-btn ${params.primer_f === "AGRGTTYGATYMTGGCTCAG" ? "active" : ""}`}
-                onClick={() => onChange({ ...params, primer_f: "AGRGTTYGATYMTGGCTCAG", primer_r: "RGYTACCTTGTTACGACTT" })}>
+                onClick={() => onChange({ ...params, ont_region: "V1-V9", primer_f: "AGRGTTYGATYMTGGCTCAG", primer_r: "RGYTACCTTGTTACGACTT" })}>
                 27F / 1492R (V1–V9)
               </button>
               <button className={`primer-preset-btn ${params.primer_f === "AACMGGATTAGATACCCKG" ? "active" : ""}`}
-                onClick={() => onChange({ ...params, primer_f: "AACMGGATTAGATACCCKG", primer_r: "ACGTCATCCCCACCTTCC" })}>
+                onClick={() => onChange({ ...params, ont_region: "V7-V8", primer_f: "AACMGGATTAGATACCCKG", primer_r: "ACGTCATCCCCACCTTCC" })}>
                 1055F / 1392R (V7–V8, ~337 bp)
               </button>
               <button className={`primer-preset-btn ${!params.primer_f ? "active" : ""}`}
