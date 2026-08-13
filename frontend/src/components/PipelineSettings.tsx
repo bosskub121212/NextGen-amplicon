@@ -582,7 +582,7 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
                     style={{ width: "100%", marginBottom: 6 }}
                     value={isKnown ? currentVal : "__custom__"}
                     onChange={e => {
-                      if (e.target.value !== "__custom__") set("ont_db_path", e.target.value);
+                      set("ont_db_path", e.target.value === "__custom__" ? "" : e.target.value);
                     }}
                   >
                     {emuDbs.map(d => (
@@ -593,12 +593,15 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
                   {!isKnown && (
                     <input type="text" className="param-input" style={{ width: "100%", marginBottom: 4 }}
                       placeholder="Path to Emu database directory"
+                      autoFocus
                       value={currentVal}
                       onChange={e => set("ont_db_path", e.target.value)} />
                   )}
-                  <div style={{ fontSize: 11, color: "#10b981" }}>
-                    ✅ {currentVal}
-                  </div>
+                  {currentVal && (
+                    <div style={{ fontSize: 11, color: "#10b981" }}>
+                      ✅ {currentVal}
+                    </div>
+                  )}
                 </>
               );
             })()}
