@@ -317,13 +317,13 @@ def main():
 
     print("\nIntermediate files ready. Now run:\n")
     print(
+        f"  cd {out_dir} && \\\n"
         f"  conda run --no-capture-output -n emu \\\n"
         f"    emu build-database \\\n"
-        f"    --sequences  {out_dir}/sequences.fasta \\\n"
-        f"    --seq2tax    {out_dir}/seq2taxid.tsv \\\n"
-        f"    --taxonomy-list {out_dir}/taxonomy_list.tsv \\\n"
-        f"    --db-name    silva_db \\\n"
-        f"    --output-dir {out_dir}\n"
+        f"    --sequences  sequences.fasta \\\n"
+        f"    --seq2tax    seq2taxid.tsv \\\n"
+        f"    --taxonomy-list taxonomy.tsv \\\n"
+        f"    silva_db\n"
     )
     region_tag = f"  Region: {args.region or 'custom primers'}" if fwd_re else "  Region: full-length"
     print(f"Expected output: {out_dir}/silva_db/")

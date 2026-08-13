@@ -618,13 +618,13 @@ python3 ~/r16s-app/backend/python_scripts/build_emu_db.py \\
   --output-dir ~/r16s-app/backend/databases/emu_v7v8 \\
   --region V7-V8
 
-# ขั้นตอนที่ 2: build Emu database จาก intermediate files
+# ขั้นตอนที่ 2: build Emu database จาก intermediate files (ต้อง cd เข้าไปก่อน)
+cd ~/r16s-app/backend/databases/emu_v7v8 && \\
 conda run -n emu emu build-database \\
-  --sequences  ~/r16s-app/backend/databases/emu_v7v8/sequences.fasta \\
-  --seq2tax    ~/r16s-app/backend/databases/emu_v7v8/seq2taxid.tsv \\
-  --taxonomy-list ~/r16s-app/backend/databases/emu_v7v8/taxonomy_list.tsv \\
-  --db-name    silva_v7v8 \\
-  --output-dir ~/r16s-app/backend/databases/emu_v7v8
+  --sequences  sequences.fasta \\
+  --seq2tax    seq2taxid.tsv \\
+  --taxonomy-list taxonomy.tsv \\
+  silva_v7v8
 
 # ขั้นตอนที่ 3: ใส่ path ด้านบน → ~/r16s-app/backend/databases/emu_v7v8/silva_v7v8`}</pre>
               </div>

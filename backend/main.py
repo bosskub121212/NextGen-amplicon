@@ -406,8 +406,9 @@ def run_r_pipeline(job_id: str, params: RunParams):
         # Not a FASTA archive
         if not (p.endswith(".fa.gz") or p.endswith(".fasta.gz")):
             return True
-        # assignSpecies files are for addSpecies() only, NOT for assignTaxonomy()
-        if "assignspecies" in n or "assign_species" in n:
+        # assignSpecies/toSpecies files are for addSpecies() only, NOT for assignTaxonomy()
+        # (must match the same check dada2_pipeline.R does: grepl("assignSpecies|toSpecies", ...))
+        if "assignspecies" in n or "assign_species" in n or "tospecies" in n or "to_species" in n:
             return True
         return False
 
