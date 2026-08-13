@@ -514,8 +514,9 @@ export default function App() {
             <span className="job-status-label" style={{ color: STATUS_COLOR[j.status] }}>
               {j.status.toUpperCase()}
             </span>
-            {(j.status === "running" || j.status === "queued" || j.status === "waiting_checkpoint") &&
-              <button className="btn-cancel" onClick={() => handleCancel(j.job_id)}>✕</button>}
+            {(j.status === "running" || j.status === "queued" || j.status === "waiting_checkpoint" || j.status === "uploaded") &&
+              <button className="btn-cancel" onClick={() => handleCancel(j.job_id)}
+                title={j.status === "uploaded" ? "Remove — never run" : "Cancel"}>✕</button>}
             {["completed","cancelled","error"].includes(j.status) &&
               <button className="btn-del-hist"
                 onClick={() => setDeleteConfirm({ jobId: j.job_id, jobName: j.job_name || j.job_id })}>
