@@ -123,6 +123,14 @@ if (use_manifest) {
   if (nrow(manifest) == 0) stop("sample_manifest.json is empty")
 
   sample_names <- as.character(manifest$sample)
+  # Sanitize: sample names become filenames (e.g. <sample>_F_filt.fastq.gz),
+  # so strip anything that could be interpreted as a path separator.
+  sample_names_raw <- sample_names
+  sample_names <- gsub("[\\\\/]+", "_", trimws(sample_names))
+  changed <- sample_names_raw != sample_names
+  if (any(changed))
+    cat("  [WARN] sanitized sample name(s) with path separators: ",
+        paste(sample_names_raw[changed], "->", sample_names[changed], collapse=", "), "\n")
   file1        <- as.character(manifest$file1)
   file2        <- if ("file2" %in% colnames(manifest)) as.character(manifest$file2) else rep("", length(file1))
   file2[is.na(file2)] <- ""

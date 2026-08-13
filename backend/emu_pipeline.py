@@ -62,11 +62,19 @@ def find_fastq(input_dir: Path) -> dict[str, Path]:
                 file1  = row.get("file1", "").strip()
                 if not sample or not file1:
                     continue
+                # Sanitize: sample name becomes a directory name (emu_output/<sample>/),
+                # so strip anything that could be interpreted as a path separator.
+                safe_sample = re.sub(r"[\\/]+", "_", sample).strip()
+                if not safe_sample:
+                    log(f"  [WARN] manifest sample name invalid after sanitizing: {sample!r} — skipping")
+                    continue
+                if safe_sample != sample:
+                    log(f"  [WARN] sample name '{sample}' contained path separators — sanitized to '{safe_sample}'")
                 fpath = input_dir / file1
                 if not fpath.exists():
                     log(f"  [WARN] manifest file not found, skipping: {file1}")
                     continue
-                samples[sample] = fpath
+                samples[safe_sample] = fpath
             if samples:
                 log(f"  Using sample_manifest.json ({len(samples)} sample(s))")
                 return samples
@@ -196,7 +204,7 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
 
     for name, fq in samples.items():
         sample_out = emu_out_dir / name
-        sample_out.mkdir(exist_ok=True)
+        sample_out.mkdir(parents=True, exist_ok=True)
         cmd = emu_prefix + [
             "abundance",
             "--type", "map-ont",
