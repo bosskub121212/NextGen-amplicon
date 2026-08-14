@@ -196,6 +196,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const [colors, setColors]       = useState<Record<string, string>>({});
   const [font, setFont]           = useState<FontConfig>(defaultFont());
   const [sampleAliases, setSampleAliases] = useState<Record<string, string>>({});
+  const [sampleOrder, setSampleOrder] = useState<string[]>([]);  // raw sample names, user-chosen display order
   const [knownSamples, setKnownSamples]   = useState<string[]>([]);  // persists across PDF tabs
   const [showCustomize, setShowCustomize] = useState(true);
   const [legendPicker, setLegendPicker]   = useState<{name:string; x:number; y:number; color:string; curveNumber:number} | null>(null);
@@ -235,6 +236,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           if (s.font)          setFont({ ...defaultFont(), ...s.font });
           if (s.colors)        setColors(s.colors);
           if (s.sampleAliases) setSampleAliases(s.sampleAliases);
+          if (s.sampleOrder)   setSampleOrder(s.sampleOrder);
           return true;
         }
       } catch { /* fall through */ }
@@ -246,11 +248,12 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
           if (s.font)          setFont({ ...defaultFont(), ...s.font });
           if (s.colors)        setColors(s.colors);
           if (s.sampleAliases) setSampleAliases(s.sampleAliases);
+          if (s.sampleOrder)   setSampleOrder(s.sampleOrder);
           return true;
         }
       } catch { /* ignore */ }
       // No saved settings
-      setFont(defaultFont()); setColors({}); setSampleAliases({});
+      setFont(defaultFont()); setColors({}); setSampleAliases({}); setSampleOrder([]);
       return false;
     };
 
@@ -350,6 +353,35 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       .catch(() => setLoading(false));
   }, [activeTab, selJob]);
 
+  // ── Custom sample display order (drag/reorder in Customize panel) ──
+  // Returns the alias'd sample names in the user's chosen order; any sample
+  // not explicitly ordered keeps its natural (data) order, appended at the end.
+  const orderedAliasedSamples = useCallback((tabOverride?: TabDef, dataOverride?: string[][]): string[] => {
+    const tab  = tabOverride  ?? activeTab;
+    const data = dataOverride ?? csvData;
+    if (!data || !tab) return [];
+    const raws = getUniqueSamples(tab, data);
+    const orderedRaws = sampleOrder.length > 0
+      ? [...sampleOrder.filter(s => raws.includes(s)), ...raws.filter(s => !sampleOrder.includes(s))]
+      : raws;
+    return orderedRaws.map(raw => sampleAliases[raw] || sampleAliases[shortName(raw)] || shortName(raw));
+  }, [csvData, activeTab, sampleOrder, sampleAliases]);
+
+  // Applies the custom sample order to a Plotly result's x-axis categoryarray.
+  // Safe to call on every chart type: Plotly only honors categoryorder/categoryarray
+  // on "category" axes, so numeric axes (rarefaction, PCoA, etc.) simply ignore it.
+  const applySampleOrder = useCallback((p: { data: any[]; layout: any } | null, tabOverride?: TabDef, dataOverride?: string[][]) => {
+    if (!p) return p;
+    const order = orderedAliasedSamples(tabOverride, dataOverride);
+    if (order.length > 1 && p.layout) {
+      p.layout = {
+        ...p.layout,
+        xaxis: { ...p.layout.xaxis, categoryorder: "array", categoryarray: order },
+      };
+    }
+    return p;
+  }, [orderedAliasedSamples]);
+
   // ── Re-render chart when data / colors / font / aliases changes ────
   // (renderChart is declared below but useCallback deps already cover it)
   const triggerRender = useCallback(() => {
@@ -360,13 +392,13 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const el = chartRef.current;
       setTimeout(() => {
         if (window.Plotly && el) {
-          const p2 = buildPlotly();
+          const p2 = applySampleOrder(buildPlotly());
           if (p2) { Plotly.newPlot(el, p2.data, p2.layout, { responsive: true }); plotted.current = true; }
         }
       }, 500);
       return;
     }
-    const p = buildPlotly();
+    const p = applySampleOrder(buildPlotly());
     if (!p) return;
     if (plotted.current) {
       Plotly.react(chartRef.current, p.data, p.layout, { responsive: true });
@@ -375,7 +407,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       plotted.current = true;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [csvData, colors, font, activeTab, sampleAliases, ellipseData, metaRows]);
+  }, [csvData, colors, font, activeTab, sampleAliases, sampleOrder, ellipseData, metaRows, applySampleOrder]);
 
   useEffect(() => { triggerRender(); }, [triggerRender]);
 
@@ -1463,7 +1495,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // ── Save settings → edit_charts/settings.json on server ──
   const saveSettings = async () => {
     if (!selJob) return;
-    const payload = { font, colors, sampleAliases };
+    const payload = { font, colors, sampleAliases, sampleOrder };
     localStorage.setItem(`prev_settings_${selJob}`, JSON.stringify(payload));
     // Persist to server inside edit_charts/ folder (included in ZIP export)
     try {
@@ -1573,7 +1605,7 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         try {
           const text = await fetch(`${API}/results/${selJob}/table/${tab.file}`).then(r => r.text());
           const tabData = parseCSV(text);
-          const plotData = buildPlotly(tabData, tab);
+          const plotData = applySampleOrder(buildPlotly(tabData, tab), tab, tabData);
           if (!plotData) continue;
           await Plotly.newPlot(tmpDiv, plotData.data, plotData.layout,
             { responsive: false, displayModeBar: false });
@@ -1636,10 +1668,27 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   const series = csvData && activeTab
     ? getSeries(activeTab, csvData)
     : (activeTab?.type === "pdf" ? knownSamples : []);
-  // Unique sample names (raw) for alias editing panel
-  const uniqueSamples = csvData && activeTab
+  // Unique sample names (raw) for alias editing panel — reordered per sampleOrder,
+  // with any not-yet-ordered samples appended at the end in their natural order.
+  const uniqueSamplesRaw = csvData && activeTab
     ? getUniqueSamples(activeTab, csvData)
     : (activeTab?.type === "pdf" ? knownSamples : []);
+  const uniqueSamples = sampleOrder.length > 0
+    ? [...sampleOrder.filter(s => uniqueSamplesRaw.includes(s)), ...uniqueSamplesRaw.filter(s => !sampleOrder.includes(s))]
+    : uniqueSamplesRaw;
+
+  const moveSample = (raw: string, dir: -1 | 1) => {
+    setSampleOrder(prevOrder => {
+      const base = prevOrder.length > 0
+        ? [...prevOrder.filter(s => uniqueSamplesRaw.includes(s)), ...uniqueSamplesRaw.filter(s => !prevOrder.includes(s))]
+        : [...uniqueSamplesRaw];
+      const idx = base.indexOf(raw);
+      const swapIdx = idx + dir;
+      if (idx < 0 || swapIdx < 0 || swapIdx >= base.length) return base;
+      [base[idx], base[swapIdx]] = [base[swapIdx], base[idx]];
+      return base;
+    });
+  };
 
   return (
     <div className="prev-root">
@@ -1950,13 +1999,32 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                         </div>
                       )}
 
-                      {/* Sample name aliases */}
+                      {/* Sample name aliases + display order */}
                       {uniqueSamples.length > 0 && (
                         <div className="prev-cust-section">
-                          <div className="prev-cust-section-title">Sample Names (X-axis)</div>
+                          <div className="prev-cust-section-title">Sample Names &amp; Order (X-axis)</div>
                           <div className="prev-alias-list">
-                            {uniqueSamples.map(raw => (
+                            {uniqueSamples.map((raw, i) => (
                               <div key={raw} className="prev-alias-row">
+                                <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                                  <button type="button" title="Move up"
+                                    onClick={() => moveSample(raw, -1)}
+                                    disabled={i === 0}
+                                    style={{
+                                      lineHeight: 1, fontSize: 9, padding: "0 3px",
+                                      opacity: i === 0 ? 0.3 : 1, cursor: i === 0 ? "default" : "pointer",
+                                      background: "none", border: "1px solid #475569", borderRadius: 3, color: "#cbd5e1",
+                                    }}>▲</button>
+                                  <button type="button" title="Move down"
+                                    onClick={() => moveSample(raw, 1)}
+                                    disabled={i === uniqueSamples.length - 1}
+                                    style={{
+                                      lineHeight: 1, fontSize: 9, padding: "0 3px",
+                                      opacity: i === uniqueSamples.length - 1 ? 0.3 : 1,
+                                      cursor: i === uniqueSamples.length - 1 ? "default" : "pointer",
+                                      background: "none", border: "1px solid #475569", borderRadius: 3, color: "#cbd5e1",
+                                    }}>▼</button>
+                                </span>
                                 <span className="prev-alias-orig" title={raw}>
                                   {shortName(raw)}
                                 </span>
@@ -1973,10 +2041,16 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
                               </div>
                             ))}
                           </div>
-                          <button className="prev-btn-reset"
-                            onClick={() => setSampleAliases({})}>
-                            ↺ Reset names
-                          </button>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button className="prev-btn-reset"
+                              onClick={() => setSampleAliases({})}>
+                              ↺ Reset names
+                            </button>
+                            <button className="prev-btn-reset"
+                              onClick={() => setSampleOrder([])}>
+                              ↺ Reset order
+                            </button>
+                          </div>
                         </div>
                       )}
 
