@@ -370,15 +370,28 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // Applies the custom sample order to a Plotly result's x-axis categoryarray.
   // Safe to call on every chart type: Plotly only honors categoryorder/categoryarray
   // on "category" axes, so numeric axes (rarefaction, PCoA, etc.) simply ignore it.
+  //
+  // getUniqueSamples() is deliberately loose for some chart types (e.g. "taxheatmap"
+  // returns the union of BOTH row and column labels, since either axis could hold
+  // sample IDs depending on data orientation — that's fine for the rename panel, but
+  // if fed straight into categoryarray it creates phantom empty category slots for
+  // every taxon name too. So: only ever reorder values that actually appear in this
+  // chart's real x-axis data (intersect first), and leave anything else untouched.
   const applySampleOrder = useCallback((p: { data: any[]; layout: any } | null, tabOverride?: TabDef, dataOverride?: string[][]) => {
     if (!p) return p;
     const order = orderedAliasedSamples(tabOverride, dataOverride);
-    if (order.length > 1 && p.layout) {
-      p.layout = {
-        ...p.layout,
-        xaxis: { ...p.layout.xaxis, categoryorder: "array", categoryarray: order },
-      };
+    if (order.length < 2 || !p.layout) return p;
+    const xValuesInData = new Set<string>();
+    for (const trace of p.data) {
+      if (Array.isArray(trace?.x)) trace.x.forEach((v: any) => xValuesInData.add(String(v)));
     }
+    const filteredOrder = order.filter(s => xValuesInData.has(s));
+    if (filteredOrder.length < 2) return p; // this chart's x-axis isn't samples — leave it alone
+    const finalOrder = [...filteredOrder, ...Array.from(xValuesInData).filter(v => !filteredOrder.includes(v))];
+    p.layout = {
+      ...p.layout,
+      xaxis: { ...p.layout.xaxis, categoryorder: "array", categoryarray: finalOrder },
+    };
     return p;
   }, [orderedAliasedSamples]);
 
