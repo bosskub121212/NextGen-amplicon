@@ -167,7 +167,7 @@ export default function App() {
   // Revert "Detected samples" back to filename auto-detect when manual pairing is turned off
   useEffect(() => {
     if (useManualPairing || serverFileList.length === 0) return;
-    const isONT = marker === "ONT-16S";
+    const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
     const r1 = isONT ? [] : serverFileList.filter(n => /_R1|_1\.(fq|fastq)/i.test(n));
     const base = r1.length > 0 ? r1 : serverFileList.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
     const names = base.map(n =>
@@ -385,7 +385,7 @@ export default function App() {
         if (!merged.some(m => m.name === f.name)) merged.push(f);
       }
       // Recompute sample names from non-ZIP files
-      const isONT = marker === "ONT-16S";
+      const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
       const nonZip = merged.filter(f => !f.name.toLowerCase().endsWith(".zip"));
       const r1 = isONT ? [] : nonZip.filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
       const base = r1.length > 0 ? r1 : nonZip;
@@ -412,7 +412,7 @@ export default function App() {
       // Use server-returned file list (ZIPs were extracted server-side)
       const serverFiles: string[] = res.data.files || [];
       setServerFileList(serverFiles);
-      const isONT = marker === "ONT-16S";
+      const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
       const r1 = isONT ? [] : serverFiles.filter(n => /_R1|_1\.(fq|fastq)/i.test(n));
       const base = r1.length > 0 ? r1 : serverFiles.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
       const names = base.map(n =>
@@ -435,8 +435,17 @@ export default function App() {
     const fastq = files.filter(f => /\.(fastq|fq)(\.gz)?$/i.test(f)).sort();
     const used = new Set<string>();
     const rows: {sample:string; file1:string; file2:string}[] = [];
+    // Single-end / long-read modes (ONT-16S marker, or QIIME2-VSEARCH sequencer type inside
+    // the 16S marker card): every file is its own independent sample — never try to guess a
+    // R1/R2 or _1/_2 mate, since "_1"/"_2" here means replicate number, not read-pair.
+    const isSingleEnd = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
     for (const f of fastq) {
       if (used.has(f)) continue;
+      if (isSingleEnd) {
+        used.add(f);
+        rows.push({ sample: f.replace(/\.(fastq|fq)(\.gz)?$/i, ""), file1: f, file2: "" });
+        continue;
+      }
       // Try to find this file's mate via common R1/R2 or _1/_2 conventions
       let mate = "";
       let sample = f.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "");
@@ -1489,9 +1498,11 @@ export default function App() {
         {/* Upload */}
         <div className="section-card">
           <div className="section-title">📂 Upload FASTQ Files</div>
-          {marker === "ONT-16S" && (
+          {(marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch")) && (
             <div className="ps-info-box ps-info-box--ok" style={{ marginBottom: 10, fontSize: 13 }}>
-              🧫 <strong>ONT mode:</strong> Upload one FASTQ file per sample (single reads, not paired R1/R2)
+              🧫 <strong>Single-end mode:</strong> Upload one FASTQ file per sample (single reads, not paired R1/R2).
+              Files like <code>AC_1.fastq.gz</code> / <code>AC_2.fastq.gz</code> are treated as two separate
+              samples, not an R1/R2 pair.
             </div>
           )}
           <div
@@ -1503,8 +1514,8 @@ export default function App() {
           >
             {selectedFiles.length
               ? <>➕ <strong>{selectedFiles.length} file(s)</strong> selected — click/drop to add more</>
-              : marker === "ONT-16S"
-                ? <>🧫 Drop ONT .fastq / .fastq.gz / .zip here, or <u>click to browse</u></>
+              : (marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch"))
+                ? <>🧫 Drop single-end .fastq / .fastq.gz / .zip here, or <u>click to browse</u></>
                 : <>📂 Drop .fastq / .fastq.gz / .zip here, or <u>click to browse</u></>
             }
           </div>
@@ -1531,7 +1542,7 @@ export default function App() {
                       onClick={ev => { ev.stopPropagation();
                         setSelectedFiles(prev => {
                           const next = prev.filter(x => x.name !== f.name);
-                          const isONT = marker === "ONT-16S";
+                          const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
                           const nonZip = next.filter(x => !x.name.toLowerCase().endsWith(".zip"));
                           const r1 = isONT ? [] : nonZip.filter(x => /_R1|_1\.(fq|fastq)/i.test(x.name));
                           const base = r1.length > 0 ? r1 : nonZip;
