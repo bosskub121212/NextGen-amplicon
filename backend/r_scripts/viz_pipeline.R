@@ -575,9 +575,15 @@ tryCatch({
         theme_bw() +
         theme(axis.text.x=element_text(angle=45, hjust=1, size=8),
               legend.text=element_text(size=8),
-              legend.key.size=unit(0.4,"cm"))
+              legend.key.size=unit(0.4,"cm"),
+              legend.justification="top") +
+        guides(fill=guide_legend(ncol=1, title.position="top"))
       fname <- sprintf("04_taxonomy_%s.pdf", tolower(rank))
-      save_pdf(p, fname, width=max(8, nsamples(ps)*0.45), height=7)
+      # Legend is now a single tall column (one taxon per row) instead of wrapping into
+      # multiple side-by-side columns — scale page height so long Top-N lists (30/50/100)
+      # still fit instead of being squeezed/cut off.
+      legend_h <- max(7, n_col * 0.16 + 2)
+      save_pdf(p, fname, width=max(8, nsamples(ps)*0.45), height=legend_h)
 
       # Save table
       # NOTE: values_fn must be sum, not mean — multiple distinct ASVs commonly

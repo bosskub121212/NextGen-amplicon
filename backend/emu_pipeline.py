@@ -263,9 +263,19 @@ def remove_chimeras(samples: dict, out_dir: Path, db_path: str,
 
     ref_fasta = Path(db_path) / "sequences.fasta"
     if not ref_fasta.exists():
-        log(f"  [WARN] {ref_fasta} not found — skipping chimera removal "
-            "(only works with Emu DBs built by our build_emu_db*.py scripts)")
-        return samples
+        # `emu build-database <name>` (the step our build_emu_db*.py scripts print as the
+        # "next command") creates the compiled index in a subdirectory named <name>, one
+        # level below where sequences.fasta/seq2taxid.tsv/taxonomy.tsv actually live —
+        # e.g. .../silva_qiime2_v7v8/silva_qiime2_v7v8/. If ont_db_path was registered as
+        # that inner compiled-index folder (needed by `emu abundance --db`), sequences.fasta
+        # is one directory up. Check there before giving up.
+        parent_fasta = Path(db_path).parent / "sequences.fasta"
+        if parent_fasta.exists():
+            ref_fasta = parent_fasta
+        else:
+            log(f"  [WARN] {ref_fasta} not found — skipping chimera removal "
+                "(only works with Emu DBs built by our build_emu_db*.py scripts)")
+            return samples
 
     chim_dir = out_dir / "chimera_filtered"
     chim_dir.mkdir(exist_ok=True)
