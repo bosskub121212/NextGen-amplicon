@@ -15,9 +15,19 @@ Usage (called by main.py):
                            [--job_name NAME]
 """
 
-import argparse, csv, json, os, re, shutil, subprocess, sys
+import argparse, csv, gzip, json, os, re, shutil, subprocess, sys
 from datetime import datetime
 from pathlib import Path
+
+# ── Region-appropriate length bounds (post primer-trim) ────────────────────────
+# Used to give cutadapt a realistic --maximum-length so mis-primed / chimeric-length
+# reads get discarded instead of flowing through to Emu. Falls back to a loose
+# sanity bound for regions not in this table.
+REGION_LENGTH_BOUNDS = {
+    "V7-V8": (250, 450),
+    "V1-V9": (1000, 1700),
+}
+DEFAULT_TRIM_BOUNDS = (50, 2000)
 
 # ── Progress reporter (mirrors dada2_pipeline.R format for main.py SSE) ───────
 def progress(pct: int, label: str):
@@ -41,6 +51,17 @@ def parse_args():
     p.add_argument("--region",        default="V1-V9")
     p.add_argument("--job_name",      default="")
     p.add_argument("--marker",        default="ONT-16S")
+    # QC / cleanup steps (added to match a manual QIIME2 ONT pipeline used for
+    # accuracy comparison — see gap_analysis_partner_vs_our_app.md 2026-08-16).
+    # All have sensible defaults so no UI/main.py changes are required; each
+    # step is skipped gracefully (with a warning) if its tool isn't installed.
+    p.add_argument("--qc_min_qual",   type=int, default=10,   help="Chopper min mean read quality (Q)")
+    p.add_argument("--qc_min_len",    type=int, default=100,  help="Chopper min read length (raw, pre-primer-trim)")
+    p.add_argument("--qc_max_len",    type=int, default=2000, help="Chopper max read length (raw, pre-primer-trim)")
+    p.add_argument("--skip_qc",       action="store_true",    help="Skip Chopper QC filtering step")
+    p.add_argument("--skip_chimera",  action="store_true",    help="Skip vsearch chimera-removal step")
+    p.add_argument("--cutadapt_error_rate", type=float, default=0.20, help="cutadapt -e (max error rate)")
+    p.add_argument("--cutadapt_overlap",    type=int,   default=10,   help="cutadapt -O (min primer overlap)")
     return p.parse_args()
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -120,11 +141,77 @@ def _rev_comp(seq: str) -> str:
     )
     return seq.translate(table)[::-1]
 
-# ── Step 1: Trim primers with cutadapt ─────────────────────────────────────────
+def _fastq_iter(path: Path):
+    """Yield (header, seq, plus, qual) 4-line records from a fastq(.gz) file."""
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt") as fh:
+        while True:
+            h = fh.readline()
+            if not h:
+                break
+            s = fh.readline()
+            p = fh.readline()
+            q = fh.readline()
+            if not q:
+                break
+            yield h.rstrip("\n"), s.rstrip("\n"), p.rstrip("\n"), q.rstrip("\n")
+
+# ── Step 1: QC filter raw reads with Chopper ────────────────────────────────────
+def qc_filter_chopper(samples: dict, out_dir: Path, min_qual: int, min_len: int,
+                      max_len: int, threads: int) -> dict[str, Path]:
+    """Quality + length filter raw ONT reads before primer trimming (matches a
+    typical Chopper pre-processing step used ahead of manual QIIME2 ONT pipelines).
+    Skips gracefully (keeps raw reads) if chopper isn't installed."""
+    chopper = shutil.which("chopper")
+    if not chopper:
+        log("  [WARN] chopper not found — skipping QC filtering "
+            "(install with: conda install -c bioconda chopper)")
+        return samples
+
+    qc_dir = out_dir / "qc_filtered"
+    qc_dir.mkdir(exist_ok=True)
+    filtered = {}
+
+    for name, fq in samples.items():
+        out_fq = qc_dir / f"{name}.fastq.gz"
+        cat_cmd = ["zcat", str(fq)] if str(fq).endswith(".gz") else ["cat", str(fq)]
+        chopper_cmd = [chopper, "-q", str(min_qual), "-l", str(min_len),
+                       "--maxlength", str(max_len), "-t", str(threads)]
+        log(f"  → QC filter (chopper): {name}")
+        log(f"  CMD: {' '.join(cat_cmd)} | {' '.join(str(c) for c in chopper_cmd)} | gzip")
+        try:
+            with open(out_fq, "wb") as out_f:
+                p1 = subprocess.Popen(cat_cmd, stdout=subprocess.PIPE)
+                p2 = subprocess.Popen(chopper_cmd, stdin=p1.stdout, stdout=subprocess.PIPE)
+                p1.stdout.close()
+                p3 = subprocess.Popen(["gzip"], stdin=p2.stdout, stdout=out_f)
+                p2.stdout.close()
+                p3.communicate()
+            if out_fq.exists() and out_fq.stat().st_size > 0:
+                filtered[name] = out_fq
+            else:
+                log(f"  [WARN] chopper produced empty output for {name} — using unfiltered reads")
+                filtered[name] = fq
+        except Exception as e:
+            log(f"  [WARN] chopper failed for {name}: {e} — using unfiltered reads")
+            filtered[name] = fq
+
+    return filtered
+
+# ── Step 2: Trim primers with cutadapt ─────────────────────────────────────────
 def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
-                 threads: int) -> dict[str, Path]:
+                 threads: int, error_rate: float = 0.20, overlap: int = 10,
+                 min_len: int = 50, max_len: int = 0) -> dict[str, Path]:
     """Trim primers from ONT single-end reads with cutadapt.
-    Uses single-end mode only (-g / -a) — never -G/-A which trigger paired-end."""
+    Uses single-end mode only (-g / -a) — never -G/-A which trigger paired-end.
+
+    error_rate/overlap default to a tolerant 20% / 10bp overlap (vs cutadapt's
+    own defaults of 10% / 3bp) — ONT reads have much higher per-base error than
+    Illumina, so an untuned cutadapt call silently --discard-untrimmed's a large
+    fraction of genuinely-good reads whose primer site has a couple of errors.
+    --revcomp checks both orientations, since ONT reads aren't orientation-fixed.
+    min_len/max_len bound the POST-trim amplicon length (region-appropriate,
+    e.g. ~250-450bp for V7-V8) to catch mis-primed / chimeric-length artifacts."""
     if not (primer_f or primer_r):
         log("  Primers not specified — skipping cutadapt trimming")
         return samples
@@ -143,17 +230,102 @@ def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
         out_fq = trim_dir / fq.name
         # ONT = single-end: forward primer at 5' end, RC(reverse primer) at 3' end
         # NEVER use -G/-A — those flags trigger paired-end mode and require two files.
-        cmd = [cutadapt, "-j", str(threads)]
+        cmd = [cutadapt, "-j", str(threads), "-e", str(error_rate), "-O", str(overlap)]
         if primer_f:
             cmd += ["-g", primer_f]          # 5' forward primer
         if primer_r:
             cmd += ["-a", _rev_comp(primer_r)]  # 3' reverse primer (as RC)
-        cmd += ["--discard-untrimmed", "-m", "50",
-                "-o", str(out_fq), str(fq)]
+        if primer_f or primer_r:
+            cmd += ["--revcomp"]             # also check the RC strand, keep whichever matches
+        cmd += ["--discard-untrimmed", "-m", str(min_len)]
+        if max_len:
+            cmd += ["-M", str(max_len)]
+        cmd += ["-o", str(out_fq), str(fq)]
         run_cmd(cmd, f"Trim {name}")
         trimmed[name] = out_fq if out_fq.exists() else fq
 
     return trimmed
+
+# ── Step 3: Remove chimeras with vsearch (reference-based) ─────────────────────
+def remove_chimeras(samples: dict, out_dir: Path, db_path: str,
+                    threads: int) -> dict[str, Path]:
+    """Filter out chimeric reads with vsearch --uchime_ref against the Emu
+    database's own sequences.fasta. Reference-based (not --uchime_denovo)
+    because raw/trimmed ONT reads are ~100% unique — de novo chimera detection
+    relies on abundance ratios between near-identical sequences that don't
+    meaningfully exist here. Skips gracefully if vsearch or the reference
+    fasta isn't available."""
+    vsearch = shutil.which("vsearch")
+    if not vsearch:
+        log("  [WARN] vsearch not found — skipping chimera removal "
+            "(install with: conda install -c bioconda vsearch)")
+        return samples
+
+    ref_fasta = Path(db_path) / "sequences.fasta"
+    if not ref_fasta.exists():
+        log(f"  [WARN] {ref_fasta} not found — skipping chimera removal "
+            "(only works with Emu DBs built by our build_emu_db*.py scripts)")
+        return samples
+
+    chim_dir = out_dir / "chimera_filtered"
+    chim_dir.mkdir(exist_ok=True)
+    cleaned = {}
+
+    for name, fq in samples.items():
+        fa_in  = chim_dir / f"{name}.in.fasta"
+        fa_ok  = chim_dir / f"{name}.nonchimeric.fasta"
+        fa_bad = chim_dir / f"{name}.chimeric.fasta"
+        out_fq = chim_dir / f"{name}.fastq.gz"
+
+        # cutadapt/chopper output is always plain fastq or fastq.gz — convert to
+        # fasta since --uchime_ref requires it.
+        n_reads = 0
+        with open(fa_in, "w") as out_f:
+            for h, seq, _, _ in _fastq_iter(fq):
+                rid = h[1:].split()[0] if h.startswith("@") else h.split()[0]
+                out_f.write(f">{rid}\n{seq}\n")
+                n_reads += 1
+
+        if n_reads == 0:
+            log(f"  [WARN] {name}: no reads to check for chimeras — skipping")
+            cleaned[name] = fq
+            continue
+
+        cmd = [vsearch, "--uchime_ref", str(fa_in), "--db", str(ref_fasta),
+               "--nonchimeras", str(fa_ok), "--chimeras", str(fa_bad),
+               "--threads", str(threads), "--fasta_width", "0"]
+        ok = run_cmd(cmd, f"Chimera check: {name}")
+
+        if not ok or not fa_ok.exists():
+            log(f"  [WARN] vsearch chimera check failed for {name} — keeping all reads")
+            cleaned[name] = fq
+            for p in (fa_in, fa_ok, fa_bad):
+                try: p.unlink()
+                except Exception: pass
+            continue
+
+        keep_ids = set()
+        with open(fa_ok) as f:
+            for line in f:
+                if line.startswith(">"):
+                    keep_ids.add(line[1:].strip().split()[0])
+
+        n_kept = 0
+        with gzip.open(out_fq, "wt") as out_f:
+            for h, seq, plus, qual in _fastq_iter(fq):
+                rid = h[1:].split()[0] if h.startswith("@") else h.split()[0]
+                if rid in keep_ids:
+                    out_f.write(f"{h}\n{seq}\n{plus}\n{qual}\n")
+                    n_kept += 1
+
+        log(f"  {name}: {n_reads} reads → {n_kept} non-chimeric ({n_reads - n_kept} chimeras removed)")
+        cleaned[name] = out_fq if n_kept > 0 else fq
+
+        for p in (fa_in, fa_ok, fa_bad):
+            try: p.unlink()
+            except Exception: pass
+
+    return cleaned
 
 # ── Step 2: Run Emu on each sample ─────────────────────────────────────────────
 def run_emu(samples: dict, out_dir: Path, db_path: str,
@@ -324,20 +496,27 @@ def write_tables(sample_names: list, taxa_dict: dict, out_dir: Path, top_n: int)
     return sorted_taxa
 
 # ── Step 5: Write read_tracking.csv (simplified for ONT) ───────────────────────
-def write_read_tracking(samples_raw: dict, samples_trimmed: dict,
-                        out_dir: Path):
-    """Write simplified read tracking: input and (optionally) trimmed counts."""
+def write_read_tracking(samples_raw: dict, samples_qc: dict, samples_trimmed: dict,
+                        samples_final: dict, out_dir: Path):
+    """Write read tracking through each pipeline stage: input → QC-filtered →
+    primer-trimmed → chimera-filtered (final). Any stage that was skipped
+    (tool not installed) will simply show the same count as the stage before it."""
     rows = []
     for name in sorted(samples_raw.keys()):
         raw_fq   = samples_raw.get(name)
+        qc_fq    = samples_qc.get(name)
         trim_fq  = samples_trimmed.get(name)
+        final_fq = samples_final.get(name)
         n_input  = count_reads(raw_fq) if raw_fq else 0
-        n_final  = count_reads(trim_fq) if (trim_fq and trim_fq != raw_fq) else n_input
-        rows.append({"sample": name, "input": n_input, "final": n_final})
+        n_qc     = count_reads(qc_fq)    if (qc_fq    and qc_fq    != raw_fq)  else n_input
+        n_trim   = count_reads(trim_fq)  if (trim_fq  and trim_fq  != qc_fq)   else n_qc
+        n_final  = count_reads(final_fq) if (final_fq and final_fq != trim_fq) else n_trim
+        rows.append({"sample": name, "input": n_input, "qc_filtered": n_qc,
+                     "primer_trimmed": n_trim, "final": n_final})
 
     path = out_dir / "read_tracking.csv"
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["sample", "input", "final"])
+        writer = csv.DictWriter(f, fieldnames=["sample", "input", "qc_filtered", "primer_trimmed", "final"])
         writer.writeheader()
         writer.writerows(rows)
     log("  Saved: read_tracking.csv")
@@ -403,45 +582,68 @@ def main():
     log("=" * 50)
 
     # ── 1. Find samples ────────────────────────────────────────────────────────
-    progress(5, "Step 1/6 — Scanning input FASTQ files")
+    progress(5, "Step 1/8 — Scanning input FASTQ files")
     samples_raw = find_fastq(input_dir)
     if not samples_raw:
         log(f"[ERROR] No FASTQ files found in: {input_dir}")
         sys.exit(1)
     log(f"  Found {len(samples_raw)} samples: {', '.join(sorted(samples_raw))}")
 
-    # ── 2. Trim primers ────────────────────────────────────────────────────────
-    progress(15, "Step 2/6 — Trimming primers (cutadapt)")
-    samples_trimmed = trim_primers(
-        samples_raw, out_dir, args.primer_f, args.primer_r, args.threads)
+    # ── 2. QC filter (Chopper) ─────────────────────────────────────────────────
+    if args.skip_qc:
+        log("  Step 2/8 — QC filtering skipped (--skip_qc)")
+        samples_qc = samples_raw
+    else:
+        progress(12, "Step 2/8 — QC filtering (chopper)")
+        samples_qc = qc_filter_chopper(
+            samples_raw, out_dir, args.qc_min_qual, args.qc_min_len,
+            args.qc_max_len, args.threads)
 
-    # ── 3. Run Emu ─────────────────────────────────────────────────────────────
-    progress(25, f"Step 3/6 — Running Emu on {len(samples_trimmed)} samples")
+    # ── 3. Trim primers ────────────────────────────────────────────────────────
+    progress(22, "Step 3/8 — Trimming primers (cutadapt)")
+    trim_min_len, trim_max_len = REGION_LENGTH_BOUNDS.get(args.region, DEFAULT_TRIM_BOUNDS)
+    samples_trimmed = trim_primers(
+        samples_qc, out_dir, args.primer_f, args.primer_r, args.threads,
+        error_rate=args.cutadapt_error_rate, overlap=args.cutadapt_overlap,
+        min_len=trim_min_len, max_len=trim_max_len)
+
+    # ── 4. Remove chimeras (vsearch, reference-based) ──────────────────────────
+    if args.skip_chimera:
+        log("  Step 4/8 — Chimera removal skipped (--skip_chimera)")
+        samples_clean = samples_trimmed
+    else:
+        progress(32, "Step 4/8 — Chimera removal (vsearch)")
+        samples_clean = remove_chimeras(
+            samples_trimmed, out_dir, args.db_path, args.threads)
+
+    # ── 5. Run Emu ─────────────────────────────────────────────────────────────
+    progress(42, f"Step 5/8 — Running Emu on {len(samples_clean)} samples")
     emu_results = run_emu(
-        samples_trimmed, out_dir, args.db_path, args.min_abundance, args.threads)
+        samples_clean, out_dir, args.db_path, args.min_abundance, args.threads)
 
     if not emu_results:
         log("[ERROR] Emu produced no output. Check db_path and input FASTQ files.")
         sys.exit(1)
-    log(f"  Emu completed for {len(emu_results)}/{len(samples_trimmed)} samples")
+    log(f"  Emu completed for {len(emu_results)}/{len(samples_clean)} samples")
 
-    # ── 4. Combine outputs ─────────────────────────────────────────────────────
-    progress(60, "Step 4/6 — Combining abundance tables")
+    # ── 6. Combine outputs ─────────────────────────────────────────────────────
+    progress(62, "Step 6/8 — Combining abundance tables")
     sample_names, taxa_dict = combine_emu_outputs(emu_results, out_dir)
 
-    # ── 5. Write tables ────────────────────────────────────────────────────────
-    progress(70, "Step 5/6 — Writing ASV & taxonomy tables")
+    # ── 7. Write tables ────────────────────────────────────────────────────────
+    progress(72, "Step 7/8 — Writing ASV & taxonomy tables")
     sorted_taxa = write_tables(sample_names, taxa_dict, out_dir, args.topN)
 
     # Write read tracking
-    read_rows = write_read_tracking(samples_raw, samples_trimmed, out_dir)
+    read_rows = write_read_tracking(samples_raw, samples_qc, samples_trimmed,
+                                    samples_clean, out_dir)
 
     # Write summary
     write_summary(out_dir, sample_names, len(sorted_taxa), read_rows,
                   args.region, args)
 
-    # ── 6. Visualizations ──────────────────────────────────────────────────────
-    progress(78, "Step 6/6 — Generating plots (viz_pipeline.R)")
+    # ── 8. Visualizations ──────────────────────────────────────────────────────
+    progress(82, "Step 8/8 — Generating plots (viz_pipeline.R)")
     run_viz(out_dir, args.metadata, args.topN, args.threads, args.marker)
 
     progress(100, "Complete")
