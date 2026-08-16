@@ -139,12 +139,26 @@ write_checkpoint("primer_trim", 10, "Trimming primers")
 trim_dir <- file.path(opt$output_dir, "Trimmed")
 dir.create(trim_dir, recursive=TRUE, showWarnings=FALSE)
 
-cutadapt_ok <- (system("cutadapt --version", ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+# system() only inherits a minimal PATH that may not include ~/.local/bin,
+# where `pip install --user cutadapt` puts the binary — without this fallback,
+# cutadapt_ok silently comes back FALSE and trimming is skipped with no clear
+# error even though cutadapt is actually installed.
+resolve_cutadapt <- function() {
+  candidates <- c("cutadapt", path.expand("~/.local/bin/cutadapt"), "/usr/local/bin/cutadapt")
+  for (c in candidates) {
+    ok <- suppressWarnings(system(paste(shQuote(c), "--version"),
+                                  ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+    if (ok) return(c)
+  }
+  NULL
+}
+CUTADAPT_BIN <- resolve_cutadapt()
+cutadapt_ok <- !is.null(CUTADAPT_BIN)
 
 fq_use <- fq_all  # will be updated to trimmed files if cutadapt succeeds
 
 if (cutadapt_ok) {
-  cat("cutadapt found. Trimming primers (linked adapter mode for PacBio)...\n")
+  cat("cutadapt found at:", CUTADAPT_BIN, "— trimming primers (linked adapter mode for PacBio)...\n")
   fq_trim <- file.path(trim_dir, basename(fq_all))
 
   RC <- function(seq) as.character(reverseComplement(DNAString(seq)))
@@ -154,14 +168,16 @@ if (cutadapt_ok) {
   for (i in seq_along(fq_all)) {
     # For PacBio CCS, reads can be in either orientation — use linked adapters
     cmd <- sprintf(
-      "cutadapt -g \"%s...%s\" --discard-untrimmed -m %d -M %d --max-n 0 -j %d -o %s %s > /dev/null 2>&1",
+      "%s -g \"%s...%s\" --discard-untrimmed -m %d -M %d --max-n 0 -j %d -o %s %s > /dev/null 2>&1",
+      CUTADAPT_BIN,
       opt$primer_f, primer_r_rc,
       opt$min_length, opt$max_length,
       opt$threads,
       fq_trim[i], fq_all[i]
     )
     rc_cmd <- sprintf(
-      "cutadapt -g \"%s...%s\" --discard-untrimmed -m %d -M %d --max-n 0 -j %d -o %s.rc_temp %s > /dev/null 2>&1",
+      "%s -g \"%s...%s\" --discard-untrimmed -m %d -M %d --max-n 0 -j %d -o %s.rc_temp %s > /dev/null 2>&1",
+      CUTADAPT_BIN,
       opt$primer_r, primer_f_rc,
       opt$min_length, opt$max_length,
       opt$threads,

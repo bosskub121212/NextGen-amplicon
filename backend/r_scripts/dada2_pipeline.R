@@ -218,6 +218,23 @@ RC <- function(seq) {
   chartr("ACGTacgt", "TGCAtgca", paste(rev(strsplit(seq, "")[[1]]), collapse=""))
 }
 
+# system() only inherits a minimal PATH that may not include ~/.local/bin,
+# where `pip install --user cutadapt` puts the binary. Without checking that
+# fallback, cutadapt_ok silently comes back FALSE and primer trimming gets
+# skipped with no clear error — even though cutadapt is actually installed
+# and works fine for every other pipeline (Python scripts already check this
+# fallback via shutil.which).
+resolve_cutadapt <- function() {
+  candidates <- c("cutadapt", path.expand("~/.local/bin/cutadapt"), "/usr/local/bin/cutadapt")
+  for (c in candidates) {
+    ok <- suppressWarnings(system(paste(shQuote(c), "--version"),
+                                  ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+    if (ok) return(c)
+  }
+  NULL
+}
+CUTADAPT_BIN <- resolve_cutadapt()
+
 if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
   prog(10, "Step 1/8 — Cutadapt primer trimming")
   cat("Step 1b: Primer Trimming with cutadapt...\n")
@@ -225,7 +242,9 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
   cat("  Primer R:", opt$primer_r, "\n")
   if (is_single) cat("  Mode: single-end\n")
 
-  cutadapt_ok <- (system("cutadapt --version", ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+  cutadapt_ok <- !is.null(CUTADAPT_BIN)
+  if (!cutadapt_ok) cat("  [WARN] cutadapt not found on PATH or in ~/.local/bin — skipping primer trimming\n")
+  else cat("  Using cutadapt at:", CUTADAPT_BIN, "\n")
 
   if (cutadapt_ok) {
     primer_f_rc <- RC(opt$primer_f)
@@ -241,7 +260,7 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
       cutFs <- file.path(cut_dir, paste0(sample_names, "_cut.fastq.gz"))
       for (i in seq_along(fnFs)) {
         cmd <- paste(
-          "cutadapt",
+          CUTADAPT_BIN,
           "-g", opt$primer_f, "-a", primer_r_rc,
           "-e", opt$error_rate,
           "-O", opt$min_overlap,
@@ -269,7 +288,7 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
       cutRs <- file.path(cut_dir, paste0(sample_names, "_R_cut.fastq.gz"))
       for (i in seq_along(fnFs)) {
         cmd <- paste(
-          "cutadapt",
+          CUTADAPT_BIN,
           "-g", opt$primer_f,   "-a", primer_r_rc,
           "-G", opt$primer_r,   "-A", primer_f_rc,
           "-e", opt$error_rate,

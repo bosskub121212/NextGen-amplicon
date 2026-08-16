@@ -5,11 +5,20 @@ NextGen-Amplicon — QIIME2/VSEARCH OTU-picking pipeline for 16S-family markers
 This is the "QIIME2 (VSEARCH OTU)" Sequencer Type option in the 16S rRNA
 pipeline card — an alternative to DADA2 that mirrors a manually-run QIIME2/
 VSEARCH OTU-clustering workflow (Chopper QC -> tolerant cutadapt -> VSEARCH
-dereplicate -> de novo chimera removal -> OTU clustering @ X% identity ->
-map reads back to OTU centroids -> taxonomy). Built to let results be
+dereplicate -> reference-based chimera removal -> OTU clustering @ X% identity
+-> map reads back to OTU centroids -> taxonomy). Built to let results be
 compared directly against a partner lab's manual VSEARCH-based pipeline,
 and to process high per-read-error long reads (e.g. ONT) that DADA2's
 exact-dereplication approach cannot handle regardless of amplicon length.
+
+Chimera removal uses vsearch --uchime_ref (against the same taxonomy
+reference database) rather than the partner script's literal --uchime_denovo:
+de novo detection needs abundance differences between near-identical sequences
+to work, which high-error long reads don't reliably have after dereplication
+(virtually every read is unique), and vsearch's --uchime_denovo is single-
+threaded regardless of --threads — a severe bottleneck on ONT-scale unique-
+sequence counts. Same reasoning already applied to emu_pipeline.py's ONT-16S
+chimera step. See resolve_reference_fasta()/remove_chimeras_ref() below.
 
 Calls the `vsearch` / `cutadapt` / `chopper` binaries directly (NOT the
 `qiime` CLI) — same tools already required for the Emu ONT-16S pipeline's
@@ -235,21 +244,49 @@ def dereplicate(vsearch: str, pooled_fasta: Path, out_dir: Path, threads: int) -
     ok = run_cmd(cmd, "Dereplicate pooled reads")
     return uniques if ok and uniques.exists() else None
 
-# ── Step 5: De novo chimera removal (on abundance-sorted uniques) ──────────────
-def remove_chimeras_denovo(vsearch: str, uniques_fasta: Path, out_dir: Path, threads: int) -> Path:
+# ── Step 5: Reference-based chimera removal (on abundance-sorted uniques) ──────
+def resolve_reference_fasta(db_path: str) -> Path | None:
+    """Locate a reference FASTA for --uchime_ref (and reused by assign_taxonomy's
+    Emu-format branch). Accepts a plain FASTA/.fa.gz FILE directly, or an Emu-format
+    DIRECTORY containing sequences.fasta — checked both at db_path itself and at
+    db_path's parent, since `emu build-database <name>` (the step our
+    build_emu_db*.py scripts print as the "next command") creates the compiled
+    index in a subdirectory named <name>, one level below where sequences.fasta
+    actually lives (e.g. .../silva_qiime2_v7v8/silva_qiime2_v7v8/). If ont_db_path
+    was registered as that inner compiled-index folder, sequences.fasta is one
+    directory up."""
+    dbp = Path(db_path)
+    if dbp.is_file():
+        return dbp
+    if dbp.is_dir():
+        direct = dbp / "sequences.fasta"
+        if direct.exists():
+            return direct
+        parent = dbp.parent / "sequences.fasta"
+        if parent.exists():
+            return parent
+    return None
+
+def remove_chimeras_ref(vsearch: str, uniques_fasta: Path, out_dir: Path,
+                        ref_fasta: Path, threads: int) -> Path:
+    """Reference-based chimera detection (vsearch --uchime_ref) against the same
+    taxonomy reference database, checking each unique sequence individually.
+    Used instead of --uchime_denovo: de novo detection relies on abundance ratios
+    between near-identical sequences to spot a chimera as a rare recombinant of
+    two more-abundant parents, but ONT reads are ~100% unique after dereplication
+    (no real signal for it to work with) — and critically, vsearch's own
+    --uchime_denovo implementation is single-threaded regardless of --threads
+    ("the uchime_denovo command does not support multithreading"), making it a
+    severe bottleneck on the large unique-sequence sets ONT data produces.
+    --uchime_ref does not have either problem and fully supports --threads."""
     sorted_fa = out_dir / "uniques.sorted.fasta"
     run_cmd([vsearch, "--sortbysize", str(uniques_fasta), "--output", str(sorted_fa),
               "--threads", str(threads)], "Sort uniques by abundance")
     src = sorted_fa if sorted_fa.exists() else uniques_fasta
     nonchim = out_dir / "uniques.nonchimeras.fasta"
-    # NOTE: classic --uchime_denovo is largely single-threaded in vsearch regardless of
-    # --threads (unlike --usearch_global/--cluster_size, which do parallelize well) — this
-    # step will still be one of the slower ones on a large unique-sequence set. --threads is
-    # passed anyway since it's harmless and newer vsearch builds do use it for parts of the
-    # algorithm.
-    ok = run_cmd([vsearch, "--uchime_denovo", str(src), "--nonchimeras", str(nonchim),
-                  "--threads", str(threads)],
-                 "De novo chimera detection (uchime_denovo)")
+    ok = run_cmd([vsearch, "--uchime_ref", str(src), "--db", str(ref_fasta),
+                  "--nonchimeras", str(nonchim), "--threads", str(threads)],
+                 "Reference-based chimera detection (uchime_ref)")
     return nonchim if ok and nonchim.exists() else src
 
 # ── Step 6: OTU clustering ──────────────────────────────────────────────────────
@@ -558,9 +595,15 @@ def main():
         log("[ERROR] Dereplication failed — check vsearch install and pooled reads.")
         sys.exit(1)
 
-    # ── 5. Chimera removal (de novo, on abundance-sorted uniques) ──────────────
-    progress(42, "Step 5/9 — De novo chimera removal (vsearch)")
-    nonchim = remove_chimeras_denovo(vsearch, uniques, out_dir, args.threads)
+    # ── 5. Chimera removal (reference-based, on abundance-sorted uniques) ──────
+    progress(42, "Step 5/9 — Chimera removal vs. reference (vsearch)")
+    ref_fasta_chim = resolve_reference_fasta(args.db_path)
+    if ref_fasta_chim:
+        nonchim = remove_chimeras_ref(vsearch, uniques, out_dir, ref_fasta_chim, args.threads)
+    else:
+        log(f"  [WARN] No reference FASTA found at {args.db_path} for chimera check "
+            "— skipping chimera removal")
+        nonchim = uniques
 
     # ── 6. OTU clustering ────────────────────────────────────────────────────────
     progress(52, f"Step 6/9 — Clustering OTUs @ {args.otu_similarity*100:.1f}% identity")

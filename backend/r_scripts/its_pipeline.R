@@ -127,10 +127,25 @@ RC <- function(seq) {
 primer_f_rc <- RC(primer_f)
 primer_r_rc <- RC(primer_r)
 
-cutadapt_ok <- (system("cutadapt --version", ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+# system() only inherits a minimal PATH that may not include ~/.local/bin,
+# where `pip install --user cutadapt` puts the binary — without this fallback,
+# cutadapt_ok silently comes back FALSE and trimming is skipped with no clear
+# error even though cutadapt is actually installed.
+resolve_cutadapt <- function() {
+  candidates <- c("cutadapt", path.expand("~/.local/bin/cutadapt"), "/usr/local/bin/cutadapt")
+  for (c in candidates) {
+    ok <- suppressWarnings(system(paste(shQuote(c), "--version"),
+                                  ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+    if (ok) return(c)
+  }
+  NULL
+}
+CUTADAPT_BIN <- resolve_cutadapt()
+cutadapt_ok <- !is.null(CUTADAPT_BIN)
 trim_dir <- file.path(output_dir, "trimmed")
 
 if (cutadapt_ok) {
+  cat("Using cutadapt at:", CUTADAPT_BIN, "\n")
   dir.create(trim_dir, recursive=TRUE, showWarnings=FALSE)
   trimFs <- file.path(trim_dir, paste0(sample_names, "_F_trim.fastq.gz"))
   trimRs <- file.path(trim_dir, paste0(sample_names, "_R_trim.fastq.gz"))
@@ -139,7 +154,8 @@ if (cutadapt_ok) {
   n_trimmed <- 0
   for (i in seq_along(fnFs_raw)) {
     cmd <- sprintf(
-      "cutadapt -g %s -a %s -G %s -A %s -e %s -O %d -m 50 -j %d %s -o %s -p %s %s %s > /dev/null 2>&1",
+      "%s -g %s -a %s -G %s -A %s -e %s -O %d -m 50 -j %d %s -o %s -p %s %s %s > /dev/null 2>&1",
+      CUTADAPT_BIN,
       primer_f, primer_r_rc,
       primer_r, primer_f_rc,
       opt$error_rate, opt$min_overlap,
