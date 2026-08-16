@@ -554,18 +554,18 @@ tryCatch({
       melt_df  <- psmelt(ps_rel)
       melt_df[[rank]][is.na(melt_df[[rank]])] <- "Unclassified"
 
-      # Top 15 taxa; merge rest as "Other"
+      # Top N taxa (per job's Top Taxa setting); merge rest as "Other"
       top_taxa <- melt_df %>%
         dplyr::group_by(.data[[rank]]) %>%
         dplyr::summarise(mean_abund = mean(Abundance, na.rm=TRUE)) %>%
         dplyr::arrange(dplyr::desc(mean_abund)) %>%
-        dplyr::slice_head(n=15) %>%
+        dplyr::slice_head(n=TOP_N) %>%
         dplyr::pull(.data[[rank]])
 
       melt_df$TaxLabel <- ifelse(melt_df[[rank]] %in% top_taxa,
                                  melt_df[[rank]], "Other")
       n_col <- length(unique(melt_df$TaxLabel))
-      pal   <- c(make_palette(min(15, n_col-1)), "grey80")[seq_len(n_col)]
+      pal   <- c(make_palette(min(n_col - 1, TOP_N)), "grey80")[seq_len(n_col)]
 
       p <- ggplot(melt_df, aes(x=Sample, y=Abundance, fill=TaxLabel)) +
         geom_bar(stat="identity", width=0.85) +
@@ -617,7 +617,7 @@ if (has_pheatmap && has_ggplot2 && has_dplyr && has_tidyr) {
       melt_hm    <- psmelt(ps_rel_hm)
       melt_hm[[hm_lvl]][is.na(melt_hm[[hm_lvl]])] <- "Unclassified"
 
-      top_n_hm    <- min(20, length(unique(melt_hm[[hm_lvl]])))
+      top_n_hm    <- min(TOP_N, length(unique(melt_hm[[hm_lvl]])))
       top_taxa_hm <- melt_hm %>%
         dplyr::group_by(.data[[hm_lvl]]) %>%
         dplyr::summarise(mean_abund = mean(Abundance, na.rm=TRUE), .groups="drop") %>%
@@ -695,12 +695,12 @@ if (has_meta && has_ggplot2) {
         dplyr::group_by(.data[[rank2]]) %>%
         dplyr::summarise(m=mean(Abundance)) %>%
         dplyr::arrange(dplyr::desc(m)) %>%
-        dplyr::slice_head(n=15) %>%
+        dplyr::slice_head(n=TOP_N) %>%
         dplyr::pull(.data[[rank2]])
       group_melt2$TaxLabel <- ifelse(group_melt2[[rank2]] %in% top_t2,
                                       group_melt2[[rank2]], "Other")
       n_col2 <- length(unique(group_melt2$TaxLabel))
-      pal2   <- c(make_palette(min(15, n_col2-1)), "grey80")[seq_len(n_col2)]
+      pal2   <- c(make_palette(min(n_col2 - 1, TOP_N)), "grey80")[seq_len(n_col2)]
 
       p2 <- ggplot(group_melt2, aes_string(x=GROUP_COL, y="Abundance", fill="TaxLabel")) +
         geom_bar(stat="identity", width=0.7) +
