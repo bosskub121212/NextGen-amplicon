@@ -182,7 +182,7 @@ out <- filterAndTrim(
   maxN=0, maxEE=c(opt$maxEE_f, opt$maxEE_r),
   truncQ=2, rm.phix=TRUE,
   minLen=opt$minLen,        # key ITS setting — remove fragments < 50 bp
-  compress=TRUE, multithread=TRUE
+  compress=TRUE, multithread=opt$threads
 )
 cat("Filter results:\n")
 print(out)
@@ -198,8 +198,8 @@ cat("\nSamples passing filter:", length(sample_names), "\n\n")
 prog(25, "Step 2/6 — Learning error rates")
 cat("Step 2/6: Learning Error Rates...\n")
 
-errF <- learnErrors(filtFs, nbases=as.numeric(opt$nbases), multithread=TRUE, verbose=FALSE)
-errR <- learnErrors(filtRs, nbases=as.numeric(opt$nbases), multithread=TRUE, verbose=FALSE)
+errF <- learnErrors(filtFs, nbases=as.numeric(opt$nbases), multithread=opt$threads, verbose=FALSE)
+errR <- learnErrors(filtRs, nbases=as.numeric(opt$nbases), multithread=opt$threads, verbose=FALSE)
 cat("  Error rates learned.\n\n")
 
 # ── Step 3: Dereplicate ───────────────────────────────────────
@@ -220,8 +220,8 @@ pool_setting <- switch(opt$pool,
   "pseudo" = "pseudo",
   FALSE)
 
-dadaFs <- dada(derepFs, err=errF, pool=pool_setting, multithread=TRUE)
-dadaRs <- dada(derepRs, err=errR, pool=pool_setting, multithread=TRUE)
+dadaFs <- dada(derepFs, err=errF, pool=pool_setting, multithread=opt$threads)
+dadaRs <- dada(derepRs, err=errR, pool=pool_setting, multithread=opt$threads)
 if (length(sample_names)==1) {
   dadaFs <- list(dadaFs); names(dadaFs) <- sample_names
   dadaRs <- list(dadaRs); names(dadaRs) <- sample_names
@@ -237,7 +237,7 @@ mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs,
 if (is.data.frame(mergers)) mergers <- setNames(list(mergers), sample_names)
 
 seqtab       <- makeSequenceTable(mergers)
-seqtab_nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE)
+seqtab_nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=opt$threads)
 cat("  ASVs before chimera removal:", ncol(seqtab), "\n")
 cat("  ASVs after chimera removal:",  ncol(seqtab_nochim), "\n\n")
 
@@ -301,7 +301,7 @@ if (nchar(unite_db)>0 && file.exists(unite_db)) {
     tax <- assignTaxonomy(
       seqtab_nochim, unite_db,
       taxLevels=c("Kingdom","Phylum","Class","Order","Family","Genus","Species"),
-      multithread=TRUE, minBoot=opt$minBoot, tryRC=TRUE
+      multithread=opt$threads, minBoot=opt$minBoot, tryRC=TRUE
     )
     cat("  Taxonomy assigned to", sum(!is.na(tax[,"Genus"])), "ASVs at genus level\n")
   }, error=function(e) cat("  Taxonomy error:", e$message, "\n"))

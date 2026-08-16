@@ -245,7 +245,7 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
           "-g", opt$primer_f, "-a", primer_r_rc,
           "-e", opt$error_rate,
           "-O", opt$min_overlap,
-          "-m 50 --cores=0",
+          sprintf("-m 50 --cores=%d", THREADS),
           discard_flag,
           "-o", cutFs[i],
           fnFs[i],
@@ -274,7 +274,7 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
           "-G", opt$primer_r,   "-A", primer_f_rc,
           "-e", opt$error_rate,
           "-O", opt$min_overlap,
-          "-m 50 --cores=0",
+          sprintf("-m 50 --cores=%d", THREADS),
           discard_flag,
           "-o", cutFs[i], "-p", cutRs[i],
           fnFs[i], fnRs[i],
@@ -632,7 +632,7 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
     cat("  Using 18S database:", nema_db, "\n")
     tryCatch({
       tax <- assignTaxonomy(seqtab_nochim, nema_db, minBoot=opt$minBoot,
-                            multithread=TRUE, verbose=FALSE)
+                            multithread=THREADS, verbose=FALSE)
       cat("  18S taxonomy assigned.\n\n")
     }, error=function(e) cat("  18S taxonomy error:", e$message, "\n"))
   } else {

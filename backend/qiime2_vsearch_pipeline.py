@@ -242,7 +242,13 @@ def remove_chimeras_denovo(vsearch: str, uniques_fasta: Path, out_dir: Path, thr
               "--threads", str(threads)], "Sort uniques by abundance")
     src = sorted_fa if sorted_fa.exists() else uniques_fasta
     nonchim = out_dir / "uniques.nonchimeras.fasta"
-    ok = run_cmd([vsearch, "--uchime_denovo", str(src), "--nonchimeras", str(nonchim)],
+    # NOTE: classic --uchime_denovo is largely single-threaded in vsearch regardless of
+    # --threads (unlike --usearch_global/--cluster_size, which do parallelize well) — this
+    # step will still be one of the slower ones on a large unique-sequence set. --threads is
+    # passed anyway since it's harmless and newer vsearch builds do use it for parts of the
+    # algorithm.
+    ok = run_cmd([vsearch, "--uchime_denovo", str(src), "--nonchimeras", str(nonchim),
+                  "--threads", str(threads)],
                  "De novo chimera detection (uchime_denovo)")
     return nonchim if ok and nonchim.exists() else src
 
