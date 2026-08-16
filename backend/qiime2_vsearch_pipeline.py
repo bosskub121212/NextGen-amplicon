@@ -128,7 +128,7 @@ def run_cmd(cmd: list, desc: str = "", env=None) -> bool:
 def _rev_comp(seq: str) -> str:
     table = str.maketrans(
         "ACGTacgtMKRYWSBVHDNmkrywsbvhdn",
-        "TGCAtgcaKMYRWSVBDHNkmyrywsvbdhn"
+        "TGCAtgcaKMYRWSVBDHNkmyrwsvbdhn"
     )
     return seq.translate(table)[::-1]
 
