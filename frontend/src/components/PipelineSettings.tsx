@@ -1096,7 +1096,7 @@ conda run -n emu emu build-database \\
                       {/* Taxonomy reference database — reuses the same Emu-format DB (sequences.fasta + taxonomy.tsv) */}
                       <div className="param-item" style={{ gridColumn: "1/-1", marginTop: 4 }}>
                         <label className="param-label">Taxonomy Reference Database</label>
-                        <span className="param-hint">Same format as Emu databases (sequences.fasta + taxonomy.tsv) — used for VSEARCH taxonomy assignment</span>
+                        <span className="param-hint">Pick an Emu-format DB, or click Browse to pick any regular SILVA .fa.gz file</span>
                         {(() => {
                           const refDbs: { key: string; path: string; label: string }[] = Object.entries(dbPaths)
                             .filter(([k, v]) => k.startsWith("emu_") && v)
@@ -1118,22 +1118,22 @@ conda run -n emu emu build-database \\
                           }
                           return (
                             <>
-                              <select className="param-input" style={{ width: "100%", marginBottom: 6 }}
-                                value={isKnown ? currentVal : "__custom__"}
-                                onChange={e => set("ont_db_path", e.target.value === "__custom__" ? "" : e.target.value)}>
-                                {refDbs.map(d => (
-                                  <option key={d.key} value={d.path}>{d.label} — {d.path.split("/").slice(-2).join("/")}</option>
-                                ))}
-                                <option value="__custom__">Custom path... / browse for a SILVA file</option>
-                              </select>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                                <select className="param-input" style={{ flex: 1 }}
+                                  value={isKnown ? currentVal : "__custom__"}
+                                  onChange={e => set("ont_db_path", e.target.value === "__custom__" ? "" : e.target.value)}>
+                                  {refDbs.map(d => (
+                                    <option key={d.key} value={d.path}>{d.label} — {d.path.split("/").slice(-2).join("/")}</option>
+                                  ))}
+                                  <option value="__custom__">Custom path...</option>
+                                </select>
+                                <button className="browse-btn" type="button" onClick={() => setShowBrowser(true)}>📂 Browse</button>
+                              </div>
                               {!isKnown && (
-                                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
-                                  <input type="text" className="param-input" style={{ flex: 1 }}
-                                    placeholder="Path to Emu-format DB dir, or a SILVA trainset .fa.gz file" autoFocus
-                                    value={currentVal}
-                                    onChange={e => set("ont_db_path", e.target.value)} />
-                                  <button className="browse-btn" type="button" onClick={() => setShowBrowser(true)}>📂 Browse</button>
-                                </div>
+                                <input type="text" className="param-input" style={{ width: "100%", marginBottom: 4 }}
+                                  placeholder="Path to Emu-format DB dir, or a SILVA trainset .fa.gz file" autoFocus
+                                  value={currentVal}
+                                  onChange={e => set("ont_db_path", e.target.value)} />
                               )}
                               {currentVal && <div style={{ fontSize: 11, color: "#10b981" }}>✅ {currentVal}</div>}
                               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
