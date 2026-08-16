@@ -1124,15 +1124,26 @@ conda run -n emu emu build-database \\
                                 {refDbs.map(d => (
                                   <option key={d.key} value={d.path}>{d.label} — {d.path.split("/").slice(-2).join("/")}</option>
                                 ))}
-                                <option value="__custom__">Custom path...</option>
+                                <option value="__custom__">Custom path... / browse for a SILVA file</option>
                               </select>
                               {!isKnown && (
-                                <input type="text" className="param-input" style={{ width: "100%", marginBottom: 4 }}
-                                  placeholder="Path to reference database directory" autoFocus
-                                  value={currentVal}
-                                  onChange={e => set("ont_db_path", e.target.value)} />
+                                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+                                  <input type="text" className="param-input" style={{ flex: 1 }}
+                                    placeholder="Path to Emu-format DB dir, or a SILVA trainset .fa.gz file" autoFocus
+                                    value={currentVal}
+                                    onChange={e => set("ont_db_path", e.target.value)} />
+                                  <button className="browse-btn" type="button" onClick={() => setShowBrowser(true)}>📂 Browse</button>
+                                </div>
                               )}
                               {currentVal && <div style={{ fontSize: 11, color: "#10b981" }}>✅ {currentVal}</div>}
+                              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                                💡 Also accepts a regular SILVA trainset file (e.g. the same
+                                silva_nr99_v138.2_toGenus_trainset.fa.gz used by the DADA2 pipeline) —
+                                no need to build an Emu-format database first.
+                              </div>
+                              {showBrowser && (
+                                <DbFileBrowser onSelect={p => { set("ont_db_path", p); }} onClose={() => setShowBrowser(false)} />
+                              )}
                             </>
                           );
                         })()}

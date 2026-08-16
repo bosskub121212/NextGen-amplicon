@@ -14,8 +14,12 @@ exact-dereplication approach cannot handle regardless of amplicon length.
 Calls the `vsearch` / `cutadapt` / `chopper` binaries directly (NOT the
 `qiime` CLI) — same tools already required for the Emu ONT-16S pipeline's
 QC/chimera steps, so no extra multi-GB QIIME2 conda environment is needed
-on deployment machines. Reuses the exact same reference-database format as
-Emu (sequences.fasta + seq2taxid.tsv + taxonomy.tsv) for taxonomy lookup.
+on deployment machines. Taxonomy reference accepts EITHER an Emu-format
+directory (sequences.fasta + seq2taxid.tsv + taxonomy.tsv) OR a plain
+DADA2-trainset-style SILVA FASTA file (e.g. silva_nr99_v138.2_toGenus_
+trainset.fa.gz) — the same files already used by the DADA2 pipeline's own
+Taxonomy Database picker, auto-detected from whether db_path is a
+directory or a file. See assign_taxonomy() below.
 
 Usage (called by main.py):
     python qiime2_vsearch_pipeline.py --input <fastq_dir> --output <out_dir>
@@ -298,14 +302,30 @@ def map_reads_to_otus(vsearch: str, samples: dict, otus_fasta: Path, out_dir: Pa
 
     return sample_names, otu_counts, mapped_totals
 
-# ── Step 8: Assign taxonomy to OTU centroids (vs. Emu-format reference DB) ─────
+# ── Step 8: Assign taxonomy to OTU centroids ────────────────────────────────────
+# Supports TWO reference formats, auto-detected from db_path:
+#   (a) a DIRECTORY in Emu format: sequences.fasta + seq2taxid.tsv + taxonomy.tsv
+#       (e.g. emu_qiime2_v7v8 built from a partner lab's QIIME2 .qza artifacts)
+#   (b) a single FILE — a standard DADA2-trainset-style SILVA FASTA, e.g.
+#       silva_nr99_v138.2_toGenus_trainset.fa.gz — the same files already used
+#       by the DADA2 pipeline's own Taxonomy Database picker, no rebuild needed.
 def assign_taxonomy(vsearch: str, otus_fasta: Path, db_path: str, out_dir: Path,
                     identity: float, threads: int) -> dict[str, dict]:
-    ref_fasta      = Path(db_path) / "sequences.fasta"
-    seq2tax_path   = Path(db_path) / "seq2taxid.tsv"
-    taxonomy_path  = Path(db_path) / "taxonomy.tsv"
+    dbp = Path(db_path)
+    if dbp.is_dir():
+        return _assign_taxonomy_emu_format(vsearch, otus_fasta, dbp, out_dir, identity, threads)
+    if dbp.is_file():
+        return _assign_taxonomy_trainset_format(vsearch, otus_fasta, dbp, out_dir, identity, threads)
+    log(f"  [WARN] reference database not found at {db_path} — taxonomy will be blank")
+    return {}
+
+def _assign_taxonomy_emu_format(vsearch: str, otus_fasta: Path, db_dir: Path, out_dir: Path,
+                                identity: float, threads: int) -> dict[str, dict]:
+    ref_fasta     = db_dir / "sequences.fasta"
+    seq2tax_path  = db_dir / "seq2taxid.tsv"
+    taxonomy_path = db_dir / "taxonomy.tsv"
     if not (ref_fasta.exists() and seq2tax_path.exists() and taxonomy_path.exists()):
-        log(f"  [WARN] reference database incomplete at {db_path} "
+        log(f"  [WARN] Emu-format reference incomplete at {db_dir} "
             "(need sequences.fasta + seq2taxid.tsv + taxonomy.tsv) — taxonomy will be blank")
         return {}
 
@@ -330,7 +350,7 @@ def assign_taxonomy(vsearch: str, otus_fasta: Path, db_path: str, out_dir: Path,
            "--id", str(identity), "--top_hits_only",
            "--userout", str(hits_path), "--userfields", "query+target+id",
            "--threads", str(threads)]
-    run_cmd(cmd, f"Assign OTU taxonomy (vsearch @ {identity * 100:.0f}% identity vs. reference)")
+    run_cmd(cmd, f"Assign OTU taxonomy (vsearch @ {identity * 100:.0f}% identity vs. Emu-format reference)")
 
     otu_tax: dict[str, dict] = {}
     if hits_path.exists():
@@ -346,6 +366,39 @@ def assign_taxonomy(vsearch: str, otus_fasta: Path, db_path: str, out_dir: Path,
                 otu_tax[otu_id] = tax_lookup.get(taxid, {}) if taxid else {}
     n_assigned = sum(1 for v in otu_tax.values() if v)
     log(f"  {n_assigned}/{len(otu_tax)} OTUs got a taxonomy hit")
+    return otu_tax
+
+def _assign_taxonomy_trainset_format(vsearch: str, otus_fasta: Path, ref_fasta: Path, out_dir: Path,
+                                     identity: float, threads: int) -> dict[str, dict]:
+    """DADA2-trainset-style FASTA (e.g. silva_nr99_v138.2_toGenus_trainset.fa.gz). Headers ARE
+    the semicolon-delimited lineage (Kingdom;Phylum;Class;Order;Family;Genus;) — DADA2's
+    assignTaxonomy() format, capped at 6 ranks (no species — matches how the DADA2 pipeline
+    already treats these same files). vsearch reads .gz input natively, no decompression needed,
+    and reports the matched header verbatim as `target`, so no separate id->lineage lookup file
+    is required at all."""
+    hits_path = out_dir / "otu_taxonomy_hits.tsv"
+    cmd = [vsearch, "--usearch_global", str(otus_fasta), "--db", str(ref_fasta),
+           "--id", str(identity), "--top_hits_only",
+           "--userout", str(hits_path), "--userfields", "query+target",
+           "--threads", str(threads)]
+    run_cmd(cmd, f"Assign OTU taxonomy (vsearch @ {identity * 100:.0f}% identity vs. SILVA trainset FASTA)")
+
+    ranks = ["superkingdom", "phylum", "class", "order", "family", "genus"]
+    otu_tax: dict[str, dict] = {}
+    if hits_path.exists():
+        with open(hits_path) as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 2:
+                    continue
+                otu_id, lineage = parts[0], parts[1]
+                if otu_id in otu_tax:
+                    continue
+                pieces = [p.strip() for p in lineage.split(";") if p.strip()]
+                otu_tax[otu_id] = dict(zip(ranks, pieces))
+    n_assigned = sum(1 for v in otu_tax.values() if v)
+    log(f"  {n_assigned}/{len(otu_tax)} OTUs got a taxonomy hit (species rank unavailable — "
+        "trainset format caps at genus, same limitation as the DADA2 pipeline)")
     return otu_tax
 
 # ── Step 9: Write ASV/taxonomy tables (same format as emu_pipeline.py) ─────────

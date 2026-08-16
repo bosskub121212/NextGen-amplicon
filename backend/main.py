@@ -621,9 +621,10 @@ def run_r_pipeline(job_id: str, params: RunParams):
         # ── 16S / 12S / 18S-nema — QIIME2/VSEARCH OTU-picking pipeline ─────
         # Alternative engine to DADA2: mirrors a manually-run QIIME2/VSEARCH
         # OTU-clustering workflow. Calls vsearch/cutadapt/chopper directly
-        # (no qiime CLI / conda env required). Reuses the same Emu-format
-        # reference database (sequences.fasta + seq2taxid.tsv + taxonomy.tsv)
-        # as the ONT-16S (Emu) marker for taxonomy lookup.
+        # (no qiime CLI / conda env required). Taxonomy reference (ont_db_path)
+        # accepts EITHER an Emu-format directory (sequences.fasta + seq2taxid.tsv
+        # + taxonomy.tsv) OR a plain SILVA trainset .fa.gz file — same files the
+        # DADA2 pipeline's own Taxonomy Database picker already uses.
         vsearch_script = R_SCRIPTS_DIR.parent / "qiime2_vsearch_pipeline.py"
         _vs_db_auto = ""
         try:
@@ -640,9 +641,11 @@ def run_r_pipeline(job_id: str, params: RunParams):
                         break
         except Exception:
             pass
+        # Unlike the ONT-16S/Emu branch, a FILE path here is valid and meaningful
+        # (a standalone SILVA trainset .fa.gz — see qiime2_vsearch_pipeline.py's
+        # _assign_taxonomy_trainset_format) — so it's passed through as-is, not
+        # collapsed to its parent directory.
         vsearch_db = params.ont_db_path or _vs_db_auto or db_path
-        if vsearch_db and Path(vsearch_db).is_file():
-            vsearch_db = str(Path(vsearch_db).parent)
 
         cmd = [
             sys.executable, str(vsearch_script),
