@@ -585,19 +585,22 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
 
               return (
                 <>
-                  <select
-                    className="param-input"
-                    style={{ width: "100%", marginBottom: 6 }}
-                    value={isKnown ? currentVal : "__custom__"}
-                    onChange={e => {
-                      set("ont_db_path", e.target.value === "__custom__" ? "" : e.target.value);
-                    }}
-                  >
-                    {emuDbs.map(d => (
-                      <option key={d.key} value={d.path}>{d.label} — {d.path.split("/").slice(-2).join("/")}</option>
-                    ))}
-                    <option value="__custom__">Custom path...</option>
-                  </select>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                    <select
+                      className="param-input"
+                      style={{ flex: 1 }}
+                      value={isKnown ? currentVal : "__custom__"}
+                      onChange={e => {
+                        set("ont_db_path", e.target.value === "__custom__" ? "" : e.target.value);
+                      }}
+                    >
+                      {emuDbs.map(d => (
+                        <option key={d.key} value={d.path}>{d.label} — {d.path.split("/").slice(-2).join("/")}</option>
+                      ))}
+                      <option value="__custom__">Custom path...</option>
+                    </select>
+                    <button className="browse-btn" type="button" onClick={() => setShowBrowser(true)}>📂 Browse</button>
+                  </div>
                   {!isKnown && (
                     <input type="text" className="param-input" style={{ width: "100%", marginBottom: 4 }}
                       placeholder="Path to Emu database directory"
@@ -609,6 +612,15 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
                     <div style={{ fontSize: 11, color: "#10b981" }}>
                       ✅ {currentVal}
                     </div>
+                  )}
+                  <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                    💡 กด Browse แล้วเลือกไฟล์ .fasta ที่อยู่ในโฟลเดอร์ Emu database (เช่น species_taxid.fasta หรือ sequences.fasta) ระบบจะใช้โฟลเดอร์ที่เก็บไฟล์นั้นเป็น database path ให้อัตโนมัติ
+                  </div>
+                  {showBrowser && (
+                    <DbFileBrowser
+                      onSelect={p => { set("ont_db_path", p); }}
+                      onClose={() => setShowBrowser(false)}
+                    />
                   )}
                 </>
               );
@@ -668,11 +680,13 @@ conda run -n emu emu build-database \\
           <div className="ps-cmd-block" style={{ marginTop: 12 }}>
             <div className="ps-cmd-header"><span>emu_pipeline.py — steps</span></div>
             <pre className="ps-cmd-body">{`1. Scan input FASTQ files (single file per sample)
-2. Trim primers with cutadapt${params.primer_f ? ` (${params.primer_f.slice(0,10)}… / ${params.primer_r.slice(0,10)}…)` : " — SKIPPED (no primers set)"}
-3. Run Emu abundance on each sample
-4. Combine per-sample TSVs → asv_table.csv + taxonomy.csv
-5. Write read_tracking.csv + summary.json
-6. Generate visualizations (viz_pipeline.R)`}</pre>
+2. QC filter with chopper (min quality/length, max length)
+3. Trim primers with cutadapt${params.primer_f ? ` (${params.primer_f.slice(0,10)}… / ${params.primer_r.slice(0,10)}…)` : " — SKIPPED (no primers set)"}
+4. Remove chimeras with vsearch (uchime_ref)
+5. Run Emu abundance on each sample
+6. Combine per-sample TSVs → asv_table.csv + taxonomy.csv
+7. Write read_tracking.csv + summary.json
+8. Generate visualizations (viz_pipeline.R)`}</pre>
           </div>
 
           {/* Metadata */}
