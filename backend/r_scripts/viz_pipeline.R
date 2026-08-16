@@ -545,7 +545,7 @@ cat("\n── Section 4: Taxonomy Bar Plots ────────────
 tryCatch({
   if (!has_ggplot2) stop("ggplot2 not available")
   tax_ranks_avail <- rank_names(ps)
-  plot_ranks <- intersect(c("Phylum","Class","Order","Family","Genus"), tax_ranks_avail)
+  plot_ranks <- intersect(c("Phylum","Class","Order","Family","Genus","Species"), tax_ranks_avail)
 
   for (rank in plot_ranks) {
     tryCatch({
