@@ -463,6 +463,31 @@ export default function App() {
     return rows;
   };
 
+  // Re-derive sample↔file detection whenever the pairing mode changes (Marker or
+  // Sequencer Type) for files that are already uploaded — e.g. user uploads files first,
+  // then switches to "QIIME2 (VSEARCH OTU)" or ONT-16S afterward. Without this, the
+  // "Detected samples" chips / manual-pairing table keep using whichever single-end vs
+  // paired-end mode was active at the moment of upload and never update, even though the
+  // single-end/paired-end hint banner above the drop-zone re-renders correctly.
+  useEffect(() => {
+    if (serverFileList.length === 0) return;
+    const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
+    setPairReadMode(isONT ? "single" : "paired");
+    if (useManualPairing) {
+      setFileMap(buildFileMapGuess(serverFileList));
+    } else {
+      const r1 = isONT ? [] : serverFileList.filter(n => /_R1|_1\.(fq|fastq)/i.test(n));
+      const base = r1.length > 0 ? r1 : serverFileList.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
+      const names = base.map(n =>
+        isONT
+          ? n.replace(/\.(fastq|fq)(\.gz)?$/i, "")
+          : n.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "")
+      );
+      if (names.length > 0) setSampleNames(names);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marker, params.sequencerType]);
+
   // ── Run ───────────────────────────────────────────────────────────
   const handleRun = async () => {
     if (!pendingJobId) return;
