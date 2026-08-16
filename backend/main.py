@@ -686,7 +686,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
                             jobs[job_id]["checkpoint_type"] = chk_type.strip()
                             jobs[job_id]["checkpoint_data"] = chk_data
                             log_lines.append(f"⚠️ Checkpoint: merged={chk_data.get('merged_pct',0):.1f}%, nonchim={chk_data.get('nonchim_pct',0):.1f}%")
-                            jobs[job_id]["log_lines"] = log_lines[-5:]
+                            jobs[job_id]["log_lines"] = log_lines[-500:]
                         save_jobs()
                     except Exception as e:
                         print(f"[checkpoint] parse error: {e}")
@@ -724,16 +724,18 @@ def run_r_pipeline(job_id: str, params: RunParams):
                             jobs[job_id]["step_history"] = live_steps
                             if new_label:
                                 log_lines.append(new_label)
-                                jobs[job_id]["log_lines"] = log_lines[-5:]
+                                jobs[job_id]["log_lines"] = log_lines[-500:]
                     except Exception:
                         pass
                 else:
-                    kws = ("Step ", "Done", "Found", "ASV", "read", "Filter",
-                           "Chimera", "Merge", "Learn", "Denois", "Taxonomy", "checkpoint")
-                    if any(k.lower() in line.lower() for k in kws):
-                        log_lines.append(line)
-                        with jobs_lock:
-                            jobs[job_id]["log_lines"] = log_lines[-5:]
+                    # Keep every non-empty output line (previously only lines matching
+                    # a keyword shortlist were kept, which silently hid most of the
+                    # pipeline's actual output from the UI). Capped at 500 most-recent
+                    # lines per job to bound memory — full untruncated output still
+                    # always goes to the on-disk log_file above regardless of this cap.
+                    log_lines.append(line)
+                    with jobs_lock:
+                        jobs[job_id]["log_lines"] = log_lines[-500:]
 
                 # Save to disk every ~20 lines
                 save_counter += 1

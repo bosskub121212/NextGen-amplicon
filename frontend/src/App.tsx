@@ -332,6 +332,40 @@ export default function App() {
     return () => { if (progRef.current) clearInterval(progRef.current); };
   }, [focusJob]);
 
+  // ── Right-hand detail sidebar: which job is it showing? ────────────
+  // Priority: whatever's expanded via "View Progress" (focusJob) or
+  // "Detail" (detailJob), else the first active job, else the most
+  // recent job overall — so the sidebar is never blank if any job exists.
+  const sidebarJobId = focusJob || detailJob ||
+    allJobs.find(j => ["running", "queued", "waiting_checkpoint"].includes(j.status))?.job_id ||
+    (allJobs.length > 0 ? allJobs[allJobs.length - 1].job_id : null);
+  const sidebarJobStatus = allJobs.find(j => j.job_id === sidebarJobId)?.status;
+
+  // ── Keep the sidebar's step/settings data fresh (live while running) ──
+  useEffect(() => {
+    if (!sidebarJobId) return;
+    loadDetail(sidebarJobId);
+    if (!sidebarJobStatus || !["running", "queued", "waiting_checkpoint"].includes(sidebarJobStatus)) return;
+    const iv = setInterval(() => loadDetail(sidebarJobId), 3000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarJobId, sidebarJobStatus]);
+
+  // ── Select a job from the left nav list ─────────────────────────────
+  const selectJobFromNav = (j: JobSummary) => {
+    if (["running", "queued", "waiting_checkpoint"].includes(j.status)) {
+      setFocusJob(j.job_id);
+    } else if (focusJob === j.job_id) {
+      setFocusJob(null); setFocusCpu(null); setFocusRam(null);
+    }
+    setDetailJob(j.job_id);
+    loadDetail(j.job_id);
+    setTimeout(() => {
+      document.getElementById(`job-card-${j.job_id}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
+  };
+
   // ── Add files helper (accumulate, deduplicate by name) ───────────
   const addFiles = (incoming: FileList | File[]) => {
     const newArr = Array.from(incoming);
@@ -484,13 +518,113 @@ export default function App() {
   const historyJobs  = [...allJobs].reverse().filter(j =>
     ["completed","cancelled","error"].includes(j.status));
 
+  // ── Right sidebar: step checklist + run settings for the selected job ──
+  const renderSidebarDetail = () => {
+    if (!sidebarJobId) {
+      return <div className="side-detail-empty">Select a job from the list to see its full<br/>status, step-by-step progress, and settings.</div>;
+    }
+    const job = allJobs.find(j => j.job_id === sidebarJobId);
+    if (!job) return null;
+    const d = detailData[sidebarJobId];
+    const isActive = ["running", "queued", "waiting_checkpoint"].includes(job.status);
+    const elapsed = isActive
+      ? formatElapsed(job.started_at)
+      : (d?.total_secs != null ? fmtSecs(d.total_secs) : "—");
+
+    return (
+      <>
+        <div className="side-detail-header">
+          <span className="job-status-icon">{STATUS_ICON[job.status]}</span>
+          <div>
+            <div className="side-detail-name">{job.job_name || "(unnamed)"}</div>
+            <div className="side-detail-sub">{job.marker} · {job.job_id}</div>
+          </div>
+        </div>
+
+        <div className="side-detail-time">
+          <span>⏱️ {isActive ? "Running time" : "Total time"}</span>
+          <strong>{elapsed}</strong>
+        </div>
+
+        <div className="side-detail-section-title">🧬 Pipeline Steps</div>
+        {!d ? (
+          <div className="detail-loading">⏳ Loading...</div>
+        ) : d.step_history.length === 0 ? (
+          <p className="detail-no-steps">
+            {isActive ? "ℹ️ Starting up — steps will appear here shortly." : "ℹ️ Step breakdown not available — re-run this job to capture step details."}
+          </p>
+        ) : (
+          <div className="side-step-list">
+            {d.step_history.map((s, i) => {
+              const barPct  = s.status === "running" ? 55 : 100;
+              const barColor = s.status === "completed" ? "#10b981"
+                             : s.status === "error"     ? "#ef4444" : "#3b82f6";
+              const icon = s.status === "completed" ? "✅" : s.status === "error" ? "❌" : "🔄";
+              return (
+                <div key={i} className="side-step-item">
+                  <div className="side-step-row">
+                    <span className="side-step-icon">{icon}</span>
+                    <span className="side-step-name">{s.label}</span>
+                    <span className="side-step-dur">
+                      {s.ended_at && s.started_at ? fmtSecs(s.ended_at - s.started_at) : "…"}
+                    </span>
+                  </div>
+                  <div className="side-step-bar-track">
+                    <div className={`side-step-bar-fill ${s.status === "running" ? "pulse" : ""}`}
+                      style={{ width: `${barPct}%`, background: barColor }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="side-detail-section-title">⚙️ Run Settings</div>
+        <div className="side-settings-list">
+          <div className="side-settings-row">
+            <span>Files</span>
+            <span>{job.files.length} file(s){job.files.length > 0 ? `: ${job.files.slice(0, 4).join(", ")}${job.files.length > 4 ? "…" : ""}` : ""}</span>
+          </div>
+          <div className="side-settings-row">
+            <span>Database</span>
+            <span>{job.database || "—"}</span>
+          </div>
+          {d?.params && PARAM_KEY_ORDER.filter(k => {
+            const v = d.params![k];
+            if (v === undefined || v === null || v === "" || v === 0) return false;
+            if (Array.isArray(v) && v.length === 0) return false;
+            return isParamRelevantForMarker(k, d.params!.marker || job.marker);
+          }).map(k => (
+            <div key={k} className="side-settings-row">
+              <span>{PARAM_LABELS[k]}</span>
+              <span>{typeof d.params![k] === "boolean" ? (d.params![k] ? "✅ Yes" : "✕ No") : String(d.params![k])}</span>
+            </div>
+          ))}
+          {d?.params && Array.isArray(d.params.sampleFileMap) && d.params.sampleFileMap.length > 0 && (
+            <div className="side-settings-row">
+              <span>Manual Pairing</span>
+              <span>{d.params.sampleFileMap.map((r: any) => r.sample).join(", ")}</span>
+            </div>
+          )}
+        </div>
+
+        {d?.error && (
+          <div className="detail-error-section">
+            <div className="detail-error-title">❌ Error log</div>
+            <pre className="detail-error-body">{d.error}</pre>
+          </div>
+        )}
+      </>
+    );
+  };
+
   // ── Job Card ──────────────────────────────────────────────────────
   const renderJobCard = (j: JobSummary) => {
     const displayName = j.job_name || "(unnamed)";
 
     return (
-      <div key={j.job_id}
-        className={`job-card ${focusJob === j.job_id ? "focused" : ""}`}
+      <div key={j.job_id} id={`job-card-${j.job_id}`}
+        className={`job-card ${focusJob === j.job_id ? "focused" : ""} ${sidebarJobId === j.job_id ? "sidebar-selected" : ""}`}
         style={{ borderLeft: `4px solid ${STATUS_COLOR[j.status]}` }}>
 
         <div className="job-card-header">
@@ -869,27 +1003,56 @@ export default function App() {
             <button className="btn-refresh" onClick={refreshJobs}>↻ Refresh</button>
           </div>
         </div>
-        <div className="hist-body">
-          {allJobs.length === 0 ? (
-            <div className="card empty-state">
-              <p>No jobs yet — go to <strong>New Job</strong> to start an analysis.</p>
+        <div className="hist-layout">
+          <aside className="job-nav-sidebar">
+            <div className="job-nav-title">All Jobs ({allJobs.length})</div>
+            <div className="job-nav-list">
+              {allJobs.length === 0 && <div className="job-nav-empty">No jobs yet</div>}
+              {[...allJobs].reverse().map(j => {
+                const dotClass =
+                  ["running", "queued", "waiting_checkpoint"].includes(j.status) ? "active"
+                  : j.status === "completed" ? "success"
+                  : j.status === "error" ? "error" : "neutral";
+                return (
+                  <button key={j.job_id}
+                    className={`job-nav-item ${sidebarJobId === j.job_id ? "selected" : ""}`}
+                    onClick={() => selectJobFromNav(j)}
+                    title={`${j.job_name || "(unnamed)"} — ${j.status}`}>
+                    <span className={`job-nav-dot job-nav-dot-${dotClass}`} />
+                    <span className="job-nav-name">{j.job_name || "(unnamed)"}</span>
+                    <span className="job-nav-marker">{j.marker}</span>
+                  </button>
+                );
+              })}
             </div>
-          ) : (
-            <>
-              {activeJobs.length > 0 && (
-                <>
-                  <div className="hist-section-label">🔄 Active ({activeJobs.length})</div>
-                  <div className="job-list">{activeJobs.map(renderJobCard)}</div>
-                </>
-              )}
-              {historyJobs.length > 0 && (
-                <>
-                  <div className="hist-section-label">🕒 Completed ({historyJobs.length})</div>
-                  <div className="job-list">{historyJobs.map(renderJobCard)}</div>
-                </>
-              )}
-            </>
-          )}
+          </aside>
+
+          <div className="hist-body">
+            {allJobs.length === 0 ? (
+              <div className="card empty-state">
+                <p>No jobs yet — go to <strong>New Job</strong> to start an analysis.</p>
+              </div>
+            ) : (
+              <>
+                {activeJobs.length > 0 && (
+                  <>
+                    <div className="hist-section-label">🔄 Active ({activeJobs.length})</div>
+                    <div className="job-list">{activeJobs.map(renderJobCard)}</div>
+                  </>
+                )}
+                {historyJobs.length > 0 && (
+                  <>
+                    <div className="hist-section-label">🕒 Completed ({historyJobs.length})</div>
+                    <div className="job-list">{historyJobs.map(renderJobCard)}</div>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+
+          <aside className="job-side-detail">
+            {renderSidebarDetail()}
+          </aside>
         </div>
 
         {/* ── Delete single job confirmation ── */}

@@ -19,11 +19,26 @@ const THEME_COLORS: Record<ThemeId, { a: string; b: string; glow1: string; glow2
 export default function DNAProgress({ percent, logs, currentStep, theme = "default" }: Props) {
   const [phase, setPhase] = useState(0);
   const animRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const logBodyRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
 
   useEffect(() => {
     animRef.current = setInterval(() => setPhase(p => (p + 3) % 360), 40);
     return () => { if (animRef.current) clearInterval(animRef.current); };
   }, []);
+
+  // Auto-scroll to the newest log line, but only if the user hasn't
+  // scrolled up to read earlier output — don't yank them back down.
+  useEffect(() => {
+    const el = logBodyRef.current;
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+  }, [logs]);
+
+  const handleLogScroll = () => {
+    const el = logBodyRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
 
   const { a: COL_A, b: COL_B, glow1, glow2 } = THEME_COLORS[theme];
   const GRAY = theme === "purple" ? "#312e81" : "#cbd5e1";
@@ -132,13 +147,13 @@ export default function DNAProgress({ percent, logs, currentStep, theme = "defau
           <span className="dna-log-dot red" />
           <span className="dna-log-dot yellow" />
           <span className="dna-log-dot green" />
-          <span className="dna-log-title">pipeline log</span>
+          <span className="dna-log-title">pipeline log{logs.length > 0 ? ` (${logs.length} lines)` : ""}</span>
         </div>
-        <div className="dna-log-body">
+        <div className="dna-log-body" ref={logBodyRef} onScroll={handleLogScroll}>
           {logs.length === 0 ? (
             <div className="dna-log-line dim">Waiting for output...</div>
           ) : (
-            logs.slice(-3).map((line, i, arr) => (
+            logs.map((line, i, arr) => (
               <div key={i} className={`dna-log-line ${i === arr.length - 1 ? "latest" : "dim"}`}>
                 <span className="dna-log-prompt">$</span> {line}
               </div>
