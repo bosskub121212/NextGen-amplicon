@@ -176,7 +176,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #1a202c;
   flex: 1; display: grid;
   grid-template-columns: 250px minmax(0, 1fr) 320px;
   gap: 20px; padding: 24px;
-  max-width: 1680px; margin: 0 auto; width: 100%;
+  width: 100%; box-sizing: border-box;
   align-items: start;
 }
 .hist-body { padding: 0; max-width: none; margin: 0; width: auto; }
@@ -252,6 +252,21 @@ body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #1a202c;
 }
 .side-settings-row span:first-child { color: #6b7280; font-weight: 600; flex-shrink: 0; }
 .side-settings-row span:last-child  { color: #1f2937; text-align: right; word-break: break-word; }
+.side-files-toggle {
+  margin-left: 6px; padding: 1px 7px; border-radius: 20px; border: 1px solid #c7d2fe;
+  background: #eef2ff; color: #4338ca; font-size: 9.5px; font-weight: 700;
+  cursor: pointer; font-family: inherit;
+}
+.side-files-toggle:hover { background: #e0e7ff; }
+.side-files-preview {
+  font-size: 10.5px; color: #9ca3af; padding: 0 0 6px; text-align: right;
+  word-break: break-word; border-bottom: 1px dashed #f0f0f0;
+}
+.side-files-full-list {
+  max-height: 180px; overflow-y: auto; background: #f8faff; border: 1px solid #e0e7ff;
+  border-radius: 8px; padding: 8px 10px; margin-bottom: 6px;
+}
+.side-files-full-item { font-size: 10.5px; color: #374151; padding: 2px 0; word-break: break-all; }
 
 @media (max-width: 1180px) {
   .hist-layout { grid-template-columns: 1fr; }
@@ -2692,6 +2707,11 @@ body                { background: #edf0f7; }
 [data-theme="purple"] .side-settings-row span:first-child { color: #9d89c5; }
 [data-theme="purple"] .side-settings-row span:last-child  { color: #e2d9f5; }
 [data-theme="purple"] .side-detail-empty  { color: #7a6aaa; }
+[data-theme="purple"] .side-files-preview { color: #7a6aaa; border-color: #3a2f68; }
+[data-theme="purple"] .side-files-full-list { background: #312857; border-color: #4a3880; }
+[data-theme="purple"] .side-files-full-item { color: #c4b5fd; }
+[data-theme="purple"] .side-files-toggle  { background: #382d60; border-color: #5b44a0; color: #c4b5fd; }
+[data-theme="purple"] .side-files-toggle:hover { background: #4a3880; }
 
 /* Inputs */
 [data-theme="purple"] .wiz-input          { background: #312857; border-color: #4a3880; color: #e2d9f5; }

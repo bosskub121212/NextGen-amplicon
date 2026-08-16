@@ -187,6 +187,7 @@ export default function App() {
   const [showColorPicker, setShowColorPicker] = useState<string|null>(null);
   const [detailJob, setDetailJob]   = useState<string|null>(null);
   const [detailData, setDetailData] = useState<Record<string, JobDetail>>({});
+  const [sideFilesExpanded, setSideFilesExpanded] = useState(false);
   // Delete confirmation popup
   const [deleteConfirm, setDeleteConfirm] = useState<{jobId: string; jobName: string} | null>(null);
   const [clearConfirm, setClearConfirm]   = useState(false);
@@ -350,6 +351,9 @@ export default function App() {
     return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sidebarJobId, sidebarJobStatus]);
+
+  // Collapse the "show all files" toggle whenever the sidebar switches to a different job
+  useEffect(() => { setSideFilesExpanded(false); }, [sidebarJobId]);
 
   // ── Select a job from the left nav list ─────────────────────────────
   const selectJobFromNav = (j: JobSummary) => {
@@ -583,8 +587,27 @@ export default function App() {
         <div className="side-settings-list">
           <div className="side-settings-row">
             <span>Files</span>
-            <span>{job.files.length} file(s){job.files.length > 0 ? `: ${job.files.slice(0, 4).join(", ")}${job.files.length > 4 ? "…" : ""}` : ""}</span>
+            <span>
+              {job.files.length} file(s)
+              {job.files.length > 4 && (
+                <button className="side-files-toggle"
+                  onClick={() => setSideFilesExpanded(v => !v)}>
+                  {sideFilesExpanded ? "▲ hide" : "▼ show all"}
+                </button>
+              )}
+            </span>
           </div>
+          {job.files.length > 0 && (
+            sideFilesExpanded ? (
+              <div className="side-files-full-list">
+                {job.files.map((f, i) => <div key={i} className="side-files-full-item">{i + 1}. {f}</div>)}
+              </div>
+            ) : (
+              <div className="side-files-preview">
+                {job.files.slice(0, 4).join(", ")}{job.files.length > 4 ? "…" : ""}
+              </div>
+            )
+          )}
           <div className="side-settings-row">
             <span>Database</span>
             <span>{job.database || "—"}</span>
