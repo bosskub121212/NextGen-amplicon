@@ -580,10 +580,16 @@ tryCatch({
       save_pdf(p, fname, width=max(8, nsamples(ps)*0.45), height=7)
 
       # Save table
+      # NOTE: values_fn must be sum, not mean — multiple distinct ASVs commonly
+      # share the same label at this rank (e.g. many different taxa all become
+      # "Unclassified"), so averaging them silently discards abundance and
+      # causes stacked bars to fall short of 100%.
       tax_tbl <- melt_df %>%
         dplyr::select(Sample, !!rank, Abundance) %>%
+        dplyr::group_by(Sample, .data[[rank]]) %>%
+        dplyr::summarise(Abundance = sum(Abundance, na.rm=TRUE), .groups="drop") %>%
         tidyr::pivot_wider(names_from="Sample", values_from="Abundance",
-                           values_fn=mean, values_fill=0)
+                           values_fn=sum, values_fill=0)
       write.csv(tax_tbl, file.path(TABLES_DIR, sprintf("taxonomy_%s.csv", tolower(rank))),
                 row.names=FALSE)
     }, error=function(e) cat(sprintf("  [WARN] %s barplot: %s\n", rank, e$message)))
@@ -628,8 +634,10 @@ if (has_pheatmap && has_ggplot2 && has_dplyr && has_tidyr) {
       wide_hm <- melt_hm %>%
         dplyr::filter(.data[[hm_lvl]] %in% top_taxa_hm) %>%
         dplyr::select(Sample, !!hm_lvl, Abundance) %>%
+        dplyr::group_by(Sample, .data[[hm_lvl]]) %>%
+        dplyr::summarise(Abundance = sum(Abundance, na.rm=TRUE), .groups="drop") %>%
         tidyr::pivot_wider(names_from="Sample", values_from="Abundance",
-                            values_fn=mean, values_fill=0)
+                            values_fn=sum, values_fill=0)
 
       mat_hm <- as.matrix(wide_hm[, -1, drop=FALSE])
       rownames(mat_hm) <- wide_hm[[hm_lvl]]
