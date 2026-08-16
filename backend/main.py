@@ -169,8 +169,10 @@ class RunParams(BaseModel):
     # --- Functional prediction ---
     run_tax4fun:   bool  = False
     run_picrust2:  bool  = False
-    # --- Sequencer type (for DADA2 16S/12S pipelines) ---
-    sequencerType: str   = "illumina"   # illumina | ont
+    # --- Sequencer type (for 16S/12S pipelines) ---
+    sequencerType: str   = "illumina"   # illumina | ont | qiime2_vsearch
+    # --- VSEARCH OTU clustering identity, used when sequencerType == "qiime2_vsearch" ---
+    otuSimilarity: float = 0.97
     # --- ONT long-read filtering for DADA2 (used when sequencerType == "ont") ---
     # DADA2 was built for short, high-accuracy Illumina reads with a hard truncLen.
     # ONT reads vary in length and have far higher (mostly indel) error rates, so
@@ -614,6 +616,55 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--metadata", metadata_path]
         if db_paths_json:
             cmd += ["--db_paths_json", db_paths_json]
+
+    elif params.sequencerType == "qiime2_vsearch":
+        # ── 16S / 12S / 18S-nema — QIIME2/VSEARCH OTU-picking pipeline ─────
+        # Alternative engine to DADA2: mirrors a manually-run QIIME2/VSEARCH
+        # OTU-clustering workflow. Calls vsearch/cutadapt/chopper directly
+        # (no qiime CLI / conda env required). Reuses the same Emu-format
+        # reference database (sequences.fasta + seq2taxid.tsv + taxonomy.tsv)
+        # as the ONT-16S (Emu) marker for taxonomy lookup.
+        vsearch_script = R_SCRIPTS_DIR.parent / "qiime2_vsearch_pipeline.py"
+        _vs_db_auto = ""
+        try:
+            _dp = json.loads(Path(db_paths_json).read_text()) if Path(db_paths_json).exists() else {}
+            for _key in ("emu_db_mar2026", "emu_silva"):
+                _v = _dp.get(_key, "")
+                if _v and Path(_v).exists():
+                    _vs_db_auto = _v
+                    break
+            if not _vs_db_auto:
+                for _key, _v in _dp.items():
+                    if _key.startswith("emu_") and _v and Path(_v).exists():
+                        _vs_db_auto = _v
+                        break
+        except Exception:
+            pass
+        vsearch_db = params.ont_db_path or _vs_db_auto or db_path
+        if vsearch_db and Path(vsearch_db).is_file():
+            vsearch_db = str(Path(vsearch_db).parent)
+
+        cmd = [
+            sys.executable, str(vsearch_script),
+            "--input",          input_dir,
+            "--output",         output_dir,
+            "--db_path",        vsearch_db,
+            "--threads",        str(params.nThreads),
+            "--otu_similarity", str(params.otuSimilarity),
+            "--min_len",        str(params.ontMinLen),
+            "--max_len",        str(params.ontMaxLen),
+            "--topN",           str(params.topN),
+            "--marker",         params.marker,
+            "--job_name",       params.job_name or job_id,
+            "--cutadapt_error_rate", str(params.cutadaptErrorRate),
+            "--cutadapt_overlap",    str(params.cutadaptOverlap),
+        ]
+        if params.primer_f:
+            cmd += ["--primer_f", params.primer_f]
+        if params.primer_r:
+            cmd += ["--primer_r", params.primer_r]
+        if params.metadata:
+            cmd += ["--metadata", metadata_path]
 
     else:
         # ── 16S / 12S / 18S-nema — standard DADA2 pipeline ─────────────────

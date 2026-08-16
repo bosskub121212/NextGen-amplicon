@@ -81,7 +81,8 @@ const PARAM_LABELS: Record<string, string> = {
   pb_min_len: "PacBio Min Len", pb_max_len: "PacBio Max Len",
   pb_maxEE: "PacBio Max EE", pb_region: "PacBio Region",
   ont_region: "16S Region (ONT)", ont_min_abundance: "Min Abundance Filter",
-  ont_db_path: "Emu Database",
+  ont_db_path: "Reference Database",
+  otuSimilarity: "OTU Similarity",
   run_tax4fun: "Tax4Fun2", run_picrust2: "PICRUSt2",
   customClassifierMode: "Classifier Mode", customClassifierPath: "Classifier Path",
   nThreads: "CPU Threads",
@@ -96,6 +97,7 @@ const PARAM_KEY_ORDER = Object.keys(PARAM_LABELS);
 const DADA2_ONLY_KEYS = new Set([
   "sequencerType", "truncLen_F", "truncLen_R", "ontMinLen", "ontMaxLen",
   "maxEE_F", "maxEE_R", "trimLeft_F", "trimLeft_R", "pool", "chimeraMethod",
+  "otuSimilarity",
 ]);
 const ITS_ONLY_KEYS    = new Set(["its_region", "run_lulu"]);
 const COX1_ONLY_KEYS   = new Set(["truncLen_cox1_f", "truncLen_cox1_r", "codon_table", "cox1_min_len", "cox1_max_len", "run_lulu"]);
@@ -104,6 +106,10 @@ const ONT16S_ONLY_KEYS = new Set(["ont_region", "ont_min_abundance", "ont_db_pat
 
 function isParamRelevantForMarker(key: string, marker: string): boolean {
   const m = (marker || "").toUpperCase();
+  // ont_db_path is shared: used by the ONT-16S (Emu) marker AND by the
+  // "QIIME2 (VSEARCH OTU)" sequencer-type option under 16S/12S/18S-nema.
+  if (key === "ont_db_path") return m === "ONT-16S" || m === "ONT16S" || m === "ONT" ||
+                                     m === "16S" || m === "12S" || m === "18S-NEMA";
   if (DADA2_ONLY_KEYS.has(key))  return m === "16S" || m === "12S" || m === "18S-NEMA";
   if (ITS_ONLY_KEYS.has(key))    return m === "ITS1" || m === "ITS2" || m === "ITS";
   if (COX1_ONLY_KEYS.has(key))   return m === "COX1";

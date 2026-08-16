@@ -76,11 +76,18 @@ export interface PipelineParams {
   customClassifierPath: string;
   trainAmpliconMinLen:  number;
   trainAmpliconMaxLen:  number;
-  // Sequencer type (for DADA2 pipelines)
-  sequencerType: "illumina" | "ont";
+  // Sequencer type (for DADA2 pipelines). "qiime2_vsearch" swaps the DADA2
+  // denoising step for VSEARCH dereplicate -> chimera removal -> OTU97
+  // clustering -> map-back-to-centroids, matching a manually-run QIIME2/
+  // VSEARCH OTU-picking workflow (better suited to high-error long reads
+  // than DADA2's exact-dereplication approach).
+  sequencerType: "illumina" | "ont" | "qiime2_vsearch";
   // ONT long-read length filter (used instead of truncLen_F when sequencerType === "ont")
+  // Also reused as the post-primer-trim length bounds for "qiime2_vsearch" mode.
   ontMinLen: number;
   ontMaxLen: number;
+  // VSEARCH OTU clustering identity threshold (0-1), only used when sequencerType === "qiime2_vsearch"
+  otuSimilarity: number;
 }
 
 export const defaultParams: PipelineParams = {
@@ -125,6 +132,7 @@ export const defaultParams: PipelineParams = {
   trainAmpliconMaxLen: 600,
   sequencerType: "illumina",
   ontMinLen: 300, ontMaxLen: 600,
+  otuSimilarity: 0.97,
 };
 
 export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio" | "ONT-16S";
@@ -860,6 +868,17 @@ conda run -n emu emu build-database \\
                           })}>
                           🧬 ONT R10.4+ (single-end)
                         </button>
+                        <button type="button"
+                          style={{
+                            padding: "6px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+                            border: params.sequencerType === "qiime2_vsearch" ? "2px solid #10b981" : "1px solid #334155",
+                            background: params.sequencerType === "qiime2_vsearch" ? "#052e1f" : "#1e293b",
+                            color: params.sequencerType === "qiime2_vsearch" ? "#6ee7b7" : "#94a3b8",
+                            fontWeight: params.sequencerType === "qiime2_vsearch" ? 600 : 400,
+                          }}
+                          onClick={() => set("sequencerType", "qiime2_vsearch")}>
+                          🧫 QIIME2 (VSEARCH OTU)
+                        </button>
                       </div>
                       {params.sequencerType === "ont" && (
                         <div style={{
@@ -874,6 +893,22 @@ conda run -n emu emu build-database \\
                           Recommended for short amplicons ≤500 bp (e.g. V7–V8 ~337 bp). DADA2 still expects
                           much lower error rates than raw ONT reads — for best accuracy prefer the
                           <strong> ONT 16S (Emu)</strong> marker instead when available.
+                        </div>
+                      )}
+                      {params.sequencerType === "qiime2_vsearch" && (
+                        <div style={{
+                          background: "#052e1f", border: "1px solid #065f46",
+                          borderRadius: 6, padding: "8px 12px", marginBottom: 12, fontSize: 12,
+                          color: "#6ee7b7", lineHeight: 1.6,
+                        }}>
+                          🧫 <strong>QIIME2/VSEARCH mode</strong> — single-end reads, processed with the same
+                          OTU-picking approach as a manual QIIME2 pipeline: Chopper QC filter → tolerant cutadapt
+                          (matches error-tolerant ONT primer trimming) → VSEARCH dereplicate → chimera removal
+                          (uchime_denovo) → <strong>OTU clustering at your chosen % identity</strong> → map reads
+                          back to OTU representatives → taxonomy. Unlike DADA2's exact-match ASV calling, OTU
+                          clustering tolerates high per-read error — the same reason a manual QIIME2/VSEARCH
+                          pipeline can process raw ONT reads where DADA2 cannot. Best for comparing results
+                          directly against a partner lab's manual VSEARCH-based workflow.
                         </div>
                       )}
 
@@ -991,7 +1026,16 @@ conda run -n emu emu build-database \\
                       </div>
 
                       <div className="ps-demux-tips">
-                        {params.sequencerType === "ont" ? (
+                        {params.sequencerType === "qiime2_vsearch" ? (
+                          <>
+                            <div className="ps-tip">🧫 <strong>QIIME2/VSEARCH single-end</strong> — no truncLen, no DADA2 error model; a Chopper QC pass handles quality filtering before clustering</div>
+                            <div className="ps-tip">💡 Set Min/Max Length to the expected amplicon size (e.g. 250–450 bp for V7–V8)</div>
+                            <div className="ps-tip">💡 OTU % identity is set in the next step (default 97%, matches standard OTU-picking convention)</div>
+                            <div className="ps-tip" style={{ color: "#6ee7b7" }}>
+                              Current: length filter = {params.ontMinLen}–{params.ontMaxLen} bp (single-end, OTU clustering — not ASV calling)
+                            </div>
+                          </>
+                        ) : params.sequencerType === "ont" ? (
                           <>
                             <div className="ps-tip">🧬 <strong>ONT single-end</strong> — only forward read quality shown, no truncLen (length-range filter instead)</div>
                             <div className="ps-tip">💡 Set Min/Max Length to the expected amplicon size (e.g. 300–400 bp for V7–V8)</div>
@@ -1018,8 +1062,84 @@ conda run -n emu emu build-database \\
                     </div>
                   )}
 
-                  {/* ── Step 3: DADA2 ────────────────────────────────── */}
-                  {s.id === 3 && (
+                  {/* ── Step 3: DADA2 / VSEARCH OTU ──────────────────── */}
+                  {s.id === 3 && params.sequencerType === "qiime2_vsearch" && (
+                    <div className="param-grid">
+                      <div style={{
+                        gridColumn: "1/-1", background: "#052e1f",
+                        border: "1px solid #065f46", borderRadius: 6,
+                        padding: "8px 12px", marginBottom: 4, fontSize: 12, color: "#6ee7b7",
+                      }}>
+                        🧫 <strong>VSEARCH OTU clustering mode</strong> — no DADA2 error model, pooling, or
+                        chimera-method settings apply here (chimera removal is built into the VSEARCH step).
+                      </div>
+                      <ParamNumber label="Min Length (bp)" hint="Discard reads shorter than this (post primer-trim)"
+                        value={params.ontMinLen} min={50} max={2000} onChange={v => set("ontMinLen", v)} />
+                      <ParamNumber label="Max Length (bp)" hint="Discard reads longer than this (post primer-trim)"
+                        value={params.ontMaxLen} min={50} max={2000} onChange={v => set("ontMaxLen", v)} />
+                      <div className="param-item">
+                        <label className="param-label">OTU Similarity Threshold</label>
+                        <span className="param-hint">VSEARCH clustering identity — 0.97 = standard 97% OTU picking</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <input type="range" min={0.90} max={0.995} step={0.005}
+                            value={params.otuSimilarity}
+                            onChange={e => set("otuSimilarity", Number(e.target.value))}
+                            style={{ flex: 1, accentColor: "#10b981" }} />
+                          <span style={{ color: "#6ee7b7", fontWeight: 700, width: 50, textAlign: "right" }}>
+                            {(params.otuSimilarity * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+                      <ParamNumber label="CPU Threads" hint="Parallel workers for VSEARCH/Chopper/cutadapt"
+                        value={params.nThreads} min={1} max={32} onChange={v => set("nThreads", v)} />
+
+                      {/* Taxonomy reference database — reuses the same Emu-format DB (sequences.fasta + taxonomy.tsv) */}
+                      <div className="param-item" style={{ gridColumn: "1/-1", marginTop: 4 }}>
+                        <label className="param-label">Taxonomy Reference Database</label>
+                        <span className="param-hint">Same format as Emu databases (sequences.fasta + taxonomy.tsv) — used for VSEARCH taxonomy assignment</span>
+                        {(() => {
+                          const refDbs: { key: string; path: string; label: string }[] = Object.entries(dbPaths)
+                            .filter(([k, v]) => k.startsWith("emu_") && v)
+                            .map(([k, v]) => ({
+                              key: k,
+                              path: v as string,
+                              label: k === "emu_silva" ? "Emu SILVA (full-length)"
+                                   : k === "emu_db_mar2026" ? "Emu DB Mar 2026"
+                                   : k.replace("emu_", "Emu "),
+                            }));
+                          const currentVal = params.ont_db_path || (refDbs[0]?.path ?? "");
+                          const isKnown = refDbs.some(d => d.path === currentVal);
+                          if (refDbs.length === 0) {
+                            return (
+                              <div style={{ fontSize: 12, color: "#f59e0b", marginBottom: 6 }}>
+                                ⚠ No reference database found — build one first (see ONT 16S marker's database guide)
+                              </div>
+                            );
+                          }
+                          return (
+                            <>
+                              <select className="param-input" style={{ width: "100%", marginBottom: 6 }}
+                                value={isKnown ? currentVal : "__custom__"}
+                                onChange={e => set("ont_db_path", e.target.value === "__custom__" ? "" : e.target.value)}>
+                                {refDbs.map(d => (
+                                  <option key={d.key} value={d.path}>{d.label} — {d.path.split("/").slice(-2).join("/")}</option>
+                                ))}
+                                <option value="__custom__">Custom path...</option>
+                              </select>
+                              {!isKnown && (
+                                <input type="text" className="param-input" style={{ width: "100%", marginBottom: 4 }}
+                                  placeholder="Path to reference database directory" autoFocus
+                                  value={currentVal}
+                                  onChange={e => set("ont_db_path", e.target.value)} />
+                              )}
+                              {currentVal && <div style={{ fontSize: 11, color: "#10b981" }}>✅ {currentVal}</div>}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  )}
+                  {s.id === 3 && params.sequencerType !== "qiime2_vsearch" && (
                     <div className="param-grid">
                       {params.sequencerType === "ont" && (
                         <div style={{
