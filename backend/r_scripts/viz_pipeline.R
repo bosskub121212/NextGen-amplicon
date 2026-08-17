@@ -115,11 +115,19 @@ make_palette <- function(n) {
   }
 }
 
-# ── Detect pipeline mode: Emu (CSV) vs QIIME2/DADA2 (BIOM) ───────────────────
+# ── Detect pipeline mode: CSV (Emu / QIIME2-VSEARCH) vs QIIME2/DADA2 (BIOM) ──
+# NOTE: was previously gated on MARKER %in% c("ONT-16S","ONT16S","ONT") too, which
+# broke the QIIME2-VSEARCH pipeline (qiime2_vsearch_pipeline.py) — it also writes
+# asv_table.csv + taxonomy.csv directly (same format as Emu), but always passes
+# --marker as the underlying base marker (e.g. "16S"), not an ONT-specific value,
+# so it never matched and fell through to the BIOM branch below, which has no
+# BIOM file to load since this pipeline never runs the real qiime CLI. The file
+# names themselves are already a reliable signal: the regular DADA2 pipeline
+# writes "taxonomy_table.csv" (different name), never "taxonomy.csv", so this
+# check can't misfire for it.
 emu_asv_file <- file.path(OUTPUT_DIR, "asv_table.csv")
 emu_tax_file <- file.path(OUTPUT_DIR, "taxonomy.csv")
-IS_EMU_MODE  <- file.exists(emu_asv_file) && file.exists(emu_tax_file) &&
-                MARKER %in% c("ONT-16S", "ONT16S", "ONT")
+IS_EMU_MODE  <- file.exists(emu_asv_file) && file.exists(emu_tax_file)
 
 biom_file  <- file.path(EXP_DIR, "feature-table", "feature-table.biom")
 tax_file   <- file.path(EXP_DIR, "taxonomy",       "taxonomy.tsv")
