@@ -287,9 +287,17 @@ def remove_chimeras_ref(vsearch: str, uniques_fasta: Path, out_dir: Path,
               "--threads", str(threads)], "Sort uniques by abundance")
     src = sorted_fa if sorted_fa.exists() else uniques_fasta
     nonchim = out_dir / "uniques.nonchimeras.fasta"
+    # NOTE: --uchime_ref does NOT accept --strand both at all — vsearch refuses
+    # to run ("Fatal error: Only --strand plus is allowed with uchime_ref"),
+    # confirmed live. Every other vsearch call in this pipeline got --strand both
+    # to fix the OTU-count-inflation bug, but this one command is a hard
+    # exception — leave it on the default (plus only). This is an accepted
+    # vsearch limitation, not a bug we introduced: by this point sequences have
+    # already gone through dereplication with --strand both, which merges
+    # same-sequence reads regardless of original orientation, so the bulk of any
+    # cross-strand duplication was already resolved before reaching this step.
     ok = run_cmd([vsearch, "--uchime_ref", str(src), "--db", str(ref_fasta),
-                  "--nonchimeras", str(nonchim), "--threads", str(threads),
-                  "--strand", "both"],
+                  "--nonchimeras", str(nonchim), "--threads", str(threads)],
                  "Reference-based chimera detection (uchime_ref)")
     return nonchim if ok and nonchim.exists() else src
 
