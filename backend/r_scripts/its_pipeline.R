@@ -214,8 +214,48 @@ cat("\nSamples passing filter:", length(sample_names), "\n\n")
 prog(25, "Step 2/6 — Learning error rates")
 cat("Step 2/6: Learning Error Rates...\n")
 
-errF <- learnErrors(filtFs, nbases=as.numeric(opt$nbases), multithread=opt$threads, verbose=FALSE)
-errR <- learnErrors(filtRs, nbases=as.numeric(opt$nbases), multithread=opt$threads, verbose=FALSE)
+# WORKAROUND: dada2's learnErrors(nbases=...) does not reliably honor the
+# nbases cutoff — a well-documented, long-standing upstream bug (dada2 GitHub
+# issues #954 and #2054). Confirmed on our own 16S/12S data: changing nbases
+# had zero effect on how much was actually read. Since we can't fix dada2
+# itself, pre-select our own subset of files so it physically can't read more
+# than intended, regardless of whether its internal cutoff logic works.
+select_files_for_nbases <- function(files, reads_out, read_len, nbases) {
+  # `files` and `reads_out` must already be positionally aligned. Apply one
+  # boolean mask to both together — never filter+reindex them separately, or
+  # a zero-read sample in the middle of the list will silently misalign
+  # every entry after it.
+  keep      <- file.exists(files)
+  files     <- files[keep]
+  reads_out <- reads_out[keep]
+  if (length(files) == 0) return(files)
+  reads_out[is.na(reads_out)] <- 0
+  cum <- cumsum(pmax(reads_out, 0) * max(read_len, 1))
+  n_needed <- which(cum >= nbases)[1]
+  if (is.na(n_needed)) n_needed <- length(files)  # target never reached — use everything available
+  files[seq_len(n_needed)]
+}
+# ITS has no fixed truncLen (variable-length reads); use minLen as a conservative
+# per-read base estimate (reads are guaranteed to be >= minLen, so this slightly
+# over-selects files rather than under-selecting — the safe direction).
+# NOTE: this must run against the *pre-filtering* filtFs/filtRs (before the
+# file.exists() subsetting a few lines above reassigned them), so pair it with
+# the original `out` matrix — but since filtFs/filtRs were already
+# reassigned to the filtered subset above, and `out` still has one row per
+# *original* input file, only rely on this when the shapes line up.
+its_readLen_est <- max(opt$minLen, 200)
+its_reads_out <- if (!is.null(out) && ncol(out) >= 2 && nrow(out) == length(filtFs)) {
+  out[, 2]
+} else {
+  rep(NA, length(filtFs))  # shape mismatch — fall back to "use everything" below
+}
+filtFs_for_err <- select_files_for_nbases(filtFs, its_reads_out, its_readLen_est, as.numeric(opt$nbases))
+filtRs_for_err <- select_files_for_nbases(filtRs, its_reads_out, its_readLen_est, as.numeric(opt$nbases))
+cat(sprintf("  Using %d/%d sample file(s) to reach the ~%.0f bases target for error learning\n",
+            length(filtFs_for_err), length(filtFs), as.numeric(opt$nbases)))
+
+errF <- learnErrors(filtFs_for_err, nbases=as.numeric(opt$nbases), multithread=opt$threads, verbose=FALSE)
+errR <- learnErrors(filtRs_for_err, nbases=as.numeric(opt$nbases), multithread=opt$threads, verbose=FALSE)
 cat("  Error rates learned.\n\n")
 
 # ── Step 3: Dereplicate ───────────────────────────────────────

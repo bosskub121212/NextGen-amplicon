@@ -388,9 +388,54 @@ tryCatch({
 # ── Step 3: Learn Error Rates ─────────────────────────────────
 prog(32, "Step 2/8 — Learning error rates (this takes a while...)")
 cat("Step 2/5: Learning Error Rates...\n")
-errF <- learnErrors(filtFs, nbases=opt$nbases, multithread=THREADS)
+
+# WORKAROUND: dada2's learnErrors(nbases=...) does not reliably honor the
+# nbases cutoff — this is a well-documented, long-standing upstream bug
+# (dada2 GitHub issues #954 and #2054: users report the exact same huge
+# base/sample count no matter what nbases is set to, sometimes billions of
+# bases from a single file). We confirmed this on our own data: setting
+# "Bases to Learn From" to 10M vs 100M made literally zero difference — same
+# 26 samples / 115,166,400 bases used both times. Since we can't fix dada2
+# itself, we work around it by choosing our own subset of *files* to hand to
+# learnErrors() in the first place, so it physically cannot read more than
+# intended — regardless of whether its own internal cutoff logic works.
+select_files_for_nbases <- function(files, reads_out, read_len, nbases) {
+  # `files` and `reads_out` must already be positionally aligned (same order,
+  # same length, straight from filterAndTrim's own output). Apply one boolean
+  # mask to both together — never filter+reindex them separately, or a
+  # zero-read sample sitting in the middle of the list will silently
+  # misalign every entry after it.
+  keep      <- file.exists(files)
+  files     <- files[keep]
+  reads_out <- reads_out[keep]
+  if (length(files) == 0) return(files)
+  reads_out[is.na(reads_out)] <- 0
+  cum <- cumsum(pmax(reads_out, 0) * max(read_len, 1))
+  n_needed <- which(cum >= nbases)[1]
+  if (is.na(n_needed)) n_needed <- length(files)  # target never reached — use everything available
+  files[seq_len(n_needed)]
+}
+
+reads_out_vec <- if (!is.null(out) && ncol(out) >= 2 && nrow(out) == length(filtFs)) {
+  out[, 2]
+} else {
+  rep(NA, length(filtFs))  # shape mismatch — fall back to "use everything" below
+}
+# Paired-end: filterAndTrim truncates to an exact length, so truncLen is a precise
+# per-read base estimate. Single-end/ONT mode isn't truncated to a fixed length, so
+# use the midpoint of the configured min/max length filter as a rough proxy instead.
+readLen_F <- if (is_single) {
+  ont_max_est <- if (is.finite(ont_maxLen)) ont_maxLen else 2000
+  (ont_minLen + ont_max_est) / 2
+} else opt$truncLen_F
+
+filtFs_for_err <- select_files_for_nbases(filtFs, reads_out_vec, readLen_F, opt$nbases)
+cat(sprintf("  Using %d/%d sample file(s) to reach the ~%.0f bases target for error learning\n",
+            length(filtFs_for_err), length(filtFs), opt$nbases))
+errF <- learnErrors(filtFs_for_err, nbases=opt$nbases, multithread=THREADS)
 if (!is_single) {
-  errR <- learnErrors(filtRs, nbases=opt$nbases, multithread=THREADS)
+  filtRs_for_err <- select_files_for_nbases(filtRs, reads_out_vec, opt$truncLen_R, opt$nbases)
+  errR <- learnErrors(filtRs_for_err, nbases=opt$nbases, multithread=THREADS)
 }
 cat("  Done.\n\n")
 
