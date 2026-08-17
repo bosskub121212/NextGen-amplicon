@@ -89,6 +89,27 @@ load_pkg <- function(pkg) {
 }
 
 has_phyloseq <- load_pkg("phyloseq")
+
+# ── Performance: phyloseq's tax_glom() scales very poorly with taxa count — it
+# can take many minutes to hours per call on tables with 100K+ taxa, which is
+# typical output from the VSEARCH OTU-clustering pipeline (unlike DADA2 ASVs,
+# which usually number in the hundreds/low thousands). Every downstream plot in
+# this script only ever displays the Top-N most abundant taxa anyway (the rest
+# collapse into "Other"), so we transparently shadow tax_glom() here to prune to
+# the most abundant OTUs first when the table is large. Every call site below
+# (13 of them) benefits automatically — no other code changes needed. For tables
+# under max_taxa this is a no-op and behaves identically to stock tax_glom().
+if (has_phyloseq) {
+  .phyloseq_tax_glom <- phyloseq::tax_glom
+  tax_glom <- function(physeq, taxrank, NArm=FALSE, max_taxa=5000, ...) {
+    if (phyloseq::ntaxa(physeq) > max_taxa) {
+      keep   <- names(sort(phyloseq::taxa_sums(physeq), decreasing=TRUE))[seq_len(max_taxa)]
+      physeq <- phyloseq::prune_taxa(keep, physeq)
+    }
+    .phyloseq_tax_glom(physeq, taxrank=taxrank, NArm=NArm, ...)
+  }
+}
+
 has_vegan    <- load_pkg("vegan")
 has_ggplot2  <- load_pkg("ggplot2")
 has_dplyr    <- load_pkg("dplyr")
