@@ -399,7 +399,7 @@ cat("Step 2/5: Learning Error Rates...\n")
 # itself, we work around it by choosing our own subset of *files* to hand to
 # learnErrors() in the first place, so it physically cannot read more than
 # intended — regardless of whether its own internal cutoff logic works.
-select_files_for_nbases <- function(files, reads_out, read_len, nbases) {
+select_files_for_nbases <- function(files, reads_out, read_len, nbases, outlier_mult=20) {
   # `files` and `reads_out` must already be positionally aligned (same order,
   # same length, straight from filterAndTrim's own output). Apply one boolean
   # mask to both together — never filter+reindex them separately, or a
@@ -410,6 +410,38 @@ select_files_for_nbases <- function(files, reads_out, read_len, nbases) {
   reads_out <- reads_out[keep]
   if (length(files) == 0) return(files)
   reads_out[is.na(reads_out)] <- 0
+
+  # Skip extreme outlier samples for error-LEARNING purposes only — they are
+  # still processed normally everywhere else in the pipeline, this only
+  # affects which files feed the error MODEL. A single sample that dwarfs
+  # every other sample (e.g. one huge library sitting next to many small
+  # ones) forces learnErrors() to swallow it whole just to reach *any*
+  # nbases target, defeating the point of the setting entirely. dada2's
+  # error model represents the *sequencing run's* error characteristics, not
+  # any one sample's biology — using a representative subset (excluding
+  # wildly oversized outliers) is standard DADA2 practice, not a shortcut.
+  pos <- reads_out[reads_out > 0]
+  if (length(pos) >= 3) {
+    med <- stats::median(pos)
+    normal <- reads_out > 0 & reads_out <= outlier_mult * med
+    if (any(normal) && !all(normal)) {
+      files_n     <- files[normal]
+      reads_out_n <- reads_out[normal]
+      cum_n <- cumsum(pmax(reads_out_n, 0) * max(read_len, 1))
+      # Only take this path if the non-outlier samples alone can reach a
+      # reasonable fraction of the target — otherwise they're too sparse to
+      # be a fair substitute, so fall through to the full pool below.
+      if (length(cum_n) > 0 && max(cum_n) >= nbases * 0.1) {
+        n_skip <- sum(!normal)
+        cat(sprintf("  [nbases pre-select] skipping %d outlier sample(s) (>%.0fx median reads) — using %d representative sample(s) totaling ~%.0f bases instead\n",
+                    n_skip, outlier_mult, length(files_n), max(cum_n)))
+        n_needed <- which(cum_n >= nbases)[1]
+        if (is.na(n_needed)) n_needed <- length(files_n)
+        return(files_n[seq_len(n_needed)])
+      }
+    }
+  }
+
   cum <- cumsum(pmax(reads_out, 0) * max(read_len, 1))
   n_needed <- which(cum >= nbases)[1]
   if (is.na(n_needed)) n_needed <- length(files)  # target never reached — use everything available

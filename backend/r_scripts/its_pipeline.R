@@ -220,7 +220,7 @@ cat("Step 2/6: Learning Error Rates...\n")
 # had zero effect on how much was actually read. Since we can't fix dada2
 # itself, pre-select our own subset of files so it physically can't read more
 # than intended, regardless of whether its internal cutoff logic works.
-select_files_for_nbases <- function(files, reads_out, read_len, nbases) {
+select_files_for_nbases <- function(files, reads_out, read_len, nbases, outlier_mult=20) {
   # `files` and `reads_out` must already be positionally aligned. Apply one
   # boolean mask to both together — never filter+reindex them separately, or
   # a zero-read sample in the middle of the list will silently misalign
@@ -230,6 +230,31 @@ select_files_for_nbases <- function(files, reads_out, read_len, nbases) {
   reads_out <- reads_out[keep]
   if (length(files) == 0) return(files)
   reads_out[is.na(reads_out)] <- 0
+
+  # Skip extreme outlier samples for error-LEARNING purposes only — see the
+  # matching comment in dada2_pipeline.R for the full rationale. In short: one
+  # sample that dwarfs every other sample forces learnErrors() to swallow it
+  # whole to reach any nbases target at all, defeating the setting entirely;
+  # using a representative subset instead is standard DADA2 practice.
+  pos <- reads_out[reads_out > 0]
+  if (length(pos) >= 3) {
+    med <- stats::median(pos)
+    normal <- reads_out > 0 & reads_out <= outlier_mult * med
+    if (any(normal) && !all(normal)) {
+      files_n     <- files[normal]
+      reads_out_n <- reads_out[normal]
+      cum_n <- cumsum(pmax(reads_out_n, 0) * max(read_len, 1))
+      if (length(cum_n) > 0 && max(cum_n) >= nbases * 0.1) {
+        n_skip <- sum(!normal)
+        cat(sprintf("  [nbases pre-select] skipping %d outlier sample(s) (>%.0fx median reads) — using %d representative sample(s) totaling ~%.0f bases instead\n",
+                    n_skip, outlier_mult, length(files_n), max(cum_n)))
+        n_needed <- which(cum_n >= nbases)[1]
+        if (is.na(n_needed)) n_needed <- length(files_n)
+        return(files_n[seq_len(n_needed)])
+      }
+    }
+  }
+
   cum <- cumsum(pmax(reads_out, 0) * max(read_len, 1))
   n_needed <- which(cum >= nbases)[1]
   if (is.na(n_needed)) n_needed <- length(files)  # target never reached — use everything available
