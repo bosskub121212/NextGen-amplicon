@@ -429,6 +429,16 @@ readLen_F <- if (is_single) {
   (ont_minLen + ont_max_est) / 2
 } else opt$truncLen_F
 
+# Debug visibility: confirm reads_out_vec actually carries real per-sample counts
+# (not silently falling back to all-NA/0, which would force n_needed to always
+# equal "every file that exists" regardless of the nbases target).
+cat(sprintf("  [nbases pre-select] read_len_est=%.0f  reads_out: n=%d sum=%.0f min=%.0f median=%.0f max=%.0f  (%d/%d NA)\n",
+            readLen_F, length(reads_out_vec), sum(reads_out_vec, na.rm=TRUE),
+            suppressWarnings(min(reads_out_vec, na.rm=TRUE)),
+            stats::median(reads_out_vec, na.rm=TRUE),
+            suppressWarnings(max(reads_out_vec, na.rm=TRUE)),
+            sum(is.na(reads_out_vec)), length(reads_out_vec)))
+
 filtFs_for_err <- select_files_for_nbases(filtFs, reads_out_vec, readLen_F, opt$nbases)
 cat(sprintf("  Using %d/%d sample file(s) to reach the ~%.0f bases target for error learning\n",
             length(filtFs_for_err), length(filtFs), opt$nbases))
