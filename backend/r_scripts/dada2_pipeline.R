@@ -35,6 +35,26 @@ suppressPackageStartupMessages({
   library(jsonlite)
 })
 
+# ── Load optional visualization packages ───────────────────────
+# NOTE: moved up here (was previously declared much later, around the
+# "Generating plots" step) because earlier code — the error-model PDF plots
+# right after learnErrors() — also references has_ggplot2, but ran BEFORE
+# this used to be defined, causing a silent "object 'has_ggplot2' not found"
+# error (caught by tryCatch, so it just skipped the plots with no real
+# warning). Defining it here makes it available to every section that needs
+# it, in the correct order.
+has_ggplot2  <- requireNamespace("ggplot2",  quietly=TRUE)
+has_reshape2 <- requireNamespace("reshape2", quietly=TRUE)
+has_vegan    <- requireNamespace("vegan",    quietly=TRUE)
+has_ape      <- requireNamespace("ape",      quietly=TRUE)
+has_pheatmap <- requireNamespace("pheatmap", quietly=TRUE)
+has_scales   <- requireNamespace("scales",   quietly=TRUE)
+if (has_ggplot2)  suppressPackageStartupMessages(library(ggplot2))
+if (has_reshape2) suppressPackageStartupMessages(library(reshape2))
+if (has_vegan)    suppressPackageStartupMessages(library(vegan))
+if (has_ape)      suppressPackageStartupMessages(library(ape))
+if (has_pheatmap) suppressPackageStartupMessages(library(pheatmap))
+
 # ── Arguments ────────────────────────────────────────────────
 option_list <- list(
   make_option("--input",         type="character"),
@@ -816,19 +836,8 @@ write(toJSON(summary_data, auto_unbox=TRUE), file.path(opt$output, "summary.json
 
 prog(92, "Step 7/8 — Generating taxonomy & report plots...")
 cat("Generating plots...\n")
-
-# ── Load optional visualization packages ───────────────────────
-has_ggplot2  <- requireNamespace("ggplot2",  quietly=TRUE)
-has_reshape2 <- requireNamespace("reshape2", quietly=TRUE)
-has_vegan    <- requireNamespace("vegan",    quietly=TRUE)
-has_ape      <- requireNamespace("ape",      quietly=TRUE)
-has_pheatmap <- requireNamespace("pheatmap", quietly=TRUE)
-has_scales   <- requireNamespace("scales",   quietly=TRUE)
-if (has_ggplot2)  suppressPackageStartupMessages(library(ggplot2))
-if (has_reshape2) suppressPackageStartupMessages(library(reshape2))
-if (has_vegan)    suppressPackageStartupMessages(library(vegan))
-if (has_ape)      suppressPackageStartupMessages(library(ape))
-if (has_pheatmap) suppressPackageStartupMessages(library(pheatmap))
+# (has_ggplot2/has_reshape2/has_vegan/has_ape/has_pheatmap/has_scales are
+# declared near the top of the script now — see the note there.)
 
 # ── Palette helpers ────────────────────────────────────────────
 palette20 <- c("#e74c3c","#e67e22","#f1c40f","#2ecc71","#1abc9c",
