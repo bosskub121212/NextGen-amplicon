@@ -58,9 +58,17 @@ def check_update() -> dict:
             "changelog":       remote.get("changelog", ""),
         }
     except error.HTTPError as e:
+        # 429 (rate-limited) and 5xx (transient GitHub/CDN hiccup) are not
+        # something the user can act on and not a real problem with the app —
+        # skip silently instead of showing a scary red error banner. Only
+        # surface genuinely actionable errors (404 = repo/branch moved, etc).
+        if e.code == 429 or e.code >= 500:
+            return {"available": False}
         return {"available": False, "error": f"http_{e.code}", "message": f"GitHub error {e.code}"}
     except Exception as e:
-        return {"available": False, "error": "network", "message": str(e)}
+        # Network hiccups (DNS, timeout, offline) are equally not actionable —
+        # skip silently too rather than nagging on every transient blip.
+        return {"available": False}
 
 
 def apply_update() -> dict:

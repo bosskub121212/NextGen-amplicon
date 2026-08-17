@@ -238,9 +238,12 @@ def pool_samples_to_fasta(samples: dict, out_path: Path) -> int:
 # ── Step 4: Dereplicate pooled reads ────────────────────────────────────────────
 def dereplicate(vsearch: str, pooled_fasta: Path, out_dir: Path, threads: int) -> Path | None:
     uniques = out_dir / "uniques.fasta"
+    # --strand both here too, for the same reason as cluster_otus() below — merge
+    # exact-duplicate reads regardless of which strand they ended up on, rather
+    # than only ever comparing forward-strand-to-forward-strand (vsearch's default).
     cmd = [vsearch, "--derep_fulllength", str(pooled_fasta),
            "--sizeout", "--relabel", "Uniq", "--output", str(uniques),
-           "--threads", str(threads)]
+           "--strand", "both", "--threads", str(threads)]
     ok = run_cmd(cmd, "Dereplicate pooled reads")
     return uniques if ok and uniques.exists() else None
 
@@ -285,7 +288,8 @@ def remove_chimeras_ref(vsearch: str, uniques_fasta: Path, out_dir: Path,
     src = sorted_fa if sorted_fa.exists() else uniques_fasta
     nonchim = out_dir / "uniques.nonchimeras.fasta"
     ok = run_cmd([vsearch, "--uchime_ref", str(src), "--db", str(ref_fasta),
-                  "--nonchimeras", str(nonchim), "--threads", str(threads)],
+                  "--nonchimeras", str(nonchim), "--threads", str(threads),
+                  "--strand", "both"],
                  "Reference-based chimera detection (uchime_ref)")
     return nonchim if ok and nonchim.exists() else src
 
@@ -293,9 +297,21 @@ def remove_chimeras_ref(vsearch: str, uniques_fasta: Path, out_dir: Path,
 def cluster_otus(vsearch: str, nonchim_fasta: Path, out_dir: Path,
                  similarity: float, threads: int) -> Path | None:
     otus = out_dir / "otus.fasta"
+    # --strand both: vsearch defaults to --strand plus (forward-strand comparison
+    # only). If any reads end up on the opposite strand going into this step —
+    # easy to happen with amplicon data despite cutadapt's --revcomp normalization
+    # upstream (e.g. a read where neither primer variant matched cleanly enough to
+    # trigger the revcomp swap) — two biologically-identical sequences on opposite
+    # strands look completely different to a forward-only comparison and each
+    # becomes its own separate OTU centroid instead of merging. This is a
+    # well-documented vsearch gotcha (see torognes/vsearch issue #379) and matches
+    # exactly what we saw: 237,018 "OTUs" from just 6 samples, vs ~1,000-1,200 from
+    # the BI reference's manual QIIME2 pipeline on the same data. --strand both
+    # checks both orientations during clustering so same-sequence reads merge
+    # regardless of which strand they ended up on.
     cmd = [vsearch, "--cluster_size", str(nonchim_fasta), "--id", str(similarity),
            "--centroids", str(otus), "--relabel", "OTU_", "--sizein", "--sizeout",
-           "--threads", str(threads)]
+           "--strand", "both", "--threads", str(threads)]
     ok = run_cmd(cmd, f"Cluster OTUs @ {similarity * 100:.1f}% identity")
     return otus if ok and otus.exists() else None
 
@@ -320,7 +336,7 @@ def map_reads_to_otus(vsearch: str, samples: dict, otus_fasta: Path, out_dir: Pa
 
         hits_path = map_dir / f"{name}.hits.tsv"
         cmd = [vsearch, "--usearch_global", str(fa_path), "--db", str(otus_fasta),
-               "--id", str(similarity), "--top_hits_only",
+               "--id", str(similarity), "--top_hits_only", "--strand", "both",
                "--userout", str(hits_path), "--userfields", "query+target",
                "--threads", str(threads)]
         run_cmd(cmd, f"Map reads to OTUs: {name}")
@@ -390,7 +406,7 @@ def _assign_taxonomy_emu_format(vsearch: str, otus_fasta: Path, db_dir: Path, ou
 
     hits_path = out_dir / "otu_taxonomy_hits.tsv"
     cmd = [vsearch, "--usearch_global", str(otus_fasta), "--db", str(ref_fasta),
-           "--id", str(identity), "--top_hits_only",
+           "--id", str(identity), "--top_hits_only", "--strand", "both",
            "--userout", str(hits_path), "--userfields", "query+target+id",
            "--threads", str(threads)]
     run_cmd(cmd, f"Assign OTU taxonomy (vsearch @ {identity * 100:.0f}% identity vs. Emu-format reference)")
@@ -421,7 +437,7 @@ def _assign_taxonomy_trainset_format(vsearch: str, otus_fasta: Path, ref_fasta: 
     is required at all."""
     hits_path = out_dir / "otu_taxonomy_hits.tsv"
     cmd = [vsearch, "--usearch_global", str(otus_fasta), "--db", str(ref_fasta),
-           "--id", str(identity), "--top_hits_only",
+           "--id", str(identity), "--top_hits_only", "--strand", "both",
            "--userout", str(hits_path), "--userfields", "query+target",
            "--threads", str(threads)]
     run_cmd(cmd, f"Assign OTU taxonomy (vsearch @ {identity * 100:.0f}% identity vs. SILVA trainset FASTA)")
