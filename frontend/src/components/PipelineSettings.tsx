@@ -1221,9 +1221,9 @@ conda run -n emu emu build-database \\
                       <ParamSelect label="Bases to Learn From" hint="More = higher accuracy but slower"
                         value={String(params.nbases)}
                         options={[
-                          { value: "1e7", label: "10M bases (fast)" },
-                          { value: "1e8", label: "100M bases (default)" },
-                          { value: "5e8", label: "500M bases (accurate)" },
+                          { value: "10000000", label: "10M bases (fast)" },
+                          { value: "100000000", label: "100M bases (default)" },
+                          { value: "500000000", label: "500M bases (accurate)" },
                         ]}
                         onChange={v => set("nbases", Number(v))} />
                       <ParamNumber label="CPU Threads" hint="Parallel workers for DADA2"
