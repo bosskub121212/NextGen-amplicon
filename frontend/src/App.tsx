@@ -288,7 +288,21 @@ export default function App() {
       const chkJob = res.data.jobs.find((j: JobSummary) => j.status === "waiting_checkpoint");
       if (chkJob && chkJob.job_id !== checkpointJobId) {
         setCheckpointJobId(chkJob.job_id);
-        setCheckpointParams(params);   // seed re-run form from current params
+        // Seed the re-run form from THIS job's own saved params — not the
+        // top-level `params` state, which reflects whatever is currently
+        // loaded in the main Settings form and may belong to a totally
+        // different job (or still be untouched defaults). Using the wrong
+        // source here was silently dropping primers/database/etc on
+        // "Re-run with New Settings" for any job that wasn't the one
+        // currently open in Settings.
+        try {
+          const jobDetail = await axios.get(`${API}/detail/${chkJob.job_id}`);
+          if (jobDetail.data?.params) {
+            setCheckpointParams({ ...defaultParams, ...jobDetail.data.params });
+          } else {
+            setCheckpointParams(params);
+          }
+        } catch { setCheckpointParams(params); }
         // Fetch checkpoint data
         try {
           const chk = await axios.get(`${API}/jobs/${chkJob.job_id}/checkpoint`);
@@ -759,6 +773,19 @@ export default function App() {
                 setCheckpointJobId(j.job_id);
                 axios.get(`${API}/jobs/${j.job_id}/checkpoint`)
                   .then(res => setCheckpointData(res.data.checkpoint_data))
+                  .catch(() => {});
+                // Seed the re-run form with THIS job's own saved params
+                // (primers, database, etc.) — without this, checkpointParams
+                // was left at whatever it last happened to be (often still
+                // the untouched hardcoded defaults), so "Re-run with New
+                // Settings" silently dropped primer_f/primer_r/taxDatabase
+                // and reset to defaults instead of the job's real settings.
+                axios.get(`${API}/detail/${j.job_id}`)
+                  .then(res => {
+                    if (res.data?.params) {
+                      setCheckpointParams({ ...defaultParams, ...res.data.params });
+                    }
+                  })
                   .catch(() => {});
               }}>
               ⚠️ Review Warning &amp; Decide
