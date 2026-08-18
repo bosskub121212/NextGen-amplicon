@@ -523,6 +523,73 @@ tryCatch({
 # ── Step 4: Denoise ───────────────────────────────────────────
 prog(48, "Step 3/8 — Denoising & ASV inference")
 cat("Step 3/5: Denoising (DADA2 Inference)...\n")
+
+# WORKAROUND: unlike error-LEARNING above, every sample here still needs its
+# own ASVs — we can't just skip a big one. But derepFastq()/dada() have no
+# built-in cap on reads-per-sample, and both scale with read count AND
+# unique-sequence count. A single wildly oversized sample (e.g. one library
+# sequenced 20-50x deeper than the rest of the batch — we've seen a sample
+# in this pipeline with >1M reads / ~790K unique sequences, i.e. >75%
+# uniqueness, vs. a typical sample's few thousand uniques) can stall the
+# whole run for many hours on that one file alone while every other sample
+# finishes in seconds (matches the low, single-core-pegged CPU% observed
+# live: 35 samples done, 1 giant one still grinding through derep/dada()).
+# Subsampling any such sample down to a generous cap before denoising keeps
+# its ASV composition/proportions essentially unchanged (same statistical
+# logic as rarefaction — a large-enough random subset represents the same
+# underlying sequence distribution) while bounding worst-case runtime. The
+# full, uncapped reads are still what's saved to Trim_seq/ for the user —
+# only what feeds derepFastq()/dada() below is capped.
+# NOTE on the cap value: 1M raw reads is NOT, by itself, a lot of data — the
+# real cost driver is dada()'s own partitioning algorithm, whose runtime
+# scales worse than linearly with the number of UNIQUE sequences (not raw
+# read count). A 75%+ uniqueness ratio (791K uniques from 1.05M reads, vs. a
+# few thousand uniques for a normal sample) is itself unusual for real
+# amplicon data and is what actually explains a 10+ hour stall — subsampling
+# reads reduces the unique-sequence count roughly proportionally (a sample
+# this noisy stays noisy at any depth), so the cap is set low enough (100K,
+# not just "a bit less than 1M") to reliably keep the resulting unique-count
+# in a tractable range rather than merely delaying the same problem.
+MAX_READS_PER_SAMPLE_DENOISE <- 100000
+cap_sample_for_denoise <- function(pathF, pathR, max_reads) {
+  if (!file.exists(pathF) || !requireNamespace("ShortRead", quietly=TRUE))
+    return(list(F=pathF, R=pathR, capped=FALSE))
+  fqF <- ShortRead::readFastq(pathF)
+  n <- length(fqF)
+  if (n <= max_reads) return(list(F=pathF, R=pathR, capped=FALSE))
+  set.seed(42)
+  keep <- sort(sample.int(n, max_reads))
+  outF <- sub("\\.fastq\\.gz$", "_capped.fastq.gz", pathF)
+  ShortRead::writeFastq(fqF[keep], outF, compress=TRUE, mode="w")
+  result <- list(F=outF, R=pathR, capped=TRUE, n_before=n, n_after=max_reads)
+  if (!is.null(pathR) && length(pathR) > 0 && !is.na(pathR) && file.exists(pathR)) {
+    fqR <- ShortRead::readFastq(pathR)
+    if (length(fqR) == n) {
+      outR <- sub("\\.fastq\\.gz$", "_capped.fastq.gz", pathR)
+      ShortRead::writeFastq(fqR[keep], outR, compress=TRUE, mode="w")
+      result$R <- outR
+    }
+  }
+  result
+}
+if (exists("reads_out_vec") && length(reads_out_vec) == length(filtFs)) {
+  for (.i in seq_along(filtFs)) {
+    if (!is.na(reads_out_vec[.i]) && reads_out_vec[.i] > MAX_READS_PER_SAMPLE_DENOISE) {
+      .pathR <- if (!is_single && length(filtRs) >= .i) filtRs[.i] else NULL
+      .capped <- tryCatch(
+        cap_sample_for_denoise(filtFs[.i], .pathR, MAX_READS_PER_SAMPLE_DENOISE),
+        error=function(e) { cat("  [denoise cap] skipped (error):", e$message, "\n"); list(capped=FALSE) }
+      )
+      if (isTRUE(.capped$capped)) {
+        cat(sprintf("  [denoise cap] %s: %d -> %d reads (capped to bound denoising runtime)\n",
+                    sample_names[.i], .capped$n_before, .capped$n_after))
+        filtFs[.i] <- .capped$F
+        if (!is_single && !is.null(.capped$R)) filtRs[.i] <- .capped$R
+      }
+    }
+  }
+}
+
 pool_val <- if (opt$pool == "TRUE") TRUE else if (opt$pool == "FALSE") FALSE else "pseudo"
 derepFs  <- derepFastq(filtFs)
 if (!is.list(derepFs)) derepFs <- setNames(list(derepFs), sample_names)
