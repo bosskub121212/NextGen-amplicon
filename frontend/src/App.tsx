@@ -91,26 +91,44 @@ const PARAM_KEY_ORDER = Object.keys(PARAM_LABELS);
 
 // Keys that only make sense for certain markers/pipelines — shown in Job Detail
 // only when they were actually consulted by the pipeline that ran this job.
-// (e.g. sequencerType/truncLen/maxEE only apply to the DADA2 branch — an
-// ONT-16S/Emu job never reads sequencerType, so showing "illumina" there is
-// just a leftover default value, not something that affected the run.)
-const DADA2_ONLY_KEYS = new Set([
-  "sequencerType", "truncLen_F", "truncLen_R", "ontMinLen", "ontMaxLen",
+// (e.g. truncLen/maxEE only apply to the DADA2 branch — a QIIME2/VSEARCH job
+// under the same marker (16S/12S/18S-NEMA) never reads those fields, so
+// showing "Truncate Fwd: 120" there is just a leftover value from whatever
+// mode was last configured in the shared params object, not something that
+// actually affected this run.)
+// These keys are only meaningful when sequencerType === "illumina" (the DADA2 branch).
+const ILLUMINA_ONLY_KEYS = new Set([
+  "truncLen_F", "truncLen_R",
   "maxEE_F", "maxEE_R", "trimLeft_F", "trimLeft_R", "pool", "chimeraMethod",
-  "otuSimilarity",
 ]);
+// ontMinLen/ontMaxLen are read by BOTH the "ont" sequencerType (as read-length
+// filters) and the "qiime2_vsearch" sequencerType (as --min_len/--max_len for
+// vsearch), so they're relevant for either — just not for "illumina".
+const ONT_OR_VSEARCH_LEN_KEYS = new Set(["ontMinLen", "ontMaxLen"]);
+// otuSimilarity is only read by the QIIME2/VSEARCH clustering step.
+const VSEARCH_ONLY_KEYS = new Set(["otuSimilarity"]);
 const ITS_ONLY_KEYS    = new Set(["its_region", "run_lulu"]);
 const COX1_ONLY_KEYS   = new Set(["truncLen_cox1_f", "truncLen_cox1_r", "codon_table", "cox1_min_len", "cox1_max_len", "run_lulu"]);
 const PACBIO_ONLY_KEYS = new Set(["pb_min_len", "pb_max_len", "pb_maxEE", "pb_region"]);
 const ONT16S_ONLY_KEYS = new Set(["ont_region", "ont_min_abundance", "ont_db_path"]);
+// Markers that can run either the DADA2 (illumina) or QIIME2/VSEARCH pipeline,
+// switched via sequencerType — this is where the truncLen leak bug lived.
+const DADA2_OR_VSEARCH_MARKERS = new Set(["16S", "12S", "18S-NEMA"]);
 
-function isParamRelevantForMarker(key: string, marker: string): boolean {
-  const m = (marker || "").toUpperCase();
+function isParamRelevantForMarker(key: string, marker: string, sequencerType?: string): boolean {
+  const m  = (marker || "").toUpperCase();
+  const st = sequencerType || "illumina";
   // ont_db_path is shared: used by the ONT-16S (Emu) marker AND by the
   // "QIIME2 (VSEARCH OTU)" sequencer-type option under 16S/12S/18S-nema.
   if (key === "ont_db_path") return m === "ONT-16S" || m === "ONT16S" || m === "ONT" ||
-                                     m === "16S" || m === "12S" || m === "18S-NEMA";
-  if (DADA2_ONLY_KEYS.has(key))  return m === "16S" || m === "12S" || m === "18S-NEMA";
+                                     (DADA2_OR_VSEARCH_MARKERS.has(m) && st === "qiime2_vsearch");
+  if (key === "sequencerType") return DADA2_OR_VSEARCH_MARKERS.has(m);
+  if (ILLUMINA_ONLY_KEYS.has(key))
+    return DADA2_OR_VSEARCH_MARKERS.has(m) && st === "illumina";
+  if (ONT_OR_VSEARCH_LEN_KEYS.has(key))
+    return DADA2_OR_VSEARCH_MARKERS.has(m) && (st === "ont" || st === "qiime2_vsearch");
+  if (VSEARCH_ONLY_KEYS.has(key))
+    return DADA2_OR_VSEARCH_MARKERS.has(m) && st === "qiime2_vsearch";
   if (ITS_ONLY_KEYS.has(key))    return m === "ITS1" || m === "ITS2" || m === "ITS";
   if (COX1_ONLY_KEYS.has(key))   return m === "COX1";
   if (PACBIO_ONLY_KEYS.has(key)) return m === "PACBIO";
@@ -377,9 +395,14 @@ export default function App() {
 
   // ── Select a job from the left nav list ─────────────────────────────
   const selectJobFromNav = (j: JobSummary) => {
+    // sidebarJobId prefers focusJob over detailJob, so focusJob must always
+    // reflect the job actually clicked — otherwise clicking a different job
+    // in the nav list while another job is still "focused" (e.g. an earlier
+    // running job whose progress view was opened) silently does nothing,
+    // because the stale focusJob keeps winning the priority check below.
     if (["running", "queued", "waiting_checkpoint"].includes(j.status)) {
       setFocusJob(j.job_id);
-    } else if (focusJob === j.job_id) {
+    } else {
       setFocusJob(null); setFocusCpu(null); setFocusRam(null);
     }
     setDetailJob(j.job_id);
@@ -670,7 +693,7 @@ export default function App() {
             const v = d.params![k];
             if (v === undefined || v === null || v === "" || v === 0) return false;
             if (Array.isArray(v) && v.length === 0) return false;
-            return isParamRelevantForMarker(k, d.params!.marker || job.marker);
+            return isParamRelevantForMarker(k, d.params!.marker || job.marker, d.params!.sequencerType);
           }).map(k => (
             <div key={k} className="side-settings-row">
               <span>{PARAM_LABELS[k]}</span>
@@ -967,7 +990,7 @@ export default function App() {
                         const v = d.params![k];
                         if (v === undefined || v === null || v === "" || v === 0) return false;
                         if (Array.isArray(v) && v.length === 0) return false;
-                        return isParamRelevantForMarker(k, d.params!.marker);
+                        return isParamRelevantForMarker(k, d.params!.marker, d.params!.sequencerType);
                       }).map(k => (
                         <div key={k} className="detail-step-row" style={{ gridTemplateColumns: "1fr 1fr" }}>
                           <span className="detail-step-name">{PARAM_LABELS[k]}</span>

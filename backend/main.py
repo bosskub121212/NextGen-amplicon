@@ -412,8 +412,15 @@ def run_r_pipeline(job_id: str, params: RunParams):
             return True
         if any(seg.startswith("emu_") or seg == "emu" for seg in Path(p).parts):
             return True
-        # Not a FASTA archive
-        if not (p.endswith(".fa.gz") or p.endswith(".fasta.gz")):
+        # Not a FASTA file — accept both gzipped AND plain-text FASTA (DADA2's
+        # assignTaxonomy() reads either fine; requiring .gz specifically was a
+        # bug that silently rejected valid, correctly-selected custom databases
+        # just for being uncompressed, e.g. a manually-built 12S reference
+        # named "all_12S.fasta" — which then triggered the SILVA/db_paths.json
+        # fallback below and silently substituted a completely wrong database
+        # (18S protist reference) for a 12S vertebrate job).
+        if not (p.endswith(".fa.gz") or p.endswith(".fasta.gz")
+                or p.endswith(".fa") or p.endswith(".fasta")):
             return True
         # assignSpecies/toSpecies files are for addSpecies() only, NOT for assignTaxonomy()
         # (must match the same check dada2_pipeline.R does: grepl("assignSpecies|toSpecies", ...))
@@ -433,9 +440,18 @@ def run_r_pipeline(job_id: str, params: RunParams):
         try:
             _dp = json.loads(Path(_db_paths_file).read_text()) if Path(_db_paths_file).exists() else {}
             _marker_up = params.marker.upper()
+            # NOTE: 12S (fish/vertebrate) intentionally has NO cross-marker
+            # fallback here — it used to silently fall back to "PR2_18S" (a
+            # protist/18S reference database), which is a completely different
+            # organism group and produces confidently-wrong taxonomy with no
+            # visible error. Falling back to "SILVA_16S" (bacterial) would be
+            # equally wrong for the same reason. Only resolve a dedicated
+            # "12S"-keyed entry if the deployment has registered one; otherwise
+            # leave db_path unresolved so the warning below fires loudly
+            # instead of silently substituting the wrong reference.
             _key_prefs = {
                 "16S":      ["SILVA_16S_sp", "SILVA_16S"],
-                "12S":      ["PR2_18S", "SILVA_16S"],
+                "12S":      ["12S"],
                 "18S-NEMA": ["NemaBase_18S", "PR2_18S"],
             }.get(_marker_up, ["SILVA_16S_sp", "SILVA_16S"])
             for _k in _key_prefs:
