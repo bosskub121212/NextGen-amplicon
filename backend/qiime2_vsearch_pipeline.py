@@ -303,7 +303,8 @@ def remove_chimeras_ref(vsearch: str, uniques_fasta: Path, out_dir: Path,
 
 # ── Step 6: OTU clustering ──────────────────────────────────────────────────────
 def cluster_otus(vsearch: str, nonchim_fasta: Path, out_dir: Path,
-                 similarity: float, threads: int) -> Path | None:
+                 similarity: float, threads: int,
+                 unoise_alpha: float = 2.0, unoise_minsize: int = 8) -> Path | None:
     otus = out_dir / "otus.fasta"
     # --strand both: vsearch defaults to --strand plus (forward-strand comparison
     # only). If any reads end up on the opposite strand going into this step —
@@ -312,15 +313,44 @@ def cluster_otus(vsearch: str, nonchim_fasta: Path, out_dir: Path,
     # trigger the revcomp swap) — two biologically-identical sequences on opposite
     # strands look completely different to a forward-only comparison and each
     # becomes its own separate OTU centroid instead of merging. This is a
-    # well-documented vsearch gotcha (see torognes/vsearch issue #379) and matches
-    # exactly what we saw: 237,018 "OTUs" from just 6 samples, vs ~1,000-1,200 from
-    # the BI reference's manual QIIME2 pipeline on the same data. --strand both
-    # checks both orientations during clustering so same-sequence reads merge
-    # regardless of which strand they ended up on.
-    cmd = [vsearch, "--cluster_size", str(nonchim_fasta), "--id", str(similarity),
+    # well-documented vsearch gotcha (see torognes/vsearch issue #379). --strand
+    # both checks both orientations during clustering so same-sequence reads merge
+    # regardless of which strand they ended up on. Kept even though it wasn't the
+    # main driver of the OTU-inflation bug below — it's still correct and needed.
+    #
+    # FIXED: --strand both alone did NOT fix the real problem — 236,570 "OTUs"
+    # from just 6 samples (vs. ~1,000-1,200 from the BI reference's QIIME2/DADA2
+    # pipeline on the same data) persisted even after that fix. Root cause,
+    # confirmed via the pooled-dereplication log: 643,131 unique sequences from
+    # ~662,000 total pooled reads — essentially zero exact-match duplication,
+    # the signature of noisy long-read (ONT) data where per-base sequencing
+    # error (often 5-15% for raw reads) exceeds the ~3% divergence that a plain
+    # identity-threshold cluster (--cluster_size @ 97%) can tolerate. Reads that
+    # are biologically identical but differ by random sequencing error therefore
+    # never merge, and each becomes its own near-singleton "OTU" (the old run's
+    # average cluster size was just 2.2 reads). --cluster_size has no concept of
+    # "this is probably just sequencing noise from a more-abundant true
+    # sequence" — it only looks at raw identity, with no error model at all.
+    #
+    # --cluster_unoise implements the UNOISE2/3 algorithm (Edgar 2016), which
+    # vsearch supports natively: it merges a low-abundance sequence into a
+    # higher-abundance "parent" if the difference between them is small enough
+    # to plausibly be sequencing error given the parent's abundance (controlled
+    # by --unoise_alpha — higher = more aggressive merging), and additionally
+    # discards singleton/very-low-abundance sequences outright via --minsize
+    # (default 8, standard convention) as unreliable, since real biological
+    # variants are expected to be observed more than once across pooled reads.
+    # This is conceptually the same job DADA2's error model does for BI's
+    # pipeline — collapsing per-read noise into a much smaller set of confident
+    # true sequences — just implemented differently (abundance-based rather
+    # than a fitted transition-probability model). --id/percent-identity is not
+    # used by --cluster_unoise at all (it isn't a fixed-threshold clustering
+    # method), so the "OTU Similarity" setting no longer applies to this step.
+    cmd = [vsearch, "--cluster_unoise", str(nonchim_fasta),
+           "--unoise_alpha", str(unoise_alpha), "--minsize", str(unoise_minsize),
            "--centroids", str(otus), "--relabel", "OTU_", "--sizein", "--sizeout",
            "--strand", "both", "--threads", str(threads)]
-    ok = run_cmd(cmd, f"Cluster OTUs @ {similarity * 100:.1f}% identity")
+    ok = run_cmd(cmd, f"Denoise & cluster OTUs (UNOISE, alpha={unoise_alpha}, minsize={unoise_minsize})")
     return otus if ok and otus.exists() else None
 
 # ── Step 7: Map each sample's reads back to OTU centroids ──────────────────────
@@ -629,8 +659,9 @@ def main():
             "— skipping chimera removal")
         nonchim = uniques
 
-    # ── 6. OTU clustering ────────────────────────────────────────────────────────
-    progress(52, f"Step 6/9 — Clustering OTUs @ {args.otu_similarity*100:.1f}% identity")
+    # ── 6. OTU clustering (UNOISE denoising, not fixed-identity clustering — see
+    #      cluster_otus() for why "OTU Similarity" no longer applies to this step) ──
+    progress(52, "Step 6/9 — Denoising & clustering OTUs (vsearch UNOISE)")
     otus_fasta = cluster_otus(vsearch, nonchim, out_dir, args.otu_similarity, args.threads)
     if not otus_fasta:
         log("[ERROR] OTU clustering failed.")
