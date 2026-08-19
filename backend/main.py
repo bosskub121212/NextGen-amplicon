@@ -173,6 +173,13 @@ class RunParams(BaseModel):
     sequencerType: str   = "illumina"   # illumina | ont | qiime2_vsearch
     # --- VSEARCH OTU clustering identity, used when sequencerType == "qiime2_vsearch" ---
     otuSimilarity: float = 0.97
+    # --- VSEARCH UNOISE denoising params (qiime2_vsearch only). minsize=8 is the
+    # standard USEARCH/UNOISE3 SOP default; lower it (e.g. 2-4) to retain more
+    # low-abundance real variants as their own OTUs if the resulting OTU count
+    # looks too low vs. a reference pipeline on the same samples — see
+    # qiime2_vsearch_pipeline.py's cluster_otus() for the full rationale. ---
+    otuUnoiseAlpha:   float = 2.0
+    otuUnoiseMinsize: int   = 8
     # --- ONT long-read filtering for DADA2 (used when sequencerType == "ont") ---
     # DADA2 was built for short, high-accuracy Illumina reads with a hard truncLen.
     # ONT reads vary in length and have far higher (mostly indel) error rates, so
@@ -670,6 +677,8 @@ def run_r_pipeline(job_id: str, params: RunParams):
             "--db_path",        vsearch_db,
             "--threads",        str(params.nThreads),
             "--otu_similarity", str(params.otuSimilarity),
+            "--unoise_alpha",   str(params.otuUnoiseAlpha),
+            "--unoise_minsize", str(params.otuUnoiseMinsize),
             "--min_len",        str(params.ontMinLen),
             "--max_len",        str(params.ontMaxLen),
             "--topN",           str(params.topN),

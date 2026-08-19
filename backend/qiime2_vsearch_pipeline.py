@@ -63,8 +63,10 @@ def parse_args():
     p.add_argument("--primer_r",      default="",    help="Reverse primer sequence")
     p.add_argument("--min_len",       type=int, default=50,   help="Min read length post primer-trim")
     p.add_argument("--max_len",       type=int, default=2000, help="Max read length post primer-trim")
-    p.add_argument("--otu_similarity", type=float, default=0.97, help="VSEARCH OTU clustering identity (0-1)")
+    p.add_argument("--otu_similarity", type=float, default=0.97, help="VSEARCH OTU clustering identity (0-1) — unused by --cluster_unoise itself, kept for legacy/other clustering modes")
     p.add_argument("--tax_identity",   type=float, default=0.80, help="VSEARCH taxonomy-assignment identity (0-1)")
+    p.add_argument("--unoise_alpha",   type=float, default=2.0, help="VSEARCH UNOISE alpha — higher merges more low-abundance variants into a higher-abundance parent")
+    p.add_argument("--unoise_minsize", type=int,   default=8,   help="VSEARCH UNOISE minimum size — unique sequences observed fewer times than this are discarded before clustering. Lower this if OTU counts look too low vs. a reference/other pipeline; raise it if OTU counts look inflated")
     p.add_argument("--threads",       type=int,   default=4)
     p.add_argument("--metadata",      default="")
     p.add_argument("--topN",          type=int,   default=30)
@@ -465,37 +467,76 @@ def _assign_taxonomy_emu_format(vsearch: str, otus_fasta: Path, db_dir: Path, ou
     log(f"  {n_assigned}/{len(otu_tax)} OTUs got a taxonomy hit")
     return otu_tax
 
+# Standard 16S rRNA gene identity-vs-rank thresholds (Yarza et al. 2014, Nat Rev
+# Microbiol) — a single top-hit at a given %identity can only be trusted down to
+# the rank whose threshold it clears. Applied below so a 80%-identity hit (our
+# default --tax_identity floor) doesn't get reported as a confident genus/species
+# call it can't actually support — it silently gets read as one otherwise, since
+# vsearch --top_hits_only reports the best hit's FULL header lineage regardless
+# of how far above the --id floor the actual match was.
+_RANK_IDENTITY_FLOOR = {
+    "species": 98.7, "genus": 94.5, "family": 86.5,
+    "order": 82.0, "class": 78.5, "phylum": 75.0, "superkingdom": 0.0,
+}
+
+def _truncate_by_identity(tax: dict, pct_id: float) -> dict:
+    """Drop any rank whose confidence threshold the observed %identity doesn't clear."""
+    return {rank: val for rank, val in tax.items()
+            if pct_id >= _RANK_IDENTITY_FLOOR.get(rank, 0.0)}
+
 def _assign_taxonomy_trainset_format(vsearch: str, otus_fasta: Path, ref_fasta: Path, out_dir: Path,
                                      identity: float, threads: int) -> dict[str, dict]:
-    """DADA2-trainset-style FASTA (e.g. silva_nr99_v138.2_toGenus_trainset.fa.gz). Headers ARE
-    the semicolon-delimited lineage (Kingdom;Phylum;Class;Order;Family;Genus;) — DADA2's
-    assignTaxonomy() format, capped at 6 ranks (no species — matches how the DADA2 pipeline
-    already treats these same files). vsearch reads .gz input natively, no decompression needed,
-    and reports the matched header verbatim as `target`, so no separate id->lineage lookup file
-    is required at all."""
+    """DADA2-trainset-style FASTA (e.g. silva_nr99_v138.2_toGenus_trainset.fa.gz or
+    _toSpecies_trainset.fa.gz). Headers ARE the semicolon-delimited lineage
+    (Kingdom;Phylum;Class;Order;Family;Genus; — or ...;Genus;Species; for a
+    toSpecies-format reference) — DADA2's assignTaxonomy() format. Rank count is
+    read directly off however many ';'-fields the matched header actually has
+    (6 for toGenus, 7 for toSpecies), so species IS captured when the reference
+    provides it — FIXED: this used to hardcode a 6-rank list regardless of the
+    reference file, silently discarding the species field even when a toSpecies
+    trainset was selected, and write_tables() would then always synthesize a
+    "{Genus} sp." placeholder in its place. Each hit's %identity is additionally
+    used to truncate ranks the match doesn't actually support (see
+    _RANK_IDENTITY_FLOOR) — vsearch reports the best hit's FULL header lineage
+    regardless of how far above the --id floor the real match was, so without
+    this a borderline ~80%-identity hit would still get reported as a confident
+    genus/species call. vsearch reads .gz input natively, no decompression
+    needed, and reports the matched header verbatim as `target`, so no separate
+    id->lineage lookup file is required at all."""
     hits_path = out_dir / "otu_taxonomy_hits.tsv"
     cmd = [vsearch, "--usearch_global", str(otus_fasta), "--db", str(ref_fasta),
            "--id", str(identity), "--top_hits_only", "--strand", "both",
-           "--userout", str(hits_path), "--userfields", "query+target",
+           "--userout", str(hits_path), "--userfields", "query+target+id",
            "--threads", str(threads)]
     run_cmd(cmd, f"Assign OTU taxonomy (vsearch @ {identity * 100:.0f}% identity vs. SILVA trainset FASTA)")
 
-    ranks = ["superkingdom", "phylum", "class", "order", "family", "genus"]
+    ranks = ["superkingdom", "phylum", "class", "order", "family", "genus", "species"]
     otu_tax: dict[str, dict] = {}
+    n_truncated = 0
     if hits_path.exists():
         with open(hits_path) as f:
             for line in f:
                 parts = line.rstrip("\n").split("\t")
-                if len(parts) < 2:
+                if len(parts) < 3:
                     continue
-                otu_id, lineage = parts[0], parts[1]
+                otu_id, lineage, pct_id_str = parts[0], parts[1], parts[2]
                 if otu_id in otu_tax:
                     continue
+                try:
+                    pct_id = float(pct_id_str)
+                except ValueError:
+                    pct_id = 100.0  # malformed field — don't truncate, fail open
                 pieces = [p.strip() for p in lineage.split(";") if p.strip()]
-                otu_tax[otu_id] = dict(zip(ranks, pieces))
+                tax = dict(zip(ranks, pieces))
+                truncated = _truncate_by_identity(tax, pct_id)
+                if len(truncated) < len(tax):
+                    n_truncated += 1
+                otu_tax[otu_id] = truncated
     n_assigned = sum(1 for v in otu_tax.values() if v)
-    log(f"  {n_assigned}/{len(otu_tax)} OTUs got a taxonomy hit (species rank unavailable — "
-        "trainset format caps at genus, same limitation as the DADA2 pipeline)")
+    n_species  = sum(1 for v in otu_tax.values() if v.get("species"))
+    log(f"  {n_assigned}/{len(otu_tax)} OTUs got a taxonomy hit "
+        f"({n_species} resolved to species, {n_truncated} truncated to a lower rank — "
+        "hit's %identity didn't clear that rank's confidence threshold)")
     return otu_tax
 
 # ── Step 9: Write ASV/taxonomy tables (same format as emu_pipeline.py) ─────────
@@ -519,7 +560,14 @@ def write_tables(sample_names: list, otu_counts: dict, otu_tax: dict, out_dir: P
             row = otu_tax.get(otu_id, {})
             genus = row.get("genus", "") or ""
             sp    = row.get("species", "") or ""
-            species_full = sp if sp else (f"{genus} sp." if genus else "")
+            if sp:
+                # SILVA toSpecies-trainset headers store just the epithet (e.g.
+                # "haematophila", not "Massilia haematophila") — prefix with
+                # genus for a proper binomial unless `sp` already looks fully
+                # qualified (e.g. some references DO spell it out in full).
+                species_full = sp if (genus and sp.startswith(genus)) or not genus else f"{genus} {sp}"
+            else:
+                species_full = f"{genus} sp." if genus else ""
             writer.writerow([
                 otu_id,
                 row.get("superkingdom", "") or "Bacteria",
@@ -662,7 +710,8 @@ def main():
     # ── 6. OTU clustering (UNOISE denoising, not fixed-identity clustering — see
     #      cluster_otus() for why "OTU Similarity" no longer applies to this step) ──
     progress(52, "Step 6/9 — Denoising & clustering OTUs (vsearch UNOISE)")
-    otus_fasta = cluster_otus(vsearch, nonchim, out_dir, args.otu_similarity, args.threads)
+    otus_fasta = cluster_otus(vsearch, nonchim, out_dir, args.otu_similarity, args.threads,
+                              unoise_alpha=args.unoise_alpha, unoise_minsize=args.unoise_minsize)
     if not otus_fasta:
         log("[ERROR] OTU clustering failed.")
         sys.exit(1)

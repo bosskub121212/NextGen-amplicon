@@ -2792,6 +2792,13 @@ if (!exists("dada2_extra_viz", mode="function")) {
       raw <- read.csv(asv_file, check.names=FALSE)
       sc  <- which(colnames(raw) == "sequence")
       if (length(sc) > 0) raw <- raw[, -sc, drop=FALSE]
+      # FIXED: drop a leading non-numeric ID/OTU column if present (QIIME2/VSEARCH's
+      # asv_table.csv has one, DADA2's doesn't) — see dada2_extra_viz.R for the
+      # full explanation of the NA-corruption this caused in Jaccard/Rarefaction.
+      if (ncol(raw) > 0 &&
+          suppressWarnings(all(is.na(as.numeric(as.character(raw[[1]])))))) {
+        raw <- raw[, -1, drop=FALSE]
+      }
       mat <- t(as.matrix(raw)); storage.mode(mat) <- "numeric"; mat
     }
 

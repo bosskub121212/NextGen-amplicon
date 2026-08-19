@@ -165,6 +165,19 @@ dada2_extra_viz <- function(out_dir) {
     raw <- read.csv(asv_file, check.names=FALSE)
     seq_col <- which(colnames(raw) == "sequence")
     if (length(seq_col) > 0) raw <- raw[, -seq_col, drop=FALSE]
+    # FIXED: drop a leading non-numeric ID/OTU column if present. DADA2's own
+    # asv_table.csv has no such column (rows are unnamed), but the QIIME2/VSEARCH
+    # pipeline's asv_table.csv has an unnamed first column of OTU IDs like
+    # "OTU_1;size=1174" — this function is shared by both pipelines via
+    # dada2_extra_viz.R. Without dropping it, as.matrix() below coerces the
+    # whole frame to character (mixed column types), and after transpose +
+    # storage.mode<-"numeric" the ID column survives as an all-NA row, which
+    # corrupts rowSums()/vegdist() downstream (Jaccard: "missing values are not
+    # allowed"; Rarefaction: "missing value where TRUE/FALSE needed").
+    if (ncol(raw) > 0 &&
+        suppressWarnings(all(is.na(as.numeric(as.character(raw[[1]])))))) {
+      raw <- raw[, -1, drop=FALSE]
+    }
     mat <- t(as.matrix(raw))  # samples × ASVs
     storage.mode(mat) <- "numeric"
     mat
