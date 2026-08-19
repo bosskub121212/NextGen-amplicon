@@ -2239,7 +2239,7 @@ if (isTRUE(opt$tax4fun)) {
       cat("  Install: Rscript -e \"install.packages('Tax4Fun2',\n")
       cat("    repos=c('https://bwemheu.r-universe.dev','https://cloud.r-project.org'))\"\n")
     } else {
-      tf2_dir <- file.path(opt$output_dir, "Tax4Fun2")
+      tf2_dir <- file.path(opt$output, "Tax4Fun2")
       dir.create(tf2_dir, recursive=TRUE, showWarnings=FALSE)
 
       # Export ASV sequences as FASTA
@@ -2291,7 +2291,7 @@ tryCatch({
     "dada2_extra_viz.R")
   if (!is.na(extra_script) && file.exists(extra_script)) {
     source(extra_script)
-    dada2_extra_viz(opt$output_dir)
+    dada2_extra_viz(opt$output)
   }
 }, error=function(e) cat("  [skip] Extra viz:", e$message, "\n"))
 
@@ -2314,7 +2314,7 @@ tryCatch({
   }
 
   # Write FASTA file
-  fasta_out <- file.path(opt$output_dir, "asvs.fasta")
+  fasta_out <- file.path(opt$output, "asvs.fasta")
   asv_ids   <- paste0("ASV", seq_along(asv_seqs))
   fasta_lines <- character(length(asv_seqs) * 2)
   for (i in seq_along(asv_seqs)) {
@@ -2329,10 +2329,10 @@ tryCatch({
   fasttree_bin <- Sys.which("FastTree")
   if (nchar(fasttree_bin) == 0) fasttree_bin <- Sys.which("fasttree")
 
-  tree_nwk <- file.path(opt$output_dir, "phylo_tree.nwk")
+  tree_nwk <- file.path(opt$output, "phylo_tree.nwk")
 
   if (nchar(mafft_bin) > 0 && nchar(fasttree_bin) > 0) {
-    aln_out <- file.path(opt$output_dir, "asvs_aligned.fasta")
+    aln_out <- file.path(opt$output, "asvs_aligned.fasta")
     cat("  Running MAFFT alignment...\n")
     ret_mafft <- system2(mafft_bin,
                          args = c("--auto", "--thread", "-1", "--quiet", fasta_out),
@@ -2388,4 +2388,4 @@ tryCatch({
 cat("\n========================================\n")
 cat("  dada2_pipeline.R completed successfully\n")
 cat("========================================\n")
-cat("Output directory:", opt$output_dir, "\n")
+cat("Output directory:", opt$output, "\n")
