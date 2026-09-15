@@ -2767,104 +2767,31 @@ tryCatch({
   writeLines(fasta_lines, fasta_out)
   cat("  ✓ asvs.fasta written (", length(asv_seqs), "sequences)\n")
 
-  # ── Try MAFFT + FastTree (if installed) ──────────────────────────────────
-  mafft_bin    <- Sys.which("mafft")
-  fasttree_bin <- Sys.which("FastTree")
-  if (nchar(fasttree_bin) == 0) fasttree_bin <- Sys.which("fasttree")
+  # ── Build the tree in a SEPARATE R process ───────────────────────────────
+  # The aligners and the ML optimiser allocate in C, and when they run out of
+  # memory they abort the whole R process ("An irrecoverable exception
+  # occurred") rather than raising a condition tryCatch() can catch. Inline,
+  # that killed this script at its very last step — after every result file had
+  # already been written — so a perfectly good run was reported as a failure.
+  # Isolated in its own process, the worst case is a missing tree file.
+  rscript_bin <- file.path(R.home("bin"), "Rscript")
+  tree_script <- file.path(SCRIPT_DIR, "build_tree.R")
+  tree_nwk    <- file.path(opt$output, "phylo_tree.nwk")
 
-  tree_nwk <- file.path(opt$output, "phylo_tree.nwk")
-
-  if (nchar(mafft_bin) > 0 && nchar(fasttree_bin) > 0) {
-    aln_out <- file.path(opt$output, "asvs_aligned.fasta")
-    cat("  Running MAFFT alignment...\n")
-    ret_mafft <- system2(mafft_bin,
-                         args = c("--auto", "--thread", "-1", "--quiet", fasta_out),
-                         stdout = aln_out, stderr = FALSE)
-    if (ret_mafft == 0 && file.exists(aln_out)) {
-      cat("  ✓ MAFFT alignment done\n")
-      cat("  Running FastTree...\n")
-      ret_ft <- system2(fasttree_bin,
-                        args = c("-nt", "-gtr", "-quiet", aln_out),
-                        stdout = tree_nwk, stderr = FALSE)
-      if (ret_ft == 0 && file.exists(tree_nwk)) {
-        cat("  ✓ FastTree phylogenetic tree built:", tree_nwk, "\n")
-      } else {
-        cat("  [warn] FastTree failed — falling back to NJ\n")
-        file.remove(tree_nwk)
-      }
-    } else {
-      cat("  [warn] MAFFT failed — falling back to NJ\n")
+  if (file.exists(tree_script)) {
+    ret_tree <- suppressWarnings(system2(rscript_bin,
+      args = c(shQuote(tree_script), shQuote(opt$output), as.character(THREADS)),
+      stdout = "", stderr = ""))
+    if (!file.exists(tree_nwk)) {
+      if (!identical(ret_tree, 0L))
+        cat("  [warn] Tree builder exited abnormally — continuing without a tree.\n")
+      else
+        cat("  [skip] No tree was produced — continuing.\n")
     }
+  } else {
+    cat("  [skip] build_tree.R not found at", tree_script, "\n")
   }
-
-  # ── Fallback 2: DECIPHER alignment in R (no external binaries needed) ─────
-  # Better than the raw padding fallback below: that one right-pads every
-  # sequence with gaps to a common length, which only lines up the 5' ends.
-  # ASVs of different lengths then get compared base-against-unrelated-base
-  # for most of their length, so the distances — and any UniFrac or
-  # phylogenetic diversity metric computed from the tree — are close to
-  # meaningless. DECIPHER produces a real multiple alignment first.
-  if (!file.exists(tree_nwk) && requireNamespace("DECIPHER", quietly=TRUE) && has_ape) {
-    tryCatch({
-      cat("  Aligning with DECIPHER (no MAFFT/FastTree found)...\n")
-      dna_set <- Biostrings::DNAStringSet(setNames(asv_seqs, asv_ids))
-      aligned <- DECIPHER::AlignSeqs(dna_set, verbose=FALSE,
-                                     processors=if (THREADS > 1) THREADS else NULL)
-      aln_mat <- as.DNAbin(as.matrix(as.character(aligned)))
-      rownames(aln_mat) <- asv_ids
-
-      d_mat <- tryCatch(dist.dna(aln_mat, model="K80", pairwise.deletion=TRUE),
-                        error=function(e) dist.dna(aln_mat, model="raw",
-                                                   pairwise.deletion=TRUE))
-      d_mat[!is.finite(d_mat)] <- max(d_mat[is.finite(d_mat)], 0.5, na.rm=TRUE)
-      nj_tree <- nj(d_mat)
-
-      # Optional ML refinement — noticeably better branch lengths, but only
-      # worth the runtime on a modest number of tips.
-      if (requireNamespace("phangorn", quietly=TRUE) && length(asv_seqs) <= 300) {
-        tryCatch({
-          cat("  Refining with phangorn (ML, GTR+G)...\n")
-          phy_dat <- phangorn::as.phyDat(aln_mat)
-          fit     <- phangorn::pml(phangorn::midpoint(nj_tree), data=phy_dat)
-          fit     <- phangorn::optim.pml(fit, model="GTR", optGamma=TRUE,
-                                         rearrangement="NNI",
-                                         control=phangorn::pml.control(trace=0))
-          nj_tree <- fit$tree
-          cat("  ✓ ML tree optimised\n")
-        }, error=function(e) cat("  [warn] ML refinement skipped:", e$message, "\n"))
-      }
-      write.tree(nj_tree, file=tree_nwk)
-      cat("  ✓ Phylogenetic tree built (DECIPHER alignment):", tree_nwk, "\n")
-    }, error=function(e) cat("  [warn] DECIPHER tree failed:", e$message, "\n"))
-  }
-
-  # ── Fallback 3: NJ from gap-padded sequences (last resort) ────────────────
-  if (!file.exists(tree_nwk) && has_ape) {
-    cat("  Building NJ tree from padded sequences (ape)...\n")
-    cat("  NOTE: sequences are not properly aligned — this tree is approximate.\n")
-    cat("  Install MAFFT + FastTree, or the DECIPHER R package, for a real alignment.\n")
-    seqs_char <- strsplit(asv_seqs, "")
-    maxlen    <- max(sapply(seqs_char, length))
-    # Pad shorter sequences
-    seqs_pad  <- lapply(seqs_char, function(s) c(s, rep("-", maxlen - length(s))))
-    seq_mat   <- do.call(rbind, seqs_pad)
-    rownames(seq_mat) <- asv_ids
-    # Convert to DNAbin
-    dna_bin   <- as.DNAbin(seq_mat)
-    # Compute distance
-    d_mat     <- tryCatch(dist.dna(dna_bin, model="K80", pairwise.deletion=TRUE),
-                          error=function(e) dist.dna(dna_bin, model="raw",
-                                                     pairwise.deletion=TRUE))
-    d_mat[!is.finite(d_mat)] <- 0.5
-    nj_tree   <- nj(d_mat)
-    write.tree(nj_tree, file=tree_nwk)
-    cat("  ✓ NJ phylogenetic tree built (approximate, unaligned):", tree_nwk, "\n")
-  }
-
-  if (!file.exists(tree_nwk))
-    cat("  [skip] Could not build phylogenetic tree\n")
-
-}, error=function(e) cat("  [skip] Tree building failed:", e$message, "\n"))
+}, error=function(e) cat("  [skip] Tree step failed:", e$message, "\n"))
 
 # =============================================================
 #  DONE

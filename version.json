@@ -1,5 +1,5 @@
 {
-  "version": "2.7.0",
-  "release_date": "2026-09-14",
-  "changelog": "feat: read-orientation check & repair (fixes silent loss of flipped read pairs at the merge step) as both a pre-run Data Preparation step and an automatic in-pipeline step; off-target/host read detection with Kingdom-level QC report and optional removal of Eukaryota/Mitochondria/Chloroplast ASVs; decontam negative-control contaminant removal; species-assignment file now version-matched to the trainset; DECIPHER alignment-based phylogenetic tree fallback; fixes: Tax4Fun2 API call, single-sample heatmap crash, viz_pipeline now reads DADA2 CSV output instead of erroring on a missing BIOM file"
+  "version": "2.7.1",
+  "release_date": "2026-09-15",
+  "changelog": "fix: phylogenetic tree building moved to an isolated subprocess (build_tree.R) with memory guards — DECIPHER/phangorn could abort the whole R process on low memory, which killed dada2_pipeline.R at its final step after all results were already written, reporting a completed run as a failure"
 }

@@ -73,6 +73,7 @@ copy_file "backend/r_scripts/cox1_pipeline.R"
 copy_file "backend/r_scripts/pacbio_pipeline.R"
 copy_file "backend/r_scripts/viz_pipeline.R"
 copy_file "backend/r_scripts/replot.R"
+copy_file "backend/r_scripts/build_tree.R"
 
 echo ""
 echo "--- Frontend Source ---"
