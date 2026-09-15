@@ -7,6 +7,7 @@ import MetadataEditor, { MetaRow } from "./components/MetadataEditor";
 import UpdateBanner from "./components/UpdateBanner";
 import LicenseModal, { LicenseStatus } from "./components/LicenseModal";
 import SettingsPanel, { ThemeId } from "./components/SettingsPanel";
+import DataPrepPanel from "./components/DataPrepPanel";
 import PreviewPage from "./pages/PreviewPage";
 import "./App.css";
 
@@ -1766,6 +1767,26 @@ export default function App() {
             onMarker={setMarker}
           />
         </div>
+
+        {/* ── Data preparation (pre-run) ──────────────────────────────── */}
+        {pendingJobId && marker !== "ONT-16S" && params.sequencerType !== "ont" && (
+          <div className="section-card">
+            <div className="section-title">🧰 Data Preparation</div>
+            <DataPrepPanel
+              apiBase={API}
+              jobId={pendingJobId}
+              primerF={params.primer_f}
+              primerR={params.primer_r}
+              isPaired={pairReadMode === "paired"}
+              onFilesChanged={async () => {
+                try {
+                  const res = await axios.get(`${API}/detail/${pendingJobId}`);
+                  if (res.data?.files) setServerFileList(res.data.files);
+                } catch { /* non-fatal — the file list just stays as it was */ }
+              }}
+            />
+          </div>
+        )}
 
         {/* Advanced toggle */}
         <div className="section-card">

@@ -99,7 +99,26 @@ option_list <- list(
   make_option("--ont_maxLen",        type="integer",   default=0,
               help="ONT mode: maximum read length to keep after filtering (bp)"),
   make_option("--threads",           type="integer",   default=4,
-              help="Number of CPU threads for DADA2 steps (default 4; TRUE=all cores)")
+              help="Number of CPU threads for DADA2 steps (default 4; TRUE=all cores)"),
+  # ── Read orientation (paired-end only) ──────────────────────
+  make_option("--reorient",          type="character", default="auto",
+              help="Fix mixed R1/R2 orientation before trimming: auto|TRUE|FALSE (default auto)"),
+  make_option("--reorient_ambiguous", type="character", default="keep",
+              help="Pairs matching neither primer: keep|drop (default keep)"),
+  make_option("--reorient_min_pct",  type="double",    default=5,
+              help="In auto mode, reorient only if at least this %% of pairs are flipped"),
+  # ── Off-target (host / non-target Kingdom) handling ─────────
+  make_option("--offtarget_warn_pct", type="double",   default=20,
+              help="Warn when this %% or more of reads are non-target (Eukaryota/Mitochondria/Chloroplast)"),
+  make_option("--filter_offtarget",  type="logical",   default=FALSE,
+              help="Remove non-target ASVs (Eukaryota/Mitochondria/Chloroplast) before analysis"),
+  # ── Negative-control decontamination ────────────────────────
+  make_option("--decontam",          type="character", default="none",
+              help="Reagent-contaminant removal: none|prevalence|frequency|combined"),
+  make_option("--decontam_threshold", type="double",   default=0.1,
+              help="decontam score threshold (default 0.1; 0.5 = more aggressive)"),
+  make_option("--control_samples",   type="character", default="",
+              help="Comma-separated sample IDs that are negative/blank controls")
 )
 opt <- parse_args(OptionParser(option_list=option_list))
 
@@ -232,6 +251,116 @@ if (use_manifest) {
 }
 cat("Mode (resolved):", if (is_single) "single-end" else "paired-end", "\n\n")
 prog(8, sprintf("Found %d sample(s) — ready to process", length(fnFs)))
+
+# ── Helper: locate this script's directory (used by several steps) ──
+SCRIPT_DIR <- local({
+  args     <- commandArgs(trailingOnly=FALSE)
+  file_arg <- args[grepl("^--file=", args)]
+  if (length(file_arg) > 0) dirname(normalizePath(sub("^--file=", "", file_arg[1]),
+                                                  mustWork=FALSE))
+  else getwd()
+})
+
+# ── Step 1a (optional): Read orientation repair ───────────────
+# Some libraries are sequenced with a large fraction of read pairs in the
+# OPPOSITE orientation (R1 starting at the reverse primer instead of the
+# forward one). DADA2's mergePairs() cannot merge those pairs — R1 and
+# revcomp(R2) are biologically misaligned — and cutadapt's paired-end mode
+# only searches one fixed orientation, so it leaves them untrimmed instead of
+# fixing them. The result is a merge rate far below expectation with no error
+# message anywhere. Swapping the two mates puts the pair back in the standard
+# orientation, after which normal trimming and merging both work.
+#
+# Handled here (before cutadapt) rather than inside cutadapt because cutadapt
+# has no paired-end "either orientation" mode.
+reorient_report <- NULL
+if (!is_single && nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0 &&
+    !identical(toupper(opt$reorient), "FALSE")) {
+
+  prog(9, "Step 1/8 — Checking read orientation")
+  cat("Step 1a: Read orientation check...\n")
+
+  py_bin <- NULL
+  for (cand in c("python3", "python")) {
+    ok <- suppressWarnings(system(paste(shQuote(cand), "--version"),
+                                  ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+    if (ok) { py_bin <- cand; break }
+  }
+  reorient_py <- file.path(dirname(SCRIPT_DIR), "python_scripts", "reorient_reads.py")
+
+  if (is.null(py_bin) || !file.exists(reorient_py)) {
+    cat("  [skip] orientation check unavailable",
+        if (is.null(py_bin)) "(python not found)" else "(reorient_reads.py not found)", "\n\n")
+  } else {
+    run_reorient <- function(r1, r2, outdir, check_only) {
+      args_v <- c(shQuote(reorient_py),
+                  "--r1", shQuote(r1), "--r2", shQuote(r2),
+                  "--primer-f", shQuote(opt$primer_f),
+                  "--primer-r", shQuote(opt$primer_r),
+                  "--ambiguous", shQuote(opt$reorient_ambiguous))
+      if (check_only) args_v <- c(args_v, "--check", "--sample-size", "20000")
+      else            args_v <- c(args_v, "--outdir", shQuote(outdir))
+      out <- suppressWarnings(system(paste(shQuote(py_bin), paste(args_v, collapse=" ")),
+                                     intern=TRUE, ignore.stderr=TRUE))
+      tryCatch(jsonlite::fromJSON(paste(out, collapse="")), error=function(e) NULL)
+    }
+
+    # Decide using the first sample (representative of the run/library prep)
+    chk <- run_reorient(fnFs[1], fnRs[1], NULL, check_only=TRUE)
+    do_reorient <- FALSE
+    if (is.null(chk)) {
+      cat("  [warn] orientation check failed — continuing without it\n\n")
+    } else {
+      cat(sprintf("  Sampled %d pairs: %.1f%% forward, %.1f%% flipped, %.1f%% ambiguous\n",
+                  chk$total_pairs, chk$pct_already_correct, chk$pct_flipped,
+                  chk$pct_ambiguous))
+      if (identical(toupper(opt$reorient), "TRUE")) {
+        do_reorient <- TRUE
+        cat("  reorient=TRUE — reorienting all samples\n")
+      } else if (chk$pct_flipped >= opt$reorient_min_pct) {
+        do_reorient <- TRUE
+        cat(sprintf("  Mixed orientation detected (>= %.1f%% flipped) — reorienting\n",
+                    opt$reorient_min_pct))
+        cat("  NOTE: without this step these pairs would be silently lost at the merge step.\n")
+      } else {
+        cat("  Orientation is consistent — no reorientation needed\n")
+      }
+      reorient_report <- list(checked = chk, applied = do_reorient, samples = list())
+    }
+
+    if (do_reorient) {
+      ro_dir <- file.path(opt$output, "reoriented")
+      dir.create(ro_dir, recursive=TRUE, showWarnings=FALSE)
+      newFs <- fnFs; newRs <- fnRs; n_ro <- 0
+      for (i in seq_along(fnFs)) {
+        res <- run_reorient(fnFs[i], fnRs[i], ro_dir, check_only=FALSE)
+        if (!is.null(res) && !is.null(res$out_r1) &&
+            file.exists(res$out_r1) && file.exists(res$out_r2) &&
+            file.size(res$out_r1) > 0) {
+          newFs[i] <- res$out_r1
+          newRs[i] <- res$out_r2
+          n_ro <- n_ro + 1
+          reorient_report$samples[[sample_names[i]]] <- res
+          cat(sprintf("    %s: %d pairs -> %d written (%.1f%% were flipped)\n",
+                      sample_names[i], res$total_pairs, res$written_pairs,
+                      res$pct_flipped))
+        } else {
+          cat(sprintf("    [warn] %s: reorientation failed — using original files\n",
+                      sample_names[i]))
+        }
+      }
+      if (n_ro > 0) {
+        fnFs <- newFs; fnRs <- newRs
+        cat(sprintf("  Reoriented %d/%d sample(s) — using reoriented reads downstream\n",
+                    n_ro, length(fnFs)))
+      }
+      tryCatch(write(jsonlite::toJSON(reorient_report, auto_unbox=TRUE, null="null"),
+                     file.path(opt$output, "orientation_report.json")),
+               error=function(e) invisible(NULL))
+    }
+    cat("\n")
+  }
+}
 
 # ── Step 1b (optional): Cutadapt Primer Trimming ─────────────
 RC <- function(seq) {
@@ -785,13 +914,51 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
       cat("  Taxonomy assigned successfully.\n\n")
       db_dir2       <- dirname(db_path)
       sp_candidates <- list.files(db_dir2,
-                                  pattern="(assignspecies|species_assignment).*\\.fa(\\.gz)?$",
+                                  pattern="(assignspecies|species_assignment|_species)\\.?.*\\.fa(sta)?(\\.gz)?$",
                                   full.names=TRUE, ignore.case=TRUE)
       if (length(sp_candidates) > 0) {
+        # ── Match the species file to the trainset VERSION ──────────────
+        # Picking sp_candidates[1] blindly pairs whichever file the directory
+        # listing happens to return first with the trainset, which silently
+        # mixes reference versions when more than one is installed (e.g. a
+        # v138.2 trainset paired with a leftover v138.1 species file).
+        # addSpecies() is exact-match so a mismatch is not fatal, but it does
+        # mean the species names come from a different reference build than
+        # the genus calls — so prefer an exact version match and say plainly
+        # in the log when one could not be found.
+        db_version <- function(f) {
+          n <- tolower(basename(f))
+          m <- regmatches(n, regexpr("v[0-9]+(\\.[0-9]+)*", n))       # SILVA: v138.2
+          if (length(m) > 0) return(sub("^v", "", m[1]))
+          m <- regmatches(n, regexpr("_r[0-9]+", n))                   # GTDB: _r220
+          if (length(m) > 0) return(sub("^_r", "r", m[1]))
+          NA_character_
+        }
+        train_ver <- db_version(db_path)
+        sp_vers   <- vapply(sp_candidates, db_version, character(1))
+        sp_file   <- NULL
+        if (!is.na(train_ver)) {
+          exact <- sp_candidates[!is.na(sp_vers) & sp_vers == train_ver]
+          if (length(exact) > 0) sp_file <- exact[1]
+        }
+        if (is.null(sp_file)) {
+          sp_file <- sp_candidates[1]
+          if (!is.na(train_ver) && length(sp_candidates) > 1) {
+            cat(sprintf("  [WARN] No species file matching trainset version '%s'.\n", train_ver))
+            cat(sprintf("         Using '%s' (version '%s') — species names come from a\n",
+                        basename(sp_file),
+                        if (is.na(sp_vers[1])) "unknown" else sp_vers[1]))
+            cat("         different reference build than the genus assignments.\n")
+            cat("         Available:", paste(basename(sp_candidates), collapse=", "), "\n")
+          }
+        } else if (length(sp_candidates) > 1) {
+          cat(sprintf("  Version-matched species file (trainset v%s) out of %d candidates\n",
+                      train_ver, length(sp_candidates)))
+        }
         tryCatch({
           gc(verbose=FALSE)
-          tax <- addSpecies(tax, sp_candidates[1])
-          cat("  Species added from:", basename(sp_candidates[1]), "\n\n")
+          tax <- addSpecies(tax, sp_file)
+          cat("  Species added from:", basename(sp_file), "\n\n")
         }, error=function(e) cat("  Species assignment skipped:", e$message, "\n\n"))
       }
     }, error=function(e) {
@@ -835,6 +1002,201 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
   cat("  No database file found — skipping taxonomy assignment.\n\n")
 }
 
+# ═══════════════════════════════════════════════════════════════
+#  POST-TAXONOMY QC — off-target (host) detection + decontamination
+# ═══════════════════════════════════════════════════════════════
+# Reads per sample BEFORE any ASV-level filtering. read_tracking's "nonchim"
+# column must keep meaning "reads surviving chimera removal" even when the
+# steps below drop ASVs, otherwise the tracking table silently changes
+# definition depending on which options were enabled.
+nonchim_prefilter <- rowSums(seqtab_nochim)
+sample_names_all  <- sample_names   # before decontam may drop control samples
+qc_report <- list()
+
+# ── Off-target / host contamination ──────────────────────────
+# "Universal" primers are not perfectly specific: 16S primers routinely
+# co-amplify host mitochondrial and chloroplast rRNA, and with animal tissue
+# they can pull in host nuclear/mitochondrial rDNA that SILVA can only place
+# as Kingdom=Eukaryota with every lower rank NA. Those reads are real
+# sequence, they pass every quality filter, and they inflate the read count
+# while contributing nothing to the microbial profile — so without an
+# explicit check the only symptom is a stubbornly high "Unclassified" bar
+# that looks like a database problem rather than a primer-specificity one.
+if (!is.null(tax)) {
+  tryCatch({
+    asv_reads_qc <- colSums(seqtab_nochim)
+    total_qc     <- sum(asv_reads_qc)
+    king_col <- which(colnames(tax) %in% c("Kingdom","Domain"))
+    fam_col  <- which(colnames(tax) == "Family")
+    ord_col  <- which(colnames(tax) == "Order")
+
+    kingdom_vec <- if (length(king_col) > 0) tax[, king_col[1]] else rep(NA_character_, nrow(tax))
+    family_vec  <- if (length(fam_col)  > 0) tax[, fam_col[1]]  else rep(NA_character_, nrow(tax))
+    order_vec   <- if (length(ord_col)  > 0) tax[, ord_col[1]]  else rep(NA_character_, nrow(tax))
+
+    target_kingdoms <- if (opt$marker %in% c("18S","18S-nema","nematode","12S","COX1"))
+      c("Eukaryota") else c("Bacteria","Archaea")
+
+    is_offtarget_kingdom <- !is.na(kingdom_vec) & !(kingdom_vec %in% target_kingdoms)
+    is_organelle <- (!is.na(family_vec) & family_vec %in% c("Mitochondria","Chloroplast")) |
+                    (!is.na(order_vec)  & order_vec  %in% c("Chloroplast"))
+    is_unassigned <- is.na(kingdom_vec)
+    is_offtarget  <- is_offtarget_kingdom | is_organelle
+
+    kingdom_tbl <- tapply(asv_reads_qc,
+                          ifelse(is.na(kingdom_vec), "Unassigned", kingdom_vec), sum)
+    cat("── Taxonomy QC: reads by Kingdom ──────────────────────────────\n")
+    for (k in names(sort(kingdom_tbl, decreasing=TRUE))) {
+      cat(sprintf("  %-14s %8d reads  (%5.1f%%)\n", k, kingdom_tbl[[k]],
+                  kingdom_tbl[[k]] / max(total_qc, 1) * 100))
+    }
+    off_reads   <- sum(asv_reads_qc[is_offtarget])
+    org_reads   <- sum(asv_reads_qc[is_organelle])
+    unass_reads <- sum(asv_reads_qc[is_unassigned])
+    off_pct     <- off_reads   / max(total_qc, 1) * 100
+    org_pct     <- org_reads   / max(total_qc, 1) * 100
+    unass_pct   <- unass_reads / max(total_qc, 1) * 100
+
+    cat(sprintf("  Non-target (off-target kingdom + organelle): %d reads (%.1f%%)\n",
+                off_reads, off_pct))
+    cat(sprintf("  Organelle (Mitochondria/Chloroplast):        %d reads (%.1f%%)\n",
+                org_reads, org_pct))
+    cat(sprintf("  No kingdom assigned:                         %d reads (%.1f%%)\n",
+                unass_reads, unass_pct))
+
+    if (off_pct >= opt$offtarget_warn_pct) {
+      cat("\n  [WARNING] A large share of reads are NOT from the target group.\n")
+      cat("  This is a primer-specificity problem, not a database problem:\n")
+      cat("  the primers co-amplified host or organelle DNA, so those reads\n")
+      cat("  cannot be classified further no matter which reference is used.\n")
+      cat("  Options: (1) re-run with 'Remove non-target ASVs' enabled to drop\n")
+      cat("  them, (2) use host-blocking primers (PNA clamp) at the PCR step,\n")
+      cat("  or (3) accept the lower effective depth for the microbial fraction.\n")
+      cat(sprintf("OFFTARGET_WARN:%s\n",
+          toJSON(list(pct=round(off_pct,2), reads=off_reads,
+                      organelle_pct=round(org_pct,2),
+                      unassigned_pct=round(unass_pct,2)), auto_unbox=TRUE)))
+    }
+    cat("\n")
+
+    qc_report$kingdom_reads <- as.list(kingdom_tbl)
+    qc_report$offtarget     <- list(
+      reads = off_reads, pct = round(off_pct, 2),
+      organelle_reads = org_reads, organelle_pct = round(org_pct, 2),
+      unassigned_reads = unass_reads, unassigned_pct = round(unass_pct, 2),
+      target_kingdoms = target_kingdoms,
+      warn_threshold_pct = opt$offtarget_warn_pct,
+      warned = off_pct >= opt$offtarget_warn_pct,
+      removed = FALSE
+    )
+
+    # ── Optional removal ────────────────────────────────────────
+    if (isTRUE(opt$filter_offtarget) && any(is_offtarget)) {
+      keep <- !is_offtarget
+      if (sum(keep) == 0) {
+        cat("  [skip] Removing non-target ASVs would leave nothing — keeping all.\n\n")
+      } else {
+        n_before <- ncol(seqtab_nochim)
+        seqtab_nochim <- seqtab_nochim[, keep, drop=FALSE]
+        tax           <- tax[keep, , drop=FALSE]
+        cat(sprintf("  Removed %d non-target ASV(s) (%d reads); %d ASVs remain.\n\n",
+                    n_before - sum(keep), off_reads, sum(keep)))
+        qc_report$offtarget$removed     <- TRUE
+        qc_report$offtarget$asvs_removed <- n_before - sum(keep)
+      }
+    }
+  }, error=function(e) cat("  [skip] Taxonomy QC:", e$message, "\n\n"))
+}
+
+# ── decontam: remove reagent/kit contaminants using controls ──
+# Low-biomass samples are routinely dominated by DNA that came from the
+# extraction kit and PCR reagents rather than the specimen (Sphingomonas,
+# Ralstonia, Methylobacterium and friends). The only way to tell those apart
+# from real low-abundance taxa is a blank/negative control processed
+# alongside the samples, so this only runs when the user marks one.
+if (!identical(opt$decontam, "none") && nchar(trimws(opt$control_samples)) > 0) {
+  cat("── decontam: reagent contaminant removal ──────────────────────\n")
+  tryCatch({
+    if (!requireNamespace("decontam", quietly=TRUE)) {
+      cat("  [skip] decontam package not installed.\n")
+      cat("  Install: Rscript -e \"BiocManager::install('decontam')\"\n\n")
+    } else {
+      ctrl_ids <- trimws(strsplit(opt$control_samples, ",")[[1]])
+      ctrl_ids <- ctrl_ids[nchar(ctrl_ids) > 0]
+      is_neg     <- rownames(seqtab_nochim) %in% ctrl_ids
+      # Capture the names now — seqtab_nochim gets subset further down, after
+      # which rownames(...)[is_neg] no longer lines up and the report would
+      # record the controls as empty.
+      ctrl_names <- rownames(seqtab_nochim)[is_neg]
+      cat("  Negative controls:", paste(ctrl_names, collapse=", "), "\n")
+
+      if (sum(is_neg) == 0) {
+        cat("  [skip] None of the named controls match a sample in this run.\n")
+        cat("  Named:", paste(ctrl_ids, collapse=", "), "\n")
+        cat("  Samples:", paste(rownames(seqtab_nochim), collapse=", "), "\n\n")
+      } else if (sum(!is_neg) == 0) {
+        cat("  [skip] Every sample is marked as a control — nothing left to clean.\n\n")
+      } else {
+        method <- if (opt$decontam %in% c("prevalence","frequency","combined"))
+          opt$decontam else "prevalence"
+        if (method != "prevalence") {
+          cat(sprintf("  Note: '%s' needs DNA concentrations; using 'prevalence'.\n", method))
+          method <- "prevalence"
+        }
+        ctm <- decontam::isContaminant(seqtab_nochim, neg=is_neg,
+                                       method=method, threshold=opt$decontam_threshold)
+        n_contam <- sum(ctm$contaminant, na.rm=TRUE)
+        contam_reads <- sum(colSums(seqtab_nochim)[which(ctm$contaminant)])
+        cat(sprintf("  Flagged %d contaminant ASV(s) (%d reads) at threshold %.2f\n",
+                    n_contam, contam_reads, opt$decontam_threshold))
+
+        if (n_contam > 0 && !is.null(tax)) {
+          cg <- tax[which(ctm$contaminant), which(colnames(tax) == "Genus")]
+          cg <- unique(cg[!is.na(cg)])
+          if (length(cg) > 0)
+            cat("  Contaminant genera:", paste(head(cg, 15), collapse=", "),
+                if (length(cg) > 15) sprintf("(+%d more)", length(cg) - 15) else "", "\n")
+        }
+
+        tryCatch(write.csv(ctm, file.path(opt$output, "decontam_scores.csv")),
+                 error=function(e) invisible(NULL))
+
+        keep_c <- !(ctm$contaminant %in% TRUE)
+        # Drop the control samples too — they exist to calibrate the filter,
+        # not to be analysed as if they were specimens.
+        if (sum(keep_c) > 0) {
+          seqtab_nochim <- seqtab_nochim[!is_neg, keep_c, drop=FALSE]
+          if (!is.null(tax)) tax <- tax[keep_c, , drop=FALSE]
+          # Some ASVs may now be absent from every remaining sample
+          nonzero <- colSums(seqtab_nochim) > 0
+          if (any(!nonzero) && sum(nonzero) > 0) {
+            seqtab_nochim <- seqtab_nochim[, nonzero, drop=FALSE]
+            if (!is.null(tax)) tax <- tax[nonzero, , drop=FALSE]
+          }
+          sample_names      <- rownames(seqtab_nochim)
+          cat(sprintf("  Removed %d contaminant ASV(s) and %d control sample(s).\n",
+                      n_contam, sum(is_neg)))
+          cat(sprintf("  Remaining: %d samples x %d ASVs\n\n",
+                      nrow(seqtab_nochim), ncol(seqtab_nochim)))
+          qc_report$decontam <- list(method=method, threshold=opt$decontam_threshold,
+                                     contaminant_asvs=n_contam,
+                                     contaminant_reads=contam_reads,
+                                     controls=ctrl_names,
+                                     applied=TRUE)
+        } else {
+          cat("  [skip] Every ASV was flagged — threshold is too aggressive.\n\n")
+        }
+      }
+    }
+  }, error=function(e) cat("  [skip] decontam:", e$message, "\n\n"))
+}
+
+if (length(qc_report) > 0) {
+  tryCatch(write(toJSON(qc_report, auto_unbox=TRUE, null="null"),
+                 file.path(opt$output, "qc_report.json")),
+           error=function(e) invisible(NULL))
+}
+
 # ── Save Results ──────────────────────────────────────────────
 prog(88, "Step 6/8 — Saving results & CSV tables...")
 cat("Saving results...\n")
@@ -845,11 +1207,16 @@ asv_df$sequence <- rownames(asv_df)
 write.csv(asv_df, file.path(opt$output, "asv_table.csv"), row.names=FALSE)
 
 # Read tracking
+# "nonchim" uses the counts captured BEFORE the QC steps above, so the column
+# keeps meaning "reads surviving chimera removal" regardless of whether
+# off-target filtering or decontam was enabled. When those steps did drop
+# something, an extra "after_qc" column reports what is actually left, rather
+# than quietly redefining "nonchim".
 if (is_single) {
   track <- cbind(
     out,
     sapply(dadaFs, function(d) sum(d$denoised)),
-    rowSums(seqtab_nochim)
+    nonchim_prefilter
   )
   colnames(track) <- c("input","filtered","denoised","nonchim")
 } else {
@@ -858,11 +1225,19 @@ if (is_single) {
     sapply(dadaFs, function(d) sum(d$denoised)),
     sapply(dadaRs, function(d) sum(d$denoised)),
     sapply(mergers, function(m) sum(m$abundance[m$accept])),
-    rowSums(seqtab_nochim)
+    nonchim_prefilter
   )
   colnames(track) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")
 }
-rownames(track) <- sample_names
+rownames(track) <- sample_names_all
+
+after_qc <- rowSums(seqtab_nochim)
+if (!identical(as.numeric(after_qc[sample_names_all]),
+               as.numeric(track[, "nonchim"])) ||
+    length(after_qc) != length(sample_names_all)) {
+  track <- cbind(track, after_qc = as.numeric(after_qc[sample_names_all]))
+  rownames(track) <- sample_names_all
+}
 write.csv(as.data.frame(track), file.path(opt$output, "read_tracking.csv"))
 
 # Taxonomy table + summary JSON
@@ -2005,6 +2380,30 @@ if (!is.null(tax) && has_pheatmap) {
       top_taxa_hm <- names(sort(colMeans(mat_hm), decreasing=TRUE))[1:top_n_hm]
       heat_mat_hm <- t(mat_hm[, top_taxa_hm, drop=FALSE])   # taxa × samples
 
+      # ── Guards for degenerate matrices ──────────────────────────────
+      # pheatmap fails with "'from' must be a finite number" when it tries to
+      # build colour breaks from a matrix that is entirely NaN. That happens
+      # with scale="row" on a single sample: every row has sd 0, so every
+      # scaled value is NaN. Clustering likewise needs >= 2 rows/columns.
+      heat_mat_hm <- heat_mat_hm[, colSums(is.finite(heat_mat_hm)) > 0, drop=FALSE]
+      heat_mat_hm <- heat_mat_hm[rowSums(is.finite(heat_mat_hm)) > 0, , drop=FALSE]
+      if (nrow(heat_mat_hm) < 2 || ncol(heat_mat_hm) < 1) {
+        cat("  [skip] heatmap ", hm_lvl, ": not enough data (",
+            nrow(heat_mat_hm), " taxa x ", ncol(heat_mat_hm), " samples)\n", sep="")
+        next
+      }
+      row_var  <- apply(heat_mat_hm, 1, function(r) stats::sd(r, na.rm=TRUE))
+      hm_scale <- if (ncol(heat_mat_hm) >= 3 && any(is.finite(row_var) & row_var > 0))
+        "row" else "none"
+      if (hm_scale == "row") {
+        # drop constant rows — they scale to NaN and poison the break calculation
+        heat_mat_hm <- heat_mat_hm[is.finite(row_var) & row_var > 0, , drop=FALSE]
+        if (nrow(heat_mat_hm) < 2) hm_scale <- "none"
+      }
+      cluster_rows_hm <- nrow(heat_mat_hm) >= 3
+      cluster_cols_hm <- ncol(heat_mat_hm) >= 3
+      top_n_hm <- nrow(heat_mat_hm)
+
       hm_colors <- switch(hm_lvl,
         Genus   = colorRampPalette(c("#f0f4ff","#3b82f6","#1e1b4b"))(100),
         Family  = colorRampPalette(c("#fff7ed","#f97316","#431407"))(100),
@@ -2020,7 +2419,9 @@ if (!is.null(tax) && has_pheatmap) {
         annotation_col    = ann_col_hm,
         annotation_colors = if (length(ann_colors_hm) > 0) ann_colors_hm else NULL,
         color             = hm_colors,
-        scale             = "row",
+        scale             = hm_scale,
+        cluster_rows      = cluster_rows_hm,
+        cluster_cols      = cluster_cols_hm,
         clustering_distance_rows = "euclidean",
         clustering_distance_cols = "euclidean",
         main              = hm_title,
@@ -2250,13 +2651,22 @@ if (isTRUE(opt$tax4fun)) {
       writeLines(fasta_lines, asv_fasta)
       cat("  ASV FASTA exported\n")
 
-      # Export abundance table
+      # Export abundance table (CSV for the user, TSV for Tax4Fun2 itself —
+      # makeFunctionalPrediction() reads a tab-delimited table with ASV ids in
+      # the first column, not a CSV).
       abund_df <- data.frame(SampleID=rownames(seqtab_nochim),
                              as.data.frame(seqtab_nochim),
                              stringsAsFactors=FALSE)
       colnames(abund_df)[-1] <- asv_ids
       abund_csv <- file.path(tf2_dir, "ASV_table.csv")
       write.csv(abund_df, abund_csv, row.names=FALSE)
+
+      t4f_tab <- data.frame(ASV = asv_ids,
+                            t(as.data.frame(seqtab_nochim)),
+                            check.names = FALSE, stringsAsFactors = FALSE)
+      colnames(t4f_tab)[-1] <- rownames(seqtab_nochim)
+      abund_tsv <- file.path(tf2_dir, "ASV_table.txt")
+      write.table(t4f_tab, abund_tsv, sep="\t", quote=FALSE, row.names=FALSE)
       cat("  ASV table exported\n")
 
       # Reference data path
@@ -2268,14 +2678,47 @@ if (isTRUE(opt$tax4fun)) {
         cat("  [skip] Tax4Fun2 reference data not found at:", ref_dir, "\n")
         cat("  Download: https://zenodo.org/record/6327578\n")
       } else {
-        cat("  Running Tax4Fun2...\n")
-        Tax4Fun2::Tax4Fun2(
-          file_path_otu_table = abund_csv,
-          file_path_ref_data  = ref_dir,
-          path_to_working_dir = tf2_dir,
-          use_parallel        = FALSE
-        )
-        cat("  Tax4Fun2 complete. Results in:", tf2_dir, "\n")
+        # Tax4Fun2 v2 has no single Tax4Fun2() entry point — the workflow is
+        # runRefBlast() to map ASVs against the reference, then
+        # makeFunctionalPrediction() to turn those hits into KEGG profiles.
+        # Calling Tax4Fun2::Tax4Fun2() fails with "not an exported object".
+        t4f_ns   <- asNamespace("Tax4Fun2")
+        has_fn   <- function(n) exists(n, envir=t4f_ns, inherits=FALSE)
+        tmp_dir  <- file.path(tf2_dir, "tmp")
+
+        if (has_fn("runRefBlast") && has_fn("makeFunctionalPrediction")) {
+          cat("  Running Tax4Fun2 (runRefBlast + makeFunctionalPrediction)...\n")
+          Tax4Fun2::runRefBlast(
+            path_to_otus           = asv_fasta,
+            path_to_reference_data = ref_dir,
+            path_to_temp_folder    = tmp_dir,
+            database_mode          = "Ref99NR",
+            use_force              = TRUE,
+            num_threads            = THREADS
+          )
+          Tax4Fun2::makeFunctionalPrediction(
+            path_to_otu_table         = abund_tsv,
+            path_to_reference_data    = ref_dir,
+            path_to_temp_folder       = tmp_dir,
+            database_mode             = "Ref99NR",
+            normalize_by_copy_number  = TRUE,
+            min_identity_to_reference = 0.97,
+            normalize_pathways        = FALSE
+          )
+          cat("  Tax4Fun2 complete. Results in:", tmp_dir, "\n")
+        } else if (has_fn("Tax4Fun2")) {
+          cat("  Running Tax4Fun2 (single-call API)...\n")
+          Tax4Fun2::Tax4Fun2(
+            file_path_otu_table = abund_csv,
+            file_path_ref_data  = ref_dir,
+            path_to_working_dir = tf2_dir,
+            use_parallel        = FALSE
+          )
+          cat("  Tax4Fun2 complete. Results in:", tf2_dir, "\n")
+        } else {
+          cat("  [skip] Installed Tax4Fun2 exposes neither runRefBlast() nor Tax4Fun2().\n")
+          cat("  Functions found:", paste(head(ls(t4f_ns), 10), collapse=", "), "\n")
+        }
       }
     }
   }, error=function(e) cat("  [skip] Tax4Fun2:", e$message, "\n"))
@@ -2354,11 +2797,52 @@ tryCatch({
     }
   }
 
-  # ── Fallback: NJ tree from k-mer distances (no external tools needed) ─────
+  # ── Fallback 2: DECIPHER alignment in R (no external binaries needed) ─────
+  # Better than the raw padding fallback below: that one right-pads every
+  # sequence with gaps to a common length, which only lines up the 5' ends.
+  # ASVs of different lengths then get compared base-against-unrelated-base
+  # for most of their length, so the distances — and any UniFrac or
+  # phylogenetic diversity metric computed from the tree — are close to
+  # meaningless. DECIPHER produces a real multiple alignment first.
+  if (!file.exists(tree_nwk) && requireNamespace("DECIPHER", quietly=TRUE) && has_ape) {
+    tryCatch({
+      cat("  Aligning with DECIPHER (no MAFFT/FastTree found)...\n")
+      dna_set <- Biostrings::DNAStringSet(setNames(asv_seqs, asv_ids))
+      aligned <- DECIPHER::AlignSeqs(dna_set, verbose=FALSE,
+                                     processors=if (THREADS > 1) THREADS else NULL)
+      aln_mat <- as.DNAbin(as.matrix(as.character(aligned)))
+      rownames(aln_mat) <- asv_ids
+
+      d_mat <- tryCatch(dist.dna(aln_mat, model="K80", pairwise.deletion=TRUE),
+                        error=function(e) dist.dna(aln_mat, model="raw",
+                                                   pairwise.deletion=TRUE))
+      d_mat[!is.finite(d_mat)] <- max(d_mat[is.finite(d_mat)], 0.5, na.rm=TRUE)
+      nj_tree <- nj(d_mat)
+
+      # Optional ML refinement — noticeably better branch lengths, but only
+      # worth the runtime on a modest number of tips.
+      if (requireNamespace("phangorn", quietly=TRUE) && length(asv_seqs) <= 300) {
+        tryCatch({
+          cat("  Refining with phangorn (ML, GTR+G)...\n")
+          phy_dat <- phangorn::as.phyDat(aln_mat)
+          fit     <- phangorn::pml(phangorn::midpoint(nj_tree), data=phy_dat)
+          fit     <- phangorn::optim.pml(fit, model="GTR", optGamma=TRUE,
+                                         rearrangement="NNI",
+                                         control=phangorn::pml.control(trace=0))
+          nj_tree <- fit$tree
+          cat("  ✓ ML tree optimised\n")
+        }, error=function(e) cat("  [warn] ML refinement skipped:", e$message, "\n"))
+      }
+      write.tree(nj_tree, file=tree_nwk)
+      cat("  ✓ Phylogenetic tree built (DECIPHER alignment):", tree_nwk, "\n")
+    }, error=function(e) cat("  [warn] DECIPHER tree failed:", e$message, "\n"))
+  }
+
+  # ── Fallback 3: NJ from gap-padded sequences (last resort) ────────────────
   if (!file.exists(tree_nwk) && has_ape) {
-    cat("  Building NJ tree from k-mer distances (ape)...\n")
-    # Use ape::dist.dna requires DNAbin — compute simple edit distance instead
-    # Build character matrix from ASV sequences
+    cat("  Building NJ tree from padded sequences (ape)...\n")
+    cat("  NOTE: sequences are not properly aligned — this tree is approximate.\n")
+    cat("  Install MAFFT + FastTree, or the DECIPHER R package, for a real alignment.\n")
     seqs_char <- strsplit(asv_seqs, "")
     maxlen    <- max(sapply(seqs_char, length))
     # Pad shorter sequences
@@ -2374,7 +2858,7 @@ tryCatch({
     d_mat[!is.finite(d_mat)] <- 0.5
     nj_tree   <- nj(d_mat)
     write.tree(nj_tree, file=tree_nwk)
-    cat("  ✓ NJ phylogenetic tree built (k-mer distance):", tree_nwk, "\n")
+    cat("  ✓ NJ phylogenetic tree built (approximate, unaligned):", tree_nwk, "\n")
   }
 
   if (!file.exists(tree_nwk))

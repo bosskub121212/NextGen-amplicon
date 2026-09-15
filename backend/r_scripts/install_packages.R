@@ -82,7 +82,9 @@ bioc_pkgs <- c(
   "DECIPHER",            # Multiple sequence alignment (for NJ tree)
   "Biostrings",          # DNA sequence handling
   "ggtree",              # Phylogenetic tree visualization
-  "treeio"               # Tree I/O (ggtree dependency)
+  "treeio",              # Tree I/O (ggtree dependency)
+  # QC additions
+  "decontam"             # Reagent/kit contaminant removal using negative controls
 )
 for (p in bioc_pkgs) install_if_missing(p, bioc=TRUE)
 

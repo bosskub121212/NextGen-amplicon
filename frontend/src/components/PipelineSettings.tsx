@@ -47,6 +47,17 @@ export interface PipelineParams {
   cutadaptErrorRate: number;
   cutadaptOverlap:   number;
   discardUntrimmed:  boolean;
+  // Read orientation repair (paired-end only)
+  reorient:          "auto" | "TRUE" | "FALSE";
+  reorientAmbiguous: "keep" | "drop";
+  reorientMinPct:    number;
+  // Off-target / host contamination
+  offtargetWarnPct:  number;
+  filterOfftarget:   boolean;
+  // Negative-control decontamination
+  decontam:          "none" | "prevalence";
+  decontamThreshold: number;
+  controlSamples:    string[];
   // Phylogeny
   runPhylogeny:      boolean;
   phyloThreads:      number;
@@ -115,6 +126,9 @@ export const defaultParams: PipelineParams = {
   pb_min_len: 1000, pb_max_len: 1600, pb_maxEE: 3.0, pb_region: "V1-V9",
   ont_region: "V1-V9", ont_min_abundance: 0.0001, ont_db_path: "",
   cutadaptErrorRate: 0.1, cutadaptOverlap: 3, discardUntrimmed: false,
+  reorient: "auto", reorientAmbiguous: "keep", reorientMinPct: 5,
+  offtargetWarnPct: 20, filterOfftarget: false,
+  decontam: "none", decontamThreshold: 0.1, controlSamples: [],
   runPhylogeny: true, phyloThreads: 4,
   runDiversity: true,
   samplingDepth: 10000, groupCol: "treatment", additionalGroupCols: "",
@@ -1005,6 +1019,68 @@ conda run -n emu emu build-database \\
                         <span>Discard untrimmed reads (reads where primer was not found)</span>
                       </label>
 
+                      {/* ── Read orientation repair ─────────────────────── */}
+                      {params.sequencerType !== "ont" && (
+                        <>
+                          <div className="ps-section-label" style={{ marginTop: 16 }}>
+                            READ ORIENTATION
+                          </div>
+                          <p className="param-hint" style={{ marginBottom: 8 }}>
+                            Some libraries have a large share of read pairs sequenced the
+                            other way round (R1 starting at the reverse primer). DADA2
+                            cannot merge those, and cutadapt only searches one fixed
+                            orientation — so they are lost at the merge step with no error
+                            message. This checks for it and swaps the mates when needed.
+                          </p>
+                          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                            {([
+                              { v: "auto",  label: "Auto-detect",  hint: "Check a subsample; fix only if mixed (recommended)" },
+                              { v: "TRUE",  label: "Always fix",   hint: "Always reorient every pair" },
+                              { v: "FALSE", label: "Off",          hint: "Skip the check entirely" },
+                            ] as const).map(o => (
+                              <button key={o.v} type="button" title={o.hint}
+                                style={{
+                                  padding: "6px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+                                  border: params.reorient === o.v ? "2px solid #06b6d4" : "1px solid #334155",
+                                  background: params.reorient === o.v ? "#083344" : "#1e293b",
+                                  color: params.reorient === o.v ? "#67e8f9" : "#94a3b8",
+                                  fontWeight: params.reorient === o.v ? 600 : 400,
+                                }}
+                                onClick={() => set("reorient", o.v)}>
+                                {o.label}
+                              </button>
+                            ))}
+                          </div>
+                          {params.reorient !== "FALSE" && (
+                            <div className="param-grid">
+                              {params.reorient === "auto" && (
+                                <ParamNumber label="Auto-fix threshold (%)"
+                                  hint="Reorient only when at least this % of pairs are flipped"
+                                  value={params.reorientMinPct} min={1} max={50} step={1}
+                                  onChange={v => set("reorientMinPct", v)} />
+                              )}
+                              <div className="param-item">
+                                <label className="param-label">Pairs matching neither primer</label>
+                                <span className="param-hint">
+                                  Orientation cannot be determined for these
+                                </span>
+                                <select className="param-input" value={params.reorientAmbiguous}
+                                  onChange={e => set("reorientAmbiguous", e.target.value as "keep" | "drop")}>
+                                  <option value="keep">Keep (pass through unchanged)</option>
+                                  <option value="drop">Drop (cleaner, loses those reads)</option>
+                                </select>
+                              </div>
+                            </div>
+                          )}
+                          {!params.primer_f && params.reorient !== "FALSE" && (
+                            <div style={{ fontSize: 12, color: "#f59e0b", marginTop: 6 }}>
+                              ⚠ Orientation detection needs both primers — set them above,
+                              or this step will be skipped.
+                            </div>
+                          )}
+                        </>
+                      )}
+
                       {/* Command preview */}
                       {params.primer_f && (
                         <div className="ps-cmd-block">
@@ -1509,6 +1585,81 @@ FastTree -gtr -nt aligned.fasta > unrooted-tree.nwk
                           </button>
                         ))}
                       </div>
+
+                      {/* ── Off-target / host contamination ──────────────── */}
+                      <div className="ps-section-label" style={{ marginTop: 16 }}>
+                        OFF-TARGET (HOST) READS
+                      </div>
+                      <p className="param-hint" style={{ marginBottom: 8 }}>
+                        "Universal" primers also amplify host mitochondrial and chloroplast
+                        rRNA, and with animal tissue they pick up host DNA that the reference
+                        can only place as Eukaryota with every lower rank blank. Those reads
+                        pass every quality filter and just inflate the Unclassified bar — which
+                        looks like a database problem but is really primer specificity.
+                      </p>
+                      <div className="param-grid">
+                        <ParamNumber label="Warn above (%)"
+                          hint="Flag the run when this share of reads is non-target"
+                          value={params.offtargetWarnPct} min={0} max={100} step={5}
+                          onChange={v => set("offtargetWarnPct", v)} />
+                      </div>
+                      <label className="ps-checkbox-row" style={{ marginTop: 8 }}>
+                        <input type="checkbox" checked={params.filterOfftarget}
+                          onChange={e => set("filterOfftarget", e.target.checked)} />
+                        <span>
+                          Remove non-target ASVs (Eukaryota / Mitochondria / Chloroplast)
+                          before diversity analysis
+                        </span>
+                      </label>
+                      <div style={{ fontSize: 11, color: "#475569", marginTop: 6 }}>
+                        💡 Read counts before removal are still reported in read_tracking.csv,
+                        and the full breakdown is written to qc_report.json.
+                      </div>
+
+                      {/* ── Negative-control decontamination ─────────────── */}
+                      <div className="ps-section-label" style={{ marginTop: 16 }}>
+                        REAGENT CONTAMINANTS (decontam)
+                      </div>
+                      <p className="param-hint" style={{ marginBottom: 8 }}>
+                        Low-biomass samples are routinely dominated by DNA from the extraction
+                        kit and PCR reagents (Sphingomonas, Ralstonia, Methylobacterium …). The
+                        only way to tell those from real low-abundance taxa is a blank processed
+                        alongside the samples — name it here and it will be used to calibrate
+                        the filter, then excluded from the results.
+                      </p>
+                      <div className="param-grid">
+                        <ParamSelect label="Method" hint="Requires at least one negative control"
+                          value={params.decontam}
+                          options={[
+                            { value: "none",       label: "Off" },
+                            { value: "prevalence", label: "Prevalence (presence/absence vs blank)" },
+                          ]}
+                          onChange={v => set("decontam", v as "none" | "prevalence")} />
+                        {params.decontam !== "none" && (
+                          <ParamNumber label="Score threshold"
+                            hint="0.1 = conservative, 0.5 = aggressive"
+                            value={params.decontamThreshold} min={0.01} max={0.9} step={0.05}
+                            onChange={v => set("decontamThreshold", v)} />
+                        )}
+                      </div>
+                      {params.decontam !== "none" && (
+                        <div className="param-item" style={{ marginTop: 8 }}>
+                          <label className="param-label">Negative control sample IDs</label>
+                          <span className="param-hint">
+                            Comma-separated, exactly as named in your metadata (e.g. BLANK1, NTC)
+                          </span>
+                          <input type="text" className="param-input"
+                            placeholder="BLANK1, NTC"
+                            value={params.controlSamples.join(", ")}
+                            onChange={e => set("controlSamples",
+                              e.target.value.split(",").map(s => s.trim()).filter(Boolean))} />
+                          {params.controlSamples.length === 0 && (
+                            <div style={{ fontSize: 12, color: "#f59e0b", marginTop: 6 }}>
+                              ⚠ decontam needs at least one control sample — it will be skipped.
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 

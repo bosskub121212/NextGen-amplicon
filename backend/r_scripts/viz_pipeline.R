@@ -150,6 +150,18 @@ emu_asv_file <- file.path(OUTPUT_DIR, "asv_table.csv")
 emu_tax_file <- file.path(OUTPUT_DIR, "taxonomy.csv")
 IS_EMU_MODE  <- file.exists(emu_asv_file) && file.exists(emu_tax_file)
 
+# ── DADA2 mode ──────────────────────────────────────────────────────────────
+# dada2_pipeline.R writes asv_table.csv + taxonomy_table.csv and never runs the
+# QIIME2 CLI, so there is no feature-table.biom to import. Without this branch
+# the BIOM check below fired for every DADA2 job, printed "[ERROR] BIOM file not
+# found" and quit — so the extra visualisations silently never ran for the most
+# common pipeline in the app. Both tables key on the ASV sequence, so they can
+# be joined into the same phyloseq object the rest of this script expects.
+dada2_asv_file <- file.path(OUTPUT_DIR, "asv_table.csv")
+dada2_tax_file <- file.path(OUTPUT_DIR, "taxonomy_table.csv")
+IS_DADA2_MODE  <- (!IS_EMU_MODE) && file.exists(dada2_asv_file) &&
+                  file.exists(dada2_tax_file)
+
 biom_file  <- file.path(EXP_DIR, "feature-table", "feature-table.biom")
 tax_file   <- file.path(EXP_DIR, "taxonomy",       "taxonomy.tsv")
 tree_file  <- file.path(EXP_DIR, "tree",           "tree.nwk")
@@ -197,8 +209,69 @@ if (IS_EMU_MODE) {
     }
   }, error=function(e) cat(sprintf("[WARN] Emu CSV load error: %s\n", e$message)))
 
+} else if (IS_DADA2_MODE) {
+  # ── DADA2 mode: load asv_table.csv + taxonomy_table.csv ───────────────────
+  cat("── Loading DADA2 output (CSV format) ─────────────────────────\n")
+
+  tryCatch({
+    asv_raw <- read.csv(dada2_asv_file, check.names=FALSE, stringsAsFactors=FALSE)
+    if (!"sequence" %in% colnames(asv_raw))
+      stop("asv_table.csv has no 'sequence' column")
+    seqs     <- asv_raw$sequence
+    samp_cols <- setdiff(colnames(asv_raw), "sequence")
+    asv_mat  <- as.matrix(asv_raw[, samp_cols, drop=FALSE])
+    storage.mode(asv_mat) <- "numeric"
+    asv_mat[is.na(asv_mat)] <- 0
+    # Short, stable ids; the full sequence stays available in asvs.fasta
+    asv_ids  <- paste0("ASV", seq_along(seqs))
+    rownames(asv_mat) <- asv_ids
+    keep_rows <- rowSums(asv_mat) > 0
+    asv_mat   <- asv_mat[keep_rows, , drop=FALSE]
+    names(seqs) <- asv_ids
+    cat(sprintf("  Loaded ASV table: %d ASVs × %d samples\n",
+                nrow(asv_mat), ncol(asv_mat)))
+
+    tax_raw  <- read.csv(dada2_tax_file, row.names=1, check.names=FALSE,
+                         stringsAsFactors=FALSE)
+    tax_cols <- intersect(c("Kingdom","Phylum","Class","Order","Family","Genus","Species"),
+                          colnames(tax_raw))
+    # taxonomy_table.csv is keyed by sequence — remap onto the ASV ids
+    seq_to_id <- setNames(asv_ids, seqs)
+    tax_ids   <- seq_to_id[rownames(tax_raw)]
+    tax_raw   <- tax_raw[!is.na(tax_ids), , drop=FALSE]
+    rownames(tax_raw) <- tax_ids[!is.na(tax_ids)]
+    tax_mat   <- as.matrix(tax_raw[, tax_cols, drop=FALSE])
+    tax_mat[is.na(tax_mat)] <- ""
+
+    common_ids <- intersect(rownames(asv_mat), rownames(tax_mat))
+    asv_mat    <- asv_mat[common_ids, , drop=FALSE]
+    tax_mat    <- tax_mat[common_ids, , drop=FALSE]
+    cat(sprintf("  Loaded taxonomy: %d ASVs\n", nrow(tax_mat)))
+
+    if (has_phyloseq) {
+      ps <- phyloseq(
+        otu_table(asv_mat, taxa_are_rows=TRUE),
+        tax_table(tax_mat)
+      )
+      # Attach the tree the DADA2 pipeline already built, when present —
+      # this is what makes UniFrac available downstream.
+      d2_tree <- file.path(OUTPUT_DIR, "phylo_tree.nwk")
+      if (file.exists(d2_tree)) {
+        tryCatch({
+          tr <- ape::read.tree(d2_tree)
+          if (!is.null(tr) && length(intersect(tr$tip.label, taxa_names(ps))) > 1) {
+            ps <- merge_phyloseq(ps, phy_tree(tr))
+            cat("  Attached phylogenetic tree\n")
+          }
+        }, error=function(e) cat(sprintf("[WARN] Tree attach failed: %s\n", e$message)))
+      }
+      cat(sprintf("  phyloseq object: %d ASVs × %d samples\n",
+                  ntaxa(ps), nsamples(ps)))
+    }
+  }, error=function(e) cat(sprintf("[WARN] DADA2 CSV load error: %s\n", e$message)))
+
 } else {
-  # ── QIIME2/DADA2 mode: load BIOM ──────────────────────────────────────────
+  # ── QIIME2 mode: load BIOM ────────────────────────────────────────────────
   cat("── Loading exported QIIME2 data ──────────────────────────────\n")
 
   if (!file.exists(biom_file)) {

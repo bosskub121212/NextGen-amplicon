@@ -201,6 +201,22 @@ class RunParams(BaseModel):
     nThreads:      int   = 4
     # --- Shared db paths override ---
     db_paths_json: str   = ""
+    # --- Read orientation repair (paired-end DADA2 only) ---
+    # Some libraries carry a large fraction of read pairs in the opposite
+    # orientation (R1 starting at the reverse primer). DADA2 cannot merge
+    # those and cutadapt only searches one fixed orientation, so they are
+    # silently lost at the merge step. "auto" checks a subsample and only
+    # reorients when it actually finds mixed orientation.
+    reorient:           str   = "auto"    # auto | TRUE | FALSE
+    reorientAmbiguous:  str   = "keep"    # keep | drop
+    reorientMinPct:     float = 5.0       # auto-mode trigger threshold (%)
+    # --- Off-target / host contamination ---
+    offtargetWarnPct:   float = 20.0      # warn at/above this % of reads
+    filterOfftarget:    bool  = False     # drop Eukaryota/Mitochondria/Chloroplast ASVs
+    # --- Negative-control decontamination ---
+    decontam:           str   = "none"    # none | prevalence
+    decontamThreshold:  float = 0.1
+    controlSamples:     list[str] = []    # sample IDs that are blanks/negative controls
 
 class WorkerConfig(BaseModel):
     max_workers: int = 2
@@ -281,6 +297,198 @@ async def upload_files(files: list[UploadFile] = File(...)):
         }
         save_jobs()
     return {"job_id": job_id, "files": saved}
+
+# ── 1b. Data preparation: read-orientation check / repair ─────────────────────
+# Standalone pre-run step. Paired-end amplicon libraries sometimes carry a large
+# fraction of read pairs in the opposite orientation (R1 starting at the reverse
+# primer instead of the forward one). DADA2's mergePairs() cannot merge those —
+# R1 and revcomp(R2) are biologically misaligned — and cutadapt's paired-end mode
+# only searches one fixed orientation, so it leaves them untrimmed rather than
+# fixing them. The only symptom is a merge rate far below expectation with no
+# error anywhere, which is very hard to diagnose from the UI. These endpoints let
+# the user see the problem and fix it before committing to a full run.
+def _pair_fastqs(file_names: list[str]) -> list[tuple[str, str, str]]:
+    """
+    Pair R1/R2 filenames. Returns [(sample, r1, r2), ...].
+
+    Handles the naming conventions actually seen in the wild:
+      Sample_1.fq.gz / Sample_2.fq.gz
+      Sample_R1.fastq.gz / Sample_R2.fastq.gz
+      Sample_R1_001.fastq.gz / Sample_R2_001.fastq.gz
+      Sample_L001_R1_001.fastq.gz / Sample_L001_R2_001.fastq.gz
+    """
+    import re as _re2
+    exts = (".fastq.gz", ".fq.gz", ".fastq", ".fq")
+    known = set(file_names)
+    seen: set[str] = set()
+    pairs: list[tuple[str, str, str]] = []
+    # Ordered most-specific first so "_R1" wins over a bare "_1"
+    patterns = [r"(.*)(_R1)(_\d+)?$", r"(.*)(_1)(_\d+)?$", r"(.*)(R1)(_\d+)?$"]
+
+    for f in sorted(file_names):
+        low = f.lower()
+        ext = next((e for e in exts if low.endswith(e)), None)
+        if ext is None or f in seen:
+            continue
+        stem = f[: -len(ext)]
+        m = None
+        for pat in patterns:
+            m = _re2.match(pat, stem, _re2.IGNORECASE)
+            if m:
+                break
+        if not m:
+            continue
+        pre, tag, suf = m.group(1), m.group(2), m.group(3) or ""
+        mate_tag = tag[:-1] + "2"            # _R1 -> _R2 ; _1 -> _2
+        cand = f"{pre}{mate_tag}{suf}{f[-len(ext):]}"
+        if cand in known:
+            sample = pre.rstrip("_") or stem
+            pairs.append((sample, f, cand))
+            seen.add(f)
+            seen.add(cand)
+    return pairs
+
+
+class PrepBody(BaseModel):
+    primer_f:  str = ""
+    primer_r:  str = ""
+    ambiguous: str = "keep"     # keep | drop
+    replace:   bool = True      # reoriented files replace the originals for the run
+
+
+def _run_reorient_tool(args: list[str]) -> dict:
+    """Invoke python_scripts/reorient_reads.py and parse its JSON report."""
+    script = BASE_DIR / "python_scripts" / "reorient_reads.py"
+    if not script.exists():
+        raise FileNotFoundError(f"reorient_reads.py not found at {script}")
+    proc = subprocess.run([sys.executable, str(script)] + args,
+                          capture_output=True, text=True, timeout=3600)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "reorient_reads.py failed")
+    return json.loads(proc.stdout)
+
+
+@app.post("/prep/{job_id}/orientation-check")
+def prep_orientation_check(job_id: str, body: PrepBody):
+    """Scan a subsample of each read pair and report orientation consistency."""
+    job_dir = UPLOAD_DIR / job_id
+    if not job_dir.exists():
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    if not body.primer_f or not body.primer_r:
+        return JSONResponse(status_code=400,
+                            content={"error": "primer_f and primer_r are required"})
+
+    names = [f.name for f in job_dir.iterdir() if f.is_file()]
+    pairs = _pair_fastqs(names)
+    if not pairs:
+        return {"paired": False, "samples": [],
+                "message": "No R1/R2 pairs found — orientation repair applies to "
+                           "paired-end data only."}
+
+    results, worst = [], 0.0
+    for sample, r1, r2 in pairs:
+        try:
+            rep = _run_reorient_tool([
+                "--r1", str(job_dir / r1), "--r2", str(job_dir / r2),
+                "--primer-f", body.primer_f, "--primer-r", body.primer_r,
+                "--check", "--sample-size", "20000",
+            ])
+            rep["sample"] = sample
+            results.append(rep)
+            worst = max(worst, rep.get("pct_flipped", 0.0))
+        except Exception as e:
+            results.append({"sample": sample, "error": str(e)})
+
+    return {
+        "paired": True,
+        "samples": results,
+        "max_pct_flipped": round(worst, 2),
+        "needs_reorientation": worst >= 5.0,
+        "recommendation": (
+            f"{worst:.1f}% of read pairs are in the opposite orientation. DADA2 "
+            f"cannot merge these, so they would be lost at the merge step. "
+            f"Reorienting before the run is strongly recommended."
+            if worst >= 5.0 else
+            "Read orientation is consistent — no reorientation needed."
+        ),
+    }
+
+
+@app.post("/prep/{job_id}/reorient")
+def prep_reorient(job_id: str, body: PrepBody):
+    """Rewrite every read pair into a consistent orientation."""
+    job_dir = UPLOAD_DIR / job_id
+    if not job_dir.exists():
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    if not body.primer_f or not body.primer_r:
+        return JSONResponse(status_code=400,
+                            content={"error": "primer_f and primer_r are required"})
+
+    names = [f.name for f in job_dir.iterdir() if f.is_file()]
+    pairs = _pair_fastqs(names)
+    if not pairs:
+        return JSONResponse(status_code=400,
+                            content={"error": "No R1/R2 pairs found in this job"})
+
+    out_dir = job_dir / "_reoriented"
+    out_dir.mkdir(exist_ok=True)
+    results = []
+    for sample, r1, r2 in pairs:
+        try:
+            rep = _run_reorient_tool([
+                "--r1", str(job_dir / r1), "--r2", str(job_dir / r2),
+                "--primer-f", body.primer_f, "--primer-r", body.primer_r,
+                "--outdir", str(out_dir), "--ambiguous", body.ambiguous,
+            ])
+            rep["sample"] = sample
+            results.append(rep)
+        except Exception as e:
+            results.append({"sample": sample, "error": str(e)})
+
+    replaced = False
+    if body.replace and results and all("error" not in r for r in results):
+        # Move originals aside and promote the reoriented files in their place.
+        # The reoriented copies MUST take over the original filenames: both the
+        # R pipeline's R1/R2 discovery and _pair_fastqs above key on the "_1"/
+        # "_R1" token sitting immediately before the extension, so a file called
+        # Sample_1_reoriented.fq.gz is no longer recognised as an R1 at all and
+        # the job would fail to find any paired-end data.
+        backup = job_dir / "_original"
+        backup.mkdir(exist_ok=True)
+        for (_, r1, r2), rep in zip(pairs, results):
+            for orig_name, key in ((r1, "out_r1"), (r2, "out_r2")):
+                src = job_dir / orig_name
+                if src.exists():
+                    shutil.move(str(src), str(backup / orig_name))
+                new_p = Path(rep.get(key, ""))
+                if new_p.exists():
+                    shutil.move(str(new_p), str(job_dir / orig_name))
+                    rep[key] = str(job_dir / orig_name)
+        try:
+            out_dir.rmdir()
+        except OSError:
+            pass
+        replaced = True
+        with jobs_lock:
+            if job_id in jobs:
+                jobs[job_id]["files"] = sorted(
+                    f.name for f in job_dir.iterdir() if f.is_file())
+                jobs[job_id]["reoriented"] = True
+                save_jobs()
+
+    total = sum(r.get("total_pairs", 0) for r in results if "error" not in r)
+    flipped = sum(r.get("flipped", 0) for r in results if "error" not in r)
+    written = sum(r.get("written_pairs", 0) for r in results if "error" not in r)
+    return {
+        "samples": results,
+        "replaced_originals": replaced,
+        "originals_kept_in": str(job_dir / "_original") if replaced else None,
+        "total_pairs": total,
+        "flipped_pairs": flipped,
+        "written_pairs": written,
+        "summary": (f"Reoriented {flipped:,} of {total:,} read pairs; "
+                    f"{written:,} pairs written."),
+    }
 
 # ── 2. Run (submit to thread pool) ────────────────────────────────────────────
 @app.post("/run/{job_id}")
@@ -732,6 +940,17 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--single_end", "TRUE"]
             cmd += ["--ont_minLen", str(params.ontMinLen),
                     "--ont_maxLen", str(params.ontMaxLen)]
+        # ── QC / data-repair options ──────────────────────────────────
+        cmd += ["--reorient",           str(params.reorient),
+                "--reorient_ambiguous", str(params.reorientAmbiguous),
+                "--reorient_min_pct",   str(params.reorientMinPct),
+                "--offtarget_warn_pct", str(params.offtargetWarnPct)]
+        if params.filterOfftarget:
+            cmd += ["--filter_offtarget", "TRUE"]
+        if params.decontam and params.decontam != "none" and params.controlSamples:
+            cmd += ["--decontam",           params.decontam,
+                    "--decontam_threshold", str(params.decontamThreshold),
+                    "--control_samples",    ",".join(params.controlSamples)]
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -769,6 +988,24 @@ def run_r_pipeline(job_id: str, params: RunParams):
                         save_jobs()
                     except Exception as e:
                         print(f"[checkpoint] parse error: {e}")
+
+                elif line.startswith("OFFTARGET_WARN:"):
+                    # A large share of reads came back as non-target (host /
+                    # organelle DNA co-amplified by the primers). Surface it on
+                    # the job so the UI can show it — otherwise the only clue is
+                    # a big "Unclassified" bar that looks like a database problem.
+                    try:
+                        warn_data = json.loads(line[len("OFFTARGET_WARN:"):])
+                        with jobs_lock:
+                            jobs[job_id]["offtarget_warning"] = warn_data
+                            log_lines.append(
+                                f"⚠️ Off-target reads: {warn_data.get('pct', 0):.1f}% "
+                                f"are not from the target group (host/organelle DNA)"
+                            )
+                            jobs[job_id]["log_lines"] = log_lines[-500:]
+                        save_jobs()
+                    except Exception as e:
+                        print(f"[offtarget] parse error: {e}")
 
                 elif line.startswith("PROGRESS:"):
                     try:
@@ -1038,6 +1275,9 @@ def get_detail(job_id: str):
         "error":        j.get("error", ""),
         "params":       j.get("params", {}),
         "run_at":       j.get("run_at"),
+        "files":        j.get("files", []),
+        "reoriented":   j.get("reoriented", False),
+        "offtarget_warning": j.get("offtarget_warning"),
     }
 
 # ── 5b. All jobs dashboard ────────────────────────────────────────────────────
