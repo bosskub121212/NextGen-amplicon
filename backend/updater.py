@@ -32,6 +32,40 @@ def get_local_version() -> dict:
     except Exception:
         return {"version": "0.0.0", "release_date": "", "changelog": ""}
 
+def _parse_version(v) -> tuple:
+    """
+    Turn '2.7.10' into (2, 7, 10) so versions compare numerically.
+
+    A plain string comparison gets two common cases wrong:
+      '2.7.2' != '2.7.1'   -> "update available" even when local is NEWER,
+                              which is the normal state on the dev machine
+                              between deploying locally and pushing.
+      '2.7.9' > '2.7.10'   -> lexicographic order puts 9 above 10, so a real
+                              update would be missed once the patch number
+                              reaches double digits.
+    Non-numeric junk degrades to 0 rather than raising.
+    """
+    parts = []
+    for chunk in str(v or "").strip().lstrip("vV").split("."):
+        digits = ""
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) if parts else (0,)
+
+
+def _compare_versions(a, b) -> int:
+    """-1 if a < b, 0 if equal, 1 if a > b (zero-padded to equal length)."""
+    ta, tb = _parse_version(a), _parse_version(b)
+    n = max(len(ta), len(tb))
+    ta = ta + (0,) * (n - len(ta))
+    tb = tb + (0,) * (n - len(tb))
+    return (ta > tb) - (ta < tb)
+
+
 def _fetch_remote_version() -> dict:
     """Fetch version.json from public GitHub repo — no token needed."""
     # Use raw.githubusercontent.com for public repos (no auth required)
@@ -49,13 +83,18 @@ def check_update() -> dict:
     try:
         remote    = _fetch_remote_version()
         local     = get_local_version()
-        available = remote.get("version", "0") != local.get("version", "0")
+        cmp       = _compare_versions(remote.get("version"), local.get("version"))
+        available = cmp > 0          # only when the remote is genuinely NEWER
         return {
             "available":       available,
             "current_version": local.get("version"),
             "latest_version":  remote.get("version"),
             "release_date":    remote.get("release_date", ""),
             "changelog":       remote.get("changelog", ""),
+            # True on a dev machine that has deployed locally but not pushed yet.
+            # Surfaced so the UI can say "unpublished changes" instead of
+            # pretending everything is in sync.
+            "local_is_newer":  cmp < 0,
         }
     except error.HTTPError as e:
         # 429 (rate-limited) and 5xx (transient GitHub/CDN hiccup) are not

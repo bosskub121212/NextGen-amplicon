@@ -908,9 +908,67 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
       TRUE
     }
 
+    # ── Match rank NAMES to the trainset's actual rank DEPTH ─────────────
+    # assignTaxonomy() labels levels positionally from taxLevels, whose default
+    # is Kingdom..Species (7). SILVA 138.x fits that. SILVA 144 does not: under
+    # the LPSN scheme it inserts a Kingdom rank between Domain and Phylum
+    #   Bacteria > Pseudomonadati > Pseudomonadota > Alphaproteobacteria > ...
+    # so with the default names every rank below Domain is labelled one level
+    # too high — families land in the "Genus" column and the real genus falls off
+    # the end entirely. Nothing errors; the table just silently means something
+    # other than what its headers say. Count the levels in the reference itself
+    # and name them accordingly.
+    # Take the MAXIMUM depth over many headers, not the first one: lineages that
+    # stop early are common (SILVA 144's own first records are truncated at
+    # family), so a single header under-reports the reference's real depth and
+    # would pick the wrong set of rank names.
+    detect_db_depth <- function(p, n_headers = 3000) {
+      tryCatch({
+        con <- if (grepl("\\.gz$", p)) gzfile(p, "rt") else file(p, "rt")
+        on.exit(close(con), add=TRUE)
+        seen <- 0L; best <- 0L
+        while (seen < n_headers) {
+          chunk <- readLines(con, n = 2000, warn = FALSE)
+          if (length(chunk) == 0) break
+          hdrs <- chunk[startsWith(chunk, ">")]
+          if (length(hdrs) > 0) {
+            d <- vapply(hdrs, function(h) {
+              parts <- trimws(strsplit(sub("^>", "", h), ";")[[1]])
+              sum(nzchar(parts))
+            }, integer(1))
+            best <- max(best, max(d)); seen <- seen + length(hdrs)
+          }
+        }
+        if (best > 0L) best else NA_integer_
+      }, error=function(e) NA_integer_)
+    }
+    db_depth <- detect_db_depth(db_path)
+    tax_levels <- NULL
+    if (!is.na(db_depth)) {
+      is_to_species <- grepl("tospecies", basename(db_path), ignore.case=TRUE)
+      tax_levels <- if (db_depth >= 7 && !is_to_species) {
+        # extra Kingdom rank (SILVA 144 / LPSN style)
+        c("Domain","Kingdom","Phylum","Class","Order","Family","Genus")[1:min(db_depth,7)]
+      } else if (db_depth == 6) {
+        c("Kingdom","Phylum","Class","Order","Family","Genus")
+      } else {
+        c("Kingdom","Phylum","Class","Order","Family","Genus","Species")[1:min(db_depth,7)]
+      }
+      cat(sprintf("  Reference has %d rank level(s) → %s\n",
+                  db_depth, paste(tax_levels, collapse=", ")))
+      if (db_depth >= 7 && !is_to_species)
+        cat("  (extra Kingdom rank detected — SILVA 144 / LPSN naming)\n")
+    } else {
+      cat("  [warn] Could not read rank depth from the reference — using DADA2 defaults\n")
+    }
+
     tryCatch({
-      tax <- assignTaxonomy(seqtab_nochim, db_path, minBoot=opt$minBoot,
-                            multithread=use_threads, verbose=FALSE)
+      tax <- if (!is.null(tax_levels))
+        assignTaxonomy(seqtab_nochim, db_path, minBoot=opt$minBoot,
+                       taxLevels=tax_levels, multithread=use_threads, verbose=FALSE)
+      else
+        assignTaxonomy(seqtab_nochim, db_path, minBoot=opt$minBoot,
+                       multithread=use_threads, verbose=FALSE)
       cat("  Taxonomy assigned successfully.\n\n")
       db_dir2       <- dirname(db_path)
       sp_candidates <- list.files(db_dir2,
@@ -958,6 +1016,24 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
         tryCatch({
           gc(verbose=FALSE)
           tax <- addSpecies(tax, sp_file)
+          # addSpecies() APPENDS a Species column. When the trainset already
+          # carried one (SILVA 144's toGenus set ships an empty Species rank),
+          # the result holds TWO columns called "Species" — and every later
+          # which(colnames(tax) == "Species") then returns two indices, so
+          # tax[, idx] is a matrix and the logical mask built from it is twice
+          # as long as the data: "(subscript) logical subscript too long".
+          # The species plot and CSV were silently dropped because of it, even
+          # though the assignments were sitting right there. Keep the column
+          # that actually has values.
+          dup_sp <- which(colnames(tax) == "Species")
+          if (length(dup_sp) > 1) {
+            filled  <- vapply(dup_sp, function(i) sum(!is.na(tax[, i])), integer(1))
+            keep_sp <- dup_sp[which.max(filled)]
+            drop_sp <- setdiff(dup_sp, keep_sp)
+            cat(sprintf("  Merged %d duplicate 'Species' column(s); kept the one with %d assignment(s)\n",
+                        length(drop_sp), max(filled)))
+            tax <- tax[, -drop_sp, drop=FALSE]
+          }
           cat("  Species added from:", basename(sp_file), "\n\n")
         }, error=function(e) cat("  Species assignment skipped:", e$message, "\n\n"))
       }
@@ -1038,8 +1114,17 @@ if (!is.null(tax)) {
       c("Eukaryota") else c("Bacteria","Archaea")
 
     is_offtarget_kingdom <- !is.na(kingdom_vec) & !(kingdom_vec %in% target_kingdoms)
-    is_organelle <- (!is.na(family_vec) & family_vec %in% c("Mitochondria","Chloroplast")) |
-                    (!is.na(order_vec)  & order_vec  %in% c("Chloroplast"))
+    # Scan EVERY rank for the organelle labels, not just Family/Order. Which
+    # column they land in depends on how deep the reference's ranks go: with
+    # SILVA 138.x "Mitochondria" is a Family, but under SILVA 144's extra
+    # Kingdom rank the same label shifts a column across. Checking two fixed
+    # columns reported 0% off-target on a sample that was in fact 42%
+    # mitochondrial — the single most important number on the whole run.
+    organelle_labels <- c("Mitochondria","Chloroplast")
+    is_organelle <- Reduce(`|`, lapply(seq_len(ncol(tax)), function(j) {
+      v <- tax[, j]
+      !is.na(v) & v %in% organelle_labels
+    }), init = rep(FALSE, nrow(tax)))
     is_unassigned <- is.na(kingdom_vec)
     is_offtarget  <- is_offtarget_kingdom | is_organelle
 

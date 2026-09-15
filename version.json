@@ -1,5 +1,5 @@
 {
-  "version": "2.7.1",
+  "version": "2.7.3",
   "release_date": "2026-09-15",
-  "changelog": "fix: phylogenetic tree building moved to an isolated subprocess (build_tree.R) with memory guards — DECIPHER/phangorn could abort the whole R process on low memory, which killed dada2_pipeline.R at its final step after all results were already written, reporting a completed run as a failure"
+  "changelog": "fix: update checker compared version strings for inequality, so it announced an 'update' whenever local and remote differed — including when the local build was NEWER, the normal state on a dev machine between deploying and pushing. Versions are now compared numerically (which also fixes 2.7.10 being treated as older than 2.7.9), and an update is only offered when the remote is genuinely ahead."
 }
