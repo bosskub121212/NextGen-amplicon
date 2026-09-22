@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  push_github.sh — Commit and push the app repo to GitHub
+#  push_github.sh — Commit and push the app repo to GitHub over SSH
 #
 #  Run from WSL:
-#    bash ~/r16s-app/push_github.sh "v2.7.1: fix tree crash"
+#    bash ~/r16s-app/push_github.sh "v2.8.2: report builder"
 #    bash ~/r16s-app/push_github.sh                    # message from version.json
 #    bash ~/r16s-app/push_github.sh -m "msg" --yes     # no confirmation prompt
 #    bash ~/r16s-app/push_github.sh --dry-run          # show what would go, push nothing
@@ -12,14 +12,21 @@
 #  publishing source are different decisions with different risks, and you
 #  often want the first without the second.
 #
-#  TOKEN HANDLING
-#  --------------
-#  The token is read from ~/.config/amplicon/github_token and never printed.
-#  The remote is written as https://oauth2:<token>@github.com/... — the
-#  oauth2: username matters: with the bare https://<token>@github.com/ form,
-#  git treats the token as a username, prompts for a password, and ECHOES THE
-#  WHOLE URL (token included) to the terminal, where it lands in scrollback,
-#  screenshots and pasted logs. Every line this script prints masks it.
+#  WHY SSH AND NOT A TOKEN
+#  -----------------------
+#  The previous version read a Personal Access Token and wrote it into the
+#  remote URL. That is how the old token leaked: when authentication fails or
+#  git prompts, git prints the WHOLE remote URL — token included — to the
+#  terminal, where it lands in scrollback, screenshots and pasted logs. Masking
+#  the script's own output does not help, because the line came from git.
+#
+#  With SSH the secret never appears in any URL, any argument, or any message:
+#  the private key stays in ~/.ssh and ssh does the authentication. There is
+#  also no expiry date to manage.
+#
+#  If a token-bearing remote is still configured, this script rewrites it to
+#  SSH and says so — leaving it in place would keep the old secret sitting in
+#  .git/config in plain text.
 # =============================================================================
 set -euo pipefail
 
@@ -30,11 +37,14 @@ info() { echo -e "${CYAN}  ℹ${NC}  $1"; }
 warn() { echo -e "${YEL}  !${NC}  $1"; }
 die()  { echo -e "${RED}  ✗${NC}  $1"; exit 1; }
 step() { echo -e "\n${BOLD}${CYAN}══ $1 ══${NC}"; }
-mask() { sed -E 's#://[^/@]*@#://***@#g'; }   # hide credentials in any URL
+# Kept as defence in depth: if any path ever reintroduces a credentialed URL,
+# nothing this script prints should carry it.
+mask() { sed -E 's#://[^/@]*@#://***@#g'; }
 
 APP_DIR="$HOME/r16s-app"
-TOKEN_FILE="$HOME/.config/amplicon/github_token"
 REPO_PATH="bosskub121212/NextGen-amplicon"
+SSH_URL="git@github.com:${REPO_PATH}.git"
+OLD_TOKEN_FILE="$HOME/.config/amplicon/github_token"
 
 MSG=""
 ASSUME_YES=0
@@ -44,7 +54,7 @@ while [[ $# -gt 0 ]]; do
     -m|--message) MSG="${2:-}"; shift 2 ;;
     -y|--yes)     ASSUME_YES=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
-    -h|--help)    sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,10p' "$0"; exit 0 ;;
     -*)           die "Unknown option: $1" ;;
     *)            MSG="$1"; shift ;;
   esac
@@ -63,6 +73,60 @@ if [[ -z "$MSG" ]]; then
   else
     die "No commit message given and version.json has no version"
   fi
+fi
+
+# ── 0. Remote and key ─────────────────────────────────────────────────────
+step "Checking SSH access"
+
+CUR_URL="$(git remote get-url origin 2>/dev/null || echo "")"
+if [[ -z "$CUR_URL" ]]; then
+  git remote add origin "$SSH_URL"
+  ok "Remote added: $SSH_URL"
+elif [[ "$CUR_URL" == *"@github.com:"* ]]; then
+  ok "Remote already SSH: $CUR_URL"
+else
+  # An https:// remote, with or without an embedded token. Either way it is
+  # replaced — and if it carried a token, that token has been sitting in
+  # .git/config in plain text and must be treated as compromised.
+  if [[ "$CUR_URL" == *"@github.com"* ]]; then
+    warn "The remote had a credential embedded in its URL."
+    warn "That token was stored in .git/config in plain text — REVOKE IT at"
+    warn "  https://github.com/settings/tokens"
+  fi
+  git remote set-url origin "$SSH_URL"
+  ok "Remote switched to SSH: $SSH_URL"
+fi
+
+if [[ -e "$OLD_TOKEN_FILE" ]]; then
+  warn "An old token file is still on disk: $OLD_TOKEN_FILE"
+  warn "It is no longer used. Revoke the token, then:  rm $OLD_TOKEN_FILE"
+fi
+
+# ssh -T github.com exits 1 even on success ("You've successfully
+# authenticated, but GitHub does not provide shell access"), so test the
+# message, not the exit code.
+SSH_OUT="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+              -T git@github.com 2>&1 || true)"
+if echo "$SSH_OUT" | grep -q "successfully authenticated"; then
+  ok "$(echo "$SSH_OUT" | head -1)"
+else
+  echo ""
+  warn "GitHub did not accept an SSH key. It said:"
+  echo "$SSH_OUT" | sed 's/^/      /'
+  echo ""
+  echo "  Set one up once, then re-run this script:"
+  echo ""
+  echo "    ssh-keygen -t ed25519 -C \"nextgen-amplicon\$(date +%Y%m%d)\" -f ~/.ssh/id_ed25519"
+  echo "    cat ~/.ssh/id_ed25519.pub"
+  echo ""
+  echo "  Paste that public key at  https://github.com/settings/keys"
+  echo "  (New SSH key → Authentication key). The .pub file is safe to paste;"
+  echo "  the file WITHOUT .pub is the private key and never leaves this machine."
+  echo ""
+  echo "  If your network blocks port 22, use GitHub's SSH over 443:"
+  echo "    printf 'Host github.com\\n  Hostname ssh.github.com\\n  Port 443\\n  User git\\n' >> ~/.ssh/config"
+  echo ""
+  die "No SSH access yet. Nothing was committed."
 fi
 
 # ── 1. Show exactly what would be committed ───────────────────────────────
@@ -121,30 +185,7 @@ else
   ok "$(git log -1 --oneline)"
 fi
 
-# ── 3. Configure the remote from the stored token ─────────────────────────
-step "Preparing remote"
-if [[ ! -r "$TOKEN_FILE" ]]; then
-  warn "Token file not found: $TOKEN_FILE"
-  echo ""
-  echo "  Create a Personal Access Token (scope: repo) at:"
-  echo "    https://github.com/settings/tokens"
-  echo "  then save it — the file, never this terminal:"
-  echo "    mkdir -p ~/.config/amplicon"
-  echo "    printf '%s' 'PASTE_TOKEN_HERE' > $TOKEN_FILE"
-  echo "    chmod 600 $TOKEN_FILE"
-  echo ""
-  die "Cannot push without a token. The commit above is saved locally."
-fi
-
-chmod 600 "$TOKEN_FILE" 2>/dev/null || true
-TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
-[[ -n "$TOKEN" ]] || die "Token file is empty: $TOKEN_FILE"
-
-git remote set-url origin "https://oauth2:${TOKEN}@github.com/${REPO_PATH}.git"
-unset TOKEN
-ok "Remote set: $(git remote get-url origin | mask)"
-
-# ── 4. Push ───────────────────────────────────────────────────────────────
+# ── 3. Push ───────────────────────────────────────────────────────────────
 step "Pushing"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 set +e
@@ -155,9 +196,13 @@ echo "$PUSH_OUT" | mask | sed 's/^/    /'
 
 if [[ "$PUSH_RC" -ne 0 ]]; then
   echo ""
-  if echo "$PUSH_OUT" | grep -qi "authentication failed\|could not read\|invalid username"; then
-    warn "Authentication failed — the token is probably expired or revoked."
-    warn "Generate a new one and overwrite: $TOKEN_FILE"
+  if echo "$PUSH_OUT" | grep -qi "permission denied\|publickey"; then
+    warn "The key reached GitHub but was refused for this repository."
+    warn "Check the key is on the account that owns $REPO_PATH, or add it as a"
+    warn "deploy key with write access on the repo itself."
+  elif echo "$PUSH_OUT" | grep -qi "rejected\|non-fast-forward"; then
+    warn "The remote has commits you do not have locally. Pull first:"
+    warn "  git -C $APP_DIR pull --rebase"
   fi
   die "Push failed. Your commit is safe locally; fix the cause and re-run."
 fi

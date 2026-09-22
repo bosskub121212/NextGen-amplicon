@@ -15,7 +15,38 @@ const DEFAULT_COLORS = [
   "#6366f1","#a855f7","#22d3ee","#fb923c","#a3e635",
   "#f472b6","#2dd4bf","#818cf8","#fb7185","#fbbf24",
   "#0ea5e9","#d946ef","#65a30d","#dc2626","#7c3aed",
+  "#0891b2","#be123c","#4d7c0f","#c2410c","#1d4ed8",
+  "#9333ea","#047857","#b45309","#0369a1","#a21caf",
+  "#15803d","#b91c1c","#4338ca","#0f766e","#c026d3",
 ];
+
+// ── Shared taxonomy-bar spec ──────────────────────────────────
+// Kept in sync with backend/r_scripts/plot_helpers.R, which draws the same
+// chart into the PDF reports. A taxon must look the same in both: the PDF a
+// customer receives and the chart the analyst approved on screen are supposed
+// to be the same picture.
+//   - one label for unassigned, never "" / NA / "Unknown"
+//   - order by descending abundance, "Other" pinned last
+//   - first series at the BOTTOM of the stack
+//   - "Unclassified" and "Other" are always grey and never take a colour slot
+const TAXA_UNASSIGNED = "Unclassified";
+const TAXA_OTHER      = "Other";
+const TAXA_COL_UNASSIGNED = "#9ca3af";
+const TAXA_COL_OTHER      = "#d1d5db";
+const UNASSIGNED_RE = /^(na|nan|null|unknown|unassigned|unclassified|uncultured|undetermined)$/i;
+
+/** Collapse every spelling of "not assigned" onto one label. */
+function cleanTaxonLabel(raw: string | undefined | null): string {
+  const t = String(raw ?? "").replace(/^[a-z]__/, "").trim();
+  return t === "" || UNASSIGNED_RE.test(t) ? TAXA_UNASSIGNED : t;
+}
+
+/** Colour for a taxon at position `i` among the non-grey taxa. */
+function taxonColor(name: string, slot: number): string {
+  if (name === TAXA_UNASSIGNED) return TAXA_COL_UNASSIGNED;
+  if (name === TAXA_OTHER)      return TAXA_COL_OTHER;
+  return DEFAULT_COLORS[slot % DEFAULT_COLORS.length];
+}
 
 // ── Chart tab definitions ─────────────────────────────────────
 interface TabDef {
@@ -332,8 +363,15 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
         setColors(prev => {
           const next = { ...prev };
           const series = getSeries(activeTab, rows);
-          series.forEach((name, i) => {
-            if (!next[name]) next[name] = DEFAULT_COLORS[i % DEFAULT_COLORS.length];
+          let slot = 0;
+          series.forEach((raw) => {
+            const name = activeTab.type === "taxonomy" ? cleanTaxonLabel(raw) : raw;
+            const isGrey = name === TAXA_UNASSIGNED || name === TAXA_OTHER;
+            const c = activeTab.type === "taxonomy"
+              ? taxonColor(name, isGrey ? -1 : slot)
+              : DEFAULT_COLORS[slot % DEFAULT_COLORS.length];
+            if (!isGrey) slot++;
+            if (!next[name]) next[name] = c;
           });
           return next;
         });
@@ -474,7 +512,18 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
   // ── Get series names for a tab ────────────────────────────
   function getSeries(tab: TabDef, rows: string[][]): string[] {
     if (!rows.length) return [];
-    if (tab.type === "taxonomy")    return rows[0].slice(1).slice(0, 30);  // taxon names → color assignment
+    if (tab.type === "taxonomy") {
+      // Two layouts reach this tab. dada2_pipeline.R writes samples as rows and
+      // taxa as columns; viz_pipeline.R writes the transpose, with the rank name
+      // ("Genus") in the corner cell. Reading the header blindly returned the
+      // SAMPLE name as the only series for the second layout, so no taxon ever
+      // got a stored colour and clicking a legend entry to recolour it silently
+      // did nothing. Detect the layout the same way the chart builder does.
+      const RANKS = new Set(["phylum","class","order","family","genus","species"]);
+      const taxaAsRows = RANKS.has((rows[0][0] || "").toLowerCase().trim());
+      const names = taxaAsRows ? rows.slice(1).map(r => r[0]) : rows[0].slice(1);
+      return names.map(cleanTaxonLabel).slice(0, 40);
+    }
     if (tab.type === "taxheatmap" || tab.type === "clustheatmap") return rows.slice(1).map(r => r[0]);
     if (tab.type === "readtrack")  return rows.slice(1).map(r => r[0]);   // sample names → color per line
     if (tab.type === "alpha" || tab.type === "multialpha") return rows.length > 1 ? rows.slice(1).map(r => {
@@ -569,20 +618,27 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       // otherwise leftover diversity gets silently redistributed into the shown taxa's share.
       const denom = dataRows.map((_, ri) => shownSums[ri] + otherRaw[ri]);
       const scale = (v: number, ri: number) => (is100 && denom[ri] > 0 ? (v / denom[ri]) * 100 : v);
-      const data = phylumNames.map((taxon, ci) => ({
-        name: alias(taxon) || taxon || "Unknown",
-        x: sampleNames,
-        y: dataRows.map((row, ri) => scale(num(row[ci + 1]), ri)),
-        type: "bar",
-        marker: { color: colors[taxon] || DEFAULT_COLORS[ci % DEFAULT_COLORS.length] },
-      }));
+      // Grey buckets keep their fixed colour and are skipped in the rotation, so
+      // an "Other" bucket appearing or not does not shift every other taxon.
+      let colorSlot = 0;
+      const data = phylumNames.map((taxon, ci) => {
+        const label = cleanTaxonLabel(alias(taxon) || taxon);
+        const slot  = label === TAXA_UNASSIGNED || label === TAXA_OTHER ? -1 : colorSlot++;
+        return {
+          name: label,
+          x: sampleNames,
+          y: dataRows.map((row, ri) => scale(num(row[ci + 1]), ri)),
+          type: "bar",
+          marker: { color: colors[taxon] || colors[label] || taxonColor(label, slot) },
+        };
+      });
       if (hasOther) {
         data.push({
-          name: "Other",
+          name: TAXA_OTHER,
           x: sampleNames,
           y: otherRaw.map((v, ri) => scale(v, ri)),
           type: "bar",
-          marker: { color: colors["Other"] || "#9ca3af" },
+          marker: { color: colors[TAXA_OTHER] || TAXA_COL_OTHER },
         });
       }
       return { data, layout: {
@@ -1152,17 +1208,22 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       const topIdx = colTotals.map((_, i) => i)
         .sort((a, b) => colTotals[b] - colTotals[a])
         .slice(0, maxTaxa);
-      const data = topIdx.map((ci, rank) => ({
-        name: taxaNames[ci] || "Unknown",
-        x: sampleNames,
-        y: rows.slice(1).map((row, ri) => {
-          const v = num(row[ci + 1]);
-          return is100 && rowSums[ri] > 0 ? (v / rowSums[ri]) * 100 : v;
-        }),
-        type: "bar",
-        marker: { color: colors[taxaNames[ci]] || DEFAULT_COLORS[rank % DEFAULT_COLORS.length] },
-        hovertemplate: `<b>${taxaNames[ci]}</b><br>%{x}<br>%{y:.2f}%<extra></extra>`,
-      }));
+      let dbSlot = 0;
+      const data = topIdx.map((ci) => {
+        const label = cleanTaxonLabel(taxaNames[ci]);
+        const slot  = label === TAXA_UNASSIGNED || label === TAXA_OTHER ? -1 : dbSlot++;
+        return {
+          name: label,
+          x: sampleNames,
+          y: rows.slice(1).map((row, ri) => {
+            const v = num(row[ci + 1]);
+            return is100 && rowSums[ri] > 0 ? (v / rowSums[ri]) * 100 : v;
+          }),
+          type: "bar",
+          marker: { color: colors[taxaNames[ci]] || colors[label] || taxonColor(label, slot) },
+          hovertemplate: `<b>${label}</b><br>%{x}<br>%{y:.2f}%<extra></extra>`,
+        };
+      });
       return { data, layout: { ...base, barmode: "stack",
         xaxis: { ...base.xaxis, tickmode: "array", tickvals: sampleNames, ticktext: sampleNames.map(xFmt) },
         yaxis: { ...base.yaxis, title: { text: is100 ? "Relative Abundance (%)" : "Abundance (%)" } },
@@ -1412,9 +1473,9 @@ export default function PreviewPage({ initialJobId, onClose }: PreviewPageProps)
       }];
 
       // Tip dots + text colored by phylum (1 trace per phylum → legend + color picker)
-      const phyla = Array.from(new Set(tipRows.map(r => r[phyIdx] || "Unknown")));
+      const phyla = Array.from(new Set(tipRows.map(r => cleanTaxonLabel(r[phyIdx]))));
       phyla.forEach((phy, pi) => {
-        const pts   = tipRows.filter(r => (r[phyIdx] || "Unknown") === phy);
+        const pts   = tipRows.filter(r => cleanTaxonLabel(r[phyIdx]) === phy);
         const color = colors[phy] || DEFAULT_COLORS[pi % DEFAULT_COLORS.length];
         const tipX  = pts.map(r => num(r[x1Idx]));
         const tipY  = pts.map(r => num(r[y1Idx]));

@@ -2748,3 +2748,73 @@ body                { background: #edf0f7; }
 [data-theme="purple"] .wiz-field label    { color: #b8a8e0; }
 [data-theme="purple"] .btn-del-hist       { background: #312857; border-color: #4a3880; color: #9d89c5; }
 [data-theme="purple"] .btn-del-hist:hover { background: #3b1f3e; border-color: #f87171; color: #fca5a5; }
+
+/* ── Error boundary ──────────────────────────────────────────── */
+/* Shown when a render throws. Before this existed the page simply went blank,
+   which reads as "the app is dead" rather than "one panel is broken". */
+.eb-wrap {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: #0f172a;
+}
+.eb-card {
+  max-width: 640px; width: 100%; background: #1e293b; border: 1px solid #334155;
+  border-radius: 12px; padding: 28px 30px; color: #e2e8f0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.eb-icon  { font-size: 34px; text-align: center; }
+.eb-title { margin: 10px 0 14px; font-size: 20px; font-weight: 700;
+            text-align: center; color: #f59e0b; }
+.eb-msg   { margin: 0 0 12px; font-size: 14px; line-height: 1.6; color: #fca5a5;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            word-break: break-word; }
+.eb-stack {
+  margin: 0 0 18px; padding: 12px 14px; background: #0f172a; border-radius: 8px;
+  border: 1px solid #334155; font-size: 11.5px; line-height: 1.55; color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; overflow-x: auto; max-height: 220px; overflow-y: auto;
+}
+.eb-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.eb-btn {
+  padding: 9px 18px; border-radius: 8px; border: 1px solid #475569;
+  background: #334155; color: #e2e8f0; font-size: 14px; font-weight: 600;
+  cursor: pointer;
+}
+.eb-btn:hover { background: #475569; }
+.eb-btn-primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+.eb-btn-primary:hover { background: #1d4ed8; }
+.eb-hint { margin: 16px 0 0; font-size: 12.5px; text-align: center; color: #94a3b8; }
+
+/* ── PDF report picker ───────────────────────────────────────── */
+.report-popup { max-width: 560px; text-align: left; }
+.rep-hint { font-size: 13px; color: #94a3b8; margin: 0 0 14px; line-height: 1.6; }
+.rep-label { display: block; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+             color: #94a3b8; margin: 12px 0 5px; }
+.rep-input { width: 100%; padding: 8px 11px; border-radius: 7px; border: 1px solid #475569;
+             background: #0f172a; color: #e2e8f0; font-size: 14px; }
+.rep-input:focus { outline: 2px solid #2563eb; outline-offset: 1px; }
+.rep-list { max-height: 240px; overflow-y: auto; border: 1px solid #334155; border-radius: 8px;
+            background: #0f172a; }
+.rep-row { display: flex; align-items: center; gap: 9px; padding: 7px 11px; cursor: pointer;
+           border-bottom: 1px solid #1e293b; font-size: 13.5px; color: #cbd5e1; }
+.rep-row:last-child { border-bottom: none; }
+.rep-row:hover { background: #1e293b; }
+.rep-row.on { background: #1e3a5f; color: #fff; }
+.rep-order { font-family: ui-monospace, monospace; font-size: 11px; width: 14px;
+             color: #60a5fa; font-weight: 700; }
+.rep-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rep-marker { font-size: 10px; letter-spacing: .06em; color: #64748b; }
+.rep-empty { padding: 18px; text-align: center; color: #64748b; font-size: 13px; }
+.rep-error { margin-top: 12px; padding: 9px 12px; border-radius: 7px; background: #3b1219;
+             border: 1px solid #7f1d1d; color: #fca5a5; font-size: 13px; }
+.btn-report { background: #1e6e8c !important; border-color: #1e6e8c !important; color: #fff !important; }
+.btn-report:hover { background: #17576f !important; }
+.rep-seg { display: flex; gap: 6px; }
+.rep-seg-btn { flex: 1; padding: 7px 0; border-radius: 7px; border: 1px solid #475569;
+               background: #0f172a; color: #94a3b8; font-size: 13px; cursor: pointer;
+               font-weight: 600; }
+.rep-seg-btn:hover { background: #1e293b; color: #cbd5e1; }
+.rep-seg-btn.on { background: #1e6e8c; border-color: #1e6e8c; color: #fff; }
+/* the report error can carry a shell command on its own line — keep the newline
+   and let it wrap instead of collapsing to one run-on sentence */
+.rep-error { white-space: pre-wrap; font-family: inherit; }
+.rep-error { line-height: 1.55; }

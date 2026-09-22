@@ -401,24 +401,85 @@ if (nchar(db_path) == 0 || !file.exists(db_path)) {
 
 if (nchar(db_path) > 0 && file.exists(db_path)) {
   cat("Assigning taxonomy from:", basename(db_path), "\n")
+
+  # Shared with dada2_pipeline.R: rank-depth naming, version-matched species
+  # file, duplicate-Species merge. These are properties of the REFERENCE FILE,
+  # so this pipeline needs them exactly as much as the short-read one — and
+  # while the fixes lived only in dada2_pipeline.R, PacBio runs against SILVA
+  # 144 silently produced a table whose "Genus" column held family names.
+  .helper_path <- local({
+    args <- commandArgs(trailingOnly = FALSE)
+    fa   <- args[grepl("^--file=", args)]
+    sd   <- if (length(fa) > 0) dirname(normalizePath(sub("^--file=", "", fa[1]), mustWork = FALSE)) else getwd()
+    file.path(sd, "tax_helpers.R")
+  })
+  if (file.exists(.helper_path)) source(.helper_path) else
+    cat("  [warn] tax_helpers.R not found — falling back to DADA2 defaults\n")
+  .plot_helper_path <- file.path(dirname(.helper_path), "plot_helpers.R")
+  if (file.exists(.plot_helper_path)) source(.plot_helper_path)
+  has_helpers <- exists("tax_pick_levels", mode = "function")
+
   tryCatch({
-    tax <- assignTaxonomy(seqtab_nochim, db_path,
-                          minBoot=opt$minBoot,
-                          multithread=opt$threads,
-                          verbose=FALSE)
+    tax_levels <- if (has_helpers) tax_pick_levels(db_path) else NULL
+    tax <- if (!is.null(tax_levels))
+      assignTaxonomy(seqtab_nochim, db_path, minBoot = opt$minBoot,
+                     taxLevels = tax_levels, multithread = opt$threads, verbose = FALSE)
+    else
+      assignTaxonomy(seqtab_nochim, db_path, minBoot = opt$minBoot,
+                     multithread = opt$threads, verbose = FALSE)
     cat("Taxonomy assigned.\n\n")
 
     # Try species
-    db_dir2 <- dirname(db_path)
-    sp_cands <- list.files(db_dir2, pattern="(?i)assignspecies.*\\.fa(\\.gz)?$",
-                           full.names=TRUE, perl=TRUE)
-    if (length(sp_cands) > 0) {
-      tryCatch({
-        tax <- addSpecies(tax, sp_cands[1])
-        cat("Species added from:", basename(sp_cands[1]), "\n\n")
-      }, error=function(e) cat("Species skipped:", e$message, "\n"))
+    sp_file <- if (has_helpers) tax_pick_species_file(db_path) else {
+      sp_cands <- list.files(dirname(db_path), pattern = "(?i)assignspecies.*\\.fa(\\.gz)?$",
+                             full.names = TRUE, perl = TRUE)
+      if (length(sp_cands) > 0) sp_cands[1] else NULL
     }
-  }, error=function(e) cat("Taxonomy error:", e$message, "\n\n"))
+    if (!is.null(sp_file)) {
+      tryCatch({
+        # Same two problems as the short-read pipeline, and full-length
+        # references are the larger ones, so this matters more here:
+        #   1. addSpecies() gates on matchGenera(), which accepts only space,
+        #      underscore or "/" as a separator — SILVA 144's "--other" suffix
+        #      fails it and discards species that matched at 100%.
+        #   2. assignTaxonomy's trainset is still resident when the species file
+        #      loads, so peak memory is their SUM. Running the species step in a
+        #      child process makes it max() instead. See add_species.R.
+        sp_done  <- FALSE
+        .scr_dir <- dirname(.helper_path)
+        sp_script <- file.path(.scr_dir, "add_species.R")
+        if (file.exists(sp_script)) {
+          sp_in  <- file.path(tempdir(), "pb_tax_in.rds")
+          sp_out <- file.path(tempdir(), "pb_tax_out.rds")
+          tryCatch({
+            saveRDS(tax, sp_in); gc(verbose = FALSE)
+            cat("Running species assignment in a separate process...\n"); flush.console()
+            ret_sp <- suppressWarnings(system2(
+              file.path(R.home("bin"), "Rscript"),
+              args = c(shQuote(sp_script), shQuote(sp_in), shQuote(sp_file),
+                       shQuote(sp_out), shQuote(file.path(.scr_dir, "tax_helpers.R"))),
+              stdout = "", stderr = ""))
+            if (identical(ret_sp, 0L) && file.exists(sp_out)) {
+              tax <- readRDS(sp_out); sp_done <- TRUE
+            } else {
+              cat("[warn] species subprocess exited abnormally — retrying inline\n")
+            }
+          }, error = function(e) cat("[warn] species subprocess failed:", e$message,
+                                     "- retrying inline\n"))
+          suppressWarnings(file.remove(sp_in, sp_out))
+        }
+        if (!sp_done) {
+          tax <- if (exists("tax_add_species", mode = "function")) {
+            tax_add_species(tax, sp_file)
+          } else {
+            t2 <- addSpecies(tax, sp_file)
+            if (has_helpers) tax_merge_dup_species(t2) else t2
+          }
+        }
+        cat("Species added from:", basename(sp_file), "\n\n")
+      }, error = function(e) cat("Species skipped:", e$message, "\n"))
+    }
+  }, error = function(e) cat("Taxonomy error:", e$message, "\n\n"))
 } else {
   cat("No taxonomy database found. Skipping.\n\n")
 }
@@ -524,8 +585,12 @@ make_tax_plot <- function(seqtab, taxonomy, level, topN=opt$topN) {
   if (length(col_idx) == 0) return(NULL)
 
   taxa_vec <- taxonomy[, col_idx]
-  taxa_vec[is.na(taxa_vec)] <- "Unclassified"
-  taxa_vec <- gsub("^[a-z]__", "", taxa_vec)
+  # Only NA was handled here; an empty string from the reference file kept an
+  # empty label and drew a blank legend row.
+  taxa_vec <- if (exists("tax_clean_labels", mode="function")) tax_clean_labels(taxa_vec) else {
+    v <- gsub("^[a-z]__", "", as.character(taxa_vec))
+    v[is.na(v) | trimws(v) == ""] <- "Unclassified"; v
+  }
 
   count_mat <- matrix(0, nrow=nrow(seqtab), ncol=length(unique(taxa_vec)))
   rownames(count_mat) <- rownames(seqtab)
@@ -551,14 +616,17 @@ make_tax_plot <- function(seqtab, taxonomy, level, topN=opt$topN) {
   )
   all_taxa <- c(top_taxa, if ("Other" %in% colnames(count_top)) "Other")
   df$taxon <- factor(df$taxon, levels=all_taxa)
-  colours  <- setNames(c(pal20[seq_len(min(length(top_taxa), 20))],
-                          if ("Other" %in% colnames(count_top)) "#AAAAAA"),
-                        c(top_taxa[seq_len(min(length(top_taxa), 20))],
-                          if ("Other" %in% colnames(count_top)) "Other"))
+  colours  <- if (exists("tax_colors", mode="function")) tax_colors(all_taxa) else
+    setNames(c(pal20[seq_len(min(length(top_taxa), 20))],
+               if ("Other" %in% colnames(count_top)) "#AAAAAA"),
+             c(top_taxa[seq_len(min(length(top_taxa), 20))],
+               if ("Other" %in% colnames(count_top)) "Other"))
 
   ggplot(df, aes(x=sample, y=rel_ab, fill=taxon)) +
-    geom_bar(stat="identity") +
+    # first level at the bottom, matching the interactive chart
+    geom_bar(stat="identity", position=position_stack(reverse=TRUE)) +
     scale_fill_manual(values=colours, na.value="#DDDDDD") +
+    guides(fill=guide_legend(reverse=TRUE)) +
     labs(title=sprintf("PacBio 16S Relative Abundance — %s (%s)", level, opt$region),
          x="Sample", y="Relative Abundance (%)", fill=level) +
     theme_minimal(base_size=12) +

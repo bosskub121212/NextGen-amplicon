@@ -5,3 +5,7 @@ psutil==6.0.0
 aiofiles==24.1.0
 cutadapt>=4.6
 cryptography>=42.0.0
+
+# PDF report generation (report_builder.py). Without it the report endpoint still
+# returns the HTML, which prints to PDF from a browser.
+weasyprint>=60

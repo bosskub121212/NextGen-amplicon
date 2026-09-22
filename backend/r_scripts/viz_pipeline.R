@@ -136,6 +136,20 @@ make_palette <- function(n) {
   }
 }
 
+# ── Shared taxonomy-bar spec ──────────────────────────────────────────────────
+# Label, order, stack direction and colours for every taxonomy bar, so this
+# pipeline's PDFs match dada2_pipeline.R's and the interactive chart.
+.plot_helper_path <- local({
+  a  <- commandArgs(trailingOnly = FALSE)
+  fa <- a[grepl("^--file=", a)]
+  sd <- if (length(fa) > 0) dirname(normalizePath(sub("^--file=", "", fa[1]), mustWork = FALSE)) else getwd()
+  file.path(sd, "plot_helpers.R")
+})
+if (file.exists(.plot_helper_path)) source(.plot_helper_path)
+has_plot_helpers <- exists("tax_clean_labels", mode = "function")
+if (!has_plot_helpers)
+  cat("[WARN] plot_helpers.R not found - taxonomy bars will not match the interactive chart\n")
+
 # ── Detect pipeline mode: CSV (Emu / QIIME2-VSEARCH) vs QIIME2/DADA2 (BIOM) ──
 # NOTE: was previously gated on MARKER %in% c("ONT-16S","ONT16S","ONT") too, which
 # broke the QIIME2-VSEARCH pipeline (qiime2_vsearch_pipeline.py) — it also writes
@@ -192,7 +206,12 @@ if (IS_EMU_MODE) {
     tax_cols <- intersect(c("Kingdom","Phylum","Class","Order","Family","Genus","Species"),
                           colnames(tax_raw))
     tax_mat <- as.matrix(tax_raw[, tax_cols, drop=FALSE])
-    tax_mat[is.na(tax_mat)] <- ""
+    # Blank, not NA, is what actually reaches the plots: writing "" here and then
+    # replacing only NA downstream left the unassigned group with an empty label,
+    # which rendered as a blank legend row in the PDF and "Unknown" on screen.
+    tax_mat[] <- if (has_plot_helpers) tax_clean_labels(tax_mat) else {
+      tm <- tax_mat; tm[is.na(tm) | trimws(tm) == ""] <- "Unclassified"; tm
+    }
     # Align rows
     common_ids <- intersect(rownames(asv_mat), rownames(tax_mat))
     asv_mat  <- asv_mat[common_ids, , drop=FALSE]
@@ -241,7 +260,12 @@ if (IS_EMU_MODE) {
     tax_raw   <- tax_raw[!is.na(tax_ids), , drop=FALSE]
     rownames(tax_raw) <- tax_ids[!is.na(tax_ids)]
     tax_mat   <- as.matrix(tax_raw[, tax_cols, drop=FALSE])
-    tax_mat[is.na(tax_mat)] <- ""
+    # Blank, not NA, is what actually reaches the plots: writing "" here and then
+    # replacing only NA downstream left the unassigned group with an empty label,
+    # which rendered as a blank legend row in the PDF and "Unknown" on screen.
+    tax_mat[] <- if (has_plot_helpers) tax_clean_labels(tax_mat) else {
+      tm <- tax_mat; tm[is.na(tm) | trimws(tm) == ""] <- "Unclassified"; tm
+    }
 
     common_ids <- intersect(rownames(asv_mat), rownames(tax_mat))
     asv_mat    <- asv_mat[common_ids, , drop=FALSE]
@@ -654,7 +678,9 @@ tryCatch({
       ps_glom <- tax_glom(ps, taxrank=rank, NArm=FALSE)
       ps_rel   <- transform_sample_counts(ps_glom, function(x) x / sum(x) * 100)
       melt_df  <- psmelt(ps_rel)
-      melt_df[[rank]][is.na(melt_df[[rank]])] <- "Unclassified"
+      melt_df[[rank]] <- if (has_plot_helpers) tax_clean_labels(melt_df[[rank]]) else {
+        v <- melt_df[[rank]]; v[is.na(v) | trimws(v) == ""] <- "Unclassified"; v
+      }
 
       # Top N taxa (per job's Top Taxa setting); merge rest as "Other"
       top_taxa <- melt_df %>%
@@ -666,12 +692,21 @@ tryCatch({
 
       melt_df$TaxLabel <- ifelse(melt_df[[rank]] %in% top_taxa,
                                  melt_df[[rank]], "Other")
-      n_col <- length(unique(melt_df$TaxLabel))
-      pal   <- c(make_palette(min(n_col - 1, TOP_N)), "grey80")[seq_len(n_col)]
+
+      # Draw order: biggest first, "Other" last. Levels alone are not enough —
+      # ggplot2 places the FIRST level at the TOP of a stack while Plotly places
+      # the first trace at the BOTTOM, so without reverse=TRUE the PDF comes out
+      # as a mirror image of the same chart on screen.
+      lv    <- if (has_plot_helpers) tax_order_levels(melt_df$TaxLabel, melt_df$Abundance) else
+                 unique(melt_df$TaxLabel)
+      pal   <- if (has_plot_helpers) tax_colors(lv) else
+                 setNames(c(make_palette(max(1, length(lv) - 1)), "grey80")[seq_along(lv)], lv)
+      melt_df$TaxLabel <- factor(melt_df$TaxLabel, levels=lv)
+      n_col <- length(lv)
 
       p <- ggplot(melt_df, aes(x=Sample, y=Abundance, fill=TaxLabel)) +
-        geom_bar(stat="identity", width=0.85) +
-        scale_fill_manual(values=pal, name=rank) +
+        geom_bar(stat="identity", width=0.85, position=position_stack(reverse=TRUE)) +
+        scale_fill_manual(values=pal, name=rank, breaks=lv) +
         labs(title=sprintf("Relative Abundance — %s level", rank),
              x="Sample", y="Relative abundance (%)") +
         theme_bw() +
@@ -679,7 +714,7 @@ tryCatch({
               legend.text=element_text(size=8),
               legend.key.size=unit(0.4,"cm"),
               legend.justification="top") +
-        guides(fill=guide_legend(ncol=1, title.position="top"))
+        guides(fill=guide_legend(ncol=1, title.position="top", reverse=TRUE))
       fname <- sprintf("04_taxonomy_%s.pdf", tolower(rank))
       # Legend is now a single tall column (one taxon per row) instead of wrapping into
       # multiple side-by-side columns — scale page height so long Top-N lists (30/50/100)

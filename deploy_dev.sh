@@ -70,11 +70,20 @@ EXCL=(
 )
 
 SYNC_LOG="$(mktemp)"
-trap 'rm -f "$SYNC_LOG"' EXIT
+FE_LOG="$(mktemp)"
+trap 'rm -f "$SYNC_LOG" "$FE_LOG"' EXIT
 
 if command -v rsync >/dev/null 2>&1; then
+  # The frontend gets its OWN log. rsync itemizes paths relative to the transfer
+  # root, so syncing "$WIN_SRC/frontend/" prints "src/App.tsx" — the word
+  # "frontend" never appears in the line. The old check grepped the shared log
+  # for "frontend" to decide whether to rebuild, so it matched nothing and the
+  # frontend build was skipped on EVERY run: the backend updated, the browser
+  # kept serving a months-old bundle, and the mismatch only showed up when new
+  # backend output hit old frontend code.
   rsync -rlt --itemize-changes "${EXCL[@]}" "$WIN_SRC/backend/"  "$APP_DIR/backend/"  >>"$SYNC_LOG"
-  rsync -rlt --itemize-changes "${EXCL[@]}" "$WIN_SRC/frontend/" "$APP_DIR/frontend/" >>"$SYNC_LOG"
+  rsync -rlt --itemize-changes "${EXCL[@]}" "$WIN_SRC/frontend/" "$APP_DIR/frontend/" >>"$FE_LOG"
+  cat "$FE_LOG" >>"$SYNC_LOG"
   rsync -rlt --itemize-changes "$WIN_SRC/version.json" "$APP_DIR/" >>"$SYNC_LOG"
   for f in "$WIN_SRC"/*.sh; do
     [[ -f "$f" ]] && rsync -rlt --itemize-changes "$f" "$APP_DIR/" >>"$SYNC_LOG"
@@ -124,10 +133,60 @@ else
   warn "reorient_reads.py MISSING — orientation repair will be skipped"
 fi
 
-if [[ -f "$APP_DIR/backend/r_scripts/build_tree.R" ]]; then
-  ok "build_tree.R present"
+# Each of these is source()d or spawned by the pipeline behind an exists() or
+# file.exists() guard, so a missing one degrades quietly rather than erroring —
+# exactly the failure mode that is hardest to notice. Name what is lost.
+declare -A R_HELPERS=(
+  [build_tree.R]="no phylogenetic tree will be produced"
+  [tax_helpers.R]="SILVA 144 rank depth and '--other' genus names will be mishandled"
+  [plot_helpers.R]="taxonomy bars will not match between the PDFs and the browser"
+  [qc_helpers.R]="truncLen will not be checked against the reads before filtering"
+  [add_species.R]="species assignment runs inline — much slower on a low-RAM machine"
+)
+for h in "${!R_HELPERS[@]}"; do
+  if [[ -f "$APP_DIR/backend/r_scripts/$h" ]]; then
+    ok "$h present"
+  else
+    warn "$h MISSING — ${R_HELPERS[$h]}"
+  fi
+done
+
+# A helper with a syntax error is worse than a missing one: source() aborts the
+# step that needed it, and the pipeline reports something unrelated.
+if Rscript -e 'for (f in commandArgs(TRUE)) invisible(parse(f))' \
+     "$APP_DIR"/backend/r_scripts/{tax,plot,qc}_helpers.R \
+     "$APP_DIR"/backend/r_scripts/{add_species,build_tree}.R >/dev/null 2>&1; then
+  ok "R helper scripts parse cleanly"
 else
-  warn "build_tree.R MISSING — no phylogenetic tree will be produced"
+  warn "An R helper script has a SYNTAX ERROR — run: Rscript -e 'parse(\"<file>\")'"
+fi
+
+# report_builder.py falls back to emitting HTML when weasyprint is absent, so a
+# missing install shows up as "no PDF appeared" rather than as an error.
+#
+# Check it with the interpreter THE BACKEND ACTUALLY RUNS, not whatever python3
+# resolves to in this shell. start.sh launches $APP_DIR/venv/bin/uvicorn, so a
+# `pip install` typed at a conda prompt lands somewhere the backend cannot see —
+# and a bare `python3 -c "import weasyprint"` here would happily report success
+# while the app keeps answering "weasyprint is not installed".
+VENV_PY="$APP_DIR/venv/bin/python3"
+[[ -x "$VENV_PY" ]] || VENV_PY="$APP_DIR/venv/bin/python"
+if [[ -x "$VENV_PY" ]]; then
+  if "$VENV_PY" -c "import weasyprint" >/dev/null 2>&1; then
+    ok "weasyprint present in the backend venv — PDF reports available"
+  else
+    warn "weasyprint missing from the backend venv — installing it there"
+    if "$VENV_PY" -m pip install --quiet weasyprint >/dev/null 2>&1 \
+       && "$VENV_PY" -c "import weasyprint" >/dev/null 2>&1; then
+      ok "weasyprint installed into $VENV_PY"
+    else
+      warn "Could not install it automatically. Run:"
+      warn "  $VENV_PY -m pip install weasyprint"
+      warn "PDF reports will come back as HTML until then."
+    fi
+  fi
+else
+  warn "No venv at $APP_DIR/venv — cannot check weasyprint against the backend's interpreter"
 fi
 
 # ── 3. R packages (fast check, install only what's missing) ───────────────
@@ -155,21 +214,49 @@ ok "R packages checked"
 
 # ── 4. Frontend build (only when frontend sources actually changed) ───────
 if [[ "$DO_BUILD" -eq 1 ]]; then
+  step "Building frontend"
   FRONTEND_CHANGED=1
+  BUILD_REASON="forced"
+  DIST_INDEX="$APP_DIR/frontend/dist/index.html"
+
   if command -v rsync >/dev/null 2>&1; then
-    grep '^[<>ch]' "$SYNC_LOG" 2>/dev/null | grep -q 'frontend' || FRONTEND_CHANGED=0
+    if grep -q '^[<>ch]' "$FE_LOG" 2>/dev/null; then
+      BUILD_REASON="$(grep -c '^[<>ch]' "$FE_LOG") source file(s) changed"
+    elif [[ ! -f "$DIST_INDEX" ]]; then
+      BUILD_REASON="no dist/ yet"
+    # Belt and braces: even with no change this run, rebuild when anything under
+    # src/ is newer than the built bundle. A build that failed, was interrupted,
+    # or was skipped by an earlier version of this script leaves exactly that
+    # state, and it is invisible until the app misbehaves in the browser.
+    elif [[ -n "$(find "$APP_DIR/frontend/src" "$APP_DIR/frontend/index.html" \
+                       "$APP_DIR/frontend/package.json" \
+                       -newer "$DIST_INDEX" -print -quit 2>/dev/null)" ]]; then
+      BUILD_REASON="dist/ older than sources"
+    else
+      FRONTEND_CHANGED=0
+    fi
   fi
+
   if [[ "$FRONTEND_CHANGED" -eq 1 ]]; then
-    step "Building frontend"
+    info "Rebuilding — $BUILD_REASON"
     cd "$APP_DIR/frontend"
     source "$HOME/.nvm/nvm.sh" 2>/dev/null || true
     nvm use 20 >/dev/null 2>&1 || true
-    npm run build
-    ok "Frontend built"
+    # Do not let a failed build pass silently: the previous bundle stays on disk
+    # and the backend keeps serving it, so a broken build looks like a
+    # successful deploy until the browser disagrees.
+    if npm run build; then
+      ok "Frontend built"
+      if [[ -f "$DIST_INDEX" ]]; then
+        info "Serving: $(grep -o 'assets/index-[A-Za-z0-9_-]*\.js' "$DIST_INDEX" | head -1)"
+      fi
+    else
+      warn "The browser will keep serving the OLD bundle until this builds."
+      die  "FRONTEND BUILD FAILED — backend NOT restarted. Fix the build and re-run."
+    fi
     cd "$APP_DIR"
   else
-    step "Building frontend"
-    info "No frontend changes — skipped (force with a frontend edit, or npm run build)"
+    info "Up to date — dist/ is newer than every frontend source"
   fi
 else
   info "Frontend build skipped (--no-build)"

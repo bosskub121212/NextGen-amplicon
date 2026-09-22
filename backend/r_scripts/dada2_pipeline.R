@@ -35,6 +35,38 @@ suppressPackageStartupMessages({
   library(jsonlite)
 })
 
+# ── shared taxonomy helpers ────────────────────────────────────
+# Rank-depth detection, version-matched species file, duplicate-Species merge
+# and the SILVA 144 "--other" genus normalization live in tax_helpers.R, so a
+# fix lands in this pipeline and in pacbio_pipeline.R at the same time instead
+# of in whichever one happened to be open at the time.
+.tax_helper_path <- local({
+  a  <- commandArgs(trailingOnly = FALSE)
+  fa <- a[grepl("^--file=", a)]
+  sd <- if (length(fa) > 0) dirname(normalizePath(sub("^--file=", "", fa[1]), mustWork = FALSE)) else getwd()
+  file.path(sd, "tax_helpers.R")
+})
+if (file.exists(.tax_helper_path)) source(.tax_helper_path)
+has_tax_helpers <- exists("tax_add_species", mode = "function")
+if (!has_tax_helpers)
+  cat("[warn] tax_helpers.R not found - SILVA 144 '--other' genus names will lose their species calls\n")
+
+# ── shared taxonomy-bar spec ───────────────────────────────────
+# Label, order, stack direction and colours for taxonomy bars, kept identical
+# to viz_pipeline.R's PDFs and to the interactive chart in the browser.
+.plot_helper_path <- local({
+  a  <- commandArgs(trailingOnly = FALSE)
+  fa <- a[grepl("^--file=", a)]
+  sd <- if (length(fa) > 0) dirname(normalizePath(sub("^--file=", "", fa[1]), mustWork = FALSE)) else getwd()
+  file.path(sd, "plot_helpers.R")
+})
+if (file.exists(.plot_helper_path)) source(.plot_helper_path)
+has_plot_helpers <- exists("tax_clean_labels", mode = "function")
+
+.qc_helper_path <- file.path(dirname(.plot_helper_path), "qc_helpers.R")
+if (file.exists(.qc_helper_path)) source(.qc_helper_path)
+has_qc_helpers <- exists("qc_recommend_trunclen", mode = "function")
+
 # ── Load optional visualization packages ───────────────────────
 # NOTE: moved up here (was previously declared much later, around the
 # "Generating plots" step) because earlier code — the error-model PDF plots
@@ -468,6 +500,81 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
   }
 } else {
   cat("Step 1b: No primers specified — skipping cutadapt\n\n")
+}
+
+# ── truncLen sanity check, BEFORE filterAndTrim ───────────────
+# filterAndTrim() silently DROPS every read shorter than truncLen. The maximum
+# usable value is a property of the trimmed reads, not 250 minus the primer
+# length: on this app's own V3-V4 test library the arithmetic said 229 and the
+# reads said 228, and that one base took the run from 22,607 filtered pairs to
+# 1,831. Measure it here, while it is still free to fix.
+if (!is_single && has_qc_helpers && length(fnFs) > 0 && length(fnRs) > 0) {
+  tryCatch({
+    hF <- qc_length_hist(fnFs[1]); hR <- qc_length_hist(fnRs[1])
+    rF <- qc_recommend_trunclen(hF); rR <- qc_recommend_trunclen(hR)
+    if (!is.null(rF) && !is.null(rR)) {
+      keepF <- qc_keep_at(hF, opt$truncLen_F)
+      keepR <- qc_keep_at(hR, opt$truncLen_R)
+      cat(sprintf("  Read lengths after trimming: R1 max %d bp, R2 max %d bp\n",
+                  rF$max_len, rR$max_len))
+      cat(sprintf("  truncLen_F=%d keeps %.1f%% of full-length R1 (best: %d -> %.1f%%)\n",
+                  opt$truncLen_F, keepF, rF$recommended,
+                  qc_keep_at(hF, rF$recommended)))
+      cat(sprintf("  truncLen_R=%d keeps %.1f%% of full-length R2 (best: %d -> %.1f%%)\n",
+                  opt$truncLen_R, keepR, rR$recommended,
+                  qc_keep_at(hR, rR$recommended)))
+
+      too_high <- opt$truncLen_F > rF$recommended || opt$truncLen_R > rR$recommended
+      if (too_high) {
+        side <- function(cur, rec, h) list(
+          current     = cur,
+          recommended = rec$recommended,
+          keep_pct    = qc_keep_at(h, cur),
+          keep_pct_rec= qc_keep_at(h, rec$recommended),
+          max_len     = rec$max_len,
+          n_reads     = rec$n_reads,
+          profile     = rec$profile
+        )
+        MIN_OVERLAP <- 12
+        chk <- list(
+          type                = "trunclen_too_high",
+          forward             = side(opt$truncLen_F, rF, hF),
+          reverse             = side(opt$truncLen_R, rR, hR),
+          suggest_F           = rF$recommended,
+          suggest_R           = rR$recommended,
+          ceiling_current     = opt$truncLen_F + opt$truncLen_R - MIN_OVERLAP,
+          ceiling_recommended = rF$recommended + rR$recommended - MIN_OVERLAP,
+          sample              = sample_names[1]
+        )
+        cat("\n")
+        cat("  +- TRUNCLEN TOO HIGH -------------------------------------\n")
+        cat(sprintf("  | truncLen_F=%d would discard %.1f%% of forward reads\n",
+                    opt$truncLen_F, 100 - keepF))
+        cat(sprintf("  | truncLen_R=%d would discard %.1f%% of reverse reads\n",
+                    opt$truncLen_R, 100 - keepR))
+        cat(sprintf("  | Use truncLen_F=%d truncLen_R=%d instead (merge ceiling %d bp)\n",
+                    rF$recommended, rR$recommended, chk$ceiling_recommended))
+        cat("  +----------------------------------------------------------\n\n")
+        cat(sprintf("CHECKPOINT:trunclen|%s\n", toJSON(chk, auto_unbox=TRUE)))
+        flush.console()
+        write(toJSON(chk, auto_unbox=TRUE), file.path(opt$output, "checkpoint.json"))
+
+        signal_file <- file.path(opt$output, "checkpoint_signal")
+        cat("  [checkpoint] Waiting for user decision on truncLen...\n"); flush.console()
+        waited <- 0
+        while (!file.exists(signal_file) && waited < 7200) { Sys.sleep(2); waited <- waited + 2 }
+        if (!file.exists(signal_file))
+          stop("Checkpoint timed out - no user response after 2 hours")
+        if (trimws(readLines(signal_file, warn=FALSE)[1]) == "abort")
+          stop("User chose to abort and adjust truncLen")
+        file.remove(signal_file)
+        cat("  [checkpoint] User chose to continue with the current truncLen.\n"); flush.console()
+      }
+    }
+  }, error = function(e) {
+    if (grepl("^User chose to abort|^Checkpoint timed out", e$message)) stop(e)
+    cat("  [skip] truncLen check:", e$message, "\n")
+  })
 }
 
 # ── Step 2: Filter & Trim ─────────────────────────────────────
@@ -1014,25 +1121,72 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
                       train_ver, length(sp_candidates)))
         }
         tryCatch({
-          gc(verbose=FALSE)
-          tax <- addSpecies(tax, sp_file)
-          # addSpecies() APPENDS a Species column. When the trainset already
-          # carried one (SILVA 144's toGenus set ships an empty Species rank),
-          # the result holds TWO columns called "Species" — and every later
-          # which(colnames(tax) == "Species") then returns two indices, so
-          # tax[, idx] is a matrix and the logical mask built from it is twice
-          # as long as the data: "(subscript) logical subscript too long".
-          # The species plot and CSV were silently dropped because of it, even
-          # though the assignments were sitting right there. Keep the column
-          # that actually has values.
-          dup_sp <- which(colnames(tax) == "Species")
-          if (length(dup_sp) > 1) {
-            filled  <- vapply(dup_sp, function(i) sum(!is.na(tax[, i])), integer(1))
-            keep_sp <- dup_sp[which.max(filled)]
-            drop_sp <- setdiff(dup_sp, keep_sp)
-            cat(sprintf("  Merged %d duplicate 'Species' column(s); kept the one with %d assignment(s)\n",
-                        length(drop_sp), max(filled)))
-            tax <- tax[, -drop_sp, drop=FALSE]
+          # ── Species assignment in a SEPARATE R process ──────────────────
+          # assignTaxonomy() and addSpecies() never need their references at the
+          # same moment, but inline they hold them at the same moment anyway:
+          # R does not return freed memory to the OS, so the trainset is still
+          # resident when the species file loads and peak becomes the SUM of the
+          # two. With SILVA 144 (191.8 MB trainset + 141.3 MB species file) that
+          # sum does not fit on an 8 GB laptop, and the run slows to a crawl in
+          # garbage collection — measured, three times slower than v138.2 for a
+          # reference only 1.4x larger.
+          #
+          # A child process starts with an empty heap and gives it all back on
+          # exit, so peak is max(trainset, species) instead of the sum. If the
+          # child cannot run for any reason we do it inline, exactly as before —
+          # a missing species column is a far worse outcome than a slow one.
+          sp_done <- FALSE
+          sp_script <- file.path(SCRIPT_DIR, "add_species.R")
+          if (file.exists(sp_script)) {
+            # tempdir(), not opt$output: these are scratch, and anything left in
+            # the output folder ends up in what the customer receives. on.exit()
+            # is not an option here — this runs at top level, where R accepts the
+            # call and silently never fires it.
+            sp_in  <- file.path(tempdir(), "tax_in.rds")
+            sp_out <- file.path(tempdir(), "tax_out.rds")
+            tryCatch({
+              saveRDS(tax, sp_in)
+              gc(verbose=FALSE)   # hand back what we can before forking
+              cat("  Running species assignment in a separate process to free the trainset...\n")
+              flush.console()
+              t0 <- Sys.time()
+              ret_sp <- suppressWarnings(system2(
+                file.path(R.home("bin"), "Rscript"),
+                args = c(shQuote(sp_script), shQuote(sp_in), shQuote(sp_file),
+                         shQuote(sp_out), shQuote(file.path(SCRIPT_DIR, "tax_helpers.R"))),
+                stdout = "", stderr = ""))
+              if (identical(ret_sp, 0L) && file.exists(sp_out)) {
+                tax     <- readRDS(sp_out)
+                sp_done <- TRUE
+                cat(sprintf("  Species step took %.1f min\n",
+                            as.numeric(difftime(Sys.time(), t0, units="mins"))))
+              } else {
+                cat("  [warn] species subprocess exited abnormally — retrying inline\n")
+              }
+            }, error=function(e) cat("  [warn] species subprocess failed:", e$message,
+                                     "- retrying inline\n"))
+            suppressWarnings(file.remove(sp_in, sp_out))
+          }
+
+          if (!sp_done) {
+            # Inline fallback. tax_add_species() also strips SILVA 144's
+            # "--other" genus suffix, which DADA2's matchGenera() would treat as
+            # a genus mismatch and use to discard species that matched at 100%.
+            if (has_tax_helpers) {
+              tax <- tax_add_species(tax, sp_file)
+            } else {
+              gc(verbose=FALSE)
+              tax <- addSpecies(tax, sp_file)
+              dup_sp <- which(colnames(tax) == "Species")
+              if (length(dup_sp) > 1) {
+                filled  <- vapply(dup_sp, function(i) sum(!is.na(tax[, i])), integer(1))
+                keep_sp <- dup_sp[which.max(filled)]
+                drop_sp <- setdiff(dup_sp, keep_sp)
+                cat(sprintf("  Merged %d duplicate 'Species' column(s); kept the one with %d assignment(s)\n",
+                            length(drop_sp), max(filled)))
+                tax <- tax[, -drop_sp, drop=FALSE]
+              }
+            }
           }
           cat("  Species added from:", basename(sp_file), "\n\n")
         }, error=function(e) cat("  Species assignment skipped:", e$message, "\n\n"))
@@ -1473,8 +1627,10 @@ make_tax_mat <- function(level, top_n=50) {
   col_idx <- which(colnames(tax) == level)
   if (length(col_idx) == 0) return(NULL)
   taxa_vec <- tax[, col_idx]
-  taxa_vec[is.na(taxa_vec) | taxa_vec == ""] <- "Unclassified"
-  taxa_vec <- sub("^[a-z]__", "", taxa_vec)
+  taxa_vec <- if (has_plot_helpers) tax_clean_labels(taxa_vec) else {
+    v <- sub("^[a-z]__", "", as.character(taxa_vec))
+    v[is.na(v) | trimws(v) == ""] <- "Unclassified"; v
+  }
   taxa_uniq <- unique(taxa_vec)
   mat <- sapply(taxa_uniq, function(t)
     rowSums(seqtab_nochim[, taxa_vec == t, drop=FALSE]))
@@ -1495,7 +1651,10 @@ tax_stacked_bar <- function(pct_mat, title_str, outfile,
   if (is.null(pct_mat)) return(invisible(NULL))
   n_taxa <- ncol(pct_mat)
   n_x    <- nrow(pct_mat)
-  cols_t <- make_pal(n_taxa)
+  # Columns already arrive ordered by decreasing abundance with "Other" last,
+  # which is the shared draw order; only the colours and the stack direction
+  # needed to change to match the interactive chart.
+  cols_t <- if (has_plot_helpers) unname(tax_colors(colnames(pct_mat))) else make_pal(n_taxa)
   if (is.null(x_labels)) x_labels <- rownames(pct_mat)
 
   if (has_ggplot2 && has_reshape2) {
@@ -1504,8 +1663,12 @@ tax_stacked_bar <- function(pct_mat, title_str, outfile,
     long <- reshape2::melt(df, id.vars=x_title, variable.name="Taxon", value.name="Pct")
     long$Taxon <- factor(long$Taxon, levels=colnames(pct_mat))
     p <- ggplot2::ggplot(long, ggplot2::aes(x=.data[[x_title]], y=Pct, fill=Taxon)) +
-      ggplot2::geom_bar(stat="identity") +
+      # reverse=TRUE puts the FIRST level at the bottom. ggplot2 defaults to the
+      # first level on top, Plotly to the first trace on the bottom — without
+      # this the PDF is a vertical mirror of the same chart on screen.
+      ggplot2::geom_bar(stat="identity", position=ggplot2::position_stack(reverse=TRUE)) +
       ggplot2::scale_fill_manual(values=setNames(cols_t, colnames(pct_mat))) +
+      ggplot2::guides(fill=ggplot2::guide_legend(reverse=TRUE)) +
       ggplot2::labs(title=title_str, x=x_title, y="Relative Abundance (%)") +
       ggplot2::theme_bw(base_size=11) +
       ggplot2::theme(axis.text.x=ggplot2::element_text(angle=45, hjust=1),
@@ -1522,8 +1685,8 @@ tax_stacked_bar <- function(pct_mat, title_str, outfile,
     barplot(t(pct_mat), beside=FALSE, col=cols_t, border=NA,
             main=title_str, ylab="Relative Abundance (%)",
             names.arg=x_labels, las=2, cex.names=0.8, ylim=c(0,100))
-    legend(par("usr")[2]*1.02, par("usr")[4], legend=colnames(pct_mat),
-           fill=cols_t, bty="n", cex=0.65, xpd=TRUE)
+    legend(par("usr")[2]*1.02, par("usr")[4], legend=rev(colnames(pct_mat)),
+           fill=rev(cols_t), bty="n", cex=0.65, xpd=TRUE)
     dev.off()
   }
   cat("  ", basename(outfile), "\n", sep="")
@@ -1626,6 +1789,68 @@ tryCatch({
   }
   cat("  asv_length_distribution.pdf\n")
 }, error=function(e) cat("  [skip] ASV length:", e$message, "\n"))
+
+# ═══════════════════════════════════════════════════════════════
+#  MERGE-CEILING QC — is truncLen clipping the amplicon?
+#
+#  mergePairs() needs minOverlap (12) bases of overlap, so the longest insert
+#  that can possibly merge is truncLen_F + truncLen_R - 12. Anything longer is
+#  silently discarded: no error, no warning, just missing reads. The tell is
+#  that the longest surviving ASV lands exactly on that number.
+#
+#  This cost a real V3-V4 run twice. At 230/200 the ceiling was 418 and the
+#  longest ASV was 418 — a standard ~429 bp V3-V4 insert could not merge AT
+#  ALL, so only short host-mitochondrial amplicons got through and the sample
+#  looked like it was mostly dog DNA. At 230/225 the ceiling moved to 443 and
+#  the longest ASV was 443, still pinned.
+#
+#  filterAndTrim() also DISCARDS any read shorter than truncLen, so the window
+#  has a floor as well: an ASV set whose minimum equals truncLen_F is being cut
+#  from below. Both edges are checked here.
+# ═══════════════════════════════════════════════════════════════
+tryCatch({
+  if (exists("seqtab_nochim") && !is.null(seqtab_nochim) && ncol(seqtab_nochim) > 0 &&
+      opt$truncLen_F > 0 && opt$truncLen_R > 0) {
+    MIN_OVERLAP <- 12
+    lens    <- nchar(colnames(seqtab_nochim))
+    abund   <- colSums(seqtab_nochim)
+    ceil    <- opt$truncLen_F + opt$truncLen_R - MIN_OVERLAP
+    floor_  <- opt$truncLen_F
+    TOL     <- 2
+    hit_top <- max(lens) >= ceil - TOL
+    hit_bot <- min(lens) <= floor_ + TOL
+
+    if (hit_top || hit_bot) {
+      near_top <- sum(abund[lens >= ceil - 10])
+      pct_top  <- 100 * near_top / sum(abund)
+      cat("\n")
+      cat("  ┌─ MERGE-CEILING WARNING ─────────────────────────────────────\n")
+      cat(sprintf("  │ truncLen  F=%d  R=%d  ->  mergeable range %d - %d bp\n",
+                  opt$truncLen_F, opt$truncLen_R, floor_, ceil))
+      cat(sprintf("  │ ASVs observed                      %d - %d bp\n", min(lens), max(lens)))
+      if (hit_top)
+        cat(sprintf("  │ ** longest ASV sits ON the ceiling — longer amplicons\n  │    could not merge and were discarded (%.0f reads, %.1f%%,\n  │    are within 10 bp of the edge)\n",
+                    near_top, pct_top))
+      if (hit_bot)
+        cat("  │ ** shortest ASV sits ON truncLen_F — reads shorter than\n  │    this were dropped by filterAndTrim()\n")
+      max_f <- 250 - nchar(opt$primer_f); max_r <- 250 - nchar(opt$primer_r)
+      cat(sprintf("  │ For 2x250 reads with these primers the hard maximum is\n  │    truncLen_F=%d truncLen_R=%d -> ceiling %d bp.\n",
+                  max_f, max_r, max_f + max_r - MIN_OVERLAP))
+      cat("  │ Raising truncLen_R usually needs maxEE_R raised too, since\n  │    the last bases of R2 are the lowest quality.\n")
+      cat("  └─────────────────────────────────────────────────────────────\n\n")
+      cat(sprintf(paste0('MERGE_CEILING_WARN: {"truncLen_F":%d,"truncLen_R":%d,"ceiling":%d,',
+                         '"floor":%d,"max_asv":%d,"min_asv":%d,"clipped_top":%s,"clipped_bottom":%s,',
+                         '"near_edge_reads":%d,"near_edge_pct":%.2f,"suggest_F":%d,"suggest_R":%d,',
+                         '"suggest_ceiling":%d}\n'),
+                  opt$truncLen_F, opt$truncLen_R, ceil, floor_, max(lens), min(lens),
+                  tolower(as.character(hit_top)), tolower(as.character(hit_bot)),
+                  round(near_top), pct_top, max_f, max_r, max_f + max_r - MIN_OVERLAP))
+    } else {
+      cat(sprintf("  Merge window OK: ASVs %d-%d bp sit inside the %d-%d bp window\n",
+                  min(lens), max(lens), floor_, ceil))
+    }
+  }
+}, error=function(e) cat("  [skip] merge-ceiling QC:", e$message, "\n"))
 
 prog(95, "Step 8/8 — Diversity & statistical analyses...")
 

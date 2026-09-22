@@ -10,6 +10,7 @@ import SettingsPanel, { ThemeId } from "./components/SettingsPanel";
 import DataPrepPanel from "./components/DataPrepPanel";
 import PreviewPage from "./pages/PreviewPage";
 import "./App.css";
+import ErrorBoundary from "./ErrorBoundary";
 
 const API = "http://localhost:8000";
 type Screen = "home" | "new-job" | "history" | "preview";
@@ -25,12 +26,31 @@ const STATUS_ICON: Record<string, string> = {
   waiting_checkpoint: "⚠️",
 };
 
+interface TruncLenSide {
+  current:      number;
+  recommended:  number;
+  keep_pct:     number;
+  keep_pct_rec: number;
+  max_len:      number;
+  n_reads:      number;
+  profile:      { len: number; reads: number; keep: number; keep_pct: number }[];
+}
+
 interface CheckpointData {
-  type:        string;
-  merged_pct:  number;
-  nonchim_pct: number;
-  n_samples:   number;
-  track:       Record<string, Record<string, number>>;
+  // "low_merge_rate" — raised after filtering, once the reads are already gone.
+  type:         string;
+  merged_pct?:  number;
+  nonchim_pct?: number;
+  n_samples?:   number;
+  track?:       Record<string, Record<string, number>>;
+  // "trunclen_too_high" — raised BEFORE filtering, while the fix is still free.
+  forward?:             TruncLenSide;
+  reverse?:             TruncLenSide;
+  suggest_F?:           number;
+  suggest_R?:           number;
+  ceiling_current?:     number;
+  ceiling_recommended?: number;
+  sample?:              string;
 }
 
 interface JobSummary {
@@ -224,6 +244,62 @@ export default function App() {
   const [checkpointLoading, setCheckpointLoading] = useState(false);
   const [checkpointParams, setCheckpointParams]   = useState<PipelineParams>(defaultParams);
 
+  // PDF report. A report is usually wanted OVER several runs, not for one, so the
+  // button opens a picker seeded with the job it was pressed on; adding more runs
+  // turns the same report into a comparison with a column per run.
+  const [reportPick, setReportPick]     = useState<string[]|null>(null);
+  const [reportBusy, setReportBusy]     = useState(false);
+  const [reportError, setReportError]   = useState<string|null>(null);
+  const [reportTitle, setReportTitle]   = useState("");
+  const [reportTopAsv, setReportTopAsv] = useState(30);
+
+  async function buildReport() {
+    if (!reportPick || reportPick.length === 0) return;
+    setReportBusy(true); setReportError(null);
+    try {
+      const res = await axios.post(`${API}/report`, {
+        job_ids: reportPick,
+        title:   reportTitle.trim() || null,
+        top_asv: reportTopAsv,
+        company: "NextGen Network Corporation Company Limited",
+        labels:  reportPick.map(id => allJobs.find(j => j.job_id === id)?.job_name || id),
+      }, { responseType: "blob" });
+      // Hand the PDF straight to the browser's downloader.
+      const url = URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = (reportTitle.trim() || "amplicon_report").replace(/[^\w.-]+/g, "_") + ".pdf";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      setReportPick(null); setReportTitle("");
+    } catch (e: any) {
+      // The error body arrives as a Blob because responseType is blob.
+      let msg = "Report build failed";
+      try {
+        const txt = await e?.response?.data?.text?.();
+        if (txt) {
+          const j = JSON.parse(txt);
+          msg = j.error || msg;
+          if (j.hint) msg += `\n\n${j.hint}`;
+        }
+      } catch { msg = e?.message || msg; }
+      setReportError(msg);
+    } finally { setReportBusy(false); }
+  }
+
+  // A truncLen checkpoint already knows the right answer — it was measured from
+  // the reads. Put it straight into the form so the fix is one click, not a
+  // number the user has to copy out of a warning by hand.
+  function applyTruncLenSuggestion(cd: CheckpointData | null) {
+    if (!cd || cd.type !== "trunclen_too_high") return;
+    if (cd.suggest_F == null || cd.suggest_R == null) return;
+    setCheckpointParams(prev => ({
+      ...prev,
+      truncLen_F: cd.suggest_F as number,
+      truncLen_R: cd.suggest_R as number,
+    }));
+  }
+
   // ── License ───────────────────────────────────────────────────────
   const [licenseStatus, setLicenseStatus]   = useState<LicenseStatus|null>(null);
   const [showLicense,   setShowLicense]     = useState(false);
@@ -325,7 +401,9 @@ export default function App() {
         // Fetch checkpoint data
         try {
           const chk = await axios.get(`${API}/jobs/${chkJob.job_id}/checkpoint`);
-          setCheckpointData(chk.data.checkpoint_data);
+          const cd: CheckpointData = chk.data.checkpoint_data;
+          setCheckpointData(cd);
+          applyTruncLenSuggestion(cd);
         } catch {}
       }
     } catch {}
@@ -796,7 +874,10 @@ export default function App() {
               onClick={() => {
                 setCheckpointJobId(j.job_id);
                 axios.get(`${API}/jobs/${j.job_id}/checkpoint`)
-                  .then(res => setCheckpointData(res.data.checkpoint_data))
+                  .then(res => {
+                    setCheckpointData(res.data.checkpoint_data);
+                    applyTruncLenSuggestion(res.data.checkpoint_data);
+                  })
                   .catch(() => {});
                 // Seed the re-run form with THIS job's own saved params
                 // (primers, database, etc.) — without this, checkpointParams
@@ -841,6 +922,12 @@ export default function App() {
               <a href={`${API}/download/${j.job_id}`} download className="btn-view">
                 📥 Download Results
               </a>
+              <button className="btn-view btn-report"
+                onClick={() => { setReportPick([j.job_id]); setReportError(null);
+                                 setReportTitle(j.job_name || ""); }}
+                title="Build a PDF report — add other runs to compare them side by side">
+                📄 PDF Report
+              </button>
             </>
           )}
           {(j.status === "completed" || j.status === "error") && (
@@ -1271,21 +1358,172 @@ export default function App() {
           </div>
         )}
 
+        {/* ── PDF Report Modal ── */}
+        {reportPick && (
+          <ErrorBoundary label="Report dialog">
+          <div className="popup-overlay" onClick={e => { if (e.target === e.currentTarget) setReportPick(null); }}>
+            <div className="step-popup report-popup">
+              <div className="popup-step-icon">📄</div>
+              <h2 className="popup-title">Build PDF Report</h2>
+              <p className="rep-hint">
+                เลือก 1 รัน = รายงานผลฉบับเต็ม (QC, กราฟ, ตาราง ASV, ความหลากหลาย)<br/>
+                เลือกหลายรัน = รายงานเปรียบเทียบ คอลัมน์ต่อรันในทุกตารางและกราฟ
+              </p>
+
+              <label className="rep-label">Report title</label>
+              <input className="rep-input" value={reportTitle} id="report-title"
+                     placeholder="e.g. Reference Database Comparison"
+                     onChange={e => setReportTitle(e.target.value)} />
+
+              {reportPick.length <= 1 && (
+                <>
+                  <label className="rep-label">ASVs to table</label>
+                  <div className="rep-seg">
+                    {[30, 50, 100].map(n => (
+                      <button key={n} type="button"
+                        className={`rep-seg-btn ${reportTopAsv === n ? "on" : ""}`}
+                        onClick={() => setReportTopAsv(n)}>Top {n}</button>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              <label className="rep-label">Runs to include ({reportPick.length})</label>
+              <div className="rep-list">
+                {allJobs.filter(j => j.status === "completed").map(j => {
+                  const on = reportPick.includes(j.job_id);
+                  const order = reportPick.indexOf(j.job_id);
+                  return (
+                    <label key={j.job_id} className={`rep-row ${on ? "on" : ""}`}>
+                      <input type="checkbox" checked={on} id={`rep-${j.job_id}`}
+                        onChange={() => setReportPick(p =>
+                          on ? p!.filter(x => x !== j.job_id) : [...p!, j.job_id])} />
+                      <span className="rep-order">{on ? order + 1 : ""}</span>
+                      <span className="rep-name">{j.job_name || j.job_id}</span>
+                      <span className="rep-marker">{j.marker}</span>
+                    </label>
+                  );
+                })}
+                {allJobs.filter(j => j.status === "completed").length === 0 &&
+                  <div className="rep-empty">No completed runs yet.</div>}
+              </div>
+
+              {reportError && <div className="rep-error">⚠️ {reportError}</div>}
+
+              <div className="popup-actions">
+                <button className="btn-secondary" onClick={() => setReportPick(null)}>Cancel</button>
+                <button className="btn-primary" onClick={buildReport}
+                        disabled={reportBusy || reportPick.length === 0}>
+                  {reportBusy ? "⏳ Building…" : `📄 Build PDF (${reportPick.length})`}
+                </button>
+              </div>
+            </div>
+          </div>
+          </ErrorBoundary>
+        )}
+
         {/* ── Checkpoint Warning Modal ── */}
+        {/* Wrapped on its own: this modal renders whatever shape the pipeline
+            sent, and a field the frontend did not expect used to blank the
+            entire app rather than just this panel. */}
         {checkpointJobId && (
+          <ErrorBoundary label="Checkpoint dialog">
           <div className="popup-overlay">
             <div className="step-popup checkpoint-popup">
               <div className="popup-step-icon">⚠️</div>
               <h2 className="popup-title" style={{ color: "#f59e0b" }}>
-                Low Read Survival — Pipeline Paused
+                {checkpointData?.type === "trunclen_too_high"
+                  ? "truncLen Too High — Paused Before Filtering"
+                  : "Low Read Survival — Pipeline Paused"}
               </h2>
 
-              {checkpointData ? (
+              {checkpointData?.type === "trunclen_too_high" ? (
                 <>
                   <div className="checkpoint-warning-box">
                     <p>
-                      Only <strong style={{ color: "#ef4444" }}>{checkpointData.merged_pct.toFixed(1)}%</strong> of
-                      reads survived merging and <strong style={{ color: "#ef4444" }}>{checkpointData.nonchim_pct.toFixed(1)}%</strong> survived
+                      Stopped <strong>before</strong> filtering, so nothing has been thrown away yet.
+                      {" "}<code>filterAndTrim</code> discards every read shorter than{" "}
+                      <code>truncLen</code>, and at these values that is most of the library.
+                    </p>
+                    <p style={{ marginTop: 6 }}>
+                      💡 The maximum usable <code>truncLen</code> is a property of the trimmed reads,
+                      not 250 minus the primer length. The values below were measured from
+                      {" "}<code>{checkpointData.sample}</code>.
+                    </p>
+                  </div>
+
+                  <div className="checkpoint-track-wrap">
+                    <table className="checkpoint-track-table">
+                      <thead>
+                        <tr>
+                          <th>Read</th>
+                          <th>Longest</th>
+                          <th>Your truncLen</th>
+                          <th>Reads kept</th>
+                          <th>Recommended</th>
+                          <th>Reads kept</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {([["Forward (R1)", checkpointData.forward],
+                           ["Reverse (R2)", checkpointData.reverse]] as [string, TruncLenSide|undefined][])
+                          .filter(([, d]) => !!d)
+                          .map(([label, d]) => (
+                          <tr key={label} className={(d!.keep_pct ?? 100) < 50 ? "chk-row-warn" : ""}>
+                            <td className="chk-sample-cell">{label}</td>
+                            <td>{d!.max_len} bp</td>
+                            <td style={{ fontWeight: 700,
+                              color: d!.current > d!.recommended ? "#ef4444" : "#10b981" }}>
+                              {d!.current}
+                            </td>
+                            <td style={{ fontWeight: 700,
+                              color: d!.keep_pct < 50 ? "#ef4444"
+                                   : d!.keep_pct < 90 ? "#f59e0b" : "#10b981" }}>
+                              {d!.keep_pct?.toFixed(1)}%
+                            </td>
+                            <td style={{ fontWeight: 700, color: "#10b981" }}>{d!.recommended}</td>
+                            <td style={{ fontWeight: 700, color: "#10b981" }}>
+                              {d!.keep_pct_rec?.toFixed(1)}%
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {checkpointData.reverse && (
+                    <div className="checkpoint-warning-box" style={{ marginTop: 10 }}>
+                      <p style={{ marginBottom: 6 }}>
+                        <strong>Where the cliff is</strong> — reverse reads by length:
+                      </p>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px",
+                                    fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+                        {checkpointData.reverse.profile?.map(pt => (
+                          <span key={pt.len} style={{
+                            color: pt.keep_pct < 50 ? "#ef4444" : "#374151",
+                            fontWeight: pt.len === checkpointData.reverse!.recommended ? 700 : 400,
+                          }}>
+                            {pt.len}bp&nbsp;→&nbsp;{pt.keep_pct.toFixed(1)}%
+                          </span>
+                        ))}
+                      </div>
+                      <p style={{ marginTop: 8 }}>
+                        Merge ceiling (<code>truncLen_F + truncLen_R − 12</code>):{" "}
+                        <strong>{checkpointData.ceiling_current} bp</strong> now,{" "}
+                        <strong style={{ color: "#10b981" }}>
+                          {checkpointData.ceiling_recommended} bp
+                        </strong>{" "}
+                        with the recommended values — the longest amplicon that can still merge.
+                      </p>
+                    </div>
+                  )}
+                </>
+              ) : checkpointData ? (
+                <>
+                  <div className="checkpoint-warning-box">
+                    <p>
+                      Only <strong style={{ color: "#ef4444" }}>{(checkpointData.merged_pct ?? 0).toFixed(1)}%</strong> of
+                      reads survived merging and <strong style={{ color: "#ef4444" }}>{(checkpointData.nonchim_pct ?? 0).toFixed(1)}%</strong> survived
                       chimera removal. This is far below the expected ≥70%.
                     </p>
                     <p style={{ marginTop: 6 }}>
@@ -1307,7 +1545,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {Object.entries(checkpointData.track).map(([sample, row]) => {
+                        {Object.entries(checkpointData.track ?? {}).map(([sample, row]) => {
                           const pct = row.input > 0 ? (row.nonchim / row.input * 100) : 0;
                           return (
                             <tr key={sample} className={pct < 10 ? "chk-row-warn" : ""}>
@@ -1337,7 +1575,9 @@ export default function App() {
               <div className="chk-rerun-section">
                 <div className="chk-rerun-title">🔧 ปรับค่าและรันใหม่</div>
                 <p className="chk-rerun-hint">
-                  แก้ไขค่า trim / truncation ด้านล่าง แล้วกด <strong>Re-run with New Settings</strong><br/>
+                  {checkpointData?.type === "trunclen_too_high"
+                    ? <>ค่า truncLen ด้านล่าง<strong>ใส่ค่าที่แนะนำไว้ให้แล้ว</strong> — กด <strong>Re-run with New Settings</strong> ได้เลย<br/></>
+                    : <>แก้ไขค่า trim / truncation ด้านล่าง แล้วกด <strong>Re-run with New Settings</strong><br/></>}
                   ไฟล์ที่อัปโหลดไว้จะถูกนำมาใช้ใหม่โดยไม่ต้องอัปโหลดซ้ำ
                 </p>
                 <div className="chk-param-grid">
@@ -1412,6 +1652,7 @@ export default function App() {
               </div>
             </div>
           </div>
+          </ErrorBoundary>
         )}
       </div>
     );

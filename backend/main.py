@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
-import subprocess, os, sys, uuid, json, threading, time, shutil
+import subprocess, os, sys, uuid, json, threading, time, shutil, re
+from typing import List, Optional
 
 # Ensure backend/ directory is on sys.path so local modules (license, updater, etc.) can be imported
 sys.path.insert(0, os.path.dirname(__file__))
@@ -978,12 +979,33 @@ def run_r_pipeline(job_id: str, params: RunParams):
                         body = line[11:]  # "low_merge|{json}"
                         chk_type, chk_json = body.split("|", 1) if "|" in body else (body, "{}")
                         chk_data = json.loads(chk_json)
+                        ctype = chk_type.strip()
+                        # The label and log line depend on which checkpoint fired.
+                        # "trunclen" is raised BEFORE filtering, while the settings
+                        # can still be corrected for free; "low_merge" is raised
+                        # after, once the reads are already gone.
+                        if ctype == "trunclen":
+                            fwd = chk_data.get("forward", {})
+                            rev = chk_data.get("reverse", {})
+                            label = "⚠️  truncLen too high — waiting for user decision"
+                            note = (
+                                f"⚠️ truncLen would discard most reads: "
+                                f"F={fwd.get('current')} keeps {fwd.get('keep_pct', 0):.1f}%, "
+                                f"R={rev.get('current')} keeps {rev.get('keep_pct', 0):.1f}%. "
+                                f"Suggested: F={chk_data.get('suggest_F')} R={chk_data.get('suggest_R')}"
+                            )
+                        else:
+                            label = "⚠️  Low merge rate — waiting for user decision"
+                            note = (
+                                f"⚠️ Checkpoint: merged={chk_data.get('merged_pct',0):.1f}%, "
+                                f"nonchim={chk_data.get('nonchim_pct',0):.1f}%"
+                            )
                         with jobs_lock:
                             jobs[job_id]["status"]          = "waiting_checkpoint"
-                            jobs[job_id]["step_label"]      = "⚠️  Low merge rate — waiting for user decision"
-                            jobs[job_id]["checkpoint_type"] = chk_type.strip()
+                            jobs[job_id]["step_label"]      = label
+                            jobs[job_id]["checkpoint_type"] = ctype
                             jobs[job_id]["checkpoint_data"] = chk_data
-                            log_lines.append(f"⚠️ Checkpoint: merged={chk_data.get('merged_pct',0):.1f}%, nonchim={chk_data.get('nonchim_pct',0):.1f}%")
+                            log_lines.append(note)
                             jobs[job_id]["log_lines"] = log_lines[-500:]
                         save_jobs()
                     except Exception as e:
@@ -1006,6 +1028,39 @@ def run_r_pipeline(job_id: str, params: RunParams):
                         save_jobs()
                     except Exception as e:
                         print(f"[offtarget] parse error: {e}")
+
+                elif line.startswith("MERGE_CEILING_WARN:"):
+                    # truncLen_F + truncLen_R - 12 is the longest insert that can
+                    # merge. When the longest surviving ASV lands exactly on that
+                    # number, longer amplicons were dropped with no error at all,
+                    # and the run just looks like it had less diversity than it
+                    # did. Surface it — reading it off the ASV length plot by eye
+                    # is how this went unnoticed for two runs.
+                    try:
+                        mc = json.loads(line[len("MERGE_CEILING_WARN:"):])
+                        with jobs_lock:
+                            jobs[job_id]["merge_ceiling_warning"] = mc
+                            bits = []
+                            if mc.get("clipped_top"):
+                                bits.append(
+                                    f"longest ASV ({mc.get('max_asv')} bp) sits on the "
+                                    f"{mc.get('ceiling')} bp merge ceiling"
+                                )
+                            if mc.get("clipped_bottom"):
+                                bits.append(
+                                    f"shortest ASV ({mc.get('min_asv')} bp) sits on truncLen_F"
+                                )
+                            log_lines.append(
+                                "⚠️ truncLen is clipping the amplicon: "
+                                + "; ".join(bits)
+                                + f". Try truncLen_F={mc.get('suggest_F')} "
+                                  f"truncLen_R={mc.get('suggest_R')} "
+                                  f"(ceiling {mc.get('suggest_ceiling')} bp) with maxEE_R raised."
+                            )
+                            jobs[job_id]["log_lines"] = log_lines[-500:]
+                        save_jobs()
+                    except Exception as e:
+                        print(f"[merge_ceiling] parse error: {e}")
 
                 elif line.startswith("PROGRESS:"):
                     try:
@@ -1403,6 +1458,94 @@ def get_checkpoint(job_id: str):
         "checkpoint_type": j.get("checkpoint_type"),
         "checkpoint_data": j.get("checkpoint_data", {}),
     }
+
+# ── 6e. PDF report ────────────────────────────────────────────────────────────
+# Wraps report_builder.py, which is also a standalone CLI. The report is built on
+# demand rather than at the end of a run: it is usually wanted over several runs
+# finished at different times, and it should stay rebuildable without re-running
+# anything. Everything it needs is already on disk in the result folders.
+class ReportRequest(BaseModel):
+    job_ids: List[str]
+    title:    Optional[str] = None
+    subtitle: Optional[str] = None
+    company:  Optional[str] = None
+    labels:   Optional[List[str]] = None
+    top_asv:  int = 30          # 30 / 50 / 100 — only used by the single-run layout
+    compare:  bool = False      # force the comparison layout on one folder
+
+
+@app.post("/report")
+def build_report(req: ReportRequest):
+    import importlib, tempfile
+    try:
+        rb = importlib.import_module("report_builder")
+        importlib.reload(rb)          # pick up edits without restarting the backend
+    except Exception as e:
+        return JSONResponse(status_code=500,
+                            content={"error": f"report_builder unavailable: {e}"})
+
+    runs, missing = [], []
+    for i, jid in enumerate(req.job_ids):
+        j = jobs.get(jid) or {}
+        out = j.get("output_dir") or str(RESULTS_DIR / jid)
+        label = None
+        if req.labels and i < len(req.labels) and req.labels[i]:
+            label = req.labels[i]
+        else:
+            label = j.get("job_name") or jid
+        try:
+            runs.append(rb.Run(Path(out), rb.KITOME, label))
+        except Exception as e:
+            missing.append(f"{label}: {e}")
+    if not runs:
+        return JSONResponse(status_code=400,
+                            content={"error": "No readable results",
+                                     "detail": missing})
+
+    app_name = "NextGen-Amplicon"
+    try:
+        app_name += " v" + json.loads((BASE_DIR.parent / "version.json").read_text())["version"]
+    except Exception:
+        pass
+    # One folder is the ordinary case and gets the result report.
+    if len(runs) == 1 and not req.compare:
+        doc = rb.build_profile_html(runs[0], title=req.title, subtitle=req.subtitle,
+                                    app=app_name, company=req.company or "",
+                                    top_asv=max(1, min(int(req.top_asv or 30), 500)))
+    else:
+        doc = rb.build_html(runs, title=req.title, subtitle=req.subtitle,
+                            app=app_name, company=req.company or "")
+
+    stem = "report_" + "_".join(r.label for r in runs)[:60].replace(" ", "_")
+    stem = re.sub(r"[^A-Za-z0-9_.-]", "", stem) or "report"
+    out_dir = Path(tempfile.gettempdir()) / "amplicon_reports"
+    out_dir.mkdir(exist_ok=True)
+    pdf_path = out_dir / f"{stem}.pdf"
+    try:
+        # A package installed while this process was already running is invisible
+        # until the import system re-reads site-packages.
+        importlib.invalidate_caches()
+        from weasyprint import HTML as _WH
+        _WH(string=doc).write_pdf(str(pdf_path))
+    except ImportError:
+        # Hand back the HTML rather than nothing — it prints to PDF from a browser.
+        html_path = out_dir / f"{stem}.html"
+        html_path.write_text(doc, encoding="utf-8")
+        # Name the interpreter. The backend runs from its own venv, so "pip install
+        # weasyprint" typed at a conda or system prompt installs it somewhere this
+        # process will never look, and the message repeats with the package already
+        # "installed" as far as the user can tell.
+        return JSONResponse(status_code=501, content={
+            "error": "weasyprint is not installed in the environment the backend runs in",
+            "hint": f"{sys.executable} -m pip install weasyprint",
+            "python": sys.executable,
+            "html": str(html_path)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"PDF build failed: {e}"})
+
+    return FileResponse(str(pdf_path), media_type="application/pdf",
+                        filename=pdf_path.name)
+
 
 # ── 7. Replot with custom colours ─────────────────────────────────────────────
 class ReplotBody(BaseModel):

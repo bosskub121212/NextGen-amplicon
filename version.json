@@ -1,5 +1,10 @@
 {
-  "version": "2.7.3",
-  "release_date": "2026-09-15",
-  "changelog": "fix: update checker compared version strings for inequality, so it announced an 'update' whenever local and remote differed — including when the local build was NEWER, the normal state on a dev machine between deploying and pushing. Versions are now compared numerically (which also fixes 2.7.10 being treated as older than 2.7.9), and an update is only offered when the remote is genuinely ahead."
+  "version": "2.8.2",
+  "release_date": "2026-09-16",
+  "changelog": "fix: the PDF report kept reporting weasyprint as missing after it had been installed. The backend runs from its own venv (start.sh launches $APP_DIR/venv/bin/uvicorn), so a pip install typed at a conda or system prompt lands where this process will never look — and deploy_dev.sh made the same mistake, checking the import with whatever python3 the shell resolved rather than with the interpreter the backend actually runs, so it reported success while the app kept answering 'not installed'. deploy_dev.sh now checks the venv's own interpreter and installs weasyprint into it when missing, and the endpoint's error names the exact interpreter and the pip command to run against it. The report endpoint also calls importlib.invalidate_caches() first, so a package installed while the backend is running is picked up without a restart.",
+  "previous": {
+    "2.8.1": "add: single-run result report with QC, figures, a top-N ASV table and diversity; the merge-ceiling verdict now weighs read mass at the edge rather than using a fixed tolerance.",
+    "2.8.0": "add: PDF reports — report_builder.py, POST /report, and a 'PDF Report' button on each completed job.",
+    "2.7.9": "perf: species assignment runs in its own R process."
+  }
 }
