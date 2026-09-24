@@ -11,6 +11,7 @@ import DataPrepPanel from "./components/DataPrepPanel";
 import PreviewPage from "./pages/PreviewPage";
 import "./App.css";
 import ErrorBoundary from "./ErrorBoundary";
+import { pairingFor, sampleOfSingle, checkPairing } from "./lib/fastqPairing";
 
 const API = "http://localhost:8000";
 type Screen = "home" | "new-job" | "history" | "preview";
@@ -207,13 +208,10 @@ export default function App() {
   useEffect(() => {
     if (useManualPairing || serverFileList.length === 0) return;
     const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
-    const r1 = isONT ? [] : serverFileList.filter(n => /_R1|_1\.(fq|fastq)/i.test(n));
+    const P = pairingFor(serverFileList);
+    const r1 = isONT ? [] : serverFileList.filter(n => P.isR1(n));
     const base = r1.length > 0 ? r1 : serverFileList.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
-    const names = base.map(n =>
-      isONT
-        ? n.replace(/\.(fastq|fq)(\.gz)?$/i, "")
-        : n.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "")
-    );
+    const names = base.map(n => isONT ? sampleOfSingle(n) : P.sampleOf(n));
     if (names.length > 0) setSampleNames(names);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useManualPairing]);
@@ -503,13 +501,10 @@ export default function App() {
       // Recompute sample names from non-ZIP files
       const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
       const nonZip = merged.filter(f => !f.name.toLowerCase().endsWith(".zip"));
-      const r1 = isONT ? [] : nonZip.filter(f => /_R1|_1\.(fq|fastq)/i.test(f.name));
+      const P = pairingFor(nonZip.map(f => f.name));
+      const r1 = isONT ? [] : nonZip.filter(f => P.isR1(f.name));
       const base = r1.length > 0 ? r1 : nonZip;
-      const names = base.map(f =>
-        isONT
-          ? f.name.replace(/\.(fastq|fq)(\.gz)?$/i, "")
-          : f.name.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "")
-      );
+      const names = base.map(f => isONT ? sampleOfSingle(f.name) : P.sampleOf(f.name));
       setSampleNames(names);
       setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
       return merged;
@@ -529,13 +524,10 @@ export default function App() {
       const serverFiles: string[] = res.data.files || [];
       setServerFileList(serverFiles);
       const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
-      const r1 = isONT ? [] : serverFiles.filter(n => /_R1|_1\.(fq|fastq)/i.test(n));
+      const P = pairingFor(serverFiles);
+      const r1 = isONT ? [] : serverFiles.filter(n => P.isR1(n));
       const base = r1.length > 0 ? r1 : serverFiles.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
-      const names = base.map(n =>
-        isONT
-          ? n.replace(/\.(fastq|fq)(\.gz)?$/i, "")
-          : n.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "")
-      );
+      const names = base.map(n => isONT ? sampleOfSingle(n) : P.sampleOf(n));
       if (names.length > 0) {
         setSampleNames(names);
         setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
@@ -549,6 +541,7 @@ export default function App() {
   // ── Guess sample↔file pairs from filenames (starting point for manual editing) ──
   const buildFileMapGuess = (files: string[]): {sample:string; file1:string; file2:string}[] => {
     const fastq = files.filter(f => /\.(fastq|fq)(\.gz)?$/i.test(f)).sort();
+    const P = pairingFor(fastq);
     const used = new Set<string>();
     const rows: {sample:string; file1:string; file2:string}[] = [];
     // Single-end / long-read modes (ONT-16S marker, or QIIME2-VSEARCH sequencer type inside
@@ -562,12 +555,15 @@ export default function App() {
         rows.push({ sample: f.replace(/\.(fastq|fq)(\.gz)?$/i, ""), file1: f, file2: "" });
         continue;
       }
-      // Try to find this file's mate via common R1/R2 or _1/_2 conventions
+      // Try to find this file's mate via common R1/R2 or _1/_2 conventions.
+      // The mate is derived by rewriting the read token IN PLACE — never by a
+      // blind _R1 -> _R2 substitution, which for Bacteria_R1_1.fq.gz produced
+      // Bacteria_R2_2.fq.gz: a different sample's reverse reads.
       let mate = "";
-      let sample = f.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "");
-      if (/_R1|_1\.(fq|fastq)/i.test(f)) {
-        const candidate = f.replace(/_R1/i, "_R2").replace(/_1\.(fq|fastq)/i, "_2.$1");
-        if (fastq.includes(candidate)) mate = candidate;
+      let sample = P.sampleOf(f);
+      if (P.isR1(f)) {
+        const candidate = P.mateOf(f);
+        if (candidate !== f && fastq.includes(candidate)) mate = candidate;
       }
       if (mate) { used.add(f); used.add(mate); rows.push({ sample, file1: f, file2: mate }); }
       else {
@@ -592,13 +588,10 @@ export default function App() {
     if (useManualPairing) {
       setFileMap(buildFileMapGuess(serverFileList));
     } else {
-      const r1 = isONT ? [] : serverFileList.filter(n => /_R1|_1\.(fq|fastq)/i.test(n));
+      const P = pairingFor(serverFileList);
+      const r1 = isONT ? [] : serverFileList.filter(n => P.isR1(n));
       const base = r1.length > 0 ? r1 : serverFileList.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
-      const names = base.map(n =>
-        isONT
-          ? n.replace(/\.(fastq|fq)(\.gz)?$/i, "")
-          : n.replace(/_R1.*|_1\.(fq|fastq).*/i, "").replace(/\.(fastq|fq)(\.gz)?$/i, "")
-      );
+      const names = base.map(n => isONT ? sampleOfSingle(n) : P.sampleOf(n));
       if (names.length > 0) setSampleNames(names);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1861,9 +1854,10 @@ export default function App() {
                           const next = prev.filter(x => x.name !== f.name);
                           const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
                           const nonZip = next.filter(x => !x.name.toLowerCase().endsWith(".zip"));
-                          const r1 = isONT ? [] : nonZip.filter(x => /_R1|_1\.(fq|fastq)/i.test(x.name));
+                          const P = pairingFor(nonZip.map(x => x.name));
+                          const r1 = isONT ? [] : nonZip.filter(x => P.isR1(x.name));
                           const base = r1.length > 0 ? r1 : nonZip;
-                          const names = base.map(x => isONT ? x.name.replace(/\.(fastq|fq)(\.gz)?$/i,"") : x.name.replace(/_R1.*|_1\.(fq|fastq).*/i,"").replace(/\.(fastq|fq)(\.gz)?$/i,""));
+                          const names = base.map(x => isONT ? sampleOfSingle(x.name) : P.sampleOf(x.name));
                           setSampleNames(names);
                           setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
                           return next;
@@ -1879,10 +1873,53 @@ export default function App() {
             <div className="sample-list">
               <div className="sample-list-title">🧪 Detected samples ({sampleNames.length})</div>
               <div className="sample-chips">
-                {sampleNames.map(s => <span key={s} className="sample-chip">{s}</span>)}
+                {/* key by position, not by name — two files can legitimately
+                    resolve to the same name, and that is exactly the case the
+                    warning below is about. */}
+                {sampleNames.map((s, i) => <span key={`${s}-${i}`} className="sample-chip">{s}</span>)}
               </div>
             </div>
           )}
+
+          {/* ── Pairing sanity check ──────────────────────────────────────
+              A duplicated or unpaired sample name means the R1/R2 files were
+              not matched up correctly. Left alone it does not fail loudly: the
+              run either dies eight minutes in at derepFastq(), or worse,
+              finishes with an ASV table built from mismatched reads. Say so
+              here, before the run starts. */}
+          {sampleNames.length > 0 && (() => {
+            const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
+            if (isONT || useManualPairing) return null;
+            const fileNames = serverFileList.length > 0
+              ? serverFileList
+              : selectedFiles.filter(f => !f.name.toLowerCase().endsWith(".zip")).map(f => f.name);
+            if (fileNames.length === 0) return null;
+            const problems = checkPairing(sampleNames, fileNames);
+            if (problems.length === 0) return null;
+            return (
+              <div style={{
+                marginTop: 10, padding: "10px 12px", borderRadius: 8,
+                background: "#7f1d1d22", border: "1px solid #ef444455", fontSize: 13,
+              }}>
+                <div style={{ fontWeight: 700, color: "#fca5a5", marginBottom: 4 }}>
+                  ⚠️ File pairing looks wrong — do not run yet
+                </div>
+                {problems.map((pr, i) => (
+                  <div key={i} style={{ color: "#fecaca", marginBottom: 2 }}>
+                    {pr.kind === "duplicate"
+                      ? <>Sample name used by more than one pair: <strong>{pr.samples.join(", ")}</strong> — two different samples would be merged into one.</>
+                      : <>No matching R2 file for: <strong>{pr.samples.join(", ")}</strong> — that sample would be dropped or paired with the wrong mate.</>}
+                  </div>
+                ))}
+                <div style={{ color: "#94a3b8", marginTop: 6 }}>
+                  Usual cause: the sample name itself contains <code>_R1</code> or <code>_R2</code>.
+                  Rename the files so the read-direction token appears only at the end
+                  (<code>Sample_1.fq.gz</code> / <code>Sample_2.fq.gz</code>), or tick
+                  “Manually assign files per sample” below and pair them yourself.
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ── Manual sample↔file pairing (advanced) ─────────────────────── */}
           {pendingJobId && serverFileList.length > 0 && (

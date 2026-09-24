@@ -184,6 +184,27 @@ findFASTQ <- function(dir, pats) {
   return(character(0))
 }
 
+# Helper: strip the read-direction token from a FASTQ filename.
+#
+# The token that says "this is read 1 / read 2" only ever sits at the END of a
+# FASTQ name, immediately before the extension:
+#     Sample_R1.fastq.gz   Sample_R1_001.fastq.gz   Sample_1.fq.gz
+# Matching "_R1" ANYWHERE in the name instead — which is what this pipeline
+# used to do — silently renames any sample that is itself called R1 or R2:
+# "Bacteria_R1_1.fq.gz" collapsed to "Bacteria", so two different samples could
+# end up sharing one name, or one sample's forward reads could be paired with
+# another sample's reverse reads. Anchor the token, and only fall back to the
+# old loose rule for names where nothing matched at the end (e.g. Trim Galore's
+# Sample_R1_val_1.fq.gz).
+strip_read_token <- function(x) {
+  y <- sub("_R?[12](_[0-9]{3})?\\.f(q|astq)(\\.gz)?$", "", x, ignore.case=TRUE)
+  loose <- y == x
+  if (any(loose))
+    y[loose] <- sub("_R1.*|_R2.*|_1\\.(fq|fastq).*|_2\\.(fq|fastq).*", "",
+                    x[loose], ignore.case=TRUE)
+  sub("\\.f(q|astq)(\\.gz)?$", "", y)
+}
+
 manifest_file <- file.path(opt$input, "sample_manifest.json")
 use_manifest  <- file.exists(manifest_file)
 
@@ -270,16 +291,58 @@ if (use_manifest) {
   }
 } else {
   # ── Paired-end (Illumina): require R1/R2 ───────────────────
+  # Anchored forms first (token at the end of the name), loose form last so
+  # odd layouts such as Sample_R1_val_1.fq.gz still resolve.
   patterns <- list(
-    R1 = c("_R1.*\\.fastq$", "_R1.*\\.fastq\\.gz$", "_1\\.f(q|astq)(\\.gz)?$"),
-    R2 = c("_R2.*\\.fastq$", "_R2.*\\.fastq\\.gz$", "_2\\.f(q|astq)(\\.gz)?$")
+    R1 = c("_R1(_[0-9]{3})?\\.f(q|astq)(\\.gz)?$", "_1\\.f(q|astq)(\\.gz)?$", "_R1.*\\.f(q|astq)(\\.gz)?$"),
+    R2 = c("_R2(_[0-9]{3})?\\.f(q|astq)(\\.gz)?$", "_2\\.f(q|astq)(\\.gz)?$", "_R2.*\\.f(q|astq)(\\.gz)?$")
   )
   fnFs <- findFASTQ(opt$input, patterns$R1)
   fnRs <- findFASTQ(opt$input, patterns$R2)
   if (length(fnFs) == 0) stop("No FASTQ files found in: ", opt$input)
   cat("Found R1:", length(fnFs), "files\n")
   cat("Found R2:", length(fnRs), "files\n\n")
-  sample_names <- sub("_R1.*|_1\\.(fq|fastq).*", "", basename(fnFs))
+  sample_names <- strip_read_token(basename(fnFs))
+
+  # ── Guards: a mis-detected pairing must never reach the pipeline ──
+  # Everything downstream assumes fnFs[i] and fnRs[i] are the two mates of ONE
+  # library. When that assumption breaks the run does not fail loudly — it
+  # produces a plausible-looking ASV table built from mismatched reads.
+  if (length(fnRs) != length(fnFs))
+    stop("Found ", length(fnFs), " R1 file(s) but ", length(fnRs), " R2 file(s). ",
+         "Every sample needs exactly one of each. Use the manual sample/file ",
+         "pairing option on the upload screen to assign them yourself.")
+  sample_names_r <- strip_read_token(basename(fnRs))
+  if (!identical(sample_names, sample_names_r)) {
+    # Retry with the old loose rule before giving up: some trimmers put the
+    # token in the middle AND at the end (Trim Galore writes
+    # Sample_R1_val_1.fq.gz / Sample_R2_val_2.fq.gz), where only stripping from
+    # the first "_R1"/"_R2" makes the two sides agree.
+    loose <- function(x) sub("_R1.*|_R2.*|_1\\.(fq|fastq).*|_2\\.(fq|fastq).*", "",
+                             x, ignore.case=TRUE)
+    lf <- loose(basename(fnFs)); lr <- loose(basename(fnRs))
+    if (identical(lf, lr) && !any(duplicated(lf))) {
+      cat("  [pairing] anchored token names disagreed between R1 and R2; using the\n")
+      cat("            loose rule instead (looks like trimmer output).\n")
+      sample_names   <- lf
+      sample_names_r <- lr
+    }
+  }
+  if (!identical(sample_names, sample_names_r)) {
+    mism <- which(sample_names != sample_names_r)
+    stop("R1 and R2 files do not line up. R1 file '", basename(fnFs[mism[1]]),
+         "' resolves to sample '", sample_names[mism[1]], "' but the R2 file in the ",
+         "same position ('", basename(fnRs[mism[1]]), "') resolves to '",
+         sample_names_r[mism[1]], "'. Use the manual sample/file pairing option ",
+         "on the upload screen.")
+  }
+  dup_names <- unique(sample_names[duplicated(sample_names)])
+  if (length(dup_names) > 0)
+    stop("Duplicate sample name(s) after parsing filenames: ",
+         paste(dup_names, collapse=", "),
+         ". Two different samples would be merged into one. Rename the files so ",
+         "the read-direction token (_R1/_R2 or _1/_2) only appears at the end, ",
+         "or use the manual sample/file pairing option.")
 }
 cat("Mode (resolved):", if (is_single) "single-end" else "paired-end", "\n\n")
 prog(8, sprintf("Found %d sample(s) — ready to process", length(fnFs)))
@@ -640,6 +703,44 @@ tryCatch({
   }
   cat("  Trimmed FastQ saved to Trim_seq/\n")
 }, error=function(e) cat("  [skip] Trim_seq copy:", e$message, "\n"))
+
+# ── Drop samples that lost every read at the filter ───────────
+# filterAndTrim() does not write an output file for a sample whose reads all
+# fail ("The filter removed all reads: ... not written"), but filtFs/filtRs
+# still hold those paths. derepFastq() then aborts the whole job with
+# "Not all provided files exist." — one dead sample throws away a run whose
+# other samples were perfectly fine, after the error model has already been
+# learned. Drop the dead ones here, keeping every parallel vector
+# (out / filtFs / filtRs / sample_names) aligned, and carry on with the rest.
+.alive <- file.exists(filtFs)
+if (!is_single && length(filtRs) == length(filtFs))
+  .alive <- .alive & file.exists(filtRs)
+if (!all(.alive)) {
+  .dead <- sample_names[!.alive]
+  cat(sprintf("\n  [!] %d of %d sample(s) had NO reads pass the filter and are dropped from this run:\n",
+              sum(!.alive), length(.alive)))
+  cat("      ", paste(.dead, collapse=", "), "\n", sep="")
+  cat("      Usual causes, most likely first:\n")
+  cat("        1. truncLen is longer than that sample's reads\n")
+  cat("        2. the Step 1 primers do not match that library, or its R1/R2\n")
+  cat("           files were paired with the wrong mate, so cutadapt emptied it\n")
+  cat("        3. maxEE too strict for that sample's quality\n")
+  cat(sprintf("ZERO_READ_SAMPLES:%s\n",
+              toJSON(list(samples=.dead, dropped=sum(!.alive), kept=sum(.alive)),
+                     auto_unbox=TRUE)))
+  if (!any(.alive))
+    stop("Every sample lost all of its reads at the filtering step — nothing left ",
+         "to denoise. Check truncLen against the actual read lengths and the ",
+         "Step 1 primer settings.")
+  if (!is.null(out) && nrow(out) == length(filtFs))
+    out <- out[.alive, , drop=FALSE]
+  if (!is_single && length(filtRs) == length(.alive))
+    filtRs <- filtRs[.alive]
+  filtFs       <- filtFs[.alive]
+  sample_names <- sample_names[.alive]
+  cat(sprintf("      Continuing with %d sample(s): %s\n\n",
+              length(sample_names), paste(sample_names, collapse=", ")))
+}
 
 # ── Step 3: Learn Error Rates ─────────────────────────────────
 prog(32, "Step 2/8 — Learning error rates (this takes a while...)")

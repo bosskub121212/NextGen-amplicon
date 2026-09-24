@@ -64,11 +64,37 @@ cd "$APP_DIR" || die "Repo not found: $APP_DIR"
 git rev-parse --git-dir >/dev/null 2>&1 || die "$APP_DIR is not a git repository"
 
 # Default message from version.json
+#
+# git expects a short subject line, a blank line, then the detail. The earlier
+# version pasted the whole changelog into the subject, which made
+# `git log --oneline` a wall of text and left GitHub's commit list truncating
+# mid-sentence. Take the first sentence as the subject, keep the rest as the
+# body.
+build_message() {
+  local V="$1" C="$2" SUBJ FIRST TRUNCATED=0
+  if [[ -z "$C" ]]; then printf '%s' "v$V"; return; fi
+  # Split on ". " followed by a capital, so "e.g." and version numbers do not
+  # count as the end of a sentence.
+  FIRST="$(printf '%s' "$C" | sed -E 's/^(.*?[^A-Z][.])[[:space:]]+[A-Z].*$/\1/')"
+  SUBJ="v$V: $FIRST"
+  if [[ ${#SUBJ} -gt 72 ]]; then          # git convention: subject <= 72 chars
+    SUBJ="$(printf '%s' "${SUBJ:0:69}" | sed -E 's/[[:space:],;:.]+[^[:space:]]*$//')…"
+    TRUNCATED=1
+  fi
+  # Repeating the changelog as a body adds nothing when the subject already
+  # carries all of it.
+  if [[ "$TRUNCATED" -eq 0 && "$FIRST" == "$C" ]]; then
+    printf '%s' "$SUBJ"
+  else
+    printf '%s\n\n%s' "$SUBJ" "$(printf '%s' "$C" | fold -s -w 72)"
+  fi
+}
+
 if [[ -z "$MSG" ]]; then
   V=$(grep -oP '"version"\s*:\s*"\K[^"]+' version.json 2>/dev/null || echo "")
   C=$(grep -oP '"changelog"\s*:\s*"\K[^"]+' version.json 2>/dev/null || echo "")
   if [[ -n "$V" ]]; then
-    MSG="v$V${C:+: $C}"
+    MSG="$(build_message "$V" "$C")"
     info "Message from version.json"
   else
     die "No commit message given and version.json has no version"
@@ -105,8 +131,11 @@ fi
 # ssh -T github.com exits 1 even on success ("You've successfully
 # authenticated, but GitHub does not provide shell access"), so test the
 # message, not the exit code.
-SSH_OUT="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-              -T git@github.com 2>&1 || true)"
+# -n matters: without it ssh inherits the terminal as its stdin and swallows
+# it, so the "Commit and push this?" prompt further down reads EOF instead of
+# the keystroke and the script reports "Cancelled" no matter what you type.
+SSH_OUT="$(ssh -n -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+              -T git@github.com 2>&1 </dev/null || true)"
 if echo "$SSH_OUT" | grep -q "successfully authenticated"; then
   ok "$(echo "$SSH_OUT" | head -1)"
 else
@@ -167,9 +196,19 @@ fi
 
 if [[ "$ASSUME_YES" -eq 0 ]]; then
   echo ""
-  echo -e "  ${BOLD}Commit message:${NC} $MSG"
-  read -r -p "  Commit and push this? [y/N] " REPLY
-  if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+  echo -e "  ${BOLD}Commit message:${NC} $(printf '%s' "$MSG" | head -1)"
+  if [[ "$(printf '%s' "$MSG" | wc -l)" -gt 0 ]]; then
+    printf '%s' "$MSG" | tail -n +3 | sed 's/^/      /'
+  fi
+  # Read the answer from the terminal itself, not from whatever stdin happens
+  # to be — and accept "yes" as well as "y".
+  ANSWER=""
+  if [[ -r /dev/tty ]]; then
+    read -r -p "  Commit and push this? [y/N] " ANSWER </dev/tty || ANSWER=""
+  else
+    read -r -p "  Commit and push this? [y/N] " ANSWER || ANSWER=""
+  fi
+  if [[ ! "$ANSWER" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
     git reset >/dev/null
     info "Cancelled — nothing committed, changes left in the working tree"
     exit 0

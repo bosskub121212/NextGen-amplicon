@@ -1029,6 +1029,28 @@ def run_r_pipeline(job_id: str, params: RunParams):
                     except Exception as e:
                         print(f"[offtarget] parse error: {e}")
 
+                elif line.startswith("ZERO_READ_SAMPLES:"):
+                    # filterAndTrim() writes no output file for a sample whose
+                    # reads all fail, and the pipeline now drops those instead
+                    # of letting derepFastq() abort the run. Surface which ones
+                    # went missing — a quietly shorter sample list is exactly
+                    # the kind of thing that reaches a customer report unnoticed.
+                    try:
+                        zr = json.loads(line[len("ZERO_READ_SAMPLES:"):])
+                        names = zr.get("samples") or []
+                        with jobs_lock:
+                            jobs[job_id]["zero_read_samples"] = zr
+                            log_lines.append(
+                                f"⚠️ {zr.get('dropped', len(names))} sample(s) had no reads "
+                                f"pass the filter and were dropped: {', '.join(names)}. "
+                                f"Continuing with {zr.get('kept')} sample(s). "
+                                f"Check truncLen against the read lengths and the Step 1 primers."
+                            )
+                            jobs[job_id]["log_lines"] = log_lines[-500:]
+                        save_jobs()
+                    except Exception as e:
+                        print(f"[zero-read] parse error: {e}")
+
                 elif line.startswith("MERGE_CEILING_WARN:"):
                     # truncLen_F + truncLen_R - 12 is the longest insert that can
                     # merge. When the longest surviving ASV lands exactly on that
