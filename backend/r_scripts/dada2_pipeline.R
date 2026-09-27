@@ -576,6 +576,13 @@ if (!is_single && has_qc_helpers && length(fnFs) > 0 && length(fnRs) > 0) {
     hF <- qc_length_hist(fnFs[1]); hR <- qc_length_hist(fnRs[1])
     rF <- qc_recommend_trunclen(hF); rR <- qc_recommend_trunclen(hR)
     if (!is.null(rF) && !is.null(rR)) {
+      # Remember what the READS support. The merge-ceiling QC at the end of the
+      # run used to propose "250 - primer length" instead, which on this very
+      # library was 233/229 against a measured maximum of 226/223 — following it
+      # would have dropped two thirds of the reverse reads. One measurement, one
+      # answer: everything downstream uses these.
+      assign("QC_MAX_TRUNC_F", rF$recommended, envir = globalenv())
+      assign("QC_MAX_TRUNC_R", rR$recommended, envir = globalenv())
       keepF <- qc_keep_at(hF, opt$truncLen_F)
       keepR <- qc_keep_at(hR, opt$truncLen_R)
       cat(sprintf("  Read lengths after trimming: R1 max %d bp, R2 max %d bp\n",
@@ -1069,10 +1076,13 @@ if (db_path == "" || !file.exists(db_path)) {
                          full.names=TRUE, ignore.case=TRUE)
   cat("  Found", length(db_files), "database file(s)\n")
 
+  # A *toSpecies* trainset is a trainset — only assignSpecies files are excluded
+  # here. The old filter dropped silva_nr99_*_toSpecies_trainset.fa.gz, which is
+  # a perfectly good 7-rank reference.
   togenus_files <- db_files[grepl("togenus|toGenus|train_set|trainset", basename(db_files), ignore.case=TRUE) &
-                             !grepl("toSpecies|tospecies|assignSpecies", basename(db_files), ignore.case=TRUE)]
+                             !grepl("assignSpecies|species_assignment", basename(db_files), ignore.case=TRUE)]
   train_files   <- db_files[grepl("train_set|trainset|nr99", basename(db_files), ignore.case=TRUE) &
-                             !grepl("toSpecies|tospecies|assignSpecies", basename(db_files), ignore.case=TRUE)]
+                             !grepl("assignSpecies|species_assignment", basename(db_files), ignore.case=TRUE)]
   other_files   <- db_files[!grepl("species|Species", basename(db_files), ignore.case=TRUE)]
 
   if (length(togenus_files) > 0) {
@@ -1091,13 +1101,37 @@ if (db_path == "" || !file.exists(db_path)) {
 }
 
 cat("  Using database:", basename(db_path), "\n")
-is_species_file <- grepl("assignSpecies|toSpecies", basename(db_path), ignore.case=TRUE)
+
+# Is this file actually a taxonomy TRAINSET? Decided from the file's own
+# headers, not its name — a renamed assignSpecies file used to sail straight
+# into assignTaxonomy(), which then produced a completed run with no taxonomy
+# at all: no taxonomy_table.csv, no r_tables/, and a confusing
+# "BIOM file not found" from the visualisation step eight minutes later. And a
+# real toSpecies TRAINSET used to be rejected for having "toSpecies" in its
+# name. Both are the same mistake in opposite directions.
+db_info <- if (has_tax_helpers && file.exists(db_path)) tax_inspect_reference(db_path) else NULL
+is_species_file <- if (!is.null(db_info)) {
+  identical(db_info$kind, "species_assignment")
+} else {
+  grepl("assignSpecies|species_assignment", basename(db_path), ignore.case=TRUE)
+}
 
 if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
   if (is_species_file) {
-    cat("  Note: '", basename(db_path), "' is an assignSpecies file.\n", sep="")
-    cat("  Skipping genus-level taxonomy (need silva_nr99_v138.2_train_set.fa.gz).\n")
-    cat("  ASV table will be saved without taxonomy.\n\n")
+    cat("\n")
+    cat("  +- WRONG KIND OF REFERENCE FILE ---------------------------\n")
+    cat(sprintf("  | %s\n", basename(db_path)))
+    cat("  | Its headers look like 'ACCESSION Genus species' with no\n")
+    cat("  | ';'-separated lineage, so this is an assignSpecies file:\n")
+    cat("  | it carries species labels only, with no Domain..Genus\n")
+    cat("  | hierarchy for assignTaxonomy() to use.\n")
+    cat("  |\n")
+    cat("  | Pick the TRAINSET instead (e.g. *_toGenus_trainset.fa.gz).\n")
+    cat("  | The species file is found automatically from the same\n")
+    cat("  | folder — you never select it yourself.\n")
+    cat("  +----------------------------------------------------------\n\n")
+    stop("Taxonomy database is an assignSpecies file, not a trainset: ",
+         basename(db_path), ". Select the *_toGenus_trainset file instead.")
   } else {
     gc(verbose=FALSE)
     cat("  Memory freed — starting taxonomy assignment...\n")
@@ -1934,18 +1968,41 @@ tryCatch({
                     near_top, pct_top))
       if (hit_bot)
         cat("  │ ** shortest ASV sits ON truncLen_F — reads shorter than\n  │    this were dropped by filterAndTrim()\n")
-      max_f <- 250 - nchar(opt$primer_f); max_r <- 250 - nchar(opt$primer_r)
-      cat(sprintf("  │ For 2x250 reads with these primers the hard maximum is\n  │    truncLen_F=%d truncLen_R=%d -> ceiling %d bp.\n",
-                  max_f, max_r, max_f + max_r - MIN_OVERLAP))
-      cat("  │ Raising truncLen_R usually needs maxEE_R raised too, since\n  │    the last bases of R2 are the lowest quality.\n")
+      # The highest truncLen this library can actually carry. Measured from the
+      # trimmed reads by the truncLen QC at the start of the run; the old
+      # "250 - primer length" arithmetic is only a fallback for runs where that
+      # measurement did not happen (single-end, or qc_helpers.R missing), and it
+      # is labelled as an estimate so nobody acts on it as if it were measured.
+      measured <- exists("QC_MAX_TRUNC_F") && exists("QC_MAX_TRUNC_R")
+      if (measured) {
+        max_f <- get("QC_MAX_TRUNC_F"); max_r <- get("QC_MAX_TRUNC_R")
+        src   <- "measured from the trimmed reads"
+      } else {
+        max_f <- 250 - nchar(opt$primer_f); max_r <- 250 - nchar(opt$primer_r)
+        src   <- "ESTIMATED from read length minus primer length — not measured"
+      }
+      best_ceil <- max_f + max_r - MIN_OVERLAP
+      at_max    <- best_ceil <= ceil
+
+      if (at_max) {
+        cat(sprintf("  │ truncLen is already at this library's maximum (%s):\n  │    F=%d R=%d -> ceiling %d bp. It CANNOT be raised.\n",
+                    src, max_f, max_r, best_ceil))
+        cat("  │ The amplicon is simply longer than these reads can span.\n")
+        cat("  │ Fixing it needs a shorter amplicon or longer reads — not a\n  │    settings change. Report the clipping as a known limit.\n")
+      } else {
+        cat(sprintf("  │ Highest truncLen this library supports (%s):\n  │    truncLen_F=%d truncLen_R=%d -> ceiling %d bp.\n",
+                    src, max_f, max_r, best_ceil))
+        cat("  │ Raising truncLen_R usually needs maxEE_R raised too, since\n  │    the last bases of R2 are the lowest quality.\n")
+      }
       cat("  └─────────────────────────────────────────────────────────────\n\n")
       cat(sprintf(paste0('MERGE_CEILING_WARN: {"truncLen_F":%d,"truncLen_R":%d,"ceiling":%d,',
                          '"floor":%d,"max_asv":%d,"min_asv":%d,"clipped_top":%s,"clipped_bottom":%s,',
                          '"near_edge_reads":%d,"near_edge_pct":%.2f,"suggest_F":%d,"suggest_R":%d,',
-                         '"suggest_ceiling":%d}\n'),
+                         '"suggest_ceiling":%d,"at_max":%s,"measured":%s}\n'),
                   opt$truncLen_F, opt$truncLen_R, ceil, floor_, max(lens), min(lens),
                   tolower(as.character(hit_top)), tolower(as.character(hit_bot)),
-                  round(near_top), pct_top, max_f, max_r, max_f + max_r - MIN_OVERLAP))
+                  round(near_top), pct_top, max_f, max_r, best_ceil,
+                  tolower(as.character(at_max)), tolower(as.character(measured))))
     } else {
       cat(sprintf("  Merge window OK: ASVs %d-%d bp sit inside the %d-%d bp window\n",
                   min(lens), max(lens), floor_, ceil))

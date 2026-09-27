@@ -48,21 +48,85 @@ tax_detect_db_depth <- function(p, n_headers = 3000) {
 }
 
 
+# What KIND of reference file this is, and how deep it goes — read from the
+# file's own headers, never from its name.
+#
+# Two things used to be decided by filename and both got them wrong:
+#
+#   * "is this a species-assignment file?"  matched assignSpecies|toSpecies,
+#     so silva_nr99_v138.2_toSpecies_trainset.fa.gz — a perfectly good 7-rank
+#     trainset — was treated as a species file and skipped, while a real
+#     assignSpecies file handed in under any other name sailed straight into
+#     assignTaxonomy() and produced a run with no taxonomy at all.
+#   * "does depth 7 mean Domain..Genus or Kingdom..Species?"  matched
+#     "tospecies" in the name, so a renamed or third-party file shifted every
+#     rank by one with no error.
+#
+# Both are answered by the headers. A trainset header is a ';'-separated
+# lineage; an assignSpecies header is "ACCESSION Genus species" with no ';'.
+# And a trainset that carries a Species rank writes a binomial whose first word
+# repeats the genus above it ("...;Bacillus;Bacillus subtilis;"), which the
+# majority test below detects without trusting any one record.
+tax_inspect_reference <- function(p, n_headers = 2000) {
+  default <- list(depth = NA_integer_, has_species = NA, kind = "unknown", n = 0L)
+  tryCatch({
+    con <- if (grepl("\\.gz$", p)) gzfile(p, "rt") else file(p, "rt")
+    on.exit(close(con), add = TRUE)
+    hdrs <- character(0)
+    while (length(hdrs) < n_headers) {
+      chunk <- readLines(con, n = 2000, warn = FALSE)
+      if (length(chunk) == 0) break
+      hdrs <- c(hdrs, chunk[startsWith(chunk, ">")])
+    }
+    if (length(hdrs) == 0) return(default)
+    parts <- lapply(hdrs, function(h) {
+      x <- trimws(strsplit(sub("^>", "", h), ";")[[1]]); x[nzchar(x)]
+    })
+    d <- lengths(parts)
+    depth <- max(d)
+    med   <- stats::median(d)
+
+    if (med <= 2) {
+      first  <- vapply(parts, function(x) if (length(x)) x[1] else "", character(1))
+      binom  <- mean(grepl("^\\S+\\s+\\S+\\s+\\S+", first))   # "ACC Genus species"
+      return(list(depth = depth, has_species = NA,
+                  kind = if (binom > 0.5) "species_assignment" else "unknown",
+                  n = length(hdrs)))
+    }
+
+    full <- parts[d == depth]
+    has_sp <- FALSE
+    if (length(full) >= 20) {
+      hit <- vapply(full, function(x) {
+        g <- x[length(x) - 1]; sp <- x[length(x)]
+        isTRUE(nzchar(g) && startsWith(sp, paste0(g, " ")))
+      }, logical(1))
+      has_sp <- mean(hit) > 0.5
+    }
+    list(depth = depth, has_species = has_sp, kind = "trainset", n = length(hdrs))
+  }, error = function(e) default)
+}
+
+
 # Rank names matching the reference's actual depth. Returns NULL to mean
 # "use the DADA2 default", so callers can pass it straight through.
 tax_pick_levels <- function(db_path, verbose = TRUE) {
-  depth <- tax_detect_db_depth(db_path)
+  info  <- tax_inspect_reference(db_path)
+  depth <- info$depth
   if (is.na(depth)) {
     if (verbose) cat("  [warn] Could not read rank depth from the reference — using DADA2 defaults\n")
     return(NULL)
   }
-  is_to_species <- grepl("tospecies", basename(db_path), ignore.case = TRUE)
+  # Measured from the headers; the filename is only a last resort when the
+  # binomial test had too few full-depth records to decide.
+  is_to_species <- if (!is.na(info$has_species)) isTRUE(info$has_species)
+                   else grepl("tospecies", basename(db_path), ignore.case = TRUE)
   # Four shapes in circulation:
   #   6  Kingdom..Genus              SILVA 138.x toGenus
   #   7  Kingdom..Species            SILVA 138.x toSpecies
   #   7  Domain..Genus               SILVA 144  toGenus    (extra Kingdom rank)
   #   8  Domain..Species             SILVA 144  toSpecies
-  # Depth alone cannot separate the two 7s, so the filename breaks the tie.
+  # Depth alone cannot separate the two 7s; the binomial test above breaks the tie.
   has_domain <- depth >= 8 || (depth == 7 && !is_to_species)
   lv <- if (depth >= 8) {
     c("Domain","Kingdom","Phylum","Class","Order","Family","Genus","Species")[1:min(depth, 8)]

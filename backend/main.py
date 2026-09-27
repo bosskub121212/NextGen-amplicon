@@ -1072,12 +1072,34 @@ def run_r_pipeline(job_id: str, params: RunParams):
                                 bits.append(
                                     f"shortest ASV ({mc.get('min_asv')} bp) sits on truncLen_F"
                                 )
+                            # Only propose new truncLen values when the reads
+                            # can actually carry them. The suggestion used to be
+                            # "250 - primer length", which on a real V3-V4 run
+                            # came out 7 bp above what the reverse reads allowed
+                            # — the app would have talked the user into wiping
+                            # their own run. R now reports at_max when the
+                            # ceiling cannot be raised.
+                            if mc.get("at_max"):
+                                tail = (
+                                    f". truncLen is already at this library's maximum "
+                                    f"(F={mc.get('suggest_F')} R={mc.get('suggest_R')}, "
+                                    f"ceiling {mc.get('suggest_ceiling')} bp) — it cannot be "
+                                    f"raised. The amplicon is longer than these reads can span, "
+                                    f"so report the clipping as a known limit of the library."
+                                )
+                            else:
+                                tail = (
+                                    f". Try truncLen_F={mc.get('suggest_F')} "
+                                    f"truncLen_R={mc.get('suggest_R')} "
+                                    f"(ceiling {mc.get('suggest_ceiling')} bp) with maxEE_R raised."
+                                )
+                                if not mc.get("measured", True):
+                                    tail += (" These are estimated from read length minus primer "
+                                             "length, not measured — check the read-length QC first.")
                             log_lines.append(
                                 "⚠️ truncLen is clipping the amplicon: "
                                 + "; ".join(bits)
-                                + f". Try truncLen_F={mc.get('suggest_F')} "
-                                  f"truncLen_R={mc.get('suggest_R')} "
-                                  f"(ceiling {mc.get('suggest_ceiling')} bp) with maxEE_R raised."
+                                + tail
                             )
                             jobs[job_id]["log_lines"] = log_lines[-500:]
                         save_jobs()
