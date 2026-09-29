@@ -1062,7 +1062,13 @@ db_path <- opt$dbPath
 cat("  dbPath received:", if (nchar(db_path) > 0) db_path else "(empty)", "\n")
 
 if (db_path == "" || !file.exists(db_path)) {
-  cat("  Searching for database in script directory...\n")
+  # Reaching here means the backend sent no database, which after v2.8.5 should
+  # not happen — /run resolves and validates it, or refuses the job. Keep a
+  # fallback for direct command-line use, but make it a careful one: search
+  # RECURSIVELY (the trainsets live in databases/SILVA/, and a top-level-only
+  # scan is how an EMU species_taxid.fasta got picked as a 16S reference), take
+  # only files that look like trainsets, and refuse to guess if none is found.
+  cat("  No database given — searching for a trainset...\n")
   args      <- commandArgs(trailingOnly=FALSE)
   file_arg  <- args[grepl("^--file=", args)]
   script_dir <- if (length(file_arg) > 0)
@@ -1070,33 +1076,30 @@ if (db_path == "" || !file.exists(db_path)) {
   else
     dirname(normalizePath(sys.frame(1)$ofile, mustWork=FALSE))
   db_dir <- file.path(dirname(script_dir), "databases")
-  cat("  Looking in:", db_dir, "\n")
+  cat("  Looking in:", db_dir, "(recursively)\n")
 
-  db_files <- list.files(db_dir, pattern="\\.fa(\\.gz)?$|\\.fasta(\\.gz)?$",
-                         full.names=TRUE, ignore.case=TRUE)
-  cat("  Found", length(db_files), "database file(s)\n")
+  db_files <- list.files(db_dir, pattern="\\.fa(sta)?(\\.gz)?$",
+                         full.names=TRUE, recursive=TRUE, ignore.case=TRUE)
+  cat("  Found", length(db_files), "FASTA file(s)\n")
 
-  # A *toSpecies* trainset is a trainset — only assignSpecies files are excluded
-  # here. The old filter dropped silva_nr99_*_toSpecies_trainset.fa.gz, which is
-  # a perfectly good 7-rank reference.
-  togenus_files <- db_files[grepl("togenus|toGenus|train_set|trainset", basename(db_files), ignore.case=TRUE) &
-                             !grepl("assignSpecies|species_assignment", basename(db_files), ignore.case=TRUE)]
-  train_files   <- db_files[grepl("train_set|trainset|nr99", basename(db_files), ignore.case=TRUE) &
-                             !grepl("assignSpecies|species_assignment", basename(db_files), ignore.case=TRUE)]
-  other_files   <- db_files[!grepl("species|Species", basename(db_files), ignore.case=TRUE)]
+  bn <- tolower(basename(db_files))
+  is_species_name <- grepl("assignspecies|assign_species|species_taxid", bn)
+  is_trainset     <- grepl("trainset|train_set|nr99", bn) & !is_species_name
+  togenus_files   <- db_files[is_trainset & grepl("togenus", bn)]
+  train_files     <- db_files[is_trainset]
 
   if (length(togenus_files) > 0) {
-    db_path <- togenus_files[1]
+    db_path <- sort(togenus_files)[1]
     cat("  Selected toGenus trainset:", basename(db_path), "\n")
   } else if (length(train_files) > 0) {
-    db_path <- train_files[1]
+    db_path <- sort(train_files)[1]
     cat("  Selected trainset:", basename(db_path), "\n")
-  } else if (length(other_files) > 0) {
-    db_path <- other_files[1]
-    cat("  Selected fallback:", basename(db_path), "\n")
-  } else if (length(db_files) > 0) {
-    db_path <- db_files[1]
-    cat("  Warning: using first available file:", basename(db_path), "\n")
+  } else {
+    # Never "use the first available file". An arbitrary FASTA used as a
+    # taxonomy reference produces confidently-wrong names and no error.
+    stop("No taxonomy trainset found under ", db_dir,
+         " (looked for *trainset*/*train_set*/*nr99* FASTA files, recursively). ",
+         "Select a database in Step 5 - Taxonomy Classification.")
   }
 }
 
@@ -1203,6 +1206,16 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
     } else {
       cat("  [warn] Could not read rank depth from the reference — using DADA2 defaults\n")
     }
+
+    # assignTaxonomy() classifies by bootstrapping — 100 resamplings of each
+    # sequence's k-mers — and without a seed the RNG state differs between runs.
+    # Running the SAME reads against the SAME database twice moved 39 ASVs
+    # (457 reads) at genus level on our own V3-V4 data, which is small but is
+    # exactly the kind of drift that makes two reports disagree for no reason a
+    # customer could ever be told. Seed it so a run can be reproduced exactly.
+    TAX_SEED <- 100L
+    set.seed(TAX_SEED)
+    cat(sprintf("  Bootstrap seed: %d (taxonomy is reproducible run to run)\n", TAX_SEED))
 
     tryCatch({
       tax <- if (!is.null(tax_levels))

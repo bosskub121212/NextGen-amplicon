@@ -631,7 +631,14 @@ export default function App() {
       setShowSubmitPopup(false);
       setScreen("history");
       await refreshJobs();
-    } catch { alert("Failed to start analysis."); }
+    } catch (e: any) {
+      // The backend refuses a run it knows will fail — an unusable taxonomy
+      // database, for instance — and says why. Swallowing that behind a generic
+      // "Failed to start analysis." is how a fixable mistake turns into a
+      // guessing game, so show the server's own message when there is one.
+      const msg = e?.response?.data?.message || e?.response?.data?.error;
+      alert(msg ? `Cannot start this run:\n\n${msg}` : "Failed to start analysis.");
+    }
     setLoading(false);
   };
 

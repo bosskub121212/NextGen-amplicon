@@ -492,6 +492,112 @@ def prep_reorient(job_id: str, body: PrepBody):
     }
 
 # ── 2. Run (submit to thread pool) ────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  Taxonomy database resolution
+#
+#  This used to happen inside run_r_pipeline(), AFTER run_params.json had
+#  already been written, and it would SILENTLY SWAP the user's chosen database
+#  for a different one whenever it judged the choice unusable. Two things went
+#  wrong with that:
+#
+#    * A run could complete against a different reference than the one Job
+#      Detail showed, and the report would cite the wrong database with nothing
+#      anywhere to contradict it.
+#    * When no replacement was found it passed an EMPTY --dbPath to R, whose own
+#      fallback then picked "the first available file" in databases/ — on one
+#      machine that was an EMU species_taxid.fasta.
+#
+#  Now: the user's explicit choice is either used or the job is REFUSED with an
+#  explanation. Automatic resolution happens only when nothing was chosen, and
+#  is recorded so the UI can say so.
+# ═══════════════════════════════════════════════════════════════════════════
+
+DADA2_TAXONOMY_MARKERS_EXCLUDED = ("ONT-16S", "ONT16S", "ONT", "PACBIO",
+                                   "ITS1", "ITS2", "ITS", "COX1")
+
+
+def _db_reject_reason(p: str) -> str:
+    """Why this path cannot serve as a DADA2 assignTaxonomy() reference — '' if it can.
+
+    Filename-based and deliberately narrow: a fast pre-check so the user is told
+    at submit time instead of eight minutes in. The authoritative check reads the
+    file's own headers and lives in tax_helpers.R; anything this lets through
+    still has to pass that one.
+    """
+    if not p:
+        return ""
+    n = Path(p).name.lower()
+    if "species_taxid" in p or any(seg.startswith("emu_") or seg == "emu" for seg in Path(p).parts):
+        return ("this is an EMU database, which belongs to the ONT pipeline. "
+                "DADA2 needs a SILVA-style trainset FASTA.")
+    if not p.endswith((".fa.gz", ".fasta.gz", ".fa", ".fasta")):
+        return "this is not a FASTA file."
+    # toSpecies trainsets are NOT rejected: silva_nr99_*_toSpecies_trainset.fa.gz
+    # is a full 7-rank trainset, and the old check threw it away for having
+    # "tospecies" in its name. Only assignSpecies-style names are refused.
+    if "assignspecies" in n or "assign_species" in n:
+        return ("this is an assignSpecies file — species labels only, with no "
+                "Domain..Genus hierarchy. Pick the *_toGenus_trainset file instead; "
+                "the species file is found automatically from the same folder.")
+    return ""
+
+
+def resolve_taxonomy_db(marker: str, db_path: str, db_paths_json: str = ""):
+    """(resolved_path, was_auto, error_message).
+
+    A non-empty error_message means: refuse the job. Never substitute silently.
+    """
+    marker_up = (marker or "").upper()
+    if marker_up in DADA2_TAXONOMY_MARKERS_EXCLUDED:
+        return db_path, False, ""          # those pipelines resolve their own
+
+    # 1. The user chose something — use it, or refuse. No substitution.
+    if db_path:
+        reason = _db_reject_reason(db_path)
+        if reason:
+            return "", False, f"{Path(db_path).name}: {reason}"
+        if not os.path.exists(db_path):
+            return "", False, f"{Path(db_path).name}: file not found at {db_path}"
+        return db_path, False, ""
+
+    # 2. Nothing chosen — resolve, and record that it was automatic.
+    dp_file = db_paths_json or str(Path.home() / "r16s-app" / "backend" / "databases" / "db_paths.json")
+    try:
+        dp = json.loads(Path(dp_file).read_text()) if Path(dp_file).exists() else {}
+        # 12S deliberately has no cross-marker fallback: it used to fall back to
+        # an 18S protist reference, which gives confidently-wrong taxonomy.
+        prefs = {"16S": ["SILVA_16S_sp", "SILVA_16S"],
+                 "12S": ["12S"],
+                 "18S-NEMA": ["NemaBase_18S", "PR2_18S"]}.get(marker_up, ["SILVA_16S_sp", "SILVA_16S"])
+        for k in prefs:
+            v = dp.get(k, "")
+            if v and Path(v).exists() and not _db_reject_reason(v):
+                return v, True, ""
+    except Exception as e:
+        print(f"[db] db_paths.json lookup failed: {e}")
+
+    db_dir = BASE_DIR / "databases"
+    if db_dir.exists():
+        # rglob, not glob: the trainsets live in databases/SILVA/, and scanning
+        # only the top level is why an empty --dbPath reached R on one machine.
+        cands = [f for f in db_dir.rglob("*") if f.is_file()
+                 and f.name.lower().endswith((".fa.gz", ".fasta.gz", ".fa", ".fasta"))
+                 and not _db_reject_reason(str(f))]
+        togenus  = [f for f in cands if "togenus" in f.name.lower()
+                    and any(k in f.name.lower() for k in ("trainset", "train_set"))]
+        trainset = [f for f in cands if any(k in f.name.lower()
+                    for k in ("trainset", "train_set", "nr99"))]
+        for pool in (togenus, trainset):
+            if pool:
+                return str(sorted(pool)[0]), True, ""
+
+    # Deliberately NOT "use the first file we can find". Picking an arbitrary
+    # FASTA as a taxonomy reference is how a run ends up with confidently-wrong
+    # names, and that is not a decision to make quietly on the user's behalf.
+    return "", False, ("no taxonomy database selected, and no *_trainset FASTA was found "
+                       f"under {db_dir}. Choose one in Step 5 — Taxonomy Classification.")
+
+
 @app.post("/run/{job_id}")
 async def run_analysis(job_id: str, params: RunParams):
     if job_id not in jobs:
@@ -529,12 +635,30 @@ async def run_analysis(job_id: str, params: RunParams):
     except ImportError:
         pass  # license module not available → allow all
 
+    # ── Resolve the taxonomy database BEFORE anything is recorded ────────────
+    # so Job Detail shows what the run actually used, and an unusable choice is
+    # refused now rather than eight minutes into the run.
+    _db_requested = params.dbPath
+    _db_resolved, _db_auto, _db_err = resolve_taxonomy_db(
+        params.marker, params.dbPath, params.db_paths_json)
+    if _db_err:
+        return JSONResponse(status_code=400, content={
+            "error": "database_not_usable",
+            "message": f"Taxonomy database cannot be used — {_db_err}",
+        })
+    params.dbPath = _db_resolved
+    if _db_auto:
+        print(f"[db] No database chosen — auto-resolved to {Path(_db_resolved).name}")
+
     # Snapshot the exact settings this run was submitted with, so it can be
     # reviewed later from Job Detail — regardless of outcome (success/error).
     try:
         params_snapshot = params.model_dump()   # pydantic v2
     except AttributeError:
         params_snapshot = params.dict()         # pydantic v1 fallback
+    params_snapshot["dbPath"]           = _db_resolved
+    params_snapshot["dbPath_requested"] = _db_requested
+    params_snapshot["dbPath_auto"]      = _db_auto
 
     running = sum(1 for j in jobs.values() if j["status"] == "running")
     with jobs_lock:
@@ -610,105 +734,11 @@ def run_r_pipeline(job_id: str, params: RunParams):
         with jobs_lock:
             jobs[job_id]["metadata_path"] = metadata_path
 
-    # Auto-detect database path from databases/ folder if not specified
+    # The taxonomy database was resolved and validated in /run before this job
+    # was ever queued (see resolve_taxonomy_db), so params.dbPath is the one
+    # recorded in run_params.json and shown in Job Detail. Nothing here may
+    # change it — a run must never use a reference other than the one on record.
     db_path = params.dbPath
-
-    # ── For DADA2 pipelines: reject EMU paths and resolve SILVA from db_paths.json ──
-    # EMU databases (species_taxid.fasta / emu_* dirs) cannot be used by DADA2's
-    # assignTaxonomy() which expects SILVA-format .fa.gz files.
-    _is_dada2_marker = params.marker.upper() not in ("ONT-16S", "ONT16S", "ONT", "PACBIO",
-                                                      "ITS1", "ITS2", "ITS", "COX1")
-    def _is_bad_dada2_db(p: str) -> bool:
-        """Return True if path is unsuitable as primary DADA2 assignTaxonomy database."""
-        if not p:
-            return False
-        n = Path(p).name.lower()
-        # EMU-style files/dirs
-        if "species_taxid" in p:
-            return True
-        if any(seg.startswith("emu_") or seg == "emu" for seg in Path(p).parts):
-            return True
-        # Not a FASTA file — accept both gzipped AND plain-text FASTA (DADA2's
-        # assignTaxonomy() reads either fine; requiring .gz specifically was a
-        # bug that silently rejected valid, correctly-selected custom databases
-        # just for being uncompressed, e.g. a manually-built 12S reference
-        # named "all_12S.fasta" — which then triggered the SILVA/db_paths.json
-        # fallback below and silently substituted a completely wrong database
-        # (18S protist reference) for a 12S vertebrate job).
-        if not (p.endswith(".fa.gz") or p.endswith(".fasta.gz")
-                or p.endswith(".fa") or p.endswith(".fasta")):
-            return True
-        # assignSpecies/toSpecies files are for addSpecies() only, NOT for assignTaxonomy()
-        # (must match the same check dada2_pipeline.R does: grepl("assignSpecies|toSpecies", ...))
-        if "assignspecies" in n or "assign_species" in n or "tospecies" in n or "to_species" in n:
-            return True
-        return False
-
-    if _is_dada2_marker and _is_bad_dada2_db(db_path):
-        print(f"[db] dbPath not suitable for DADA2 assignTaxonomy ({Path(db_path).name}) — resolving SILVA from db_paths.json")
-        db_path = ""  # reset to trigger SILVA lookup below
-
-    # ── Resolve SILVA from db_paths.json when db_path is unset ─────────────
-    if _is_dada2_marker and not db_path:
-        _db_paths_file = params.db_paths_json or str(
-            Path.home() / "r16s-app" / "backend" / "databases" / "db_paths.json"
-        )
-        try:
-            _dp = json.loads(Path(_db_paths_file).read_text()) if Path(_db_paths_file).exists() else {}
-            _marker_up = params.marker.upper()
-            # NOTE: 12S (fish/vertebrate) intentionally has NO cross-marker
-            # fallback here — it used to silently fall back to "PR2_18S" (a
-            # protist/18S reference database), which is a completely different
-            # organism group and produces confidently-wrong taxonomy with no
-            # visible error. Falling back to "SILVA_16S" (bacterial) would be
-            # equally wrong for the same reason. Only resolve a dedicated
-            # "12S"-keyed entry if the deployment has registered one; otherwise
-            # leave db_path unresolved so the warning below fires loudly
-            # instead of silently substituting the wrong reference.
-            _key_prefs = {
-                "16S":      ["SILVA_16S_sp", "SILVA_16S"],
-                "12S":      ["12S"],
-                "18S-NEMA": ["NemaBase_18S", "PR2_18S"],
-            }.get(_marker_up, ["SILVA_16S_sp", "SILVA_16S"])
-            for _k in _key_prefs:
-                _v = _dp.get(_k, "")
-                # Skip if this db_paths entry is itself an assignSpecies-only file
-                if _v and Path(_v).exists() and not _is_bad_dada2_db(_v):
-                    db_path = _v
-                    print(f"[db] Resolved from db_paths.json [{_k}]: {Path(_v).name}")
-                    break
-            if not db_path:
-                print(f"[db] WARNING: No suitable SILVA train_set found in db_paths.json for marker {_marker_up}")
-        except Exception as _e:
-            print(f"[db] db_paths.json lookup failed: {_e}")
-
-    # ── Legacy fallback: scan root databases/ folder ─────────────────────
-    if not db_path or not os.path.exists(db_path):
-        db_dir = BASE_DIR / "databases"
-        if db_dir.exists():
-            db_files = list(db_dir.glob("*.fa.gz")) + list(db_dir.glob("*.fasta.gz"))
-            # Priority 1: toGenus trainset (best for full taxonomy plots)
-            genus_files = [f for f in db_files if "togenus" in f.name.lower()
-                           and any(k in f.name.lower() for k in ("trainset", "train_set"))]
-            # Priority 2: any other trainset (toSpecies etc.)
-            other_train = [f for f in db_files if any(k in f.name.lower()
-                           for k in ("trainset", "train_set", "nr99"))
-                           and "togenus" not in f.name.lower()]
-            # Priority 3: anything that isn't assignSpecies
-            non_assign  = [f for f in db_files if "assignspecies" not in f.name.lower()]
-
-            if genus_files:
-                db_path = str(sorted(genus_files)[0])
-                print(f"[db] Auto-detected (toGenus): {sorted(genus_files)[0].name}")
-            elif other_train:
-                db_path = str(sorted(other_train)[0])
-                print(f"[db] Auto-detected (trainset): {sorted(other_train)[0].name}")
-            elif non_assign:
-                db_path = str(sorted(non_assign)[0])
-                print(f"[db] Auto-detected: {sorted(non_assign)[0].name}")
-            elif db_files:
-                db_path = str(sorted(db_files)[0])
-                print(f"[db] Fallback db: {sorted(db_files)[0].name}")
 
     # ── Route to the correct pipeline script ────────────────────────────────
     marker = params.marker.upper()
