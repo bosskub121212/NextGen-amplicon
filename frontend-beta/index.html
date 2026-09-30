@@ -182,6 +182,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .btn.pri:hover{filter:brightness(1.07);color:var(--accent-ink)}
 .btn[disabled],.btn.off{opacity:.45;cursor:not-allowed;filter:none;pointer-events:none}
+.files{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.files:empty{display:none}
+.file{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 7px;
+  border-radius:4px;background:var(--surface-2);color:var(--fg-2);white-space:nowrap}
 
 /* preflight */
 .pre{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;border-top:1px solid var(--line);
@@ -199,9 +203,26 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .advhdr[aria-expanded="true"] .chev{transform:rotate(90deg)}
 .advhdr .hint{margin-left:auto;font-size:11.5px;font-weight:400;color:var(--fg-3)}
 .advbody[hidden]{display:none}
-.stepgrp{border-top:1px solid var(--line);padding:2px 0 8px}
-.stepgrp h4{margin:12px 14px 2px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--fg-3);font-weight:600}
+/* Each pipeline step is its own card with air around it. The first version ran
+   the eight steps together as hairline-separated rows inside one panel: every
+   field looked equally important and equally adjacent, so you could not tell at
+   a glance which step you were editing. A settings form whose grouping you have
+   to reconstruct by reading is a settings form people get wrong. */
+.stepgrp{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  margin-bottom:12px;overflow:hidden}
+.stepgrp:last-child{margin-bottom:0}
+.stepgrp > h4{display:flex;align-items:baseline;gap:9px;margin:0;padding:12px 16px;
+  background:var(--surface-3);border-bottom:1px solid var(--line);
+  font-size:13.5px;font-weight:600;letter-spacing:-.005em;text-transform:none;color:var(--fg)}
+.stepgrp > h4 .n{flex:none;display:inline-grid;place-items:center;min-width:22px;height:22px;
+  padding:0 6px;border-radius:5px;background:var(--accent-soft);color:var(--accent);
+  font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}
+.stepgrp > h4 .why{margin-left:auto;font-size:11.5px;font-weight:400;color:var(--fg-3);
+  text-align:right;max-width:46ch}
+.stepgrp .grid2{padding:16px}
+.advbody{padding:12px 12px 14px;background:var(--surface-3);
+  border-top:1px solid var(--line);border-radius:0 0 var(--r) var(--r)}
+@media (max-width:860px){ .stepgrp > h4 .why{display:none} }
 
 .runbar{display:flex;align-items:center;gap:12px;margin-top:14px;padding:13px 14px;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r);flex-wrap:wrap}
@@ -256,6 +277,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .parms tr:last-child td{border-bottom:none}
 .parms td:first-child{color:var(--fg-2);width:42%;font-weight:500}
 .parms td:last-child{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.parms.samples td{width:auto;font-weight:400;color:var(--fg)}
+.parms.samples td:first-child{width:auto;font-weight:400}
+.parms.samples td:nth-child(2),.parms.samples td:nth-child(3){
+  font-family:var(--mono);font-size:11.5px;color:var(--fg-2);word-break:break-all}
+.parms.samples th{padding:8px 14px;text-align:left;font-size:10.5px;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--fg-3);border-bottom:1px solid var(--line);font-weight:600}
+.chk{padding:14px 16px;border-top:1px solid var(--line);background:var(--warn-soft)}
+.chk h4{margin:0 0 6px;font-size:13px;color:var(--warn)}
+.chk p{margin:0 0 10px;font-size:12.5px;color:var(--fg-2)}
+.chk .row{display:flex;gap:8px;flex-wrap:wrap}
+.chk table{width:100%;border-collapse:collapse;font-size:12px;margin:0 0 10px}
+.chk table td{padding:4px 0;color:var(--fg-2)}
+.chk table td:last-child{font-family:var(--mono);text-align:right;color:var(--fg)}
 
 .skel{padding:26px 14px;color:var(--fg-3);font-size:12.5px}
 
@@ -915,11 +949,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '</div>'
         + (M.live ? '<div class="bar" id="dBar" style="max-width:none;margin:-4px 0 14px">'
                     + '<i style="width:' + M.pct + '%"></i></div>' : "")
-        + (M.st === "waiting_checkpoint"
-            ? '<div class="note hold"><b>This run is paused at a checkpoint</b> and is waiting for a '
-              + 'decision — most often the truncLen review before filtering. Continue or abort it in the '
-              + 'production console; the beta side does not post that decision yet.</div>'
-            : "")
+        + (M.st === "waiting_checkpoint" ? '<div id="chkBox"></div>' : "")
         + (M.offtarget
             ? '<div class="note hold"><b>Off-target warning from the pipeline.</b> ' + esc(M.offtarget) + '</div>'
             : "")
@@ -945,7 +975,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
               : M.live
               ? '<span class="msg">The log updates as the pipeline writes it. Closing this page does not '
                 + 'affect the run.</span><span class="sp"></span>'
-                + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Manage in the production UI</a>'
+                + '<button class="btn" id="cancelBtn">Cancel job</button>'
+                + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>'
               : '<span class="msg">Nothing is running for this job.</span><span class="sp"></span>'
                 + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>')
         + '</div>';
@@ -958,6 +989,77 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
         });
       }
+
+      var cb = document.getElementById("cancelBtn");
+      if(cb) cb.addEventListener("click", function(){
+        cb.disabled = true;
+        cb.textContent = "Cancelling…";
+        fetch("/jobs/" + encodeURIComponent(jid), {method:"DELETE"})
+          .then(function(){ built = null; tick(); })
+          .catch(function(e){
+            cb.disabled = false;
+            cb.textContent = "Cancel failed — " + (e.message || e);
+          });
+      });
+
+      if(M.st === "waiting_checkpoint") loadCheckpoint(jid);
+    }
+
+    /* A checkpoint is the pipeline stopping to ask a question, and the question
+       has numbers attached. Showing "paused, continue or abort?" without them
+       is asking someone to decide blind — the truncLen checkpoint exists
+       precisely because the numbers are the decision. */
+    function loadCheckpoint(jid){
+      api("/jobs/" + encodeURIComponent(jid) + "/checkpoint").then(function(C){
+        var box = document.getElementById("chkBox");
+        if(!box) return;
+        var t = C.checkpoint_type, d = C.checkpoint_data || {};
+        var head, detail = "";
+
+        if(t === "trunclen"){
+          var f = d.forward || {}, r = d.reverse || {};
+          head = "truncLen would discard most of the reads";
+          detail = '<table><tr><td>Forward, set to ' + esc(f.current) + '</td><td>keeps '
+            + esc(Number(f.keep_pct || 0).toFixed(1)) + '%</td></tr>'
+            + '<tr><td>Reverse, set to ' + esc(r.current) + '</td><td>keeps '
+            + esc(Number(r.keep_pct || 0).toFixed(1)) + '%</td></tr>'
+            + '<tr><td><b>Measured from the trimmed reads</b></td><td><b>F=' + esc(d.suggest_F)
+            + '  R=' + esc(d.suggest_R) + '</b></td></tr></table>'
+            + '<p>Continuing keeps the values above. To use the suggested ones, abort and start a new '
+            + 'run with them — they are measured from these reads, not derived from the primer length.</p>';
+        } else if(t === "low_merge"){
+          head = "Low merge rate";
+          detail = '<table><tr><td>Reads merged</td><td>'
+            + esc(Number(d.merged_pct || 0).toFixed(1)) + '%</td></tr>'
+            + '<tr><td>Surviving chimera removal</td><td>'
+            + esc(Number(d.nonchim_pct || 0).toFixed(1)) + '%</td></tr></table>'
+            + '<p>The reads are already filtered, so continuing analyses what is left. A low merge rate '
+            + 'usually means truncLen_F + truncLen_R left less than the insert plus 12 bp of overlap.</p>';
+        } else {
+          head = "The pipeline is waiting for a decision";
+          detail = '<p class="mono">' + esc(JSON.stringify(d)) + '</p>';
+        }
+
+        box.innerHTML = '<div class="panel" style="margin-bottom:14px"><div class="chk" '
+          + 'style="border-top:none;border-radius:var(--r)">'
+          + '<h4>⚠ ' + esc(head) + '</h4>' + detail
+          + '<div class="row"><button class="btn" id="chkGo">Continue anyway</button>'
+          + '<button class="btn" id="chkStop">Abort this run</button></div></div></div>';
+
+        function send(path, el){
+          el.disabled = true;
+          fetch("/jobs/" + encodeURIComponent(jid) + "/checkpoint/" + path, {method:"POST"})
+            .then(function(){ built = null; tick(); })
+            .catch(function(e){ el.disabled = false; el.textContent = "Failed: " + (e.message || e); });
+        }
+        var g = document.getElementById("chkGo"), s = document.getElementById("chkStop");
+        g.addEventListener("click", function(){ send("continue", g); });
+        s.addEventListener("click", function(){ send("abort", s); });
+      }).catch(function(e){
+        var box = document.getElementById("chkBox");
+        if(box) box.innerHTML = '<div class="note hold"><b>This run is paused at a checkpoint</b>, but '
+          + 'its details could not be read: ' + esc(e.message || e) + '</div>';
+      });
     }
 
     tick();
@@ -1032,106 +1134,482 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
   /* The New Job form. Real values, real database list — but it does not submit.
      See the scope note at the top of this file. */
+  /* ═══ the New Job form ════════════════════════════════════════════════════
+     This posts real jobs. Everything below talks to the same two endpoints the
+     production console uses — POST /upload then POST /run/{job_id} — against
+     the same job store, so a job started here is indistinguishable from one
+     started there and shows up in both.
+
+     The form's job is to make the run REFUSABLE before it starts. A 16S run is
+     fifteen minutes of CPU minimum; every check that can be done in the browser
+     in a millisecond is a check worth doing there, because the alternative is
+     finding out eight minutes in. So: pairing is resolved and shown before
+     upload, metadata is matched against the detected samples by name, and the
+     Start button stays disabled with a reason attached until both agree. */
+
+  var FORM = null;   /* live state for the form currently on screen */
+
+  /* ── read-direction tokens ───────────────────────────────────────────────
+     Ported from frontend/src/lib/fastqPairing.ts (v2.8.3), deliberately
+     unchanged in behaviour. The token that says "read 1 / read 2" only ever
+     sits at the END of a FASTQ filename. Matching "_R1" anywhere — which this
+     app used to do — breaks every dataset whose SAMPLE is called R1 or R2:
+     Bacteria_R1_1.fq.gz collapsed to sample "Bacteria", and the mate guess
+     rewrote it to Bacteria_R2_2.fq.gz, pairing one sample's forward reads with
+     a DIFFERENT sample's reverse reads. That does not fail loudly. It produces
+     a plausible ASV table. */
+  var EXT       = /\.(fastq|fq)(\.gz)?$/i;
+  var FWD_TOKEN = /_(R?)1((?:_\d{3})?)\.(fastq|fq)(\.gz)?$/i;
+  var REV_TOKEN = /_(R?)2((?:_\d{3})?)\.(fastq|fq)(\.gz)?$/i;
+  var FWD_LOOSE = /_R1/i;
+  var REV_LOOSE = /_R2/i;
+
+  function pairingFor(names){
+    var fastq = names.filter(function(n){ return EXT.test(n); });
+    var hasToken = fastq.some(function(n){ return FWD_TOKEN.test(n) || REV_TOKEN.test(n); });
+
+    var strictMate = function(n){
+      return n.replace(FWD_TOKEN, function(_m, r, lane, ext, gz){
+        return "_" + r + "2" + (lane || "") + "." + ext + (gz || "");
+      });
+    };
+    var looseMate = function(n){
+      return n.replace(FWD_LOOSE, "_R2").replace(/_1\.(fq|fastq)/i, "_2.$1");
+    };
+
+    /* Some trimmers put a token at BOTH ends — Trim Galore writes
+       S1_R1_val_1.fq.gz — so verify the anchored rule against the actual file
+       list before committing to it, once for the whole set. */
+    var strict = hasToken;
+    if(hasToken){
+      var fwd = fastq.filter(function(n){ return FWD_TOKEN.test(n); });
+      var misses = fwd.filter(function(n){ return fastq.indexOf(strictMate(n)) === -1; }).length;
+      if(misses > 0){
+        var lf = fastq.filter(function(n){ return FWD_LOOSE.test(n); });
+        var lm = lf.filter(function(n){ return fastq.indexOf(looseMate(n)) === -1; }).length;
+        if(lf.length > 0 && lm === 0) strict = false;
+      }
+    }
+    if(strict) return {
+      strict:true,
+      isR1:  function(n){ return FWD_TOKEN.test(n); },
+      isR2:  function(n){ return REV_TOKEN.test(n); },
+      sample:function(n){ return n.replace(FWD_TOKEN,"").replace(REV_TOKEN,"").replace(EXT,""); },
+      mate:  strictMate
+    };
+    return {
+      strict:false,
+      isR1:  function(n){ return FWD_LOOSE.test(n); },
+      isR2:  function(n){ return REV_LOOSE.test(n); },
+      sample:function(n){ return n.replace(/_R1.*|_R2.*/i,"").replace(EXT,""); },
+      mate:  looseMate
+    };
+  }
+
+  /* Resolve a file list into the sample↔file manifest the backend accepts, and
+     say plainly what is wrong when it cannot. */
+  function detectSamples(names, single){
+    var fastq = names.filter(function(n){ return EXT.test(n); });
+    var other = names.filter(function(n){ return !EXT.test(n); });
+    var problems = [];
+    if(other.length) problems.push({kind:"ignored", detail:other.join(", ")});
+    if(!fastq.length) return {map:[], problems:problems, strict:false};
+
+    if(single){
+      var map1 = fastq.map(function(f){ return {sample:f.replace(EXT,""), file1:f, file2:""}; });
+      return {map:map1, problems:problems.concat(dupCheck(map1)), strict:true};
+    }
+
+    var P  = pairingFor(fastq);
+    var r1 = fastq.filter(P.isR1);
+    var r2 = fastq.filter(P.isR2);
+    var map = [];
+    var unpaired = [];
+    r1.forEach(function(f){
+      var mate = P.mate(f);
+      if(fastq.indexOf(mate) === -1) unpaired.push(f);
+      else map.push({sample:P.sample(f), file1:f, file2:mate});
+    });
+    var orphanR2 = r2.filter(function(f){
+      return !map.some(function(m){ return m.file2 === f; });
+    });
+    var untokened = fastq.filter(function(f){ return !P.isR1(f) && !P.isR2(f); });
+
+    if(unpaired.length)  problems.push({kind:"unpaired",  detail:unpaired.join(", ")});
+    if(orphanR2.length)  problems.push({kind:"orphanR2",  detail:orphanR2.join(", ")});
+    if(untokened.length) problems.push({kind:"untokened", detail:untokened.join(", ")});
+    return {map:map, problems:problems.concat(dupCheck(map)), strict:P.strict};
+  }
+
+  function dupCheck(map){
+    var seen = {}, dup = [];
+    map.forEach(function(m){
+      if(seen[m.sample] && dup.indexOf(m.sample) === -1) dup.push(m.sample);
+      seen[m.sample] = 1;
+    });
+    return dup.length ? [{kind:"duplicate", detail:dup.join(", ")}] : [];
+  }
+
+  /* ── metadata CSV ────────────────────────────────────────────────────────
+     Parsed here rather than posted as a file, because the backend takes
+     metadata as rows on the run payload (MetaRow: sampleId, group, description,
+     plus any extra columns). Quoted fields are handled; anything else is left
+     exactly as typed. */
+  function parseCSV(text){
+    var rows = [], row = [], cur = "", q = false;
+    text = text.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+    for(var i = 0; i < text.length; i++){
+      var c = text[i];
+      if(q){
+        if(c === '"' && text[i+1] === '"'){ cur += '"'; i++; }
+        else if(c === '"') q = false;
+        else cur += c;
+      } else if(c === '"') q = true;
+      else if(c === ","){ row.push(cur); cur = ""; }
+      else if(c === "\n"){ row.push(cur); cur = ""; rows.push(row); row = []; }
+      else cur += c;
+    }
+    row.push(cur);
+    if(row.length > 1 || row[0] !== "") rows.push(row);
+    return rows.filter(function(r){ return r.some(function(c){ return c.trim() !== ""; }); });
+  }
+
+  function metaFromCSV(text){
+    var rows = parseCSV(text);
+    if(rows.length < 2) return {rows:[], err:"The file has no data rows."};
+    var head = rows[0].map(function(h){ return h.trim(); });
+    var low  = head.map(function(h){ return h.toLowerCase().replace(/[^a-z0-9]/g, ""); });
+    var iId  = low.indexOf("sampleid");
+    if(iId === -1) iId = low.indexOf("sample");
+    if(iId === -1) iId = low.indexOf("id");
+    if(iId === -1)
+      return {rows:[], err:"No sampleId column. Found: " + head.join(", ")};
+    var iGrp = low.indexOf("group");
+    var iDsc = low.indexOf("description");
+    var out = rows.slice(1).map(function(r){
+      var o = {sampleId:(r[iId]||"").trim(),
+               group:iGrp === -1 ? "" : (r[iGrp]||"").trim(),
+               description:iDsc === -1 ? "" : (r[iDsc]||"").trim()};
+      head.forEach(function(h, k){                    /* keep custom columns */
+        if(k !== iId && k !== iGrp && k !== iDsc && h && !(h in o)) o[h] = (r[k]||"").trim();
+      });
+      return o;
+    }).filter(function(o){ return o.sampleId; });
+    return {rows:out, err:out.length ? "" : "No rows had a sampleId."};
+  }
+
+  /* ── settings model ──────────────────────────────────────────────────────
+     One row per control: [key, label, kind, default, options|hint]. The keys
+     are RunParams field names verbatim, so buildPayload() can read them back
+     without a translation table — a translation table is where a UI silently
+     sends something the backend never asked for. */
+  function stepSpec(key){
+    var P = PRESET[key] || PRESET["16S"];
+    return [
+      {n:1, title:"Cutadapt — primer trimming",
+       why:"Removes the primers before DADA2 sees the reads.",
+       fields:[
+        ["primer_f",          "Forward primer",        "mono",   P.fwd,  P.fwdName],
+        ["primer_r",          "Reverse primer",        "mono",   P.rev,  P.revName],
+        ["cutadaptErrorRate", "Error rate",            "num",    "0.1",  "fraction of mismatches allowed"],
+        ["cutadaptOverlap",   "Minimum overlap",       "int",    "3",    "bases"],
+        ["discardUntrimmed",  "Discard untrimmed",     "bool",   "false","drop reads with no primer found"],
+        ["reorient",          "Read orientation repair","select","auto", ["auto","TRUE","FALSE"]]
+       ]},
+      {n:2, title:"Demux QC — filtering and trimming",
+       why:"truncLen is measured from the trimmed reads at run time; these are the starting values.",
+       fields:[
+        ["truncLen_F", "truncLen, forward",  "int", "240", "0 = no truncation"],
+        ["truncLen_R", "truncLen, reverse",  "int", "200", "0 = no truncation"],
+        ["maxEE_F",    "maxEE, forward",     "num", "2",   "max expected errors"],
+        ["maxEE_R",    "maxEE, reverse",     "num", "2",   "max expected errors"],
+        ["trimLeft_F", "trimLeft, forward",  "int", "0",   ""],
+        ["trimLeft_R", "trimLeft, reverse",  "int", "0",   ""]
+       ]},
+      {n:3, title:"DADA2 — ASV denoising",
+       why:"pseudo-pooling recovers low-abundance variants shared across samples.",
+       fields:[
+        ["pool",          "Pooling mode",        "select", "pseudo", ["pseudo","TRUE","FALSE"]],
+        ["chimeraMethod", "Chimera method",      "select", "consensus", ["consensus","pooled","per-sample"]],
+        ["nbases",        "Bases to learn from", "int",    "100000000", "error model training set"],
+        ["nThreads",      "CPU threads",         "int",    "4",  ""]
+       ]},
+      {n:4, title:"Phylogenetic tree",
+       why:"Needed for UniFrac. Adds several minutes on large ASV tables.",
+       fields:[
+        ["_buildTree", "Build tree", "bool", "true", "DECIPHER alignment + phangorn"]
+       ]},
+      {n:5, title:"Taxonomy classification",
+       why:"The reference decides every name in the report.",
+       fields:[
+        ["dbPath",   "Taxonomy database", "db",  "", ""],
+        ["minBoot",  "Minimum bootstrap", "int", "50", "% of 100 resamplings"],
+        ["_species", "Species assignment","ro",  "exact match (100%)",
+                     "addSpecies() is exact matching — minBoot does not apply to it"]
+       ]},
+      {n:6, title:"Diversity analysis",
+       why:"PERMANOVA needs ≥2 groups with ≥2 samples each; below that it is skipped and says so.",
+       fields:[
+        ["topN",             "Top taxa in plots", "int",  "30", ""],
+        ["offtargetWarnPct", "Off-target warning at", "num", "20", "% of reads non-target"],
+        ["filterOfftarget",  "Drop off-target ASVs",  "bool","false",
+                             "Eukaryota / Mitochondria / Chloroplast"]
+       ]},
+      {n:7, title:"Differential abundance",
+       why:"Decontam needs negative-control samples named in the metadata.",
+       fields:[
+        ["run_lulu",  "LULU curation", "bool",   "true", ""],
+        ["decontam",  "Decontam",      "select", "none", ["none","prevalence"]],
+        ["decontamThreshold", "Decontam threshold", "num", "0.1", ""]
+       ]},
+      {n:8, title:"Functional analysis",
+       why:"Prediction from 16S is inference, not measurement. Adds run time.",
+       fields:[
+        ["run_picrust2", "PICRUSt2", "bool", "false", "16S only"],
+        ["run_tax4fun",  "Tax4Fun2", "bool", "false", "16S only, needs the reference pack"]
+       ]}
+    ];
+  }
+
+  function field(f, dbOpts){
+    var key = f[0], label = f[1], kind = f[2], def = f[3], extra = f[4];
+    var id = "f_" + key;
+    var ctl;
+    if(kind === "select"){
+      ctl = '<select id="' + id + '" data-k="' + esc(key) + '">'
+        + extra.map(function(o){
+            return '<option' + (o === def ? " selected" : "") + '>' + esc(o) + '</option>'; }).join("")
+        + '</select>';
+    } else if(kind === "bool"){
+      ctl = '<select id="' + id + '" data-k="' + esc(key) + '" data-bool="1">'
+        + '<option value="true"'  + (def === "true"  ? " selected" : "") + '>on</option>'
+        + '<option value="false"' + (def === "false" ? " selected" : "") + '>off</option></select>';
+    } else if(kind === "db"){
+      ctl = '<select id="' + id + '" data-k="dbPath">' + (dbOpts.length
+        ? dbOpts.map(function(o){
+            return '<option value="' + esc(o.path) + '">' + esc(o.label) + '</option>'; }).join("")
+        : '<option value="">— no database installed —</option>') + '</select>';
+    } else if(kind === "ro"){
+      ctl = '<input type="text" value="' + esc(def) + '" readonly>';
+    } else {
+      ctl = '<input type="text" id="' + id + '" data-k="' + esc(key) + '"'
+        + ' data-kind="' + esc(kind) + '"'
+        + (kind === "mono" ? ' class="mono"' : "")
+        + ' value="' + esc(def) + '">';
+    }
+    var hint = (kind === "select" || kind === "bool" || kind === "db") ? "" : extra;
+    return '<div class="f"><label for="' + id + '">' + esc(label) + '</label>' + ctl
+      + (hint ? '<span class="note">' + esc(hint) + '</span>' : "") + '</div>';
+  }
+
+  function stepCard(st, dbOpts){
+    return '<div class="stepgrp"><h4><span class="n">' + st.n + '</span>' + esc(st.title)
+      + '<span class="why">' + esc(st.why) + '</span></h4>'
+      + '<div class="grid2">' + st.fields.map(function(f){ return field(f, dbOpts); }).join("")
+      + '</div></div>';
+  }
+
+  /* Three states, not two. A green tick on a check that had nothing to check —
+     "Pairing clean" with no files chosen — looks exactly like a check that
+     actually passed, so the row reads as all-clear before anything has
+     happened. A check with no input yet says so and stays grey. */
+  function pf(state, good, bad, idle){
+    if(state === null || state === undefined)
+      return '<span class="pf">'
+        + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" opacity=".7"><circle cx="12" cy="12" r="9"/></svg>'
+        + esc(idle || bad) + '</span>';
+    return '<span class="pf ' + (state ? "ok" : "bad") + '">'
+      + (state
+        ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12l5 5L20 6"/></svg>'
+        : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/></svg>')
+      + esc(state ? good : bad) + '</span>';
+  }
+
   function renderForm(it){
-    var P = PRESET[it.key] || {fwd:"", fwdName:"—", rev:"", revName:"—", dbHint:"—"};
+    var P      = PRESET[it.key] || PRESET["16S"];
     var dbOpts = databaseOptions(it.key);
     var nAvail = dbOpts.filter(function(o){ return o.avail; }).length;
+    var spec   = stepSpec(it.key);
+
+    FORM = {
+      marker: it.key, label: it.label,
+      files: [],          /* File objects chosen but not yet uploaded */
+      jobId: null,        /* set by POST /upload */
+      uploaded: [],       /* filenames the backend says it saved */
+      detect: null,       /* detectSamples() result for the uploaded names */
+      meta: [],           /* MetaRow[] */
+      metaName: "",
+      metaErr: "",
+      busy: false,
+      lastError: ""
+    };
 
     work.innerHTML =
         '<div class="crumb">New job · ' + esc(it.label) + '</div>'
       + '<h2 class="ttl">New ' + esc(it.label) + ' job</h2>'
-      + '<p class="sub">Four settings decide the result. Everything else has a default and is tucked away below.</p>'
+      + '<p class="sub">Upload the reads, check the detected samples, then start. '
+      + 'Every setting below is sent exactly as shown and recorded with the run.</p>'
 
-      + '<div class="note hold"><b>Beta: this form does not start runs yet.</b> Everything on it is read from '
-      + 'the live backend — the database list, the licence, the primer defaults — but submitting is deliberately '
-      + 'not wired up. A submit path that posts a subtly wrong payload costs hours of compute and returns a '
-      + 'plausible wrong answer, which is exactly what the last few patches were about. '
-      + 'Start runs in the <a href="/">production console</a> until this side is finished and verified.</div>'
-
-      + '<div class="panel" style="margin-top:14px">'
+      + '<div class="panel">'
         + '<div class="sechdr"><h3>Input</h3><span class="hint">FASTQ pairs and sample metadata</span></div>'
         + '<div class="grid2" style="padding-bottom:0">'
           + '<div class="f span2"><label for="jn">Job name</label>'
           + '<input type="text" id="jn" placeholder="e.g. Soil_16S_Run1"></div>'
         + '</div>'
         + '<div class="up">'
-          + '<div class="drop">'
+          + '<div class="drop" id="dropFq">'
             + '<div class="t">Sequencing reads</div>'
-            + '<div class="s">.fastq.gz pairs, or a .zip containing them</div>'
-            + '<div class="row"><button class="btn pri off" disabled>Upload files</button>'
-              + '<span class="s">not in the beta yet</span></div>'
+            + '<div class="s">Drop .fastq / .fastq.gz / .fq.gz pairs here, or a .zip containing them</div>'
+            + '<div class="row">'
+              + '<input type="file" id="fqIn" multiple accept=".fastq,.fq,.gz,.zip" hidden>'
+              + '<button class="btn pri" id="fqPick">'
+                + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>'
+                + 'Choose files</button>'
+              + '<button class="btn" id="fqUp" disabled>Upload</button>'
+              + '<span class="s" id="fqState">Nothing chosen yet</span>'
+            + '</div>'
+            + '<div class="files" id="fqList"></div>'
           + '</div>'
-          + '<div class="drop">'
+          + '<div class="drop" id="dropMd">'
             + '<div class="t">Sample metadata</div>'
-            + '<div class="s">CSV with sampleId, group, description</div>'
-            + '<div class="row"><button class="btn off" disabled>Upload metadata</button></div>'
-            + '<div class="s">Grouping and diversity plots need it. Note that PERMANOVA needs at least two '
-            + 'groups with two samples each — below that the pipeline now says so instead of printing R² = 1.</div>'
+            + '<div class="s">CSV with a sampleId column, plus group and description</div>'
+            + '<div class="row">'
+              + '<input type="file" id="mdIn" accept=".csv,.tsv,.txt" hidden>'
+              + '<button class="btn" id="mdPick">Choose CSV</button>'
+              + '<button class="btn" id="tplBtn">Download template</button>'
+            + '</div>'
+            + '<div class="s" id="mdState">Optional. Grouping and diversity plots need it.</div>'
           + '</div>'
         + '</div>'
-        + '<div class="pre">'
-          + pf(false, "", "No FASTQ files yet")
-          + pf(false, "", "Metadata not loaded")
-          + pf(nAvail > 0, nAvail + " database file" + (nAvail === 1 ? "" : "s") + " on disk",
-               dbOpts.length ? "Every candidate database is missing from disk"
-                             : "No database found for this marker")
-          + pf(!!P.fwd, "Primers: " + P.fwdName + " / " + P.revName, "No primer default for this marker")
-        + '</div>'
+        + '<div class="pre" id="pre"></div>'
       + '</div>'
 
+      + '<div id="sampleBox"></div>'
+
       + '<div class="panel adv">'
-        + '<div class="sechdr"><h3>Essential settings</h3><span class="hint">These four change the result</span></div>'
+        + '<div class="sechdr"><h3>Essential settings</h3>'
+        + '<span class="hint">these four change the result</span></div>'
         + '<div class="grid2">'
           + '<div class="f"><label for="pf1">Forward primer</label>'
-            + '<input type="text" class="mono" id="pf1" value="' + esc(P.fwd) + '" readonly>'
+            + '<input type="text" class="mono" id="pf1" value="' + esc(P.fwd) + '">'
             + '<span class="note">' + esc(P.fwdName) + ' — the default for ' + esc(it.label) + '</span></div>'
           + '<div class="f"><label for="pr1">Reverse primer</label>'
-            + '<input type="text" class="mono" id="pr1" value="' + esc(P.rev) + '" readonly>'
+            + '<input type="text" class="mono" id="pr1" value="' + esc(P.rev) + '">'
             + '<span class="note">' + esc(P.revName) + '</span></div>'
           + '<div class="f"><label for="db">Taxonomy database</label>'
             + '<select id="db">' + (dbOpts.length
-                ? dbOpts.map(function(o){ return '<option value="' + esc(o.path) + '">' + esc(o.label) + '</option>'; }).join("")
-                : '<option>— none installed —</option>') + '</select>'
+                ? dbOpts.map(function(o){
+                    return '<option value="' + esc(o.path) + '">' + esc(o.label) + '</option>'; }).join("")
+                : '<option value="">— none installed —</option>') + '</select>'
             + '<span class="note">' + esc(P.dbHint)
-            + ' · the matching assignSpecies file is picked up automatically'
+            + ' · the matching assignSpecies file is found automatically'
             + (dbOpts.unmatchedOnly
-                ? ' · <b>none of the installed databases looks like a ' + esc(it.key)
-                  + ' reference</b>, so all trainsets are listed'
+                ? ' · <b>none of the installed databases looks like a ' + esc(it.key) + ' reference</b>'
                 : dbOpts.setAside
                 ? ' · ' + dbOpts.setAside + ' other trainset'
                   + (dbOpts.setAside === 1 ? "" : "s") + ' installed for other markers'
                 : "")
             + '</span></div>'
-          + '<div class="f"><label for="tl">Truncation length</label>'
-            + '<select id="tl"><option>Measure from the trimmed reads (recommended)</option>'
-            + '<option>Set manually</option></select>'
-            + '<span class="note">Measured after primer trimming, never derived as 250 − primer length</span></div>'
+          + '<div class="f"><label for="seq">Sequencer</label>'
+            + '<select id="seq">'
+              + '<option value="illumina">Illumina (paired-end)</option>'
+              + '<option value="ont">ONT R10.4+ (single-end)</option>'
+            + '</select>'
+            + '<span class="note">Single-end changes how samples are detected</span></div>'
         + '</div>'
       + '</div>'
 
       + '<div class="panel adv">'
         + '<button class="advhdr" id="advBtn" aria-expanded="false" aria-controls="advBody">'
           + '<svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg>'
-          + 'Advanced settings'
-          + '<span class="hint">All eight pipeline steps · defaults suit most runs</span>'
+          + 'All pipeline steps'
+          + '<span class="hint">eight steps · every value here is sent with the run</span>'
         + '</button>'
         + '<div class="advbody" id="advBody" hidden>'
-          + grp("Step 1 — Cutadapt · primer trimming", [["Cutadapt error rate","0.1"],["Minimum overlap","3"],["Discard untrimmed","off"],["Read orientation repair","auto"]])
-          + grp("Step 2 — Demux QC · quality review",  [["Max expected errors, forward","2"],["Max expected errors, reverse","2"],["Trim left, forward","0"],["Trim left, reverse","0"]])
-          + grp("Step 3 — DADA2 · ASV denoising",      [["Pooling mode","pseudo"],["Chimera method","consensus"],["Bases to learn from","100,000,000"],["CPU threads","4"]])
-          + grp("Step 4 — Phylogenetic tree",          [["Build tree","on"],["Alignment","DECIPHER"]])
-          + grp("Step 5 — Taxonomy classification",    [["Minimum bootstrap","50"],["Species assignment","exact match (100%)"]])
-          + grp("Step 6 — Diversity analysis",         [["Rarefaction","on"],["Beta metrics","Bray-Curtis + Jaccard + UniFrac"]])
-          + grp("Step 7 — Differential abundance",     [["LULU curation","on"],["Decontam","off"]])
-          + grp("Step 8 — Functional analysis",        [["PICRUSt2","on"],["Top taxa in plots","30"]])
+          + spec.map(function(st){ return stepCard(st, dbOpts); }).join("")
         + '</div>'
       + '</div>'
 
+      + '<div id="runErr"></div>'
       + '<div class="runbar">'
-        + '<span class="msg">Submission is not part of this beta cut.</span>'
-        + '<span class="sp"></span>'
-        + '<a class="btn pri" href="/">Start this job in the production UI</a>'
+        + '<span class="msg" id="runMsg"></span><span class="sp"></span>'
+        + '<button class="btn pri" id="runBtn" disabled>'
+          + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 4l14 8-14 8z"/></svg>'
+          + 'Start analysis</button>'
       + '</div>';
+
+    wireForm(dbOpts, nAvail, P);
+    preflight(dbOpts, nAvail, P);
+  }
+
+  function wireForm(dbOpts, nAvail, P){
+    var fqIn = document.getElementById("fqIn");
+    var mdIn = document.getElementById("mdIn");
+
+    document.getElementById("fqPick").addEventListener("click", function(){ fqIn.click(); });
+    document.getElementById("mdPick").addEventListener("click", function(){ mdIn.click(); });
+
+    fqIn.addEventListener("change", function(){ chooseFastq(fqIn.files, dbOpts, nAvail, P); });
+    mdIn.addEventListener("change", function(){ chooseMeta(mdIn.files[0], dbOpts, nAvail, P); });
+
+    /* Drag and drop onto either card. */
+    var dz = document.getElementById("dropFq");
+    ["dragenter","dragover"].forEach(function(e){
+      dz.addEventListener(e, function(ev){ ev.preventDefault(); dz.style.borderColor = "var(--accent)"; });
+    });
+    ["dragleave","drop"].forEach(function(e){
+      dz.addEventListener(e, function(ev){ ev.preventDefault(); dz.style.borderColor = ""; });
+    });
+    dz.addEventListener("drop", function(ev){
+      if(ev.dataTransfer && ev.dataTransfer.files.length)
+        chooseFastq(ev.dataTransfer.files, dbOpts, nAvail, P);
+    });
+
+    document.getElementById("fqUp").addEventListener("click", function(){
+      doUpload(dbOpts, nAvail, P);
+    });
+
+    document.getElementById("tplBtn").addEventListener("click", function(){
+      var names = FORM.detect ? FORM.detect.map.map(function(m){ return m.sample; }) : ["Sample1","Sample2"];
+      var csv = "sampleId,group,description\n"
+        + names.map(function(n){ return n + ",GroupA," + n; }).join("\n") + "\n";
+      var url = URL.createObjectURL(new Blob([csv], {type:"text/csv"}));
+      var a = document.createElement("a");
+      a.href = url; a.download = "metadata_template.csv";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    });
+
+    /* The database picker appears twice — in Essential and under Taxonomy —
+       because that is where each kind of user looks for it. They are one
+       setting, so they are kept in lockstep rather than allowed to disagree;
+       two controls quietly holding different values is how the wrong reference
+       gets used. */
+    var dbTop = document.getElementById("db");
+    var dbAdv = document.getElementById("f_dbPath");
+    function link(a, b){
+      if(!a || !b) return;
+      a.addEventListener("change", function(){ b.value = a.value; });
+    }
+    link(dbTop, dbAdv); link(dbAdv, dbTop);
+    if(dbTop && dbAdv) dbAdv.value = dbTop.value;
+
+    /* Same for the primers: Essential is a shortcut to the Step 1 fields. */
+    [["pf1","f_primer_f"], ["pr1","f_primer_r"]].forEach(function(pr){
+      var a = document.getElementById(pr[0]), b = document.getElementById(pr[1]);
+      if(!a || !b) return;
+      a.addEventListener("input", function(){ b.value = a.value; });
+      b.addEventListener("input", function(){ a.value = b.value; });
+    });
+
+    document.getElementById("seq").addEventListener("change", function(){
+      /* Single-end changes what counts as a sample, so re-detect immediately
+         rather than at submit time. */
+      if(FORM.uploaded.length)
+        FORM.detect = detectSamples(FORM.uploaded, this.value !== "illumina");
+      paintSamples();
+      preflight(dbOpts, nAvail, P);
+    });
 
     var ab = document.getElementById("advBtn"), abody = document.getElementById("advBody");
     ab.addEventListener("click", function(){
@@ -1139,30 +1617,276 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       ab.setAttribute("aria-expanded", String(!open));
       abody.hidden = open;
     });
+
+    document.getElementById("runBtn").addEventListener("click", function(){
+      doRun(dbOpts, nAvail, P);
+    });
   }
 
-  function pf(ok, good, bad){
-    return '<span class="pf ' + (ok ? "ok" : "bad") + '">'
-      + (ok
-        ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12l5 5L20 6"/></svg>'
-        : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/></svg>')
-      + esc(ok ? good : bad) + '</span>';
+  function chooseFastq(fileList, dbOpts, nAvail, P){
+    FORM.files    = Array.prototype.slice.call(fileList);
+    FORM.jobId    = null;         /* a new selection invalidates the old upload */
+    FORM.uploaded = [];
+    FORM.detect   = null;
+    FORM.lastError = "";
+    var names = FORM.files.map(function(f){ return f.name; });
+    var bytes = FORM.files.reduce(function(n, f){ return n + f.size; }, 0);
+    document.getElementById("fqState").textContent =
+      FORM.files.length + " file" + (FORM.files.length === 1 ? "" : "s")
+      + " · " + (bytes / 1048576).toFixed(1) + " MB — not uploaded yet";
+    document.getElementById("fqList").innerHTML = names.map(function(n){
+      return '<span class="file">' + esc(n) + '</span>'; }).join("");
+    document.getElementById("fqUp").disabled = !FORM.files.length;
+
+    /* Show the pairing BEFORE the upload, from the local filenames. If the
+       names are wrong, the user finds out now instead of after a transfer. */
+    var single = document.getElementById("seq").value !== "illumina";
+    FORM.detect = detectSamples(names, single);
+    paintSamples(true);
+    preflight(dbOpts, nAvail, P);
   }
 
-  function grp(title, rows){
-    return '<div class="stepgrp"><h4>' + esc(title) + '</h4><div class="grid2">'
-      + rows.map(function(r){
-          return '<div class="f"><label>' + esc(r[0]) + '</label>'
-            + '<input type="text" value="' + esc(r[1]) + '" readonly></div>';
-        }).join("")
-      + '</div></div>';
+  function chooseMeta(file, dbOpts, nAvail, P){
+    if(!file) return;
+    var r = new FileReader();
+    r.onload = function(){
+      var res = metaFromCSV(String(r.result));
+      FORM.meta     = res.rows;
+      FORM.metaErr  = res.err;
+      FORM.metaName = file.name;
+      document.getElementById("mdState").textContent = res.err
+        ? file.name + " — " + res.err
+        : file.name + " · " + res.rows.length + " row" + (res.rows.length === 1 ? "" : "s");
+      paintSamples();
+      preflight(dbOpts, nAvail, P);
+    };
+    r.readAsText(file);
   }
 
-  /* Database options come from GET /databases — the same db_paths.json the
-     backend resolves against. Only trainsets are offered: an assignSpecies
-     file in this dropdown is what produced the WRONG KIND OF REFERENCE FILE
-     failure, and v2.8.5 now refuses it at submit time. Refusing it here too
-     means it is never offered in the first place. */
+  function doUpload(dbOpts, nAvail, P){
+    if(!FORM.files.length || FORM.busy) return;
+    FORM.busy = true;
+    FORM.lastError = "";
+    var btn = document.getElementById("fqUp");
+    btn.disabled = true;
+    document.getElementById("fqState").textContent = "Uploading…";
+
+    var fd = new FormData();
+    FORM.files.forEach(function(f){ fd.append("files", f, f.name); });
+
+    fetch("/upload", {method:"POST", body:fd})
+      .then(function(r){
+        return r.json().then(function(j){
+          if(!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+          return j;
+        });
+      })
+      .then(function(j){
+        FORM.jobId    = j.job_id;
+        /* Trust the backend's file list, not the browser's: a .zip arrives as
+           one file and comes back as the FASTQs it contained. */
+        FORM.uploaded = Array.isArray(j.files) ? j.files : [];
+        var single    = document.getElementById("seq").value !== "illumina";
+        FORM.detect   = detectSamples(FORM.uploaded, single);
+        document.getElementById("fqState").textContent =
+          "Uploaded · " + FORM.uploaded.length + " file"
+          + (FORM.uploaded.length === 1 ? "" : "s") + " on the server";
+        /* The raw file list has done its job. From here the Detected samples
+           table below shows the same filenames with the sample each one was
+           assigned to, which is the view worth reading — two lists of the same
+           eight names, one of them less informative, is just noise. */
+        document.getElementById("fqList").innerHTML = "";
+      })
+      .catch(function(e){
+        FORM.lastError = "Upload failed — " + (e.message || e);
+        document.getElementById("fqState").textContent = "Upload failed";
+      })
+      .then(function(){
+        FORM.busy = false;
+        btn.disabled = !!FORM.jobId;
+        paintSamples();
+        preflight(dbOpts, nAvail, P);
+      });
+  }
+
+  /* The sample table. This is the screen that decides whether a run is worth
+     starting, so it shows the actual file each sample resolved to — not just a
+     count. A count of 4 looks identical whether or not the right files are
+     behind it. */
+  function paintSamples(provisional){
+    var box = document.getElementById("sampleBox");
+    if(!box) return;
+    var D = FORM.detect;
+    if(!D || !D.map.length && !D.problems.length){ box.innerHTML = ""; return; }
+
+    var metaIds = FORM.meta.map(function(m){ return m.sampleId; });
+    var rows = D.map.map(function(m){
+      var matched = metaIds.indexOf(m.sample) !== -1;
+      return '<tr><td><b>' + esc(m.sample) + '</b></td>'
+        + '<td>' + esc(m.file1) + '</td>'
+        + '<td>' + (m.file2 ? esc(m.file2) : '<span style="color:var(--fg-3)">single-end</span>') + '</td>'
+        + '<td>' + (!FORM.meta.length ? '<span style="color:var(--fg-3)">—</span>'
+            : matched ? '<span style="color:var(--ok)">matched</span>'
+                      : '<span style="color:var(--warn)">no metadata row</span>') + '</td></tr>';
+    }).join("");
+
+    var extraMeta = metaIds.filter(function(id){
+      return !D.map.some(function(m){ return m.sample === id; });
+    });
+
+    var PROB = {
+      unpaired:  "Forward reads with no matching reverse file",
+      orphanR2:  "Reverse reads with no matching forward file",
+      untokened: "FASTQ files with no _R1/_R2 or _1/_2 token — they cannot be assigned to a read direction",
+      duplicate: "Two files resolved to the SAME sample name — one would overwrite the other",
+      ignored:   "Not FASTQ, ignored"
+    };
+    var probs = D.problems.filter(function(p){ return p.kind !== "ignored" || true; }).map(function(p){
+      var bad = p.kind !== "ignored";
+      return '<div class="' + (bad ? "errbox" : "warnbox") + '" style="border-radius:0">'
+        + '<b>' + esc(PROB[p.kind] || p.kind) + ':</b> ' + esc(p.detail) + '</div>';
+    }).join("");
+
+    box.innerHTML = '<div class="panel" style="margin-top:12px">'
+      + '<div class="sechdr"><h3>Detected samples</h3><span class="hint">'
+      + D.map.length + ' sample' + (D.map.length === 1 ? "" : "s")
+      + (provisional && !FORM.jobId ? " · from the filenames, before upload" : "")
+      + (D.strict ? "" : " · matched on a loose _R1/_R2 rule") + '</span></div>'
+      + (rows ? '<table class="parms samples"><thead><tr><th>Sample</th><th>Forward</th>'
+          + '<th>Reverse</th><th>Metadata</th></tr></thead><tbody>' + rows + '</tbody></table>'
+        : '<div class="skel">No sample could be resolved from these filenames.</div>')
+      + probs
+      + (extraMeta.length
+          ? '<div class="warnbox"><b>' + extraMeta.length + ' metadata row'
+            + (extraMeta.length === 1 ? "" : "s") + ' match no sample:</b> ' + esc(extraMeta.join(", "))
+            + ' — check the spelling against the Sample column above.</div>'
+          : "")
+      + (FORM.metaErr ? '<div class="errbox" style="border-radius:0 0 var(--r) var(--r)"><b>Metadata:</b> '
+          + esc(FORM.metaErr) + '</div>' : "")
+      + '</div>';
+  }
+
+  function preflight(dbOpts, nAvail, P){
+    var el = document.getElementById("pre");
+    if(!el) return;
+    var D  = FORM.detect;
+    var n  = D ? D.map.length : 0;
+    var hardProblems = D ? D.problems.filter(function(p){ return p.kind !== "ignored"; }) : [];
+    var metaOk  = !FORM.meta.length || (!FORM.metaErr && D && D.map.every(function(m){
+      return FORM.meta.some(function(x){ return x.sampleId === m.sample; });
+    }));
+    var dbSel = document.getElementById("db");
+    var dbOk  = !!(dbSel && dbSel.value);
+
+    el.innerHTML =
+        pf(FORM.files.length ? (!!FORM.jobId && n > 0) : null,
+           n + " sample" + (n === 1 ? "" : "s") + " uploaded",
+           FORM.jobId ? "No sample detected" : "Chosen, not uploaded yet",
+           "No FASTQ files yet")
+      + pf(D ? !hardProblems.length : null,
+           "Pairing clean",
+           hardProblems.length + " pairing problem" + (hardProblems.length === 1 ? "" : "s"),
+           "Pairing — nothing to check yet")
+      + pf(FORM.meta.length ? metaOk : null,
+           "Metadata: " + FORM.meta.length + " rows matched",
+           "Metadata does not match the samples",
+           "No metadata (optional)")
+      + pf(dbOk, "Database selected", nAvail ? "No database selected" : "No database on disk");
+
+    var run = document.getElementById("runBtn");
+    var msg = document.getElementById("runMsg");
+    if(!run || !msg) return;
+
+    var why = !FORM.jobId          ? "Upload the reads first."
+            : n === 0              ? "No sample could be resolved from the uploaded filenames."
+            : hardProblems.length  ? "Fix the pairing problems above — a run started like this produces a table that looks fine and is not."
+            : !dbOk                ? "Choose a taxonomy database."
+            : !metaOk              ? "The metadata does not cover every sample. Remove it or fix the names."
+            : "";
+    run.disabled = !!why || FORM.busy;
+    msg.innerHTML = why ? esc(why)
+      : 'Ready — ' + n + ' sample' + (n === 1 ? "" : "s") + ' into job <span class="mono">'
+        + esc(FORM.jobId) + '</span>.';
+
+    var err = document.getElementById("runErr");
+    if(err) err.innerHTML = FORM.lastError
+      ? '<div class="note bad"><b>' + esc(FORM.lastError) + '</b></div>' : "";
+  }
+
+  /* Build the RunParams payload. Keys come straight off the controls' data-k,
+     which are RunParams field names, so nothing is renamed on the way out.
+     Anything the form does not offer is simply omitted and the backend's own
+     default applies — the UI does not restate defaults it is not in charge of. */
+  function buildPayload(){
+    var p = {
+      job_name: (document.getElementById("jn").value || "").trim(),
+      marker:   FORM.marker,
+      sequencerType: document.getElementById("seq").value,
+      metadata: FORM.meta,
+      sampleFileMap: FORM.detect ? FORM.detect.map : []
+    };
+    Array.prototype.forEach.call(
+      document.querySelectorAll("#advBody [data-k]"), function(el){
+        var k = el.dataset.k, v = el.value;
+        if(k.charAt(0) === "_") return;                 /* display-only rows */
+        if(el.dataset.bool)            p[k] = (v === "true");
+        else if(el.dataset.kind === "int") p[k] = parseInt(v, 10);
+        else if(el.dataset.kind === "num") p[k] = parseFloat(v);
+        else p[k] = v;
+      });
+    /* Step 4's tree toggle has no RunParams field of its own; it is display
+       only, and saying so beats inventing a key the backend ignores. */
+    var tax = document.getElementById("db");
+    if(tax) p.dbPath = tax.value;
+    p.taxDatabase = p.dbPath ? p.dbPath.split(/[\\/]/).pop() : "";
+    return p;
+  }
+
+  function doRun(dbOpts, nAvail, P){
+    if(FORM.busy || !FORM.jobId) return;
+    var bad = Object.keys(buildPayload()).filter(function(k){
+      var v = buildPayload()[k];
+      return typeof v === "number" && !isFinite(v);
+    });
+    if(bad.length){
+      FORM.lastError = "These settings are not numbers: " + bad.join(", ");
+      preflight(dbOpts, nAvail, P);
+      return;
+    }
+
+    FORM.busy = true;
+    FORM.lastError = "";
+    var run = document.getElementById("runBtn");
+    run.disabled = true;
+    document.getElementById("runMsg").textContent = "Starting…";
+
+    var jobId = FORM.jobId;
+    fetch("/run/" + encodeURIComponent(jobId), {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(buildPayload())
+    })
+      .then(function(r){
+        return r.json().then(function(j){
+          if(!r.ok){
+            /* The backend refuses with a reason — licence, database, integrity.
+               Show the reason it gave, not a generic failure. */
+            throw new Error(j.message || j.error || ("HTTP " + r.status));
+          }
+          return j;
+        });
+      })
+      .then(function(){
+        FORM.busy = false;
+        return refreshJobs().then(function(){ go({name:"job", id:jobId}); });
+      })
+      .catch(function(e){
+        FORM.busy = false;
+        FORM.lastError = "The backend refused this run — " + (e.message || e);
+        preflight(dbOpts, nAvail, P);
+      });
+  }
+
   function databaseOptions(key){
     var d = STATE.databases;
     if(!d || !d.databases) return [];
