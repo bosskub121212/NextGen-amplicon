@@ -84,6 +84,16 @@ if command -v rsync >/dev/null 2>&1; then
   rsync -rlt --itemize-changes "${EXCL[@]}" "$WIN_SRC/backend/"  "$APP_DIR/backend/"  >>"$SYNC_LOG"
   rsync -rlt --itemize-changes "${EXCL[@]}" "$WIN_SRC/frontend/" "$APP_DIR/frontend/" >>"$FE_LOG"
   cat "$FE_LOG" >>"$SYNC_LOG"
+  # The beta console (served at /beta) is a plain static file with NO build step,
+  # on purpose: it is synced into its own directory, its own log, and it is never
+  # part of the frontend rebuild decision below. A mistake in the beta UI can
+  # therefore not fail the production build or stop this deploy — which is the
+  # whole reason it is a separate folder instead of a branch of frontend/src.
+  if [[ -d "$WIN_SRC/frontend-beta" ]]; then
+    mkdir -p "$APP_DIR/frontend-beta"
+    rsync -rlt --itemize-changes "${EXCL[@]}" \
+      "$WIN_SRC/frontend-beta/" "$APP_DIR/frontend-beta/" >>"$SYNC_LOG"
+  fi
   rsync -rlt --itemize-changes "$WIN_SRC/version.json" "$APP_DIR/" >>"$SYNC_LOG"
   for f in "$WIN_SRC"/*.sh; do
     [[ -f "$f" ]] && rsync -rlt --itemize-changes "$f" "$APP_DIR/" >>"$SYNC_LOG"
@@ -100,8 +110,8 @@ if command -v rsync >/dev/null 2>&1; then
 else
   warn "rsync not installed — falling back to cp (cannot report what changed)"
   warn "Install for better output:  sudo apt install rsync"
-  mkdir -p "$APP_DIR/backend" "$APP_DIR/frontend"
-  ( cd "$WIN_SRC" && find backend frontend -type f \
+  mkdir -p "$APP_DIR/backend" "$APP_DIR/frontend" "$APP_DIR/frontend-beta"
+  ( cd "$WIN_SRC" && find backend frontend frontend-beta -type f \
       ! -path '*/node_modules/*' ! -path '*/dist/*' ! -path '*/venv/*' \
       ! -path '*/__pycache__/*'  ! -path '*/uploads/*' ! -path '*/results/*' \
       ! -path '*/databases/*'    ! -name '*.pyc' ! -name '*.log' \
@@ -292,6 +302,9 @@ echo ""
 echo -e "${BOLD}${GREEN}  ✅  Deployed  (v$APP_VER)${NC}"
 echo ""
 echo "  App:  http://localhost:8000"
+if [[ -f "$APP_DIR/frontend-beta/index.html" ]]; then
+echo "  Beta: http://localhost:8000/beta        (experimental UI — same jobs, same backend)"
+fi
 echo ""
 echo "  To publish these changes to GitHub (separate step):"
 echo "    bash $APP_DIR/push_github.sh \"your commit message\""

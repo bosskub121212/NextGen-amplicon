@@ -2218,6 +2218,24 @@ def download_results(job_id: str):
         headers={"Content-Disposition": f'attachment; filename="{safe_id}_results.zip"'},
     )
 
+# -- 14b. App version ---------------------------------------------------------
+@app.get("/version")
+def app_version():
+    """Read version.json so a front end can show the running version.
+
+    Registered here, above the SPA catch-all, for the reason set out below:
+    anything declared after that route is unreachable.
+    """
+    vf = BASE_DIR.parent / "version.json"
+    try:
+        data = json.loads(vf.read_text())
+        return {
+            "version":      data.get("version", ""),
+            "release_date": data.get("release_date", ""),
+        }
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"error": f"version.json unreadable: {e}"})
+
 # -- 15. Serve frontend static files (SPA) ------------------------------------
 # Looks for dist/ next to the backend/ directory (i.e. ~/r16s-app/frontend/dist)
 from fastapi.staticfiles import StaticFiles
@@ -2227,6 +2245,24 @@ _FRONTEND_DIRS = [
     BASE_DIR.parent / "frontend" / "build",  # CRA build output (legacy)
 ]
 _FRONTEND_DIR = next((d for d in _FRONTEND_DIRS if d.is_dir()), None)
+
+# ── Beta front end, served at /beta ──────────────────────────────────────────
+# A second, separate UI against the same backend, the same job store and the
+# same licence. It exists so UI work can continue while the production console
+# at / keeps running customer jobs: nothing below touches the production routes,
+# and frontend-beta/ has no build step, so a mistake in it cannot break the
+# Vite bundle or stop a deploy.
+#
+# ORDER MATTERS. Starlette matches routes in registration order and the SPA
+# catch-all below claims "/{full_path:path}", i.e. every path there is. Mount
+# /beta after it and /beta silently returns the production index.html instead —
+# which looks like the beta UI simply not updating.
+_BETA_DIR = BASE_DIR.parent / "frontend-beta"
+if _BETA_DIR.is_dir() and (_BETA_DIR / "index.html").exists():
+    app.mount("/beta", StaticFiles(directory=_BETA_DIR, html=True), name="beta")
+    print(f"[beta] Beta console mounted at /beta  ({_BETA_DIR})")
+else:
+    print(f"[beta] No beta console at {_BETA_DIR} — /beta not mounted")
 
 if _FRONTEND_DIR:
     # Mount static assets (JS/CSS chunks) — must come before the catch-all

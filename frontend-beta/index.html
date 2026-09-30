@@ -1,0 +1,1268 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NextGen-Amplicon Console (Beta)</title>
+
+<!-- Fonts load non-blockingly on purpose. This app is routinely run on a lab
+     machine with no internet: a normal stylesheet link there stalls first paint
+     waiting for a DNS failure. media="print" + onload swaps it in only if it
+     actually arrives; offline machines render immediately in the system stack. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" media="print" onload="this.media='all'"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: fixed instrument shell — header rail, 260px navigation column,
+   scrolling work surface. Nothing floats; everything is docked. */
+:root{
+  --bg:#eff2f4; --surface:#ffffff; --surface-2:#e9edef; --surface-3:#f6f8f9;
+  --line:#d7dee1; --line-strong:#bcc7cb;
+  --fg:#0e1517; --fg-2:#54646a; --fg-3:#8a989e;
+  --accent:#0f6b74; --accent-ink:#ffffff; --accent-soft:#dfeef0; --accent-line:#8fc3c8;
+  --ok:#1b7a50; --ok-soft:#dff0e6;
+  --warn:#9a5b00; --warn-soft:#fbeed6;
+  --err:#ac2b21; --err-soft:#fadedb;
+  --lock:#7d8b91;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --r:6px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0d1315; --surface:#141b1e; --surface-2:#1b2427; --surface-3:#111819;
+  --line:#263338; --line-strong:#38484e;
+  --fg:#e7eef0; --fg-2:#9db0b6; --fg-3:#6d8087;
+  --accent:#41aab4; --accent-ink:#04191c; --accent-soft:#11343a; --accent-line:#2b6a72;
+  --ok:#4dc08b; --ok-soft:#10301f;
+  --warn:#d69a3c; --warn-soft:#2f2412;
+  --err:#e2726a; --err-soft:#33191a;
+  --lock:#6d8087;
+  color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#0d1315; --surface:#141b1e; --surface-2:#1b2427; --surface-3:#111819;
+  --line:#263338; --line-strong:#38484e;
+  --fg:#e7eef0; --fg-2:#9db0b6; --fg-3:#6d8087;
+  --accent:#41aab4; --accent-ink:#04191c; --accent-soft:#11343a; --accent-line:#2b6a72;
+  --ok:#4dc08b; --ok-soft:#10301f;
+  --warn:#d69a3c; --warn-soft:#2f2412;
+  --err:#e2726a; --err-soft:#33191a;
+  --lock:#6d8087;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.5}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+.num{font-variant-numeric:tabular-nums}
+.mono{font-family:var(--mono)}
+
+/* ── shell ─────────────────────────────────────────────────────── */
+/* grid-template-columns:minmax(0,1fr) is load-bearing. A grid column defaults to
+   an "auto" floor of min-content, so without it the shell grows to the widest
+   unbreakable thing on the page — a long database path, a mono log line — and
+   the whole app scrolls sideways on a narrow window. Same reason for the
+   min-width:0 on .body and .nav below. */
+.shell{display:grid;grid-template-rows:auto 1fr;grid-template-columns:minmax(0,1fr);
+  height:100%;max-width:100%}
+.hdr{display:flex;align-items:center;gap:16px;padding:10px 16px;min-width:0;flex-wrap:wrap;
+  background:var(--surface);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand h1{margin:0;font-size:15px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;
+  display:flex;align-items:center;gap:8px}
+.brand p{margin:0;font-size:11.5px;color:var(--fg-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.beta{display:inline-flex;align-items:center;padding:1px 6px;border-radius:4px;
+  background:var(--warn-soft);color:var(--warn);font-size:9.5px;font-weight:700;
+  letter-spacing:.1em;text-transform:uppercase;border:1px solid currentColor}
+.hdr-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.maker{text-align:right;line-height:1.25}
+.maker b{display:block;font-size:11.5px;font-weight:600}
+.maker span{display:block;font-size:10.5px;color:var(--fg-3)}
+.iconbtn{display:grid;place-items:center;width:30px;height:30px;border:1px solid var(--line);
+  border-radius:var(--r);background:var(--surface);color:var(--fg-2)}
+.iconbtn:hover{border-color:var(--line-strong);color:var(--fg)}
+.iconbtn.on{border-color:var(--accent);color:var(--accent)}
+
+.body{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:0;min-width:0}
+.nav{background:var(--surface);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;min-height:0;min-width:0;padding:12px 10px 10px;overflow:auto}
+.work{min-width:0;overflow:auto;padding:20px 24px 40px}
+
+/* ── nav ───────────────────────────────────────────────────────── */
+.newjob{display:flex;align-items:center;gap:9px;width:100%;padding:10px 12px;
+  background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--r);
+  font-weight:600;font-size:13.5px;text-align:left}
+.newjob:hover{filter:brightness(1.07)}
+.newjob .chev{margin-left:auto;transition:transform .16s}
+.newjob[aria-expanded="true"] .chev{transform:rotate(90deg)}
+.pipes{display:flex;flex-direction:column;gap:1px;margin:8px 0 0;padding:0 0 0 10px;
+  border-left:1px solid var(--line)}
+.pipes[hidden]{display:none}
+.grp{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--fg-3);
+  padding:10px 8px 4px;font-weight:600}
+.pipe{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:none;
+  background:none;border-radius:5px;font-size:13px;text-align:left;color:var(--fg)}
+.pipe:hover{background:var(--surface-2)}
+.pipe[aria-current="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.pipe .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none;opacity:.85}
+.pipe.locked{color:var(--lock)}
+.pipe.locked .dot{background:var(--lock);opacity:.5}
+.pipe.locked:hover{background:var(--surface-2)}
+.pipe .lk{margin-left:auto;flex:none;color:var(--lock)}
+.navspace{flex:1;min-height:12px}
+.navbtn{display:flex;align-items:center;gap:9px;width:100%;padding:9px 12px;border:1px solid var(--line);
+  background:var(--surface);border-radius:var(--r);font-size:13px;font-weight:500;text-align:left}
+.navbtn:hover{border-color:var(--line-strong)}
+.navbtn[aria-current="true"]{background:var(--surface-2);border-color:var(--line-strong)}
+.navbtn .count{margin-left:auto;font-size:11px;color:var(--fg-3);font-variant-numeric:tabular-nums}
+.lic{margin-top:10px;padding:9px 10px;border:1px solid var(--line);border-radius:var(--r);
+  background:var(--surface-3);font-size:11px;color:var(--fg-2);line-height:1.45}
+.lic b{color:var(--fg);font-size:11.5px}
+
+/* ── work surface ──────────────────────────────────────────────── */
+.crumb{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--fg-3);margin-bottom:6px}
+.ttl{margin:0 0 3px;font-size:19px;font-weight:600;letter-spacing:-.015em;text-wrap:balance}
+.sub{margin:0 0 18px;font-size:13px;color:var(--fg-2);max-width:62ch}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+.sechdr{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.sechdr h3{margin:0;font-size:13px;font-weight:600}
+.sechdr .hint{margin-left:auto;font-size:11.5px;color:var(--fg-3)}
+
+/* job list */
+.jobs{display:flex;flex-direction:column}
+.job{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;
+  padding:13px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+.job:last-child{border-bottom:none}
+.job:hover{background:var(--surface-3)}
+.job .nm{font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.job .meta{font-size:11.5px;color:var(--fg-2);margin-top:2px;font-variant-numeric:tabular-nums}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:99px;
+  font-size:10.5px;font-weight:600;letter-spacing:.02em;white-space:nowrap}
+.chip.run{background:var(--accent-soft);color:var(--accent)}
+.chip.done{background:var(--ok-soft);color:var(--ok)}
+.chip.err{background:var(--err-soft);color:var(--err)}
+.chip.wait{background:var(--warn-soft);color:var(--warn)}
+.chip.mk{background:var(--surface-2);color:var(--fg-2)}
+.stat{width:9px;height:9px;border-radius:50%;flex:none}
+.stat.run{background:var(--accent);animation:pulse 1.6s ease-in-out infinite}
+.stat.done{background:var(--ok)}
+.stat.err{background:var(--err)}
+.stat.wait{background:var(--warn)}
+.stat.idle{background:var(--fg-3);opacity:.6}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.stat.run{animation:none}}
+.bar{height:3px;background:var(--surface-2);border-radius:2px;overflow:hidden;margin-top:7px;max-width:340px}
+.bar i{display:block;height:100%;background:var(--accent);transition:width .4s}
+.act{font-size:11.5px;color:var(--fg-2);white-space:nowrap;text-align:right}
+
+/* forms */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;padding:14px}
+.f{display:flex;flex-direction:column;gap:4px;min-width:0}
+.f label{font-size:11.5px;font-weight:600;color:var(--fg-2)}
+.f .note{font-size:11px;color:var(--fg-3);margin:0;padding:0;border:none;background:none}
+input[type=text],select{width:100%;padding:7px 9px;border:1px solid var(--line-strong);
+  border-radius:5px;background:var(--surface);color:var(--fg);font:inherit;font-size:13px}
+input.mono{font-family:var(--mono);font-size:12.5px;letter-spacing:.01em}
+input:focus,select:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+input[readonly]{background:var(--surface-3);color:var(--fg-2)}
+.span2{grid-column:span 2}
+
+/* upload */
+.up{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px}
+.drop{border:1.5px dashed var(--line-strong);border-radius:var(--r);background:var(--surface-3);
+  padding:16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.drop .t{font-size:12.5px;font-weight:600}
+.drop .s{font-size:11.5px;color:var(--fg-2)}
+.drop .row{display:flex;gap:8px;align-items:center;margin-top:2px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:5px;
+  border:1px solid var(--line-strong);background:var(--surface);font-size:12.5px;font-weight:600;
+  text-decoration:none;color:inherit}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.pri:hover{filter:brightness(1.07);color:var(--accent-ink)}
+.btn[disabled],.btn.off{opacity:.45;cursor:not-allowed;filter:none;pointer-events:none}
+
+/* preflight */
+.pre{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;border-top:1px solid var(--line);
+  background:var(--surface-3);border-radius:0 0 var(--r) var(--r)}
+.pf{display:inline-flex;align-items:center;gap:7px;padding:5px 10px;border-radius:99px;
+  font-size:11.5px;font-weight:600;background:var(--surface-2);color:var(--fg-3)}
+.pf.ok{background:var(--ok-soft);color:var(--ok)}
+.pf.bad{background:var(--warn-soft);color:var(--warn)}
+
+/* advanced */
+.adv{margin-top:12px}
+.advhdr{display:flex;align-items:center;gap:9px;width:100%;padding:11px 14px;background:none;
+  border:none;font-size:13px;font-weight:600;text-align:left}
+.advhdr .chev{transition:transform .16s}
+.advhdr[aria-expanded="true"] .chev{transform:rotate(90deg)}
+.advhdr .hint{margin-left:auto;font-size:11.5px;font-weight:400;color:var(--fg-3)}
+.advbody[hidden]{display:none}
+.stepgrp{border-top:1px solid var(--line);padding:2px 0 8px}
+.stepgrp h4{margin:12px 14px 2px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--fg-3);font-weight:600}
+
+.runbar{display:flex;align-items:center;gap:12px;margin-top:14px;padding:13px 14px;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);flex-wrap:wrap}
+.runbar .msg{font-size:12px;color:var(--fg-2)}
+.runbar .sp{margin-left:auto}
+
+/* license panel */
+.lockpanel{padding:18px 16px;display:flex;gap:14px;align-items:flex-start}
+.lockpanel .ic{flex:none;width:36px;height:36px;border-radius:8px;background:var(--surface-2);
+  display:grid;place-items:center;color:var(--lock)}
+.lockpanel h3{margin:0 0 4px;font-size:14px}
+.lockpanel p{margin:0 0 10px;font-size:12.5px;color:var(--fg-2);max-width:58ch}
+.kv{display:flex;flex-wrap:wrap;gap:6px}
+.kv span{font-size:11px;padding:3px 8px;border-radius:4px;background:var(--surface-2);color:var(--fg-2)}
+
+/* job detail */
+.dhdr{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.back{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--line);
+  background:var(--surface);border-radius:5px;font-size:12px;font-weight:600;color:var(--fg-2)}
+.back:hover{border-color:var(--line-strong);color:var(--fg)}
+.two{display:grid;grid-template-columns:320px 1fr;gap:14px;align-items:start}
+.steps{display:flex;flex-direction:column}
+.step{display:flex;align-items:center;gap:9px;padding:9px 14px;border-bottom:1px solid var(--line);font-size:12.5px}
+.step:last-child{border-bottom:none}
+.step .t{flex:1;min-width:0}
+.step .d{font-size:11px;color:var(--fg-3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.step.pend{color:var(--fg-3)}
+.tick{width:14px;height:14px;flex:none}
+.log{margin:0;padding:12px 14px;height:360px;overflow:auto;background:var(--surface-3);
+  border-radius:0 0 var(--r) var(--r);font-family:var(--mono);font-size:11.5px;line-height:1.65;
+  color:var(--fg-2);white-space:pre-wrap;word-break:break-word}
+.log .w{color:var(--warn)}
+.log .e{color:var(--err)}
+.log .s{color:var(--fg);font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-bottom:14px}
+.kpi{background:var(--surface);padding:11px 13px;min-width:0}
+.kpi b{display:block;font-size:17px;font-weight:600;font-variant-numeric:tabular-nums;
+  letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kpi span{font-size:11px;color:var(--fg-3)}
+.errbox{padding:13px 14px;background:var(--err-soft);color:var(--err);border-radius:0 0 var(--r) var(--r);
+  font-size:12.5px;border-top:1px solid var(--line);white-space:pre-wrap;word-break:break-word}
+.warnbox{padding:11px 14px;background:var(--warn-soft);color:var(--warn);font-size:12.5px;
+  border-top:1px solid var(--line)}
+.note{margin-top:14px;padding:12px 14px;border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:var(--r);background:var(--surface);font-size:12.5px;color:var(--fg-2);max-width:78ch}
+.note b{color:var(--fg)}
+.note.bad{border-left-color:var(--err)}
+.note.hold{border-left-color:var(--warn)}
+.parms{width:100%;border-collapse:collapse;font-size:12px}
+.parms td{padding:6px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+.parms tr:last-child td{border-bottom:none}
+.parms td:first-child{color:var(--fg-2);width:42%;font-weight:500}
+.parms td:last-child{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+
+.skel{padding:26px 14px;color:var(--fg-3);font-size:12.5px}
+
+@media (max-width:860px){
+  .body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}
+  .nav{border-right:none;border-bottom:1px solid var(--line)}
+  .navspace{display:none}
+  .work{padding:16px}
+  .grid2,.up{grid-template-columns:1fr}
+  .span2{grid-column:span 1}
+  .maker{display:none}
+  .two{grid-template-columns:1fr}
+  .kpis{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+
+<div class="shell">
+  <header class="hdr">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 32 32" aria-label="NextGen-Amplicon logo" role="img">
+        <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--accent)"/>
+        <!-- paired-end reads meeting at an overlap: what the pipeline actually does -->
+        <path d="M6 12h12" stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round" opacity=".55"/>
+        <path d="M15 8.5l4 3.5-4 3.5" stroke="var(--accent-ink)" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" fill="none" opacity=".55"/>
+        <path d="M26 20H14" stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round" opacity=".55"/>
+        <path d="M17 23.5l-4-3.5 4-3.5" stroke="var(--accent-ink)" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" fill="none" opacity=".55"/>
+        <rect x="13.5" y="14.5" width="5.5" height="3" rx="1.5" fill="var(--accent-ink)"/>
+      </svg>
+      <div style="min-width:0">
+        <h1>NextGen-Amplicon <span class="beta">Beta</span></h1>
+        <p>Amplicon sequencing analysis · DADA2 · Emu</p>
+      </div>
+    </div>
+    <div class="hdr-right">
+      <div class="maker">
+        <b>NextGen Network Corporation</b>
+        <span id="verLine">Company Limited</span>
+      </div>
+      <a class="btn" href="/" title="Open the production console">Production UI</a>
+      <button class="iconbtn" id="theme" title="Switch light / dark" aria-label="Switch light or dark theme">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="body">
+    <nav class="nav">
+      <button class="newjob" id="njBtn" aria-expanded="true" aria-controls="pipes">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+        New job
+        <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+
+      <div class="pipes" id="pipes"></div>
+
+      <div class="navspace"></div>
+
+      <button class="navbtn" id="histBtn" aria-current="true">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
+        Project history
+        <span class="count num" id="jobCount">—</span>
+      </button>
+
+      <div class="lic" id="licBox">Reading licence…</div>
+    </nav>
+
+    <main class="work" id="work"></main>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     NextGen-Amplicon — beta console.
+
+     This is a SEPARATE, read-mostly front end served at /beta by the same
+     backend that serves the production UI at /. It shares the API, the job
+     store and the licence; it shares no code with frontend/, and it has no
+     build step, so a mistake in here can neither break the production bundle
+     nor stop deploy_dev.sh.
+
+     Scope of this first cut, deliberately: everything that READS is real —
+     job list, job detail, step timeline, live log, run parameters, licence
+     entitlements, database list. Job SUBMISSION is not wired up. A half-wired
+     submit button that posts a subtly wrong payload would waste hours of
+     compute and produce a plausible-looking wrong answer, which is the exact
+     failure mode the last five patches were about. Start jobs in the
+     production UI until this side is finished and verified.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  var work     = document.getElementById("work");
+  var njBtn    = document.getElementById("njBtn");
+  var pipes    = document.getElementById("pipes");
+  var histBtn  = document.getElementById("histBtn");
+  var licBox   = document.getElementById("licBox");
+  var jobCount = document.getElementById("jobCount");
+  var verLine  = document.getElementById("verLine");
+
+  /* ── the instrument's full capability, in licence order ──────────────────
+     data-key MUST match license.py's PIPELINES names exactly, because that is
+     what GET /license/status returns and what decides locked vs unlocked. Do
+     not "tidy" 18S-nema to 18S or ONT-16S to ONT: the entitlement check would
+     silently stop matching and every pipeline would show as locked. */
+  var CATALOG = [
+    {grp:"Illumina short-read", items:[
+      {key:"16S",      label:"16S rRNA",       marker:"16S",
+       desc:"Bacterial and archaeal community profiling from the 16S rRNA gene. DADA2 exact sequence variants, SILVA taxonomy, diversity and functional prediction."},
+      {key:"12S",      label:"12S rRNA",       marker:"12S",
+       desc:"Vertebrate metabarcoding from the 12S rRNA gene — eDNA surveys, diet analysis, species detection."},
+      {key:"ITS1",     label:"ITS1 fungi",     marker:"ITS1",
+       desc:"Fungal community profiling from the ITS1 spacer, against the UNITE reference."},
+      {key:"ITS2",     label:"ITS2 fungi",     marker:"ITS2",
+       desc:"Fungal community profiling from the ITS2 spacer, against the UNITE reference."},
+      {key:"COX1",     label:"COX1 / CO1",     marker:"COX1",
+       desc:"Animal barcoding from the COI gene, against MIDORI2. Codon-aware filtering for the invertebrate table."},
+      {key:"18S-nema", label:"18S nematode",   marker:"18S-nema",
+       desc:"Nematode community profiling from 18S, against NemaBase."}
+    ]},
+    {grp:"Long-read", items:[
+      {key:"PacBio",   label:"PacBio CCS 16S", marker:"PacBio",
+       desc:"Full-length 16S from PacBio HiFi circular consensus reads — species-level resolution across V1–V9."},
+      {key:"ONT-16S",  label:"ONT 16S",        marker:"ONT-16S",
+       desc:"Full-length 16S from Oxford Nanopore reads, quantified with Emu against its own database."}
+    ]}
+  ];
+
+  /* Marker-specific defaults. The production UI shows one set of primers
+     whatever the marker is, which is how a 12S job can be submitted with 16S
+     primers. Here each marker carries its own. */
+  var PRESET = {
+    "16S": {fwd:"CCTACGGGNGGCWGCAG",          fwdName:"341F",
+            rev:"GGACTACHVGGGTWTCTAAT",       revName:"806R",
+            dbHint:"SILVA toGenus trainset"},
+    "12S": {fwd:"GTCGGTAAAACTCGTGCCAGC",      fwdName:"MiFish-U-F",
+            rev:"CATAGTGGGGTATCTAATCCCAGTTTG",revName:"MiFish-U-R",
+            dbHint:"12S DADA2 trainset"}
+  };
+
+  /* The pipeline announces its own steps as "Step N/8 — label". Nothing here
+     invents a step list: the timeline is built from step_history, and the only
+     thing derived is the count of steps not yet reached. */
+  var STEP_RE = /^Step\s+(\d+)\s*\/\s*(\d+)\s*[—–-]\s*(.*)$/;
+
+  /* Log colouring. These have to be narrow, because a false red line in a log
+     is worse than no colour at all: the first draft matched a bare /error/i and
+     painted DADA2's own "Step 2/8 — Learning error rates" and "ErrorModel_R1.pdf
+     saved" bright red on a run that was going perfectly. Match the shapes R and
+     this pipeline actually use to announce a failure, and nothing else. */
+  var LOG_ERR  = /^\s*(Error|ERROR|FATAL|Execution halted)\b|Error in |ERROR:|Traceback \(most recent|WRONG KIND OF|No such file|cannot open|Killed$/;
+  var LOG_WARN = /^\s*(Warning|WARN)\b|WARNING:|Warning message/;
+
+  var STATE = {
+    jobs: [],
+    maxWorkers: null,
+    license: null,
+    unlocked: {},
+    databases: null,
+    view: {name:"history"},
+    listErr: null
+  };
+
+  /* ── plumbing ───────────────────────────────────────────────────────────
+     Every fetch that fails must SAY it failed. An empty job list and an
+     unreachable backend look identical otherwise, and "there are no jobs" is
+     a much worse lie than "I could not reach the backend". */
+  function api(path){
+    return fetch(path, {cache:"no-store", headers:{"Accept":"application/json"}})
+      .then(function(r){
+        if(!r.ok) throw new Error("GET " + path + " → HTTP " + r.status);
+        return r.json();
+      });
+    /* Deliberately NOT treating a top-level "error" key in a 200 body as a
+       transport failure. This wrapper used to do exactly that, and it was
+       wrong in the worst possible direction: /detail/{id} returns the job's OWN
+       error message in an "error" field on a perfectly successful response, so
+       every FAILED job rendered as "could not read this job" and the real
+       reason it failed — the thing the user opened the page to see — was
+       thrown away. Transport failures come from the HTTP status; a body-level
+       "error" is data, and the caller decides what it means. */
+  }
+
+  function esc(s){
+    return String(s === null || s === undefined ? "" : s)
+      .replace(/[&<>"]/g, function(c){
+        return ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[c]; });
+  }
+
+  function dur(secs){
+    if(secs === null || secs === undefined || !isFinite(secs) || secs < 0) return "—";
+    secs = Math.round(secs);
+    if(secs < 60) return secs + "s";
+    var m = Math.floor(secs / 60), s = secs % 60;
+    if(m < 60) return m + "m " + (s < 10 ? "0" : "") + s + "s";
+    return Math.floor(m / 60) + "h " + (m % 60) + "m";
+  }
+
+  /* started_at / finished_at are POSIX seconds from Python's time.time(). */
+  function when(ts){
+    if(!ts) return "—";
+    var d = new Date(ts * 1000);
+    if(isNaN(d.getTime())) return "—";
+    var today = new Date(), sameDay = d.toDateString() === today.toDateString();
+    var hhmm = String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+    if(sameDay) return hhmm;
+    return d.toLocaleDateString(undefined, {day:"numeric", month:"short"}) + ", " + hhmm;
+  }
+
+  function ago(ts){
+    if(!ts) return "";
+    var s = Date.now()/1000 - ts;
+    if(s < 90) return "just now";
+    return dur(s) + " ago";
+  }
+
+  function nfmt(n){
+    if(n === null || n === undefined || n === "" || !isFinite(n)) return "—";
+    return Number(n).toLocaleString();
+  }
+
+  /* ── status vocabulary ──────────────────────────────────────────────────
+     The backend uses seven status strings. Mapping them here in one place,
+     with an explicit default, means a status we have not seen shows up as
+     itself rather than silently rendering as "complete". */
+  function statusKind(s){
+    switch(s){
+      case "running":            return "run";
+      case "queued":             return "run";
+      case "waiting_checkpoint": return "wait";
+      case "completed":          return "done";
+      case "error":              return "err";
+      case "cancelled":          return "err";
+      case "uploaded":           return "idle";
+      default:                   return "idle";
+    }
+  }
+  function statusLabel(s){
+    switch(s){
+      case "running":            return "Running";
+      case "queued":             return "Queued";
+      case "waiting_checkpoint": return "Waiting for you";
+      case "completed":          return "Complete";
+      case "error":              return "Failed";
+      case "cancelled":          return "Cancelled";
+      case "uploaded":           return "Not started";
+      default:                   return s || "Unknown";
+    }
+  }
+  function chip(s){
+    return '<span class="chip ' + statusKind(s) + '">' + esc(statusLabel(s)) + '</span>';
+  }
+  var isLive = function(s){ return s === "running" || s === "queued" || s === "waiting_checkpoint"; };
+
+  /* ── timers ─────────────────────────────────────────────────────────────
+     One timer per view, cleared on every navigation. A leaked interval that
+     keeps writing into a detached DOM node is how the old log view ended up
+     polling four jobs at once. */
+  var timer = null;
+  function stopTimer(){ if(timer){ clearInterval(timer); timer = null; } }
+
+  /* ═══ sidebar ══════════════════════════════════════════════════════════ */
+  var LOCK_SVG = '<svg class="lk" width="12" height="12" viewBox="0 0 24 24" fill="none" '
+    + 'stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/>'
+    + '<path d="M8 11V7a4 4 0 018 0v4"/></svg>';
+
+  function renderNavPipes(){
+    var html = "";
+    CATALOG.forEach(function(g){
+      html += '<div class="grp">' + esc(g.grp) + '</div>';
+      g.items.forEach(function(it){
+        var open = !!STATE.unlocked[it.key];
+        html += '<button class="pipe' + (open ? "" : " locked") + '" data-key="' + esc(it.key) + '">'
+             +  '<span class="dot"></span>' + esc(it.label)
+             +  (open ? "" : LOCK_SVG) + '</button>';
+      });
+    });
+    pipes.innerHTML = html;
+    Array.prototype.forEach.call(pipes.querySelectorAll(".pipe"), function(b){
+      b.addEventListener("click", function(){ go({name:"pipeline", key:b.dataset.key}); });
+    });
+  }
+
+  function findPipe(key){
+    for(var i = 0; i < CATALOG.length; i++){
+      var m = CATALOG[i].items.filter(function(x){ return x.key === key; });
+      if(m.length) return m[0];
+    }
+    return null;
+  }
+
+  function renderLicenceBox(){
+    var L = STATE.license;
+    if(!L){
+      licBox.innerHTML = '<b>Licence unavailable</b><br>The backend did not answer '
+        + '<span class="mono">/license/status</span>. Every pipeline is shown as locked until it does — '
+        + 'nothing is being hidden from you, and nothing has been unlocked on a guess.';
+      return;
+    }
+    var names = Array.isArray(L.pipelines) ? L.pipelines : [];
+    var total = CATALOG.reduce(function(n,g){ return n + g.items.length; }, 0);
+    var extra = "";
+    if(L.status === "dev")      extra = "Developer machine — the licence check is bypassed, so all pipelines are open.";
+    else if(L.status === "disabled") extra = "Licensing is not switched on in this build, so all pipelines are open.";
+    else if(L.days_remaining !== null && L.days_remaining !== undefined)
+      extra = L.days_remaining + " day" + (L.days_remaining === 1 ? "" : "s") + " remaining"
+            + (L.expiry_warning ? " — renew soon." : ".");
+    else if(L.message) extra = L.message;
+
+    licBox.innerHTML = '<b>Licence · ' + names.length + ' of ' + total + ' pipelines</b><br>'
+      + (names.length
+          ? esc(names.join(", ")) + (names.length < total
+              ? ". The rest are shown so you can see the full instrument; they unlock with a licence key."
+              : ".")
+          : "No pipeline is enabled on this machine.")
+      + (extra ? "<br>" + esc(extra) : "");
+  }
+
+  /* ═══ routing ══════════════════════════════════════════════════════════ */
+  function go(view){
+    stopTimer();
+    STATE.view = view;
+    work.scrollTop = 0;
+    Array.prototype.forEach.call(pipes.querySelectorAll(".pipe"), function(b){
+      if(view.name === "pipeline" && b.dataset.key === view.key) b.setAttribute("aria-current","true");
+      else b.removeAttribute("aria-current");
+    });
+    if(view.name === "history") histBtn.setAttribute("aria-current","true");
+    else histBtn.removeAttribute("aria-current");
+
+    if(view.name === "history")  return renderHistory();
+    if(view.name === "job")      return renderJob(view.id);
+    if(view.name === "pipeline") return renderPipeline(view.key);
+  }
+
+  /* ═══ home: project history ════════════════════════════════════════════ */
+  /* Sort by how much the row wants your attention, then by recency:
+       1. waiting_checkpoint — a run is stopped and cannot continue until you decide
+       2. running / queued   — in flight
+       3. everything finished
+     A paused run buried under four active ones is a run nobody notices for an
+     hour, which is the whole cost of getting this order wrong. */
+  function attention(s){
+    if(s === "waiting_checkpoint") return 0;
+    if(s === "running" || s === "queued") return 1;
+    return 2;
+  }
+  function jobSort(a, b){
+    var d = attention(a.status) - attention(b.status);
+    if(d) return d;
+    return (b.started_at || 0) - (a.started_at || 0);   /* then newest first */
+  }
+
+  function renderHistory(){
+    work.innerHTML = '<div class="crumb">Project history</div>'
+      + '<h2 class="ttl">Jobs on this machine</h2>'
+      + '<p class="sub">Open any job for its step timeline, the log exactly as the pipeline wrote it, '
+      + 'and the settings it actually ran with.</p>'
+      + '<div class="panel"><div class="sechdr"><h3>Recent</h3><span class="hint" id="hSum">loading…</span></div>'
+      + '<div id="jobsBox"><div class="skel">Reading the job list…</div></div></div>'
+      + '<div id="histNote"></div>';
+
+    paintHistory();
+    refreshJobs().then(paintHistory);
+    timer = setInterval(function(){
+      if(STATE.view.name !== "history"){ stopTimer(); return; }
+      refreshJobs().then(paintHistory);
+    }, 5000);
+  }
+
+  function paintHistory(){
+    var box = document.getElementById("jobsBox");
+    if(!box) return;
+    var sum  = document.getElementById("hSum");
+    var note = document.getElementById("histNote");
+
+    if(STATE.listErr){
+      box.innerHTML = '<div class="errbox" style="border-radius:0 0 var(--r) var(--r)">'
+        + '<b>Could not read the job list.</b>\n' + esc(STATE.listErr)
+        + '\n\nThis screen is showing nothing because it knows nothing — not because there are no jobs.</div>';
+      if(sum) sum.textContent = "backend unreachable";
+      if(note) note.innerHTML = '<div class="note bad"><b>Is the backend up?</b> The beta console is served by the '
+        + 'same process as the production UI, so if this cannot reach <span class="mono">/jobs</span>, '
+        + 'neither can the production console. Check <span class="mono">bash ~/r16s-app/start_backend.sh</span>.</div>';
+      return;
+    }
+
+    var jobs = STATE.jobs.slice().sort(jobSort);
+    jobCount.textContent = jobs.length;
+
+    if(!jobs.length){
+      box.innerHTML = '<div class="skel">No jobs yet. The backend answered, and its job store is empty.</div>';
+      if(sum) sum.textContent = "0 jobs";
+      if(note) note.innerHTML = "";
+      return;
+    }
+
+    var c = {run:0, done:0, err:0, wait:0, idle:0};
+    jobs.forEach(function(j){ c[statusKind(j.status)]++; });
+    var parts = [];
+    if(c.run)  parts.push(c.run + " active");
+    if(c.wait) parts.push(c.wait + " waiting");
+    if(c.done) parts.push(c.done + " complete");
+    if(c.err)  parts.push(c.err + " failed");
+    if(c.idle) parts.push(c.idle + " not started");
+    if(sum) sum.textContent = parts.join(" · ")
+      + (STATE.maxWorkers ? "  ·  " + STATE.maxWorkers + " worker slot" + (STATE.maxWorkers === 1 ? "" : "s") : "");
+
+    box.innerHTML = '<div class="jobs">' + jobs.map(function(j){
+      var kind = statusKind(j.status);
+      var nFiles = Array.isArray(j.files) ? j.files.length : 0;
+      var meta = j.step_label ? esc(j.step_label)
+               : (j.status === "error" && j.error) ? esc(String(j.error).split("\n")[0])
+               : esc(j.database || "—");
+      return '<div class="job" data-id="' + esc(j.job_id) + '" tabindex="0" role="button">'
+        + '<span class="stat ' + kind + '"></span>'
+        + '<div style="min-width:0">'
+          + '<div class="nm">' + esc(j.job_name || j.job_id) + chip(j.status)
+            + '<span class="chip mk">' + esc(j.marker || "—") + '</span></div>'
+          + '<div class="meta">' + meta + '</div>'
+          + (kind === "run"
+              ? '<div class="bar"><i style="width:' + (Number(j.progress) || 0) + '%"></i></div>'
+              : "")
+        + '</div>'
+        + '<div class="act">' + (nFiles ? nFiles + " file" + (nFiles === 1 ? "" : "s") : "no files")
+          + '<br>' + esc(j.started_at ? (isLive(j.status) ? "started " + ago(j.started_at) : when(j.started_at))
+                                      : "not started") + '</div>'
+      + '</div>';
+    }).join("") + '</div>';
+
+    Array.prototype.forEach.call(box.querySelectorAll(".job"), function(el){
+      function open(){ go({name:"job", id:el.dataset.id}); }
+      el.addEventListener("click", open);
+      el.addEventListener("keydown", function(e){
+        if(e.key === "Enter" || e.key === " "){ e.preventDefault(); open(); }
+      });
+    });
+
+    if(note) note.innerHTML = '<div class="note"><b>Why this is the first screen.</b> '
+      + 'You spend more time watching and comparing runs than starting them. Starting a job is one button '
+      + 'away, top left.</div>';
+  }
+
+  function refreshJobs(){
+    return api("/jobs").then(function(d){
+      STATE.jobs = Array.isArray(d.jobs) ? d.jobs : [];
+      STATE.maxWorkers = d.max_workers;
+      STATE.listErr = null;
+    }).catch(function(e){
+      STATE.listErr = e.message || String(e);
+    });
+  }
+
+  /* ═══ job detail ═══════════════════════════════════════════════════════ */
+  /* ── job detail ───────────────────────────────────────────────────────────
+     The shell is built once. Subsequent polls of a live run PATCH the pieces
+     that changed — log, progress bar, KPI values, step rows — instead of
+     rewriting the whole panel. Rewriting it was the obvious implementation and
+     it is wrong for the one screen people actually sit and stare at: replacing
+     the log element every 2 seconds resets its scroll position, drops any text
+     the user had selected to copy into a bug report, and re-attaches a scroll
+     listener on every tick. The shell is rebuilt only when the status changes,
+     because that is when the layout genuinely differs. */
+  function renderJob(id){
+    var listed = STATE.jobs.filter(function(j){ return j.job_id === id; })[0] || {job_id:id};
+
+    work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
+        + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 6l-6 6 6 6"/></svg>'
+        + 'Project history</button></div>'
+      + '<h2 class="ttl" id="dTtl">' + esc(listed.job_name || id) + '</h2>'
+      + '<p class="sub" id="dSub">' + chip(listed.status) + ' <span class="chip mk">'
+        + esc(listed.marker || "—") + '</span></p>'
+      + '<div id="dBody"><div class="panel"><div class="skel">Reading job detail…</div></div></div>';
+
+    document.getElementById("backBtn").addEventListener("click", function(){ go({name:"history"}); });
+
+    var built     = null;   /* the status the current shell was built for */
+    var atBottom  = true;   /* follow the log only while the user is at the end of it */
+
+    function tick(){
+      if(STATE.view.name !== "job" || STATE.view.id !== id){ stopTimer(); return; }
+      Promise.all([
+        api("/detail/"   + encodeURIComponent(id)).catch(function(e){ return {__err:e.message || String(e)}; }),
+        api("/progress/" + encodeURIComponent(id)).catch(function(e){ return {__err:e.message || String(e)}; })
+      ]).then(function(r){ paintJob(id, r[0], r[1]); });
+    }
+
+    /* ── turn the two responses into one flat view model ───────────────────
+       Nothing here invents a value. Where the backend gave us nothing, the
+       model carries null and the tile shows "—". */
+    function model(D, P){
+      var okP     = P && !P.__err;
+      var st      = D.status || listed.status;
+      var live    = isLive(st);
+      var pct     = (okP && typeof P.percent === "number") ? P.percent : (Number(listed.progress) || 0);
+      var params  = D.params || {};
+      var history = Array.isArray(D.step_history) ? D.step_history : [];
+      var nFiles  = Array.isArray(D.files) ? D.files.length : 0;
+      var elapsed = (D.total_secs !== null && D.total_secs !== undefined) ? D.total_secs
+                  : (D.started_at ? (live ? Date.now()/1000 - D.started_at : null) : null);
+
+      /* step timeline, built from step_history and nothing else. The pipeline
+         labels its own steps "Step N/8 — ...", so the total is read off those
+         labels; steps past the furthest one reached are listed as pending only
+         because the pipeline itself said how many there are. */
+      var total = 0, maxSeen = 0;
+      var rows = history.map(function(h){
+        var m = STEP_RE.exec(String(h.label || ""));
+        var n = m ? parseInt(m[1], 10) : null;
+        if(m){ total = Math.max(total, parseInt(m[2], 10)); maxSeen = Math.max(maxSeen, n); }
+        return {
+          n: n,
+          text: m ? m[3] : String(h.label || ""),
+          status: h.status,
+          secs: (h.started_at && h.ended_at) ? h.ended_at - h.started_at
+              : (h.started_at && h.status === "running") ? Date.now()/1000 - h.started_at : null
+        };
+      });
+      var seen = {};
+      rows = rows.filter(function(r){
+        if(r.n === null) return true;
+        var k = r.n + "|" + r.text;
+        if(seen[k]) return false;
+        seen[k] = 1;
+        return true;
+      });
+      for(var n = maxSeen + 1; n <= total; n++) rows.push({n:n, text:"", status:"pending", secs:null});
+
+      var ram = (okP && P.ram_mb)
+        ? (P.ram_mb/1024).toFixed(1) + (P.ram_total_mb ? " / " + (P.ram_total_mb/1024).toFixed(0) : "") + " GB"
+        : null;
+      var cpu = (okP && typeof P.cpu_pct === "number") ? P.cpu_pct + "%" : null;
+
+      var kpis = [
+        [nFiles ? String(nFiles) : "—",       nFiles === 1 ? "Input file" : "Input files"],
+        [live ? pct + "%" : statusLabel(st),  live ? "Progress" : "Outcome"],
+        [dur(elapsed),                        live ? "Elapsed" : "Run time"],
+        live && ram ? [ram, "RAM in use"]
+          : live && cpu ? [cpu, "CPU (machine)"]
+          : [params.marker || listed.marker || "—", "Marker"]
+      ];
+
+      return {
+        st:st, live:live, pct:pct, params:params, rows:rows, total:total, maxSeen:maxSeen,
+        kpis:kpis, error:D.error || "", offtarget:D.offtarget_warning || "",
+        logs: (okP && Array.isArray(P.logs)) ? P.logs : null,
+        logErr: P && P.__err ? P.__err : "",
+        runAt:D.run_at, startedAt:D.started_at, finishedAt:D.finished_at,
+        marker: listed.marker || params.marker || "—", D:D
+      };
+    }
+
+    var TICK_OK   = '<svg class="tick" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="3"><path d="M4 12l5 5L20 6"/></svg>';
+    var TICK_RUN  = '<svg class="tick" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.6"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+    var TICK_ERR  = '<svg class="tick" viewBox="0 0 24 24" fill="none" stroke="var(--err)" stroke-width="2.6"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
+    var TICK_PEND = '<svg class="tick" viewBox="0 0 24 24" fill="none" stroke="var(--fg-3)" stroke-width="2" opacity=".5"><circle cx="12" cy="12" r="9"/></svg>';
+
+    function stepsHtml(M){
+      if(!M.rows.length)
+        return '<div class="skel">No steps recorded yet.'
+          + (M.live ? " The pipeline announces each step as it starts it." : "") + '</div>';
+      return M.rows.map(function(r){
+        var ic = r.status === "completed" ? TICK_OK
+               : r.status === "running"   ? TICK_RUN
+               : r.status === "error"     ? TICK_ERR : TICK_PEND;
+        var name = (r.n ? "Step " + r.n + (M.total ? "/" + M.total : "") + (r.text ? " — " : "") : "") + r.text;
+        return '<div class="step' + (r.status === "pending" ? " pend" : "") + '">' + ic
+          + '<span class="t">' + esc(name || "—") + '</span>'
+          + '<span class="d">' + (r.status === "running" ? "running"
+              : (r.secs !== null ? dur(r.secs) : "")) + '</span></div>';
+      }).join("");
+    }
+
+    /* The log is shown exactly as the pipeline wrote it — only coloured, never
+       filtered or reworded. Anything this screen hides is something a future
+       bug report will not contain. */
+    function logHtml(M){
+      if(M.logs === null)
+        return M.logErr
+          ? '<span class="e">Could not read the log: ' + esc(M.logErr) + '</span>'
+          : '<span class="e">The backend returned no log for this job.</span>';
+      if(!M.logs.length) return "(no log lines yet)";
+      return M.logs.map(function(l){
+        var s = String(l);
+        var cls = STEP_RE.test(s) ? "s" : LOG_ERR.test(s) ? "e" : LOG_WARN.test(s) ? "w" : "";
+        return cls ? '<span class="' + cls + '">' + esc(s) + '</span>' : esc(s);
+      }).join("\n");
+    }
+
+    function paintJob(jid, D, P){
+      var body = document.getElementById("dBody");
+      if(!body) return;
+
+      /* A transport failure on /detail is fatal for this screen: without it we
+         know neither the status nor the parameters, and guessing either is how
+         a stale view ends up looking authoritative. */
+      if(D.__err){
+        built = null;
+        body.innerHTML = '<div class="panel"><div class="errbox" style="border-radius:var(--r)">'
+          + '<b>Could not read this job.</b>\n' + esc(D.__err)
+          + '\n\nIf the backend was restarted, a job it no longer holds in memory is gone from '
+          + '/detail even when its results are still on disk in the job folder.</div></div>';
+        stopTimer();
+        return;
+      }
+
+      var M = model(D, P);
+
+      var sub = document.getElementById("dSub");
+      if(sub) sub.innerHTML = chip(M.st) + ' <span class="chip mk">' + esc(M.marker) + '</span> &nbsp;'
+        + esc(M.runAt ? "submitted " + when(M.runAt) : "")
+        + (M.startedAt  ? ' · started '  + esc(when(M.startedAt))  : "")
+        + (M.finishedAt ? ' · finished ' + esc(when(M.finishedAt)) : "");
+
+      if(built === M.st){ patch(M); }
+      else { build(jid, M); built = M.st; }
+
+      if(!M.live) stopTimer();
+    }
+
+    function patch(M){
+      var i, k = document.querySelectorAll("#dBody .kpi");
+      for(i = 0; i < k.length && i < M.kpis.length; i++){
+        var b = k[i].querySelector("b"), s = k[i].querySelector("span");
+        if(b && b.textContent !== M.kpis[i][0]) b.textContent = M.kpis[i][0];
+        if(s && s.textContent !== M.kpis[i][1]) s.textContent = M.kpis[i][1];
+      }
+      var bar = document.querySelector("#dBar i");
+      if(bar) bar.style.width = M.pct + "%";
+      var sp = document.getElementById("stepsBox");
+      if(sp) sp.innerHTML = stepsHtml(M);
+      var sh = document.getElementById("stepsHint");
+      if(sh) sh.textContent = M.total ? Math.min(M.maxSeen, M.total) + " of " + M.total
+                                      : M.rows.length + " recorded";
+      var lh = document.getElementById("logHint");
+      if(lh) lh.textContent = (M.live ? "live · updates every 2s" : "as written by the pipeline")
+        + (M.logs ? " · " + M.logs.length + " lines" : "");
+      var box = document.getElementById("logBox");
+      if(box){
+        var html = logHtml(M);
+        if(box.innerHTML !== html){
+          box.innerHTML = html;
+          if(atBottom) box.scrollTop = box.scrollHeight;
+        }
+      }
+    }
+
+    function build(jid, M){
+      var body = document.getElementById("dBody");
+      body.innerHTML =
+          '<div class="kpis">' + M.kpis.map(function(x){
+              return '<div class="kpi"><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></div>'; }).join("")
+        + '</div>'
+        + (M.live ? '<div class="bar" id="dBar" style="max-width:none;margin:-4px 0 14px">'
+                    + '<i style="width:' + M.pct + '%"></i></div>' : "")
+        + (M.st === "waiting_checkpoint"
+            ? '<div class="note hold"><b>This run is paused at a checkpoint</b> and is waiting for a '
+              + 'decision — most often the truncLen review before filtering. Continue or abort it in the '
+              + 'production console; the beta side does not post that decision yet.</div>'
+            : "")
+        + (M.offtarget
+            ? '<div class="note hold"><b>Off-target warning from the pipeline.</b> ' + esc(M.offtarget) + '</div>'
+            : "")
+        + '<div class="two" style="margin-top:14px">'
+          + '<div class="panel"><div class="sechdr"><h3>Pipeline</h3>'
+            + '<span class="hint" id="stepsHint">'
+            + (M.total ? Math.min(M.maxSeen, M.total) + " of " + M.total : M.rows.length + " recorded")
+            + '</span></div>'
+            + '<div class="steps" id="stepsBox">' + stepsHtml(M) + '</div></div>'
+          + '<div class="panel"><div class="sechdr"><h3>Log</h3><span class="hint" id="logHint">'
+            + (M.live ? "live · updates every 2s" : "as written by the pipeline")
+            + (M.logs ? " · " + M.logs.length + " lines" : "") + '</span></div>'
+            + '<div class="log" id="logBox">' + logHtml(M) + '</div>'
+            + (M.error ? '<div class="errbox"><b>Run stopped.</b>\n' + esc(M.error) + '</div>' : "")
+          + '</div>'
+        + '</div>'
+        + renderParams(M.params, M.D)
+        + '<div class="runbar">'
+          + (M.st === "completed"
+              ? '<span class="msg">Results are on disk in the job folder.</span><span class="sp"></span>'
+                + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download results (.zip)</a>'
+                + '<a class="btn pri" href="/?job=' + encodeURIComponent(jid) + '">Open charts in the production UI</a>'
+              : M.live
+              ? '<span class="msg">The log updates as the pipeline writes it. Closing this page does not '
+                + 'affect the run.</span><span class="sp"></span>'
+                + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Manage in the production UI</a>'
+              : '<span class="msg">Nothing is running for this job.</span><span class="sp"></span>'
+                + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>')
+        + '</div>';
+
+      var box = document.getElementById("logBox");
+      if(box){
+        box.scrollTop = box.scrollHeight;
+        atBottom = true;
+        box.addEventListener("scroll", function(){
+          atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+        });
+      }
+    }
+
+    tick();
+    timer = setInterval(tick, 2000);
+  }
+
+  /* The settings a run actually used, read from the snapshot the backend wrote
+     BEFORE starting the job (v2.8.5). dbPath_requested vs dbPath is the pair
+     that proved a job had silently used a different database than the one
+     chosen, so both are shown, and a mismatch is called out. */
+  function renderParams(p, D){
+    if(!p || !Object.keys(p).length) return "";
+    var rows = [];
+    function row(k, v){ if(v !== undefined && v !== null && v !== "") rows.push([k, v]); }
+
+    row("Marker",              p.marker);
+    row("Forward primer",      p.primer_f);
+    row("Reverse primer",      p.primer_r);
+    row("Taxonomy database",   p.taxDatabase);
+    row("Database file used",  p.dbPath);
+    if(p.dbPath_requested && p.dbPath && p.dbPath_requested !== p.dbPath)
+      row("⚠ Database requested", p.dbPath_requested + "  (the run used the file above)");
+    if(p.dbPath_auto) row("Database chosen automatically", "yes");
+    row("truncLen F / R",      (p.truncLen_F || p.truncLen_R) ? (p.truncLen_F + " / " + p.truncLen_R) : "");
+    row("maxEE F / R",         (p.maxEE_F || p.maxEE_R) ? (p.maxEE_F + " / " + p.maxEE_R) : "");
+    row("trimLeft F / R",      (p.trimLeft_F || p.trimLeft_R) ? (p.trimLeft_F + " / " + p.trimLeft_R) : "");
+    row("Pooling",             p.pool);
+    row("Chimera method",      p.chimeraMethod);
+    row("Minimum bootstrap",   p.minBoot);
+    row("Bases to learn from", p.nbases ? nfmt(p.nbases) : "");
+    row("Top taxa in plots",   p.topN);
+    row("Discard untrimmed",   p.discardUntrimmed === true ? "yes" : (p.discardUntrimmed === false ? "no" : ""));
+    row("Metadata supplied",   (p.metadata || (p.metadataRows && p.metadataRows.length)) ? "yes" : "no");
+    row("Manual sample map",   (p.sampleFileMap && Object.keys(p.sampleFileMap).length) ? "yes" : "no");
+    row("Reads re-oriented",   D.reoriented ? "yes" : "");
+
+    if(!rows.length) return "";
+    return '<div class="panel" style="margin-top:14px">'
+      + '<div class="sechdr"><h3>Settings this run used</h3>'
+      + '<span class="hint">recorded before the run started</span></div>'
+      + '<table class="parms">' + rows.map(function(r){
+          return '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>'; }).join("")
+      + '</table></div>';
+  }
+
+  /* ═══ pipeline pages ═══════════════════════════════════════════════════ */
+  function renderPipeline(key){
+    var it = findPipe(key);
+    if(!it) return go({name:"history"});
+    if(!STATE.unlocked[key]) return renderLocked(it);
+    return renderForm(it);
+  }
+
+  function renderLocked(it){
+    work.innerHTML =
+        '<div class="crumb">New job · ' + esc(it.label) + '</div>'
+      + '<h2 class="ttl">' + esc(it.label) + ' is not included in this licence</h2>'
+      + '<p class="sub">' + esc(it.desc) + '</p>'
+      + '<div class="panel"><div class="lockpanel">'
+        + '<div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg></div>'
+        + '<div><h3>What the ' + esc(it.label) + ' pipeline adds</h3>'
+        + '<p>The pipeline is installed and ready. A licence key for this machine turns it on — no reinstall, '
+        + 'and no re-download of reference databases.</p>'
+        + '<div class="kv"><span>Marker-specific primer handling</span><span>Matched reference database</span>'
+        + '<span>Same QC checkpoints</span><span>Same report builder</span></div>'
+        + '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'
+        + '<a class="btn pri" href="/">Enter a licence key in the production UI</a></div></div>'
+      + '</div></div>'
+      + '<div class="note">Locked pipelines stay visible on purpose. Hiding them would make the app look '
+      + 'smaller than it is, and nobody buys a capability they never knew existed.</div>';
+  }
+
+  /* The New Job form. Real values, real database list — but it does not submit.
+     See the scope note at the top of this file. */
+  function renderForm(it){
+    var P = PRESET[it.key] || {fwd:"", fwdName:"—", rev:"", revName:"—", dbHint:"—"};
+    var dbOpts = databaseOptions(it.key);
+    var nAvail = dbOpts.filter(function(o){ return o.avail; }).length;
+
+    work.innerHTML =
+        '<div class="crumb">New job · ' + esc(it.label) + '</div>'
+      + '<h2 class="ttl">New ' + esc(it.label) + ' job</h2>'
+      + '<p class="sub">Four settings decide the result. Everything else has a default and is tucked away below.</p>'
+
+      + '<div class="note hold"><b>Beta: this form does not start runs yet.</b> Everything on it is read from '
+      + 'the live backend — the database list, the licence, the primer defaults — but submitting is deliberately '
+      + 'not wired up. A submit path that posts a subtly wrong payload costs hours of compute and returns a '
+      + 'plausible wrong answer, which is exactly what the last few patches were about. '
+      + 'Start runs in the <a href="/">production console</a> until this side is finished and verified.</div>'
+
+      + '<div class="panel" style="margin-top:14px">'
+        + '<div class="sechdr"><h3>Input</h3><span class="hint">FASTQ pairs and sample metadata</span></div>'
+        + '<div class="grid2" style="padding-bottom:0">'
+          + '<div class="f span2"><label for="jn">Job name</label>'
+          + '<input type="text" id="jn" placeholder="e.g. Soil_16S_Run1"></div>'
+        + '</div>'
+        + '<div class="up">'
+          + '<div class="drop">'
+            + '<div class="t">Sequencing reads</div>'
+            + '<div class="s">.fastq.gz pairs, or a .zip containing them</div>'
+            + '<div class="row"><button class="btn pri off" disabled>Upload files</button>'
+              + '<span class="s">not in the beta yet</span></div>'
+          + '</div>'
+          + '<div class="drop">'
+            + '<div class="t">Sample metadata</div>'
+            + '<div class="s">CSV with sampleId, group, description</div>'
+            + '<div class="row"><button class="btn off" disabled>Upload metadata</button></div>'
+            + '<div class="s">Grouping and diversity plots need it. Note that PERMANOVA needs at least two '
+            + 'groups with two samples each — below that the pipeline now says so instead of printing R² = 1.</div>'
+          + '</div>'
+        + '</div>'
+        + '<div class="pre">'
+          + pf(false, "", "No FASTQ files yet")
+          + pf(false, "", "Metadata not loaded")
+          + pf(nAvail > 0, nAvail + " database file" + (nAvail === 1 ? "" : "s") + " on disk",
+               dbOpts.length ? "Every candidate database is missing from disk"
+                             : "No database found for this marker")
+          + pf(!!P.fwd, "Primers: " + P.fwdName + " / " + P.revName, "No primer default for this marker")
+        + '</div>'
+      + '</div>'
+
+      + '<div class="panel adv">'
+        + '<div class="sechdr"><h3>Essential settings</h3><span class="hint">These four change the result</span></div>'
+        + '<div class="grid2">'
+          + '<div class="f"><label for="pf1">Forward primer</label>'
+            + '<input type="text" class="mono" id="pf1" value="' + esc(P.fwd) + '" readonly>'
+            + '<span class="note">' + esc(P.fwdName) + ' — the default for ' + esc(it.label) + '</span></div>'
+          + '<div class="f"><label for="pr1">Reverse primer</label>'
+            + '<input type="text" class="mono" id="pr1" value="' + esc(P.rev) + '" readonly>'
+            + '<span class="note">' + esc(P.revName) + '</span></div>'
+          + '<div class="f"><label for="db">Taxonomy database</label>'
+            + '<select id="db">' + (dbOpts.length
+                ? dbOpts.map(function(o){ return '<option value="' + esc(o.path) + '">' + esc(o.label) + '</option>'; }).join("")
+                : '<option>— none installed —</option>') + '</select>'
+            + '<span class="note">' + esc(P.dbHint)
+            + ' · the matching assignSpecies file is picked up automatically'
+            + (dbOpts.unmatchedOnly
+                ? ' · <b>none of the installed databases looks like a ' + esc(it.key)
+                  + ' reference</b>, so all trainsets are listed'
+                : dbOpts.setAside
+                ? ' · ' + dbOpts.setAside + ' other trainset'
+                  + (dbOpts.setAside === 1 ? "" : "s") + ' installed for other markers'
+                : "")
+            + '</span></div>'
+          + '<div class="f"><label for="tl">Truncation length</label>'
+            + '<select id="tl"><option>Measure from the trimmed reads (recommended)</option>'
+            + '<option>Set manually</option></select>'
+            + '<span class="note">Measured after primer trimming, never derived as 250 − primer length</span></div>'
+        + '</div>'
+      + '</div>'
+
+      + '<div class="panel adv">'
+        + '<button class="advhdr" id="advBtn" aria-expanded="false" aria-controls="advBody">'
+          + '<svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg>'
+          + 'Advanced settings'
+          + '<span class="hint">All eight pipeline steps · defaults suit most runs</span>'
+        + '</button>'
+        + '<div class="advbody" id="advBody" hidden>'
+          + grp("Step 1 — Cutadapt · primer trimming", [["Cutadapt error rate","0.1"],["Minimum overlap","3"],["Discard untrimmed","off"],["Read orientation repair","auto"]])
+          + grp("Step 2 — Demux QC · quality review",  [["Max expected errors, forward","2"],["Max expected errors, reverse","2"],["Trim left, forward","0"],["Trim left, reverse","0"]])
+          + grp("Step 3 — DADA2 · ASV denoising",      [["Pooling mode","pseudo"],["Chimera method","consensus"],["Bases to learn from","100,000,000"],["CPU threads","4"]])
+          + grp("Step 4 — Phylogenetic tree",          [["Build tree","on"],["Alignment","DECIPHER"]])
+          + grp("Step 5 — Taxonomy classification",    [["Minimum bootstrap","50"],["Species assignment","exact match (100%)"]])
+          + grp("Step 6 — Diversity analysis",         [["Rarefaction","on"],["Beta metrics","Bray-Curtis + Jaccard + UniFrac"]])
+          + grp("Step 7 — Differential abundance",     [["LULU curation","on"],["Decontam","off"]])
+          + grp("Step 8 — Functional analysis",        [["PICRUSt2","on"],["Top taxa in plots","30"]])
+        + '</div>'
+      + '</div>'
+
+      + '<div class="runbar">'
+        + '<span class="msg">Submission is not part of this beta cut.</span>'
+        + '<span class="sp"></span>'
+        + '<a class="btn pri" href="/">Start this job in the production UI</a>'
+      + '</div>';
+
+    var ab = document.getElementById("advBtn"), abody = document.getElementById("advBody");
+    ab.addEventListener("click", function(){
+      var open = ab.getAttribute("aria-expanded") === "true";
+      ab.setAttribute("aria-expanded", String(!open));
+      abody.hidden = open;
+    });
+  }
+
+  function pf(ok, good, bad){
+    return '<span class="pf ' + (ok ? "ok" : "bad") + '">'
+      + (ok
+        ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12l5 5L20 6"/></svg>'
+        : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5v.5"/></svg>')
+      + esc(ok ? good : bad) + '</span>';
+  }
+
+  function grp(title, rows){
+    return '<div class="stepgrp"><h4>' + esc(title) + '</h4><div class="grid2">'
+      + rows.map(function(r){
+          return '<div class="f"><label>' + esc(r[0]) + '</label>'
+            + '<input type="text" value="' + esc(r[1]) + '" readonly></div>';
+        }).join("")
+      + '</div></div>';
+  }
+
+  /* Database options come from GET /databases — the same db_paths.json the
+     backend resolves against. Only trainsets are offered: an assignSpecies
+     file in this dropdown is what produced the WRONG KIND OF REFERENCE FILE
+     failure, and v2.8.5 now refuses it at submit time. Refusing it here too
+     means it is never offered in the first place. */
+  function databaseOptions(key){
+    var d = STATE.databases;
+    if(!d || !d.databases) return [];
+    var marker = key === "12S" ? /12s/i
+               : key === "16S" ? /silva|16s/i
+               : key === "18S-nema" ? /nema|18s/i
+               : key === "ONT-16S" ? /emu|16s/i
+               : new RegExp(key.replace(/[^\w]/g, ""), "i");
+    var hit = [], other = [];
+    Object.keys(d.databases).forEach(function(k){
+      var p = d.databases[k];
+      if(!p) return;
+      var base = String(p).split(/[\\/]/).pop();
+      /* An assignSpecies file in this list is what produced the WRONG KIND OF
+         REFERENCE FILE failure. v2.8.5 refuses it at submit time; not offering
+         it at all is better. It is not "hidden" — it has no business here, and
+         the pipeline finds the matching species file by itself. */
+      if(/assignspecies|species_taxid/i.test(base)) return;
+      if(!/trainset|\.fa(\.gz)?$|\.fasta(\.gz)?$/i.test(base)) return;
+      var avail = !Array.isArray(d.available) || d.available.indexOf(k) !== -1;
+      var label = base + (avail ? "" : "  — file missing on disk");
+      var entry = {key:k, path:p, label:label, avail:avail};
+      /* Marker matching is a filename heuristic, so a miss must not make a
+         database disappear. Anything installed that could be a trainset is
+         still listed, just marked as not matching this marker — the user can
+         see it and decide, which beats a dropdown that quietly omits the file
+         they know they downloaded. */
+      (marker.test(k) || marker.test(base) ? hit : other).push(entry);
+    });
+    /* Order matters because the first option is the one a distracted user
+       accepts. A file that is not on disk must never be that option, and among
+       the files that ARE there, the newest reference should lead — numeric
+       collation so v144 sorts above v138.2 rather than below it. */
+    function byPreference(a, b){
+      if(a.avail !== b.avail) return a.avail ? -1 : 1;
+      return b.label.localeCompare(a.label, undefined, {numeric:true});
+    }
+    hit.sort(byPreference);
+    other.sort(byPreference);
+    /* When the heuristic matched something, offer only those: a 12S trainset on
+       a 16S form is how a run ends up against the wrong reference. When it
+       matched NOTHING, list everything instead of showing an empty dropdown —
+       an empty list would read as "no databases installed", which is a lie the
+       user cannot check. Either way the count of what was set aside is
+       reported next to the field. */
+    if(hit.length){
+      hit.setAside = other.length;
+      return hit;
+    }
+    other.forEach(function(o){ o.label += "  (not matched to " + key + ")"; });
+    other.setAside = 0;
+    other.unmatchedOnly = true;
+    return other;
+  }
+
+  /* ═══ boot ═════════════════════════════════════════════════════════════ */
+  njBtn.addEventListener("click", function(){
+    var open = njBtn.getAttribute("aria-expanded") === "true";
+    njBtn.setAttribute("aria-expanded", String(!open));
+    pipes.hidden = open;
+  });
+  histBtn.addEventListener("click", function(){ go({name:"history"}); });
+
+  document.getElementById("theme").addEventListener("click", function(){
+    var r = document.documentElement;
+    var dark = r.getAttribute("data-theme") === "dark"
+      || (!r.getAttribute("data-theme") && matchMedia("(prefers-color-scheme: dark)").matches);
+    r.setAttribute("data-theme", dark ? "light" : "dark");
+    try{ localStorage.setItem("nga-beta-theme", dark ? "light" : "dark"); }catch(e){}
+  });
+  try{
+    var saved = localStorage.getItem("nga-beta-theme");
+    if(saved) document.documentElement.setAttribute("data-theme", saved);
+  }catch(e){}
+
+  /* Licence first: it decides which pipelines are even offered. A failure here
+     leaves every pipeline locked, which is the safe direction to fail in. */
+  api("/license/status").then(function(L){
+    STATE.license = L;
+    var names = Array.isArray(L.pipelines) ? L.pipelines : [];
+    names.forEach(function(n){ STATE.unlocked[n] = 1; });
+  }).catch(function(){
+    STATE.license = null;
+  }).then(function(){
+    renderLicenceBox();
+    renderNavPipes();
+  });
+
+  api("/databases").then(function(d){ STATE.databases = d; }).catch(function(){});
+
+  /* Show the BACKEND's version, not a made-up one for this page. The beta badge
+     already says what this UI is; claiming a different version number here
+     would be the first thing to mislead someone reading a bug report. */
+  api("/version").then(function(v){
+    if(v && v.version) verLine.textContent = "Company Limited · v" + v.version + " · beta console";
+  }).catch(function(){
+    verLine.textContent = "Company Limited · beta console";
+  });
+
+  go({name:"history"});
+})();
+</script>
+</html>
