@@ -21,10 +21,13 @@ Four things the raw tables get wrong for a reader, which this corrects:
      it splits one genus across two rows. Collapsed here, with the count of affected
      reads kept and reported rather than hidden.
 
-  2. Haemotropic mycoplasmas arrive under two superseded genus names,
-     Eperythrozoon and Haemobartonella — both transferred into Mycoplasma in 2001.
-     Left alone, one organism appears twice and neither row reaches its true
-     abundance. Merged into a single line.
+  2. Haemotropic mycoplasmas arrive under two genus names, Eperythrozoon and
+     Haemobartonella. Left alone, one group appears twice and neither row reaches
+     its true abundance. Merged into a single line. (Those two names are the
+     CURRENT ones: the transfer of these organisms into Mycoplasma proposed in
+     2001 was never validly published, and Judicial Opinion 92 (2014) denied the
+     Request to place the new combinations on the Approved Lists. Earlier versions
+     of this file described them as superseded, which is the wrong way round.)
 
   3. Host mitochondrial DNA is co-amplified by "universal" 16S primers and can be a
      quarter of the reads. It sits inside the taxonomy table as an ordinary family,
@@ -64,9 +67,12 @@ BLANK_RE = re.compile(
     r"^(na|nan|null|unknown|unassigned|unclassified|uncultured|undetermined)$", re.I
 )
 
-# Both were folded into Mycoplasma in 2001; reference databases still carry them.
+# Two current genus names for one group of haemotropic mycoplasmas. The 2001
+# transfer into Mycoplasma was never validly published and Opinion 92 (2014)
+# denied it, so these are not superseded names — but they do split one biological
+# group across two rows, which is why they are merged under a neutral label.
 HAEMOPLASMA = {"Eperythrozoon", "Haemobartonella"}
-HAEMOPLASMA_LABEL = "Mycoplasma (haemotropic)"
+HAEMOPLASMA_LABEL = "Haemoplasma group"
 
 # Genera repeatedly recovered from DNA extraction kits and PCR reagents.
 # Salter et al. 2014, BMC Biol 12:87, plus later additions. Override with --kit-list.
@@ -173,7 +179,7 @@ class Run:
 
     # ── derived views ─────────────────────────────────────────────────────────
     def _clean_genus(self, g):
-        """One label per genus: no blanks, no '--other', no superseded haemoplasma names."""
+        """One label per genus: no blanks, no '--other', haemoplasma names merged."""
         if not g:
             return None
         g = str(g).strip()
@@ -733,8 +739,10 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                      "and appear as separate rows in the raw taxonomy table.")
     if run.genera.get(HAEMOPLASMA_LABEL):
         notes.append("Haemotropic mycoplasmas are reported as one group: reference databases "
-                     "still split them between the superseded genus names Eperythrozoon and "
-                     "Haemobartonella, both transferred into Mycoplasma in 2001.")
+                     "split them between the genus names Eperythrozoon and Haemobartonella, "
+                     "which are the names LPSN currently treats as correct \u2014 the transfer of "
+                     "these organisms into Mycoplasma proposed in 2001 was never validly "
+                     "published, and Judicial Opinion 92 (2014) denied it.")
     notes.append("A blank extraction control sequenced alongside the sample would turn the "
                  "reagent estimate into a measurement.")
     out.append("<ul>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>")
@@ -890,12 +898,17 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
     haemo = [r.genera.get(HAEMOPLASMA_LABEL, 0) for r in runs]
     if any(haemo):
         r = runs[-1]
-        out.append(f'<div class="note acc"><p style="margin:0"><b>Haemotropic <i>Mycoplasma</i> '
-                   f"spp. &mdash; {fmt(haemo[-1])} reads, "
+        out.append(f'<div class="note acc"><p style="margin:0"><b>Haemotropic mycoplasmas '
+                   f"&mdash; {fmt(haemo[-1])} reads, "
                    f"{100*haemo[-1]/r.bacteria:.1f}% of bacterial reads.</b> Reference databases "
-                   "split these across the genus labels <i>Eperythrozoon</i> and "
-                   "<i>Haemobartonella</i>; members of both were transferred into <i>Mycoplasma</i> "
-                   "in 2001, so they are one group under superseded names and are merged here."
+                   "label these <i>Eperythrozoon</i> and <i>Haemobartonella</i>. Those are the "
+                   "names LPSN currently treats as correct: the transfer of these organisms into "
+                   "<i>Mycoplasma</i> proposed in 2001 was never validly published, and Judicial "
+                   "Opinion 92 (2014) denied the Request to place the new combinations on the "
+                   "Approved Lists. They are one group under two current names, and are merged "
+                   "here for that reason. Haemoplasmas are blood-borne pathogens of dogs; their "
+                   "route of transmission is unresolved, so recovery from an ectoparasite sample "
+                   "is not by itself evidence of arthropod vectoring."
                    "</p></div>")
 
     # ── 5. phyla ──────────────────────────────────────────────────────────────

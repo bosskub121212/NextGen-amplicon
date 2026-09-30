@@ -2379,35 +2379,62 @@ tryCatch({
     cat("  beta_heatmap.pdf\n")
 
     # ── 7d. PERMANOVA + beta dispersion ──────────────────────────
+    # A design can have two or more groups and still make these tests
+    # meaningless. With one sample per group, adonis2() has no residual degrees
+    # of freedom: it prints R2 = 1, F blank, no p-value, and betadisper returns
+    # a table of NaN. That is not a null result — it is arithmetic with nothing
+    # in it, and it looks exactly like a real table to anyone reading the
+    # output. A customer report went out this month only because the degenerate
+    # table was spotted and removed by hand. Decide here instead.
+    perm_feasible <- function(gv) {
+      gv   <- gv[!is.na(gv) & nchar(gv) > 0]
+      n    <- length(gv); grps <- table(gv); k <- length(grps)
+      if (k < 2)
+        return(list(perm=FALSE, disp=FALSE,
+                    why=sprintf("only %d group(s) with metadata — at least 2 are needed", k)))
+      if (n - k < 1)
+        return(list(perm=FALSE, disp=FALSE,
+                    why=sprintf(paste0("%d sample(s) across %d group(s) leaves 0 residual degrees of ",
+                                       "freedom. adonis2() would report R2 = 1 with no test statistic ",
+                                       "and betadisper() would return NaN. At least one group needs ",
+                                       "more than one sample."), n, k)))
+      if (min(grps) < 2)
+        return(list(perm=TRUE, disp=FALSE,
+                    why=sprintf(paste0("beta dispersion needs at least 2 samples in every group; ",
+                                       "the smallest group here has %d"), min(grps))))
+      list(perm=TRUE, disp=TRUE, why="")
+    }
+
     tryCatch({
       sink(file.path(opt$output, "beta_stats.txt"))
       cat("=== Beta Diversity Statistics ===\n\n")
       cat("Bray-Curtis distance matrix:\n")
       print(round(dist_mat, 4))
-      if (length(meta_cols) > 0) {
-        for (col_name in names(meta_cols)) {
-          gv <- meta_cols[[col_name]]
-          grps <- unique(gv[nchar(gv) > 0])
-          if (length(grps) >= 2) {
-            grp_factor <- factor(gv)
-            cat(sprintf("\n\n=== PERMANOVA — %s effect ===\n", col_name))
-            perm_res <- vegan::adonis2(bc_dist ~ grp_factor, permutations=999)
-            print(perm_res)
-            cat(sprintf("\n=== Beta Dispersion — %s ===\n", col_name))
-            disp_res <- vegan::betadisper(bc_dist, grp_factor)
-            print(vegan::permutest(disp_res, permutations=999))
-          }
+      run_block <- function(gv, label) {
+        v <- perm_feasible(gv)
+        if (!v$perm) {
+          cat(sprintf("\n\n=== %s ===\n", label))
+          cat(sprintf("Not tested: %s\n", v$why))
+          cat("The distance matrix above is descriptive and remains valid.\n")
+          return(invisible(NULL))
         }
-      } else if (!is.null(group_vec) && length(unique(group_vec)) >= 2) {
-        grp_factor <- factor(group_vec)
-        cat("\n=== PERMANOVA (vegan::adonis2) — Group effect ===\n")
-        perm_res <- vegan::adonis2(bc_dist ~ grp_factor, permutations=999)
-        print(perm_res)
-        cat("\n=== Beta Dispersion (vegan::betadisper) ===\n")
-        disp_res <- vegan::betadisper(bc_dist, grp_factor)
-        print(vegan::permutest(disp_res, permutations=999))
+        grp_factor <- factor(gv)
+        cat(sprintf("\n\n=== PERMANOVA (vegan::adonis2) — %s ===\n", label))
+        print(vegan::adonis2(bc_dist ~ grp_factor, permutations=999))
+        if (v$disp) {
+          cat(sprintf("\n=== Beta Dispersion (vegan::betadisper) — %s ===\n", label))
+          print(vegan::permutest(vegan::betadisper(bc_dist, grp_factor), permutations=999))
+        } else {
+          cat(sprintf("\nBeta dispersion not tested: %s\n", v$why))
+        }
+      }
+      if (length(meta_cols) > 0) {
+        for (col_name in names(meta_cols)) run_block(meta_cols[[col_name]], sprintf("%s effect", col_name))
+      } else if (!is.null(group_vec)) {
+        run_block(group_vec, "Group effect")
       } else {
-        cat("\n(Skipping PERMANOVA — need ≥2 groups with metadata)\n")
+        cat("\n\nNot tested: no grouping column in the metadata.\n")
+        cat("The distance matrix above is descriptive and remains valid.\n")
       }
       sink()
       cat("  beta_stats.txt\n")

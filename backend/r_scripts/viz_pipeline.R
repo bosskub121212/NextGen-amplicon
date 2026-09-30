@@ -1004,13 +1004,26 @@ tryCatch({
   }, error=function(e) cat(sprintf("  [WARN] UPGMA: %s\n", e$message)))
 
   # ── PERMANOVA table ──
+  # Same gate as dada2_pipeline.R: two groups are not enough on their own. With
+  # one sample per group adonis2() has no residual degrees of freedom and writes
+  # a CSV containing R2 = 1 and no p-value, which reads as a result and is not
+  # one. Refuse to write the file and say why.
   if (has_meta && has_vegan) {
     tryCatch({
       group_vec_beta <- meta_df[labels(dist_bc), GROUP_COL]
-      pm <- adonis2(dist_bc ~ group_vec_beta)
-      write.csv(as.data.frame(pm),
-                file.path(TABLES_DIR, "permanova_BrayCurtis.csv"))
-      cat("  ✓ Saved: permanova_BrayCurtis.csv\n")
+      gvb  <- group_vec_beta[!is.na(group_vec_beta) & nchar(as.character(group_vec_beta)) > 0]
+      grps <- table(gvb); n <- length(gvb); k <- length(grps)
+      if (k < 2) {
+        cat("  [skip] PERMANOVA: only", k, "group(s) with metadata\n")
+      } else if (n - k < 1) {
+        cat(sprintf(paste0("  [skip] PERMANOVA: %d sample(s) across %d group(s) leaves 0 residual ",
+                           "degrees of freedom — the test would report R2 = 1 with no p-value\n"), n, k))
+      } else {
+        pm <- adonis2(dist_bc ~ group_vec_beta)
+        write.csv(as.data.frame(pm),
+                  file.path(TABLES_DIR, "permanova_BrayCurtis.csv"))
+        cat("  ✓ Saved: permanova_BrayCurtis.csv\n")
+      }
     }, error=function(e) cat(sprintf("  [WARN] PERMANOVA: %s\n", e$message)))
   }
 
