@@ -2257,12 +2257,35 @@ _FRONTEND_DIR = next((d for d in _FRONTEND_DIRS if d.is_dir()), None)
 # catch-all below claims "/{full_path:path}", i.e. every path there is. Mount
 # /beta after it and /beta silently returns the production index.html instead —
 # which looks like the beta UI simply not updating.
-_BETA_DIR = BASE_DIR.parent / "frontend-beta"
-if _BETA_DIR.is_dir() and (_BETA_DIR / "index.html").exists():
+_BETA_DIR   = BASE_DIR.parent / "frontend-beta"
+_BETA_INDEX = _BETA_DIR / "index.html"
+
+if _BETA_INDEX.exists():
+    # TWO explicit routes, then the mount. The explicit ones are not belt and
+    # braces, they are the fix.
+    #
+    # Starlette compiles Mount("/beta") to the regex ^/beta/(?P<path>.*)$ — note
+    # the mandatory slash. A request for a bare "/beta" therefore does NOT match
+    # the mount. Normally Starlette would then redirect to "/beta/", but that
+    # only happens when NOTHING matched, and the SPA catch-all below matches
+    # every path there is. So "/beta" was answered with the PRODUCTION console,
+    # served from a /beta URL, which presents as "the beta build never updates"
+    # — the app quietly serving something else instead of saying it could not
+    # serve what was asked for.
+    #
+    # "/beta/" is spelled out too because StaticFiles(html=True) has to resolve
+    # an empty remaining path to index.html, and how it does that has moved
+    # between Starlette versions. Naming the file is one line and cannot drift.
+    @app.get("/beta",  include_in_schema=False)
+    @app.get("/beta/", include_in_schema=False)
+    def serve_beta_index():
+        return FileResponse(str(_BETA_INDEX))
+
+    # Still mounted, for any file the beta console gains later.
     app.mount("/beta", StaticFiles(directory=_BETA_DIR, html=True), name="beta")
     print(f"[beta] Beta console mounted at /beta  ({_BETA_DIR})")
 else:
-    print(f"[beta] No beta console at {_BETA_DIR} — /beta not mounted")
+    print(f"[beta] No beta console at {_BETA_INDEX} — /beta will answer 404")
 
 if _FRONTEND_DIR:
     # Mount static assets (JS/CSS chunks) — must come before the catch-all
@@ -2271,6 +2294,17 @@ if _FRONTEND_DIR:
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_spa(full_path: str):
         """Return index.html for any unknown path so React Router works."""
+        # ...but never for a /beta URL. Answering those with the production
+        # console is what hid a missing beta mount for an entire deploy cycle:
+        # the page loaded, it just was not the page that was asked for. If the
+        # beta front end is not installed, say that instead of substituting a
+        # different application for it.
+        if full_path == "beta" or full_path.startswith("beta/"):
+            return JSONResponse(status_code=404, content={
+                "error":    "The beta console is not installed on this machine.",
+                "expected": str(_BETA_INDEX),
+                "hint":     "Run deploy_dev.sh on this machine, or update.sh to pull it.",
+            })
         index = _FRONTEND_DIR / "index.html"
         if index.exists():
             return FileResponse(str(index))

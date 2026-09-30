@@ -128,6 +128,18 @@ fi
 APP_VER=$(grep -oP '"version"\s*:\s*"\K[^"]+' "$APP_DIR/version.json" 2>/dev/null || echo "?")
 info "Runtime version: $APP_VER"
 
+# The beta console is one file and it is served straight off disk, so "did it
+# arrive" is worth one line here. Without this, a beta index that never synced
+# shows up as a working page at /beta — the production console, served by the
+# SPA catch-all — and looks like a build that refuses to update.
+if [[ -d "$WIN_SRC/frontend-beta" ]]; then
+  if [[ -f "$APP_DIR/frontend-beta/index.html" ]]; then
+    ok "Beta console present ($(wc -c <"$APP_DIR/frontend-beta/index.html") bytes) — /beta"
+  else
+    warn "frontend-beta/index.html did NOT sync — /beta will answer 404 until it does"
+  fi
+fi
+
 # ── 2. Sanity-check the pieces that fail silently ─────────────────────────
 # Both of these are invoked as external processes by the R pipeline, so if
 # they are missing or broken the run does not fail — it just quietly skips a
