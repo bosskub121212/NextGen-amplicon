@@ -55,6 +55,11 @@ html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.5}
 button{font:inherit;color:inherit;cursor:pointer}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+/* The HTML hidden attribute only sets display:none through the UA stylesheet,
+   so ANY author rule with a display — .pathrow{display:flex}, .files{display:flex}
+   — silently wins and the element stays on screen. This had already been patched
+   by hand for .pipes and .advbody; one rule stops the next one happening. */
+[hidden]{display:none !important}
 .num{font-variant-numeric:tabular-nums}
 .mono{font-family:var(--mono)}
 
@@ -159,14 +164,19 @@ button{font:inherit;color:inherit;cursor:pointer}
 /* forms */
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;padding:14px}
 .f{display:flex;flex-direction:column;gap:4px;min-width:0}
-.f label{font-size:11.5px;font-weight:600;color:var(--fg-2)}
-.f .note{font-size:11px;color:var(--fg-3);margin:0;padding:0;border:none;background:none}
-input[type=text],select{width:100%;padding:7px 9px;border:1px solid var(--line-strong);
-  border-radius:5px;background:var(--surface);color:var(--fg);font:inherit;font-size:13px}
-input.mono{font-family:var(--mono);font-size:12.5px;letter-spacing:.01em}
+.f label{font-size:12.5px;font-weight:600;color:var(--fg)}
+.f .note{font-size:11.5px;color:var(--fg-2);margin:0;padding:0;border:none;background:none;line-height:1.45}
+input[type=text],select{width:100%;padding:9px 11px;border:1px solid var(--line-strong);
+  border-radius:5px;background:var(--surface);color:var(--fg);font:inherit;font-size:13.5px}
+input.mono{font-family:var(--mono);font-size:13.5px;letter-spacing:.01em}
 input:focus,select:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
 input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .span2{grid-column:span 2}
+.f.wide{grid-column:span 2}
+.pathrow{display:flex;gap:8px;align-items:center}
+.pathrow input{flex:1;min-width:0}
+.dbnote{font-size:11.5px;color:var(--fg-2);margin-top:2px}
+.dbnote b{color:var(--fg)}
 
 /* upload */
 .up{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px}
@@ -213,13 +223,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .stepgrp:last-child{margin-bottom:0}
 .stepgrp > h4{display:flex;align-items:baseline;gap:9px;margin:0;padding:12px 16px;
   background:var(--surface-3);border-bottom:1px solid var(--line);
-  font-size:13.5px;font-weight:600;letter-spacing:-.005em;text-transform:none;color:var(--fg)}
+  font-size:14.5px;font-weight:600;letter-spacing:-.005em;text-transform:none;color:var(--fg)}
 .stepgrp > h4 .n{flex:none;display:inline-grid;place-items:center;min-width:22px;height:22px;
   padding:0 6px;border-radius:5px;background:var(--accent-soft);color:var(--accent);
   font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}
-.stepgrp > h4 .why{margin-left:auto;font-size:11.5px;font-weight:400;color:var(--fg-3);
+.stepgrp > h4 .why{margin-left:auto;font-size:12px;font-weight:400;color:var(--fg-2);
   text-align:right;max-width:46ch}
-.stepgrp .grid2{padding:16px}
+.stepgrp .grid2{padding:16px;gap:16px 18px}
 .advbody{padding:12px 12px 14px;background:var(--surface-3);
   border-top:1px solid var(--line);border-radius:0 0 var(--r) var(--r)}
 @media (max-width:860px){ .stepgrp > h4 .why{display:none} }
@@ -425,15 +435,6 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   /* Marker-specific defaults. The production UI shows one set of primers
      whatever the marker is, which is how a 12S job can be submitted with 16S
      primers. Here each marker carries its own. */
-  var PRESET = {
-    "16S": {fwd:"CCTACGGGNGGCWGCAG",          fwdName:"341F",
-            rev:"GGACTACHVGGGTWTCTAAT",       revName:"806R",
-            dbHint:"SILVA toGenus trainset"},
-    "12S": {fwd:"GTCGGTAAAACTCGTGCCAGC",      fwdName:"MiFish-U-F",
-            rev:"CATAGTGGGGTATCTAATCCCAGTTTG",revName:"MiFish-U-R",
-            dbHint:"12S DADA2 trainset"}
-  };
-
   /* The pipeline announces its own steps as "Step N/8 — label". Nothing here
      invents a step list: the timeline is built from step_history, and the only
      thing derived is the count of steps not yet reached. */
@@ -453,6 +454,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     license: null,
     unlocked: {},
     databases: null,
+    browse: null,
     view: {name:"history"},
     listErr: null
   };
@@ -1303,92 +1305,233 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      are RunParams field names verbatim, so buildPayload() can read them back
      without a translation table — a translation table is where a UI silently
      sends something the backend never asked for. */
-  function stepSpec(key){
-    var P = PRESET[key] || PRESET["16S"];
-    return [
-      {n:1, title:"Cutadapt — primer trimming",
-       why:"Removes the primers before DADA2 sees the reads.",
-       fields:[
-        ["primer_f",          "Forward primer",        "mono",   P.fwd,  P.fwdName],
-        ["primer_r",          "Reverse primer",        "mono",   P.rev,  P.revName],
-        ["cutadaptErrorRate", "Error rate",            "num",    "0.1",  "fraction of mismatches allowed"],
-        ["cutadaptOverlap",   "Minimum overlap",       "int",    "3",    "bases"],
-        ["discardUntrimmed",  "Discard untrimmed",     "bool",   "false","drop reads with no primer found"],
-        ["reorient",          "Read orientation repair","select","auto", ["auto","TRUE","FALSE"]]
-       ]},
-      {n:2, title:"Demux QC — filtering and trimming",
-       why:"truncLen is measured from the trimmed reads at run time; these are the starting values.",
-       fields:[
-        ["truncLen_F", "truncLen, forward",  "int", "240", "0 = no truncation"],
-        ["truncLen_R", "truncLen, reverse",  "int", "200", "0 = no truncation"],
-        ["maxEE_F",    "maxEE, forward",     "num", "2",   "max expected errors"],
-        ["maxEE_R",    "maxEE, reverse",     "num", "2",   "max expected errors"],
-        ["trimLeft_F", "trimLeft, forward",  "int", "0",   ""],
-        ["trimLeft_R", "trimLeft, reverse",  "int", "0",   ""]
-       ]},
-      {n:3, title:"DADA2 — ASV denoising",
-       why:"pseudo-pooling recovers low-abundance variants shared across samples.",
-       fields:[
-        ["pool",          "Pooling mode",        "select", "pseudo", ["pseudo","TRUE","FALSE"]],
-        ["chimeraMethod", "Chimera method",      "select", "consensus", ["consensus","pooled","per-sample"]],
-        ["nbases",        "Bases to learn from", "int",    "100000000", "error model training set"],
-        ["nThreads",      "CPU threads",         "int",    "4",  ""]
-       ]},
-      {n:4, title:"Phylogenetic tree",
-       why:"Needed for UniFrac. Adds several minutes on large ASV tables.",
-       fields:[
-        ["_buildTree", "Build tree", "bool", "true", "DECIPHER alignment + phangorn"]
-       ]},
-      {n:5, title:"Taxonomy classification",
-       why:"The reference decides every name in the report.",
-       fields:[
-        ["dbPath",   "Taxonomy database", "db",  "", ""],
-        ["minBoot",  "Minimum bootstrap", "int", "50", "% of 100 resamplings"],
-        ["_species", "Species assignment","ro",  "exact match (100%)",
-                     "addSpecies() is exact matching — minBoot does not apply to it"]
-       ]},
-      {n:6, title:"Diversity analysis",
-       why:"PERMANOVA needs ≥2 groups with ≥2 samples each; below that it is skipped and says so.",
-       fields:[
-        ["topN",             "Top taxa in plots", "int",  "30", ""],
-        ["offtargetWarnPct", "Off-target warning at", "num", "20", "% of reads non-target"],
-        ["filterOfftarget",  "Drop off-target ASVs",  "bool","false",
-                             "Eukaryota / Mitochondria / Chloroplast"]
-       ]},
-      {n:7, title:"Differential abundance",
-       why:"Decontam needs negative-control samples named in the metadata.",
-       fields:[
-        ["run_lulu",  "LULU curation", "bool",   "true", ""],
-        ["decontam",  "Decontam",      "select", "none", ["none","prevalence"]],
-        ["decontamThreshold", "Decontam threshold", "num", "0.1", ""]
-       ]},
-      {n:8, title:"Functional analysis",
-       why:"Prediction from 16S is inference, not measurement. Adds run time.",
-       fields:[
-        ["run_picrust2", "PICRUSt2", "bool", "false", "16S only"],
-        ["run_tax4fun",  "Tax4Fun2", "bool", "false", "16S only, needs the reference pack"]
-       ]}
-    ];
+  /* ── amplicon region presets ─────────────────────────────────────────────
+     Ported verbatim from frontend/src/components/PipelineSettings.tsx
+     (CUTADAPT_PRESETS). Choosing a region sets the primer pair AND the starting
+     truncLen together, because those three are one decision: V3–V4 primers with
+     V4 truncation is a run that filters almost everything away, and the two
+     fields sitting far apart in a form is exactly how that happens.
+
+     truncF/truncR here are STARTING values only. The pipeline measures the real
+     ones from the trimmed reads and stops at a checkpoint if these would throw
+     the data away — they are never derived as 250 minus the primer length. */
+  var REGION_PRESETS = [
+    {label:"16S V3–V4  (341F / 805R)",   marker:"16S",  region:"V3-V4",
+     f:"CCTACGGGNGGCWGCAG",         r:"GACTACHVGGGTATCTAATCC",  truncF:240, truncR:200},
+    {label:"16S V3–V4  (341F / 785R)",   marker:"16S",  region:"V3-V4",
+     f:"CCTACGGGNGGCWGCAG",         r:"GGACTACHVGGGTWTCTAAT",   truncF:240, truncR:200},
+    {label:"16S V4  (515F / 806R)",      marker:"16S",  region:"V4",
+     f:"GTGYCAGCMGCCGCGGTAA",       r:"GGACTACNVGGGTWTCTAAT",   truncF:240, truncR:160},
+    {label:"16S V7–V8  (1055F / 1392R)", marker:"16S",  region:"V7-V8",
+     f:"AACMGGATTAGATACCCKG",       r:"ACGTCATCCCCACCTTCC",     truncF:250, truncR:200},
+    {label:"12S fish  (MiFish-U)",       marker:"12S",  region:"12S",
+     f:"GTCGGTAAAACTCGTGCCAGC",     r:"CATAGTGGGGTATCTAATCCCAGTTTG", truncF:0, truncR:0},
+    {label:"ITS1  (ITS1F / ITS2)",       marker:"ITS1", region:"ITS1",
+     f:"CTTGGTCATTTAGAGGAAGTAA",    r:"GCTGCGTTCTTCATCGATGC"},
+    {label:"ITS1  (ITS1 / ITS2, alt)",   marker:"ITS1", region:"ITS1",
+     f:"TCCGTAGGTGAACCTGCGG",       r:"GCTGCGTTCTTCATCGATGC"},
+    {label:"ITS2  (ITS3 / ITS4)",        marker:"ITS2", region:"ITS2",
+     f:"GTGAATCATCGAATCTTTGAA",     r:"TCCTCCGCTTATTGATATGC"},
+    {label:"18S V4  (nematode)",         marker:"18S-nema", region:"V4",
+     f:"CCAGCASCYGCGGTAATTCC",      r:"ACTTTCGTTCTTGATYRA"},
+    {label:"COX1 mlCOIintF / jgHCO2198", marker:"COX1", region:"COI",
+     f:"GGWACWGGWTGAACWGTWTAYCCYCC", r:"TANACYTCNGGRTGNCCRAARAAYCA"},
+    {label:"PacBio V1–V9  (27F / 1492R)", marker:"PacBio", region:"V1-V9",
+     f:"AGRGTTYGATYMTGGCTCAG",      r:"RGYTACCTTGTTACGACTT"},
+    {label:"PacBio V1–V3  (8F / 534R)",   marker:"PacBio", region:"V1-V3",
+     f:"AGAGTTTGATCMTGGCTCAG",      r:"ATTACCGCGGCTGCTGG"},
+    {label:"PacBio V4  (515F / 806R)",    marker:"PacBio", region:"V4",
+     f:"GTGYCAGCMGCCGCGGTAA",       r:"GGACTACNVGGGTWTCTAAT"},
+    {label:"ONT V1–V9  (27F / 1492R)",    marker:"ONT-16S", region:"V1-V9",
+     f:"AGRGTTYGATYMTGGCTCAG",      r:"RGYTACCTTGTTACGACTT"},
+    {label:"ONT V7–V8  (1055F / 1392R)",  marker:"ONT-16S", region:"V7-V8",
+     f:"AACMGGATTAGATACCCKG",       r:"ACGTCATCCCCACCTTCC"}
+  ];
+
+  function presetsFor(marker){
+    return REGION_PRESETS.filter(function(p){ return p.marker === marker; });
   }
 
-  function field(f, dbOpts){
+  /* ── the settings, per marker ────────────────────────────────────────────
+     Every field the production console exposes for this marker, under its real
+     RunParams key. Which steps apply depends on the pipeline the marker runs:
+     ONT-16S goes to Emu, PacBio and COX1 to their own scripts, and none of them
+     take a paired-end truncLen — showing one anyway would be inviting a setting
+     that the run cannot use. */
+  function stepSpec(key){
+    var dada2   = ["16S", "12S", "18S-nema"].indexOf(key) !== -1;
+    var isONT   = key === "ONT-16S";
+    var isPB    = key === "PacBio";
+    var isCOX1  = key === "COX1";
+    var isITS   = key === "ITS1" || key === "ITS2";
+    var steps   = [];
+
+    steps.push({n:1, title:"Cutadapt — primer trimming",
+      why:"Removes the primers before the denoiser sees the reads.",
+      fields:[
+        ["_region",           "Amplicon region",  "region", "", ""],
+        ["primer_f",          "Forward primer",   "mono",   "", "leave blank to skip cutadapt"],
+        ["primer_r",          "Reverse primer",   "mono",   "", ""],
+        ["cutadaptErrorRate", "Error rate",       "num",    "0.1", "fraction of mismatches allowed (-e)"],
+        ["cutadaptOverlap",   "Minimum overlap",  "int",    "3",   "bases (-O)"],
+        ["discardUntrimmed",  "Discard untrimmed","bool",   "false", "drop reads with no primer found"]
+      ]});
+
+    if(dada2) steps.push({n:"1b", title:"Read orientation repair",
+      why:"Pairs that start at the reverse primer cannot be merged, and cutadapt only searches one orientation.",
+      fields:[
+        ["reorient",          "Repair orientation", "select", "auto", ["auto","TRUE","FALSE"]],
+        ["reorientAmbiguous", "Ambiguous reads",    "select", "keep", ["keep","drop"]],
+        ["reorientMinPct",    "Auto trigger at",    "num",    "5", "% of pairs found reversed"]
+      ]});
+
+    if(dada2) steps.push({n:2, title:"Filtering and trimming",
+      why:"truncLen is measured from the trimmed reads at run time; these are the starting values.",
+      fields:[
+        ["truncLen_F", "truncLen, forward", "int", "240", "0 = no truncation"],
+        ["truncLen_R", "truncLen, reverse", "int", "200", "0 = no truncation"],
+        ["maxEE_F",    "maxEE, forward",    "num", "2",   "max expected errors"],
+        ["maxEE_R",    "maxEE, reverse",    "num", "2",   "max expected errors"],
+        ["trimLeft_F", "trimLeft, forward", "int", "0",   ""],
+        ["trimLeft_R", "trimLeft, reverse", "int", "0",   ""]
+      ]});
+
+    if(isPB) steps.push({n:2, title:"PacBio CCS filtering",
+      why:"Full-length reads are filtered by length, not truncated.",
+      fields:[
+        ["pb_region",  "Region",            "select", "V1-V9", ["V1-V9","V1-V3","V4","custom"]],
+        ["pb_min_len", "Minimum length",    "int",    "1000", "bp"],
+        ["pb_max_len", "Maximum length",    "int",    "1600", "bp"],
+        ["pb_maxEE",   "Maximum expected errors", "num", "3", ""]
+      ]});
+
+    if(isONT) steps.push({n:2, title:"ONT reads and Emu",
+      why:"V7–V8 is ~337 bp and resolves to genus; V1–V9 is ~1500 bp and can reach species.",
+      fields:[
+        ["ont_region",        "16S region",        "select", "V1-V9", ["V1-V9","V7-V8"]],
+        ["ont_min_abundance", "Minimum abundance", "num",    "0.0001", "Emu abundance filter"],
+        ["ont_db_path",       "Emu database",      "path",   "", "directory containing the Emu database"],
+        ["ontMinLen",         "Minimum read length","int",   "300", "bp"],
+        ["ontMaxLen",         "Maximum read length","int",   "600", "bp"]
+      ]});
+
+    if(isCOX1) steps.push({n:2, title:"COX1 filtering",
+      why:"Codon-aware: a COI read with an internal stop codon is not a real barcode.",
+      fields:[
+        ["truncLen_cox1_f", "truncLen, forward", "int", "230", ""],
+        ["truncLen_cox1_r", "truncLen, reverse", "int", "200", ""],
+        ["codon_table",     "Codon table",       "select", "5",
+                            ["5","2"]],
+        ["cox1_min_len",    "Minimum ASV length","int", "300", "bp"],
+        ["cox1_max_len",    "Maximum ASV length","int", "330", "bp"]
+      ]});
+
+    if(isITS) steps.push({n:2, title:"ITS region",
+      why:"ITS length varies widely between taxa, so reads are not truncated to a fixed length.",
+      fields:[
+        ["its_region", "ITS region", "select", key, ["ITS1","ITS2"]],
+        ["maxEE_F",    "maxEE, forward", "num", "2", ""],
+        ["maxEE_R",    "maxEE, reverse", "num", "2", ""]
+      ]});
+
+    if(dada2 || isPB || isCOX1 || isITS) steps.push({n:3, title:"DADA2 — ASV denoising",
+      why:"pseudo-pooling recovers low-abundance variants shared across samples.",
+      fields:[
+        ["pool",          "Pooling mode",        "select", "pseudo", ["pseudo","TRUE","FALSE"]],
+        ["chimeraMethod", "Chimera method",      "select", "consensus", ["consensus","pooled","per-sample"]],
+        ["nbases",        "Bases to learn from", "int",    "100000000", "error-model training set"],
+        ["nThreads",      "CPU threads",         "int",    "4", ""]
+      ]});
+
+    if(dada2) steps.push({n:4, title:"Phylogenetic tree",
+      why:"Needed for UniFrac. Adds several minutes on a large ASV table.",
+      fields:[["_buildTree", "Build tree", "bool", "true", "DECIPHER alignment + phangorn"]]});
+
+    steps.push({n:5, title:"Taxonomy classification",
+      why:"The reference decides every name in the report.",
+      fields:[
+        ["dbPath",   "Taxonomy database", "db",   "", ""],
+        ["minBoot",  "Minimum bootstrap", "int",  "50", "% of 100 resamplings"],
+        ["_species", "Species assignment","ro",   "exact match (100%)",
+                     "addSpecies() is exact matching — minBoot does not apply to it"]
+      ]});
+
+    steps.push({n:6, title:"Diversity analysis",
+      why:"PERMANOVA needs ≥2 groups with ≥2 samples each; below that it is skipped and says so.",
+      fields:[
+        ["topN",             "Top taxa in plots",     "int",  "30", ""],
+        ["offtargetWarnPct", "Off-target warning at", "num",  "20", "% of reads non-target"],
+        ["filterOfftarget",  "Drop off-target ASVs",  "bool", "false",
+                             "Eukaryota / Mitochondria / Chloroplast"]
+      ]});
+
+    steps.push({n:7, title:"Differential abundance",
+      why:"Decontam needs negative-control samples named in the metadata.",
+      fields:[
+        ["run_lulu",          "LULU curation",      "bool",   "true", ""],
+        ["decontam",          "Decontam",           "select", "none", ["none","prevalence"]],
+        ["decontamThreshold", "Decontam threshold", "num",    "0.1", ""],
+        ["_controls",         "Negative controls",  "controls", "",
+                              "sample IDs, comma separated — must match the Sample column above"]
+      ]});
+
+    steps.push({n:8, title:"Functional analysis",
+      why:"Prediction from 16S is inference, not measurement. Adds run time.",
+      fields:[
+        ["run_picrust2", "PICRUSt2", "bool", "false", "16S only"],
+        ["run_tax4fun",  "Tax4Fun2", "bool", "false", "16S only, needs the reference pack"]
+      ]});
+
+    return steps;
+  }
+
+  function field(f, dbOpts, marker){
     var key = f[0], label = f[1], kind = f[2], def = f[3], extra = f[4];
     var id = "f_" + key;
-    var ctl;
-    if(kind === "select"){
+    var ctl, wide = false, hint = extra;
+
+    if(kind === "region"){
+      /* Region first, because it sets the two primers and the starting
+         truncLen together. They are one decision and the production console
+         treats them as one; splitting them across a form is how a V3–V4 run
+         gets V4 truncation. */
+      var ps = presetsFor(marker);
+      wide = true;
+      ctl = '<select id="f_region" data-region="1">'
+        + ps.map(function(p, i){
+            return '<option value="' + i + '">' + esc(p.label) + '</option>'; }).join("")
+        + '<option value="custom">Custom — type the primers below</option></select>';
+      hint = ps.length
+        ? "Sets both primers and the starting truncLen. The pipeline still measures the real truncLen from the trimmed reads."
+        : "No preset for this marker — enter the primers below.";
+    } else if(kind === "select"){
       ctl = '<select id="' + id + '" data-k="' + esc(key) + '">'
         + extra.map(function(o){
             return '<option' + (o === def ? " selected" : "") + '>' + esc(o) + '</option>'; }).join("")
         + '</select>';
+      hint = "";
     } else if(kind === "bool"){
       ctl = '<select id="' + id + '" data-k="' + esc(key) + '" data-bool="1">'
         + '<option value="true"'  + (def === "true"  ? " selected" : "") + '>on</option>'
         + '<option value="false"' + (def === "false" ? " selected" : "") + '>off</option></select>';
+      hint = "";
     } else if(kind === "db"){
-      ctl = '<select id="' + id + '" data-k="dbPath">' + (dbOpts.length
-        ? dbOpts.map(function(o){
-            return '<option value="' + esc(o.path) + '">' + esc(o.label) + '</option>'; }).join("")
-        : '<option value="">— no database installed —</option>') + '</select>';
+      /* Options come from the real file listing, plus a custom path. See
+         databaseOptions(). */
+      wide = true;
+      ctl = '<select id="' + id + '" data-k="dbPath">' + dbOptionHtml(dbOpts) + '</select>'
+        + '<div class="pathrow" id="dbCustomRow" hidden style="margin-top:6px">'
+        + '<input type="text" class="mono" id="f_dbPathCustom" '
+        + 'placeholder="full path, e.g. /home/you/r16s-app/backend/databases/SILVA/silva_nr99_v144_toGenus_trainset.fa.gz"></div>'
+        + '<div class="dbnote" id="dbNote"></div>';
+      hint = "";
+    } else if(kind === "path"){
+      wide = true;
+      ctl = '<input type="text" class="mono" id="' + id + '" data-k="' + esc(key) + '" '
+        + 'value="' + esc(def) + '" placeholder="full path on this machine">';
+    } else if(kind === "controls"){
+      wide = true;
+      ctl = '<input type="text" id="f_controls" placeholder="e.g. BLANK1, NTC2">';
     } else if(kind === "ro"){
       ctl = '<input type="text" value="' + esc(def) + '" readonly>';
     } else {
@@ -1397,15 +1540,47 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + (kind === "mono" ? ' class="mono"' : "")
         + ' value="' + esc(def) + '">';
     }
-    var hint = (kind === "select" || kind === "bool" || kind === "db") ? "" : extra;
-    return '<div class="f"><label for="' + id + '">' + esc(label) + '</label>' + ctl
+    return '<div class="f' + (wide ? " wide" : "") + '">'
+      + '<label for="' + id + '">' + esc(label) + '</label>' + ctl
       + (hint ? '<span class="note">' + esc(hint) + '</span>' : "") + '</div>';
   }
 
-  function stepCard(st, dbOpts){
+  /* Database options, grouped, with the custom-path escape hatch last. The
+     first cut of this built the list by pattern-matching db_paths.json, and on
+     a machine whose db_paths.json pointed at files that were not there it
+     offered two entries, both marked "file missing on disk", and no way to pick
+     anything else. A guess about which files exist, where the production
+     console simply asks. */
+  function dbOptionHtml(opts){
+    if(!opts.length)
+      return '<option value="">— no reference file found in the databases folder —</option>'
+           + '<option value="__custom__">Custom path…</option>';
+    var byDir = {};
+    opts.forEach(function(o){
+      (byDir[o.dir] = byDir[o.dir] || []).push(o);
+    });
+    /* Groups that matched the marker come first. Sorting the folder names
+       alphabetically put "12S_db — not matched" above "SILVA" on a 16S job,
+       so the first thing in the list was the one file you must not pick. */
+    var html = "";
+    Object.keys(byDir).sort(function(x, y){
+      var mx = x.indexOf("not matched") === -1 ? 0 : 1;
+      var my = y.indexOf("not matched") === -1 ? 0 : 1;
+      return mx !== my ? mx - my : x.localeCompare(y);
+    }).forEach(function(d){
+      html += '<optgroup label="' + esc(d || "databases/") + '">'
+        + byDir[d].map(function(o){
+            return '<option value="' + esc(o.path) + '"' + (o.pick ? " selected" : "") + '>'
+              + esc(o.label) + '</option>'; }).join("")
+        + '</optgroup>';
+    });
+    return html + '<optgroup label="Other"><option value="__custom__">Custom path…</option></optgroup>';
+  }
+
+  function stepCard(st, dbOpts, marker){
     return '<div class="stepgrp"><h4><span class="n">' + st.n + '</span>' + esc(st.title)
       + '<span class="why">' + esc(st.why) + '</span></h4>'
-      + '<div class="grid2">' + st.fields.map(function(f){ return field(f, dbOpts); }).join("")
+      + '<div class="grid2">' + st.fields.map(function(f){ return field(f, dbOpts, marker); }).join("")
       + '</div></div>';
   }
 
@@ -1426,9 +1601,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   function renderForm(it){
-    var P      = PRESET[it.key] || PRESET["16S"];
     var dbOpts = databaseOptions(it.key);
-    var nAvail = dbOpts.filter(function(o){ return o.avail; }).length;
+    var dbCount = dbOpts.length;
     var spec   = stepSpec(it.key);
 
     FORM = {
@@ -1487,46 +1661,30 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + '<div id="sampleBox"></div>'
 
       + '<div class="panel adv">'
-        + '<div class="sechdr"><h3>Essential settings</h3>'
-        + '<span class="hint">these four change the result</span></div>'
+        + '<div class="sechdr"><h3>Run type</h3>'
+        + '<span class="hint">every other setting lives in the pipeline steps below</span></div>'
         + '<div class="grid2">'
-          + '<div class="f"><label for="pf1">Forward primer</label>'
-            + '<input type="text" class="mono" id="pf1" value="' + esc(P.fwd) + '">'
-            + '<span class="note">' + esc(P.fwdName) + ' — the default for ' + esc(it.label) + '</span></div>'
-          + '<div class="f"><label for="pr1">Reverse primer</label>'
-            + '<input type="text" class="mono" id="pr1" value="' + esc(P.rev) + '">'
-            + '<span class="note">' + esc(P.revName) + '</span></div>'
-          + '<div class="f"><label for="db">Taxonomy database</label>'
-            + '<select id="db">' + (dbOpts.length
-                ? dbOpts.map(function(o){
-                    return '<option value="' + esc(o.path) + '">' + esc(o.label) + '</option>'; }).join("")
-                : '<option value="">— none installed —</option>') + '</select>'
-            + '<span class="note">' + esc(P.dbHint)
-            + ' · the matching assignSpecies file is found automatically'
-            + (dbOpts.unmatchedOnly
-                ? ' · <b>none of the installed databases looks like a ' + esc(it.key) + ' reference</b>'
-                : dbOpts.setAside
-                ? ' · ' + dbOpts.setAside + ' other trainset'
-                  + (dbOpts.setAside === 1 ? "" : "s") + ' installed for other markers'
-                : "")
-            + '</span></div>'
           + '<div class="f"><label for="seq">Sequencer</label>'
             + '<select id="seq">'
               + '<option value="illumina">Illumina (paired-end)</option>'
               + '<option value="ont">ONT R10.4+ (single-end)</option>'
+              + '<option value="qiime2_vsearch">QIIME2 VSEARCH (OTU clustering)</option>'
             + '</select>'
-            + '<span class="note">Single-end changes how samples are detected</span></div>'
+            + '<span class="note">Single-end changes how the files are paired and how samples are named</span></div>'
+          + '<div class="f" id="otuBox" hidden><label for="f_otuSimilarity">OTU identity</label>'
+            + '<input type="text" id="f_otuSimilarity" data-k="otuSimilarity" data-kind="num" value="0.97">'
+            + '<span class="note">VSEARCH clustering identity — 0.97 is the usual 97% OTU</span></div>'
         + '</div>'
       + '</div>'
 
       + '<div class="panel adv">'
-        + '<button class="advhdr" id="advBtn" aria-expanded="false" aria-controls="advBody">'
+        + '<button class="advhdr" id="advBtn" aria-expanded="true" aria-controls="advBody">'
           + '<svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg>'
-          + 'All pipeline steps'
-          + '<span class="hint">eight steps · every value here is sent with the run</span>'
+          + 'Pipeline settings'
+          + '<span class="hint">every value here is sent with the run and recorded with it</span>'
         + '</button>'
-        + '<div class="advbody" id="advBody" hidden>'
-          + spec.map(function(st){ return stepCard(st, dbOpts); }).join("")
+        + '<div class="advbody" id="advBody">'
+          + spec.map(function(st){ return stepCard(st, dbOpts, it.key); }).join("")
         + '</div>'
       + '</div>'
 
@@ -1538,19 +1696,24 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + 'Start analysis</button>'
       + '</div>';
 
-    wireForm(dbOpts, nAvail, P);
-    preflight(dbOpts, nAvail, P);
+    wireForm(dbOpts, dbCount);
+    preflight(dbOpts, dbCount);
   }
 
-  function wireForm(dbOpts, nAvail, P){
+  function setVal(id, v){
+    var el = document.getElementById(id);
+    if(el && el.value !== v) el.value = v;
+  }
+
+  function wireForm(dbOpts, dbCount){
     var fqIn = document.getElementById("fqIn");
     var mdIn = document.getElementById("mdIn");
 
     document.getElementById("fqPick").addEventListener("click", function(){ fqIn.click(); });
     document.getElementById("mdPick").addEventListener("click", function(){ mdIn.click(); });
 
-    fqIn.addEventListener("change", function(){ chooseFastq(fqIn.files, dbOpts, nAvail, P); });
-    mdIn.addEventListener("change", function(){ chooseMeta(mdIn.files[0], dbOpts, nAvail, P); });
+    fqIn.addEventListener("change", function(){ chooseFastq(fqIn.files, dbOpts, dbCount); });
+    mdIn.addEventListener("change", function(){ chooseMeta(mdIn.files[0], dbOpts, dbCount); });
 
     /* Drag and drop onto either card. */
     var dz = document.getElementById("dropFq");
@@ -1562,11 +1725,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     });
     dz.addEventListener("drop", function(ev){
       if(ev.dataTransfer && ev.dataTransfer.files.length)
-        chooseFastq(ev.dataTransfer.files, dbOpts, nAvail, P);
+        chooseFastq(ev.dataTransfer.files, dbOpts, dbCount);
     });
 
     document.getElementById("fqUp").addEventListener("click", function(){
-      doUpload(dbOpts, nAvail, P);
+      doUpload(dbOpts, dbCount);
     });
 
     document.getElementById("tplBtn").addEventListener("click", function(){
@@ -1580,26 +1743,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
     });
 
-    /* The database picker appears twice — in Essential and under Taxonomy —
-       because that is where each kind of user looks for it. They are one
-       setting, so they are kept in lockstep rather than allowed to disagree;
-       two controls quietly holding different values is how the wrong reference
-       gets used. */
-    var dbTop = document.getElementById("db");
-    var dbAdv = document.getElementById("f_dbPath");
-    function link(a, b){
-      if(!a || !b) return;
-      a.addEventListener("change", function(){ b.value = a.value; });
-    }
-    link(dbTop, dbAdv); link(dbAdv, dbTop);
-    if(dbTop && dbAdv) dbAdv.value = dbTop.value;
-
-    /* Same for the primers: Essential is a shortcut to the Step 1 fields. */
-    [["pf1","f_primer_f"], ["pr1","f_primer_r"]].forEach(function(pr){
-      var a = document.getElementById(pr[0]), b = document.getElementById(pr[1]);
-      if(!a || !b) return;
-      a.addEventListener("input", function(){ b.value = a.value; });
-      b.addEventListener("input", function(){ a.value = b.value; });
+    document.getElementById("seq").addEventListener("change", function(){
+      var box = document.getElementById("otuBox");
+      if(box) box.hidden = this.value !== "qiime2_vsearch";
     });
 
     document.getElementById("seq").addEventListener("change", function(){
@@ -1608,8 +1754,63 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(FORM.uploaded.length)
         FORM.detect = detectSamples(FORM.uploaded, this.value !== "illumina");
       paintSamples();
-      preflight(dbOpts, nAvail, P);
+      preflight(dbOpts, dbCount);
     });
+
+    /* Region preset drives the primers and the starting truncLen together. */
+    var rg = document.getElementById("f_region");
+    if(rg){
+      var ps = presetsFor(FORM.marker);
+      rg.addEventListener("change", function(){
+        if(rg.value === "custom") return;      /* leave whatever is typed */
+        var pr = ps[parseInt(rg.value, 10)];
+        if(!pr) return;
+        setVal("f_primer_f", pr.f);
+        setVal("f_primer_r", pr.r);
+        if(pr.truncF !== undefined) setVal("f_truncLen_F", String(pr.truncF));
+        if(pr.truncR !== undefined) setVal("f_truncLen_R", String(pr.truncR));
+        if(pr.region && document.getElementById("f_ont_region"))
+          setVal("f_ont_region", pr.region);
+        if(pr.region && document.getElementById("f_pb_region"))
+          setVal("f_pb_region", pr.region);
+      });
+      /* Apply the marker's first preset once, so the form opens consistent
+         rather than showing a region that does not match the primers below. */
+      if(ps.length){ rg.value = "0"; rg.dispatchEvent(new Event("change")); }
+      /* Typing a primer by hand means the preset no longer describes the run. */
+      ["f_primer_f", "f_primer_r"].forEach(function(i){
+        var el = document.getElementById(i);
+        if(el) el.addEventListener("input", function(){
+          var pr = ps[parseInt(rg.value, 10)];
+          var f = (document.getElementById("f_primer_f") || {}).value;
+          var r = (document.getElementById("f_primer_r") || {}).value;
+          if(!pr || pr.f !== f || pr.r !== r) rg.value = "custom";
+        });
+      });
+    }
+
+    /* "Custom path…" reveals a text box, and that box becomes the value sent. */
+    var dbSel = document.getElementById("f_dbPath");
+    var dbRow = document.getElementById("dbCustomRow");
+    var dbTxt = document.getElementById("f_dbPathCustom");
+    function dbSync(){
+      if(!dbSel) return;
+      var custom = dbSel.value === "__custom__";
+      if(dbRow) dbRow.hidden = !custom;
+      var note = document.getElementById("dbNote");
+      if(note){
+        if(custom) note.innerHTML = "The path is sent exactly as typed. The backend checks it before "
+          + "the run starts and refuses a file it cannot use.";
+        else if(!dbOpts.length) note.innerHTML = "<b>Nothing was found in the databases folder.</b> "
+          + "Either no reference is installed on this machine, or the backend could not read the folder.";
+        else note.innerHTML = dbOpts.length + " file" + (dbOpts.length === 1 ? "" : "s")
+          + " found in the databases folder" + (dbOpts.matched < dbOpts.length
+              ? ", " + (dbOpts.length - dbOpts.matched) + " of them not matching " + esc(FORM.marker)
+                + " by name — they are still listed."
+              : ".");
+      }
+    }
+    if(dbSel){ dbSel.addEventListener("change", dbSync); dbSync(); }
 
     var ab = document.getElementById("advBtn"), abody = document.getElementById("advBody");
     ab.addEventListener("click", function(){
@@ -1619,11 +1820,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     });
 
     document.getElementById("runBtn").addEventListener("click", function(){
-      doRun(dbOpts, nAvail, P);
+      doRun(dbOpts, dbCount);
     });
   }
 
-  function chooseFastq(fileList, dbOpts, nAvail, P){
+  function chooseFastq(fileList, dbOpts, dbCount){
     FORM.files    = Array.prototype.slice.call(fileList);
     FORM.jobId    = null;         /* a new selection invalidates the old upload */
     FORM.uploaded = [];
@@ -1643,10 +1844,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var single = document.getElementById("seq").value !== "illumina";
     FORM.detect = detectSamples(names, single);
     paintSamples(true);
-    preflight(dbOpts, nAvail, P);
+    preflight(dbOpts, dbCount);
   }
 
-  function chooseMeta(file, dbOpts, nAvail, P){
+  function chooseMeta(file, dbOpts, dbCount){
     if(!file) return;
     var r = new FileReader();
     r.onload = function(){
@@ -1658,12 +1859,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ? file.name + " — " + res.err
         : file.name + " · " + res.rows.length + " row" + (res.rows.length === 1 ? "" : "s");
       paintSamples();
-      preflight(dbOpts, nAvail, P);
+      preflight(dbOpts, dbCount);
     };
     r.readAsText(file);
   }
 
-  function doUpload(dbOpts, nAvail, P){
+  function doUpload(dbOpts, dbCount){
     if(!FORM.files.length || FORM.busy) return;
     FORM.busy = true;
     FORM.lastError = "";
@@ -1705,7 +1906,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         FORM.busy = false;
         btn.disabled = !!FORM.jobId;
         paintSamples();
-        preflight(dbOpts, nAvail, P);
+        preflight(dbOpts, dbCount);
       });
   }
 
@@ -1766,7 +1967,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + '</div>';
   }
 
-  function preflight(dbOpts, nAvail, P){
+  function preflight(dbOpts, dbCount){
     var el = document.getElementById("pre");
     if(!el) return;
     var D  = FORM.detect;
@@ -1775,8 +1976,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var metaOk  = !FORM.meta.length || (!FORM.metaErr && D && D.map.every(function(m){
       return FORM.meta.some(function(x){ return x.sampleId === m.sample; });
     }));
-    var dbSel = document.getElementById("db");
-    var dbOk  = !!(dbSel && dbSel.value);
+    var dbSel = document.getElementById("f_dbPath");
+    var dbTxt = document.getElementById("f_dbPathCustom");
+    var dbOk  = !!(dbSel && (dbSel.value === "__custom__"
+                     ? (dbTxt && dbTxt.value.trim())
+                     : dbSel.value));
 
     el.innerHTML =
         pf(FORM.files.length ? (!!FORM.jobId && n > 0) : null,
@@ -1791,7 +1995,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
            "Metadata: " + FORM.meta.length + " rows matched",
            "Metadata does not match the samples",
            "No metadata (optional)")
-      + pf(dbOk, "Database selected", nAvail ? "No database selected" : "No database on disk");
+      + pf(dbOk, "Database selected",
+           dbOpts.length ? "No database selected"
+                         : "No reference file found in the databases folder");
 
     var run = document.getElementById("runBtn");
     var msg = document.getElementById("runMsg");
@@ -1836,13 +2042,21 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       });
     /* Step 4's tree toggle has no RunParams field of its own; it is display
        only, and saying so beats inventing a key the backend ignores. */
-    var tax = document.getElementById("db");
-    if(tax) p.dbPath = tax.value;
+    var sel = document.getElementById("f_dbPath");
+    var txt = document.getElementById("f_dbPathCustom");
+    p.dbPath = (sel && sel.value === "__custom__")
+      ? (txt ? txt.value.trim() : "")
+      : (sel ? sel.value : "");
     p.taxDatabase = p.dbPath ? p.dbPath.split(/[\\/]/).pop() : "";
+
+    var ctl = document.getElementById("f_controls");
+    p.controlSamples = ctl
+      ? ctl.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean)
+      : [];
     return p;
   }
 
-  function doRun(dbOpts, nAvail, P){
+  function doRun(dbOpts, dbCount){
     if(FORM.busy || !FORM.jobId) return;
     var bad = Object.keys(buildPayload()).filter(function(k){
       var v = buildPayload()[k];
@@ -1850,7 +2064,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     });
     if(bad.length){
       FORM.lastError = "These settings are not numbers: " + bad.join(", ");
-      preflight(dbOpts, nAvail, P);
+      preflight(dbOpts, dbCount);
       return;
     }
 
@@ -1883,63 +2097,66 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       .catch(function(e){
         FORM.busy = false;
         FORM.lastError = "The backend refused this run — " + (e.message || e);
-        preflight(dbOpts, nAvail, P);
+        preflight(dbOpts, dbCount);
       });
   }
 
+  /* Reference files, taken from GET /databases/browse — the actual contents of
+     the databases folder, the same listing the production console's file
+     browser uses.
+
+     The previous version built this list by pattern-matching the KEYS in
+     db_paths.json. On a machine whose db_paths.json still named SILVA 138.1
+     files that are not installed, that produced a dropdown of two entries, both
+     "file missing on disk", and nothing selectable — the app deciding what you
+     are allowed to choose from, incorrectly, with no way to argue. The file
+     listing cannot be wrong about what is on disk, and "Custom path…" covers
+     everything it cannot see. */
   function databaseOptions(key){
-    var d = STATE.databases;
-    if(!d || !d.databases) return [];
-    var marker = key === "12S" ? /12s/i
-               : key === "16S" ? /silva|16s/i
-               : key === "18S-nema" ? /nema|18s/i
-               : key === "ONT-16S" ? /emu|16s/i
+    var files = (STATE.browse && Array.isArray(STATE.browse.files)) ? STATE.browse.files : [];
+    if(!files.length) return [];
+
+    var marker = key === "12S"      ? /12s|mifish|pr2/i
+               : key === "16S"      ? /silva|16s/i
+               : key === "18S-nema" ? /nema|18s|pr2/i
+               : key === "ONT-16S"  ? /emu|silva|16s/i
+               : key === "PacBio"   ? /silva|16s/i
+               : key === "ITS1" || key === "ITS2" ? /unite|its/i
+               : key === "COX1"     ? /midori|cox1|coi/i
                : new RegExp(key.replace(/[^\w]/g, ""), "i");
+
     var hit = [], other = [];
-    Object.keys(d.databases).forEach(function(k){
-      var p = d.databases[k];
-      if(!p) return;
-      var base = String(p).split(/[\\/]/).pop();
-      /* An assignSpecies file in this list is what produced the WRONG KIND OF
-         REFERENCE FILE failure. v2.8.5 refuses it at submit time; not offering
-         it at all is better. It is not "hidden" — it has no business here, and
-         the pipeline finds the matching species file by itself. */
-      if(/assignspecies|species_taxid/i.test(base)) return;
-      if(!/trainset|\.fa(\.gz)?$|\.fasta(\.gz)?$/i.test(base)) return;
-      var avail = !Array.isArray(d.available) || d.available.indexOf(k) !== -1;
-      var label = base + (avail ? "" : "  — file missing on disk");
-      var entry = {key:k, path:p, label:label, avail:avail};
-      /* Marker matching is a filename heuristic, so a miss must not make a
-         database disappear. Anything installed that could be a trainset is
-         still listed, just marked as not matching this marker — the user can
-         see it and decide, which beats a dropdown that quietly omits the file
-         they know they downloaded. */
-      (marker.test(k) || marker.test(base) ? hit : other).push(entry);
+    files.forEach(function(f){
+      var base = f.name || "";
+      /* An assignSpecies file here is what produced WRONG KIND OF REFERENCE
+         FILE. The pipeline finds the matching species file by itself from the
+         trainset, so offering it as the main reference can only be a mistake. */
+      if(/assignspecies|species_taxid|wspecies/i.test(base)) return;
+      var rel = f.rel_path || base;
+      var dir = rel.indexOf("/") === -1 ? "" : rel.slice(0, rel.lastIndexOf("/"));
+      var o = {
+        path:  f.path,
+        dir:   dir,
+        label: base + (f.size_mb ? "   (" + f.size_mb + " MB)" : ""),
+        name:  base
+      };
+      (marker.test(rel) ? hit : other).push(o);
     });
-    /* Order matters because the first option is the one a distracted user
-       accepts. A file that is not on disk must never be that option, and among
-       the files that ARE there, the newest reference should lead — numeric
-       collation so v144 sorts above v138.2 rather than below it. */
-    function byPreference(a, b){
-      if(a.avail !== b.avail) return a.avail ? -1 : 1;
-      return b.label.localeCompare(a.label, undefined, {numeric:true});
-    }
-    hit.sort(byPreference);
-    other.sort(byPreference);
-    /* When the heuristic matched something, offer only those: a 12S trainset on
-       a 16S form is how a run ends up against the wrong reference. When it
-       matched NOTHING, list everything instead of showing an empty dropdown —
-       an empty list would read as "no databases installed", which is a lie the
-       user cannot check. Either way the count of what was set aside is
-       reported next to the field. */
-    if(hit.length){
-      hit.setAside = other.length;
-      return hit;
-    }
-    other.forEach(function(o){ o.label += "  (not matched to " + key + ")"; });
-    other.setAside = 0;
-    other.unmatchedOnly = true;
-    return other;
+
+    /* Matched files first, then everything else still listed but marked — the
+       marker match is a filename heuristic and a heuristic must not be allowed
+       to hide a file the user knows they installed. */
+    function cmp(a, b){ return b.name.localeCompare(a.name, undefined, {numeric:true}); }
+    hit.sort(cmp); other.sort(cmp);
+    other.forEach(function(o){ o.dir = o.dir + "  — not matched to " + key; });
+
+    var all = hit.concat(other);
+    /* Preselect the newest trainset that matches the marker, never a file that
+       merely happens to sort first. */
+    var pick = hit.filter(function(o){ return /trainset|train_set/i.test(o.name); })[0] || hit[0];
+    if(pick) pick.pick = true;
+    all.matched = hit.length;
+    return all;
   }
 
   /* ═══ boot ═════════════════════════════════════════════════════════════ */
@@ -1976,6 +2193,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   });
 
   api("/databases").then(function(d){ STATE.databases = d; }).catch(function(){});
+  /* The authoritative list of what is actually installed. */
+  api("/databases/browse").then(function(d){ STATE.browse = d; }).catch(function(){});
 
   /* Show the BACKEND's version, not a made-up one for this page. The beta badge
      already says what this UI is; claiming a different version number here

@@ -5,8 +5,14 @@
 #  Run from WSL:
 #    bash ~/r16s-app/push_github.sh "v2.8.2: report builder"
 #    bash ~/r16s-app/push_github.sh                    # message from version.json
-#    bash ~/r16s-app/push_github.sh -m "msg" --yes     # no confirmation prompt
+#    bash ~/r16s-app/push_github.sh --ask              # confirm before committing
 #    bash ~/r16s-app/push_github.sh --dry-run          # show what would go, push nothing
+#
+#  It commits and pushes WITHOUT asking. What is about to be published is still
+#  printed first — the file list, the diffstat and the commit message — because
+#  that record is the point; the y/N prompt was not adding a decision, only a
+#  keystroke on a step that is always run deliberately. --ask brings it back,
+#  and --dry-run shows everything and pushes nothing.
 #
 #  Deliberately separate from deploy_dev.sh: updating the running app and
 #  publishing source are different decisions with different risks, and you
@@ -47,14 +53,15 @@ SSH_URL="git@github.com:${REPO_PATH}.git"
 OLD_TOKEN_FILE="$HOME/.config/amplicon/github_token"
 
 MSG=""
-ASSUME_YES=0
+ASSUME_YES=1          # push without prompting; --ask restores the confirmation
 DRY_RUN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -m|--message) MSG="${2:-}"; shift 2 ;;
-    -y|--yes)     ASSUME_YES=1; shift ;;
-    --dry-run)    DRY_RUN=1; shift ;;
-    -h|--help)    sed -n '2,10p' "$0"; exit 0 ;;
+    -m|--message)      MSG="${2:-}"; shift 2 ;;
+    -y|--yes)          ASSUME_YES=1; shift ;;   # kept: it is what scripts pass
+    -i|--ask|--confirm) ASSUME_YES=0; shift ;;
+    --dry-run)         DRY_RUN=1; shift ;;
+    -h|--help)         sed -n '2,17p' "$0"; exit 0 ;;
     -*)           die "Unknown option: $1" ;;
     *)            MSG="$1"; shift ;;
   esac
@@ -194,12 +201,13 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+echo ""
+echo -e "  ${BOLD}Commit message:${NC} $(printf '%s' "$MSG" | head -1)"
+if [[ "$(printf '%s' "$MSG" | wc -l)" -gt 0 ]]; then
+  printf '%s' "$MSG" | tail -n +3 | sed 's/^/      /'
+fi
+
 if [[ "$ASSUME_YES" -eq 0 ]]; then
-  echo ""
-  echo -e "  ${BOLD}Commit message:${NC} $(printf '%s' "$MSG" | head -1)"
-  if [[ "$(printf '%s' "$MSG" | wc -l)" -gt 0 ]]; then
-    printf '%s' "$MSG" | tail -n +3 | sed 's/^/      /'
-  fi
   # Read the answer from the terminal itself, not from whatever stdin happens
   # to be — and accept "yes" as well as "y".
   ANSWER=""
