@@ -294,6 +294,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .kv span{font-size:11px;padding:3px 8px;border-radius:4px;background:var(--surface-2);color:var(--fg-2)}
 
 /* ── chart editor ───────────────────────────────────────────────────────── */
+.tabbar{display:flex;flex-direction:column;gap:2px;padding:10px 12px}
+.tabrow{display:flex;align-items:center;gap:5px;flex-wrap:wrap;padding:3px 0}
+.tabg{flex:none;width:72px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--fg-3);font-weight:600}
+.tabb{padding:4px 11px;border:1px solid transparent;border-radius:99px;background:none;
+  font-size:12.5px;color:var(--fg-2);white-space:nowrap}
+.tabb:hover{background:var(--surface-2);color:var(--fg)}
+.tabb.on{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.ramps{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.ramp{display:flex;align-items:center;gap:7px;padding:5px 7px;border:1px solid var(--line);
+  border-radius:5px;background:var(--surface);font-size:11.5px;color:var(--fg-2)}
+.ramp span{flex:none;width:34px;height:12px;border-radius:3px;display:block}
+.ramp:hover{border-color:var(--line-strong);color:var(--fg)}
+.ramp.on{border-color:var(--accent);color:var(--accent);font-weight:600;background:var(--accent-soft)}
 .segbtns{display:inline-flex;border:1px solid var(--line-strong);border-radius:5px;overflow:hidden}
 .segb{padding:5px 13px;border:none;background:var(--surface);font-size:12.5px;font-weight:600;
   color:var(--fg-2);border-right:1px solid var(--line-strong)}
@@ -1456,26 +1470,90 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   /* ═══ chart editor ═════════════════════════════════════════════════════
-     Draws the taxonomy table as a stacked bar chart and lets you restyle it,
-     in this console rather than by bouncing to the other one.
+     Every tab the production editor has, drawn here instead of sending you to
+     the other console, and writing the same edit_charts/settings.json so a
+     palette set in either opens in the other.
 
-     It reads and writes the SAME file the production editor does —
-     edit_charts/settings.json, shape {font, colors, sampleAliases,
-     sampleOrder} — so a palette set here opens there and vice versa, and the
-     R re-plot picks it up either way. A second settings file with its own
-     schema would have been much easier to write and would have split every
-     job's styling in two depending on which console last touched it.
+     The tab list is ported from PreviewPage.tsx's ALL_TABS verbatim — same ids,
+     same labels, same source files, same grouping. A tab appears only when the
+     file behind it is actually in this job's result folder, so the row shows
+     what this run produced rather than what the app can draw in principle. */
+  var TABS = [
+    {id:"phylum",   g:"Taxonomy", label:"Phylum",   f:"taxonomy_phylum.csv",  kind:"stack"},
+    {id:"class",    g:"Taxonomy", label:"Class",    f:"taxonomy_class.csv",   kind:"stack"},
+    {id:"order",    g:"Taxonomy", label:"Order",    f:"taxonomy_order.csv",   kind:"stack"},
+    {id:"family",   g:"Taxonomy", label:"Family",   f:"taxonomy_family.csv",  kind:"stack"},
+    {id:"genus",    g:"Taxonomy", label:"Genus",    f:"taxonomy_genus.csv",   kind:"stack"},
+    {id:"species",  g:"Taxonomy", label:"Species",  f:"taxonomy_species.csv", kind:"stack"},
+    {id:"hm_phy",   g:"Taxonomy", label:"Tax. Heatmap Phylum", f:"taxonomy_phylum.csv", kind:"taxheat"},
+    {id:"hm_fam",   g:"Taxonomy", label:"Tax. Heatmap Family", f:"taxonomy_family.csv", kind:"taxheat"},
+    {id:"hm_gen",   g:"Taxonomy", label:"Tax. Heatmap Genus",  f:"taxonomy_genus.csv",  kind:"taxheat"},
 
-     The chart is hand-built SVG: this page has no bundler and no network on a
-     lab machine, so a plotting library is not available to it. That turns out
-     to be a feature — the marks follow the house rules exactly (2px gaps
-     between stacked fills, 4px rounded ends at the outer edges only, recessive
-     axes, text in text tokens rather than series colour). */
+    {id:"shannon",  g:"Alpha", label:"Shannon",  f:"alpha_diversity.csv", kind:"alpha", metric:"Shannon"},
+    {id:"observed", g:"Alpha", label:"Observed", f:"alpha_diversity.csv", kind:"alpha", metric:"Observed"},
+    {id:"chao1",    g:"Alpha", label:"Chao1",    f:"alpha_diversity.csv", kind:"alpha", metric:"Chao1"},
+    {id:"simpson",  g:"Alpha", label:"Simpson",  f:"alpha_diversity.csv", kind:"alpha", metric:"Simpson"},
+    {id:"faiths",   g:"Alpha", label:"Faith's PD", f:"faiths_pd.csv",     kind:"alpha", metric:"PD"},
+    {id:"shan_rar", g:"Alpha", label:"Shannon Rar.", f:"shannon_rarefaction.csv", kind:"lines"},
+    {id:"multi",    g:"Alpha", label:"All Alpha Metrics", f:"alpha_diversity.csv", kind:"multialpha"},
 
-  /* The validated categorical palette: adjacent-pair CVD ΔE 9.1 light /
-     8.4 dark. Assigned in fixed order to the most abundant taxa; everything
-     past the eighth folds into "Other" in neutral grey rather than being given
-     a ninth generated hue nobody can tell from the first eight. */
+    {id:"pcoa",     g:"Beta", label:"PCoA",         f:"pca_scores.csv",   kind:"scatter"},
+    {id:"scree",    g:"Beta", label:"PCA Scree",    f:"pca_scree.csv",    kind:"scree"},
+    {id:"nmds_b",   g:"Beta", label:"NMDS Bray",    f:"nmds_bray.csv",    kind:"scatter"},
+    {id:"nmds_j",   g:"Beta", label:"NMDS Jaccard", f:"nmds_jaccard.csv", kind:"scatter"},
+    {id:"hm_bray",  g:"Beta", label:"Heatmap (Bray)", f:"beta_heatmap.csv",
+     alt:"bray_curtis_distance_matrix.csv", kind:"matrix"},
+    {id:"hm_jac",   g:"Beta", label:"Heatmap (Jac)",  f:"jaccard_heatmap.csv", kind:"matrix"},
+    {id:"upgma_b",  g:"Beta", label:"UPGMA Bray",     f:"beta_heatmap.csv",
+     alt:"bray_curtis_distance_matrix.csv", kind:"dendro"},
+    {id:"upgma_j",  g:"Beta", label:"UPGMA Jaccard",  f:"jaccard_heatmap.csv", kind:"dendro"},
+
+    {id:"reads",    g:"Other", label:"Read Counts",  f:"asv_summary.csv",    kind:"alpha", metric:""},
+    {id:"rtrack",   g:"Other", label:"Read Tracking", f:"read_tracking.csv", kind:"grouped"},
+    {id:"rarefy",   g:"Other", label:"Rarefaction",  f:"rarefaction.csv",    kind:"lines"},
+    {id:"specacc",  g:"Other", label:"Spec. Accum.", f:"specaccum.csv",      kind:"lines"},
+    {id:"rankab",   g:"Other", label:"Rank Abund.",  f:"rank_abundance.csv", kind:"lines"},
+    {id:"asvlen",   g:"Other", label:"ASV Lengths",  f:"asv_lengths.csv",    kind:"hist"},
+    {id:"otu",      g:"Other", label:"OTU Dist",     f:"otu_distribution.csv", kind:"box"}
+  ];
+  var TAB_GROUPS = ["Taxonomy", "Alpha", "Beta", "Other"];
+
+  /* Sequential ramps for the heatmaps — the production console's list, kept so
+     a job styled there looks the same here. Viridis is the default because it
+     is monotonic in lightness and holds up under colour-blind simulation;
+     RdYlGn is the one scale in the list that does not, and says so rather than
+     being quietly dropped from a list the other console still offers. */
+  var SCALES = {
+    Viridis: ["#440154","#414487","#2a788e","#22a884","#7ad151","#fde725"],
+    Plasma:  ["#0d0887","#6a00a8","#b12a90","#e16462","#fca636","#f0f921"],
+    Blues:   ["#f7fbff","#c6dbef","#6baed6","#2171b5","#08519c","#08306b"],
+    Reds:    ["#fff5f0","#fcbba1","#fc8d59","#ef3b2c","#cb181d","#67000d"],
+    YlOrRd:  ["#ffffcc","#ffeda0","#fed976","#fd8d3c","#e31a1c","#800026"],
+    Greens:  ["#f7fcf5","#c7e9c0","#74c476","#31a354","#006d2c","#00441b"],
+    Hot:     ["#000000","#5c0000","#b30000","#ff4d00","#ffbb00","#ffffff"],
+    RdYlGn:  ["#d73027","#f46d43","#fdae61","#fee08b","#a6d96a","#1a9850"]
+  };
+  var SCALE_WARN = {RdYlGn: "red-to-green — not safe for colour-blind readers"};
+
+  function rampColour(name, t){
+    var ramp = SCALES[name] || SCALES.Viridis;
+    t = Math.max(0, Math.min(1, isFinite(t) ? t : 0));
+    var x = t * (ramp.length - 1), i = Math.floor(x), f = x - i;
+    if(i >= ramp.length - 1) return ramp[ramp.length - 1];
+    return mixHex(ramp[i], ramp[i + 1], f);
+  }
+  function mixHex(a, b, f){
+    function p(h){ return [parseInt(h.substr(1,2),16), parseInt(h.substr(3,2),16), parseInt(h.substr(5,2),16)]; }
+    var A = p(a), B = p(b);
+    return "#" + [0,1,2].map(function(k){
+      return ("0" + Math.round(A[k] + (B[k] - A[k]) * f).toString(16)).slice(-2); }).join("");
+  }
+  /* Pick ink that stays readable on top of a ramp cell. */
+  function onColour(hex){
+    var r = parseInt(hex.substr(1,2),16), g = parseInt(hex.substr(3,2),16), b = parseInt(hex.substr(5,2),16);
+    return (0.2126*r + 0.7152*g + 0.0722*b) > 150 ? "#111111" : "#ffffff";
+  }
+
   var SERIES_LIGHT = ["#2a78d6","#eb6834","#1baf7a","#eda100",
                       "#e87ba4","#008300","#4a3aa7","#e34948"];
   var SERIES_DARK  = ["#3987e5","#d95926","#199e70","#c98500",
@@ -1490,19 +1568,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   function seriesPalette(){ return isDark() ? SERIES_DARK : SERIES_LIGHT; }
   function otherColour(){ return isDark() ? OTHER_DARK : OTHER_LIGHT; }
 
-  /* Resolve the theme tokens to literal colours. The SVG is serialised for PNG
-     export, and a var(--fg) inside a detached SVG string resolves to nothing —
-     the exported image would come out with invisible text. */
+  /* Theme tokens resolved to literals: the SVG is serialised for PNG export,
+     and a var(--fg) inside a detached SVG string resolves to nothing — the
+     exported image would come out with invisible text. */
   function ink(){
     var cs = getComputedStyle(document.documentElement);
     function v(n, fb){ return (cs.getPropertyValue(n) || "").trim() || fb; }
-    return {
-      fg:      v("--fg", "#0e1517"),
-      fg2:     v("--fg-2", "#54646a"),
-      fg3:     v("--fg-3", "#8a989e"),
-      line:    v("--line", "#d7dee1"),
-      surface: v("--surface", "#ffffff")
-    };
+    return {fg:v("--fg","#0e1517"), fg2:v("--fg-2","#54646a"), fg3:v("--fg-3","#8a989e"),
+            line:v("--line","#d7dee1"), surface:v("--surface","#ffffff")};
   }
 
   var CHART = null;
@@ -1515,20 +1588,18 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             colorscale:"Viridis", topNTaxa:8};
   }
 
+  /* ── loading ─────────────────────────────────────────────────────────── */
   function renderCharts(id){
     var listed = STATE.jobs.filter(function(j){ return j.job_id === id; })[0] || {job_id:id};
-    CHART = {
-      id: id, rank: "", ranks: [],
-      taxa: [], samples: [], matrix: [],   /* matrix[taxonIndex][sampleIndex] */
-      font: defaultFont(), colors: {}, aliases: {}, order: [],
-      view: "chart", dirty: false, saved: false, err: ""
-    };
+    CHART = {id:id, tab:null, tabs:[], rows:null, err:"", loading:true,
+             font:defaultFont(), colors:{}, aliases:{}, order:[],
+             view:"chart", dirty:false, saved:false};
 
     work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
         + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 6l-6 6 6 6"/></svg>'
         + 'Back to results</button></div>'
       + '<h2 class="ttl">' + esc(listed.job_name || id) + ' — chart editor</h2>'
-      + '<p class="sub" id="cSub">Loading the taxonomy table…</p>'
+      + '<p class="sub" id="cSub">Reading the result folder…</p>'
       + '<div id="cBody"><div class="panel"><div class="skel">Loading…</div></div></div>';
 
     document.getElementById("backBtn").addEventListener("click", function(){
@@ -1539,27 +1610,39 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       api("/results/" + encodeURIComponent(id) + "/tables"),
       api("/results/" + encodeURIComponent(id) + "/edit_charts/settings").catch(function(){ return {}; })
     ]).then(function(r){
-      var tables = Array.isArray(r[0].tables) ? r[0].tables : [];
-      var saved  = r[1] || {};
+      var have = Array.isArray(r[0].tables) ? r[0].tables : [];
+      var saved = r[1] || {};
       if(saved.font)          CHART.font    = Object.assign(defaultFont(), saved.font);
       if(saved.colors)        CHART.colors  = saved.colors;
       if(saved.sampleAliases) CHART.aliases = saved.sampleAliases;
       if(saved.sampleOrder)   CHART.order   = saved.sampleOrder;
 
-      CHART.ranks = tables.filter(function(t){ return /^taxonomy_[a-z]+\.csv$/i.test(t); });
-      if(!CHART.ranks.length){
+      /* Only offer a tab whose file this run actually wrote. Listing a tab the
+         job has no data for means clicking it to find out — the old "Table"
+         entry in the rank picker was exactly that: taxonomy_table.csv matched
+         a pattern, so it was offered as if it were a rank. */
+      CHART.tabs = TABS.filter(function(t){
+        return have.indexOf(t.f) !== -1 || (t.alt && have.indexOf(t.alt) !== -1);
+      }).map(function(t){
+        var o = Object.assign({}, t);
+        if(have.indexOf(t.f) === -1 && t.alt) o.f = t.alt;
+        return o;
+      });
+
+      if(!CHART.tabs.length){
         document.getElementById("cBody").innerHTML =
-          '<div class="panel"><div class="skel">No taxonomy_*.csv in this job’s result folder, '
-          + 'so there is nothing to plot here. The figures the pipeline already drew are on the '
-          + 'results screen.</div></div>';
+          '<div class="panel"><div class="skel">This job wrote no CSV tables, so there is '
+          + 'nothing to redraw. The figures R produced during the run are on the results '
+          + 'screen.</div></div>';
         document.getElementById("cSub").textContent = "";
         return;
       }
-      /* Genus is the rank people look at first; fall back to whatever exists. */
-      var pref = ["taxonomy_genus.csv","taxonomy_phylum.csv","taxonomy_family.csv"];
-      CHART.rank = pref.filter(function(p){ return CHART.ranks.indexOf(p) !== -1; })[0]
-                   || CHART.ranks[0];
-      loadRank();
+      var pref = ["genus","phylum","family","observed","pcoa"];
+      var pick = null;
+      pref.forEach(function(idv){
+        if(!pick) pick = CHART.tabs.filter(function(t){ return t.id === idv; })[0];
+      });
+      selectTab(pick || CHART.tabs[0]);
     }).catch(function(e){
       document.getElementById("cBody").innerHTML =
         '<div class="panel"><div class="errbox" style="border-radius:var(--r)">'
@@ -1567,81 +1650,156 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     });
   }
 
-  function loadRank(){
-    var sub = document.getElementById("cSub");
-    if(sub) sub.textContent = "Reading " + CHART.rank + "…";
-    fetch("/results/" + encodeURIComponent(CHART.id) + "/table/" + encodeURIComponent(CHART.rank),
+  function selectTab(tab){
+    /* Drop the old shape with the old tab. Keeping it meant the new tab's KIND
+       was briefly applied to the previous tab's DATA — a dendrogram's matrix
+       read as if it were a grouped bar chart, which threw, and would otherwise
+       have drawn the last tab's numbers under this tab's title for a moment.
+       A chart that is briefly wrong is a chart someone screenshots. */
+    CHART.tab = tab; CHART.shape = null; CHART.rows = null;
+    CHART.loading = true; CHART.err = "";
+    paintCharts();
+    fetch("/results/" + encodeURIComponent(CHART.id) + "/table/" + encodeURIComponent(tab.f),
           {cache:"no-store"})
       .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
       .then(function(text){
         var rows = parseCSV(text);
-        if(rows.length < 2) throw new Error("The table has no data rows.");
-        var head = rows[0];
-
-        /* Taxon-per-row or sample-per-row? Decide from the first header, and
-           SAY which way it was read — a silently transposed chart looks
-           perfectly plausible and is completely wrong. */
-        var first = (head[0] || "").trim().toLowerCase();
-        var byRow = !/^(sample|sampleid|id)$/.test(first);
-        CHART.orientation = byRow ? "taxa in rows" : "samples in rows";
-
-        var taxa = [], samples = [], matrix = [];
-        if(byRow){
-          samples = head.slice(1).map(function(h){ return h.trim(); });
-          rows.slice(1).forEach(function(r){
-            var name = (r[0] || "").trim();
-            if(!name) return;
-            taxa.push(name);
-            matrix.push(samples.map(function(_, i){
-              var v = parseFloat(r[i+1]); return isFinite(v) ? v : 0; }));
-          });
-        } else {
-          taxa = head.slice(1).map(function(h){ return h.trim(); });
-          var bySample = rows.slice(1).filter(function(r){ return (r[0]||"").trim(); });
-          samples = bySample.map(function(r){ return r[0].trim(); });
-          taxa.forEach(function(_, ti){
-            matrix.push(bySample.map(function(r){
-              var v = parseFloat(r[ti+1]); return isFinite(v) ? v : 0; }));
-          });
-        }
-        CHART.taxa = taxa; CHART.samples = samples; CHART.matrix = matrix;
-        if(!CHART.order.length) CHART.order = samples.slice();
-        CHART.err = "";
+        if(rows.length < 2) throw new Error("The file has no data rows.");
+        CHART.rows = rows;
+        CHART.loading = false;
+        shapeData();
         paintCharts();
       })
       .catch(function(e){
+        CHART.loading = false;
         CHART.err = e.message || String(e);
         paintCharts();
       });
   }
 
-  /* Rank the taxa by total abundance, keep the top N, fold the rest into
-     "Other". This is the step that keeps the palette honest. */
-  function series(){
-    var totals = CHART.matrix.map(function(row, i){
-      return {i:i, name:CHART.taxa[i], sum:row.reduce(function(a,b){ return a+b; }, 0)};
+  /* ── shaping ─────────────────────────────────────────────────────────── */
+  function shapeData(){
+    var rows = CHART.rows, head = rows[0], kind = CHART.tab.kind;
+    var first = (head[0] || "").trim().toLowerCase();
+    CHART.shape = {};
+
+    if(kind === "stack" || kind === "taxheat"){
+      /* taxa × samples, or the transpose. Which way it was read is printed
+         above the chart: a silently transposed chart looks plausible and is
+         completely wrong. */
+      var byRow = !/^(sample|sampleid|id)$/.test(first);
+      CHART.orientation = byRow ? "taxa in rows" : "samples in rows";
+      var taxa = [], samples = [], matrix = [];
+      if(byRow){
+        samples = head.slice(1).map(function(h){ return h.trim(); });
+        rows.slice(1).forEach(function(r){
+          var nm = (r[0]||"").trim(); if(!nm) return;
+          taxa.push(nm);
+          matrix.push(samples.map(function(_, i){ return num(r[i+1]); }));
+        });
+      } else {
+        taxa = head.slice(1).map(function(h){ return h.trim(); });
+        var bs = rows.slice(1).filter(function(r){ return (r[0]||"").trim(); });
+        samples = bs.map(function(r){ return r[0].trim(); });
+        taxa.forEach(function(_, ti){
+          matrix.push(bs.map(function(r){ return num(r[ti+1]); })); });
+      }
+      CHART.shape = {taxa:taxa, samples:samples, matrix:matrix};
+      if(!CHART.order.length) CHART.order = samples.slice();
+
+    } else if(kind === "alpha" || kind === "grouped" || kind === "scree" || kind === "box"){
+      /* first column labels, remaining columns numeric */
+      var cols = head.slice(1).map(function(h){ return h.trim(); });
+      var labels = [], vals = [];
+      rows.slice(1).forEach(function(r){
+        var nm = (r[0]||"").trim(); if(!nm) return;
+        labels.push(nm);
+        vals.push(cols.map(function(_, i){ return num(r[i+1]); }));
+      });
+      CHART.shape = {labels:labels, cols:cols, vals:vals};
+      if(kind === "alpha" && !CHART.order.length) CHART.order = labels.slice();
+
+    } else if(kind === "multialpha"){
+      var cols2 = head.slice(1).map(function(h){ return h.trim(); });
+      var labels2 = [], vals2 = [];
+      rows.slice(1).forEach(function(r){
+        var nm = (r[0]||"").trim(); if(!nm) return;
+        labels2.push(nm);
+        vals2.push(cols2.map(function(_, i){ return num(r[i+1]); }));
+      });
+      CHART.shape = {labels:labels2, cols:cols2, vals:vals2};
+      if(!CHART.order.length) CHART.order = labels2.slice();
+
+    } else if(kind === "scatter"){
+      /* label, x, y — find the two numeric columns by header name first */
+      var lx = head.map(function(h){ return h.trim().toLowerCase(); });
+      function col(names, fb){
+        for(var i = 0; i < names.length; i++){ var k = lx.indexOf(names[i]); if(k !== -1) return k; }
+        return fb;
+      }
+      var cx = col(["pc1","axis1","mds1","nmds1","dim1","x"], 1);
+      var cy = col(["pc2","axis2","mds2","nmds2","dim2","y"], 2);
+      var pts = [];
+      rows.slice(1).forEach(function(r){
+        var nm = (r[0]||"").trim(); if(!nm) return;
+        pts.push({name:nm, x:num(r[cx]), y:num(r[cy]), group:""});
+      });
+      CHART.shape = {pts:pts, xLab:head[cx] || "Axis 1", yLab:head[cy] || "Axis 2"};
+
+    } else if(kind === "matrix" || kind === "dendro"){
+      /* square sample × sample matrix */
+      var names = head.slice(1).map(function(h){ return h.trim(); });
+      var m = [];
+      rows.slice(1).forEach(function(r){ m.push(names.map(function(_, i){ return num(r[i+1]); })); });
+      var rowNames = rows.slice(1).map(function(r){ return (r[0]||"").trim(); });
+      CHART.shape = {names:rowNames.length === names.length ? rowNames : names, m:m};
+      if(!CHART.order.length) CHART.order = CHART.shape.names.slice();
+
+    } else if(kind === "lines" || kind === "hist"){
+      var xcol = head[0];
+      var sers = head.slice(1).map(function(h){ return h.trim(); });
+      var xs = [], ys = [];
+      rows.slice(1).forEach(function(r){
+        xs.push(num(r[0]));
+        ys.push(sers.map(function(_, i){ return num(r[i+1]); }));
+      });
+      CHART.shape = {xLab:xcol, series:sers, xs:xs, ys:ys};
+    }
+  }
+
+  function num(v){ var n = parseFloat(v); return isFinite(n) ? n : 0; }
+  function labelOf(s){ return CHART.aliases[s] || s; }
+
+  function orderedIdx(names){
+    var idx = [];
+    CHART.order.forEach(function(nm){
+      var k = names.indexOf(nm);
+      if(k !== -1 && idx.indexOf(k) === -1) idx.push(k);
     });
-    /* Unassigned reads are not a taxon and must not win a colour slot by being
-       numerous — NA is routinely the biggest "genus" in a 16S table. */
+    names.forEach(function(_, k){ if(idx.indexOf(k) === -1) idx.push(k); });
+    return idx;
+  }
+
+  /* Taxa ranked by abundance, top N kept, the rest folded into one grey
+     "Other". Unassigned reads never take a colour slot however numerous they
+     are — NA is routinely the biggest "genus" in a 16S table. */
+  function series(){
+    var S = CHART.shape;
+    if(!S || !S.matrix) return [];
     var isNA = function(n){ return /^(na|unassigned|unclassified|)$/i.test(String(n).trim()); };
+    var totals = S.matrix.map(function(row, i){
+      return {i:i, name:S.taxa[i], sum:row.reduce(function(a,b){ return a+b; }, 0)}; });
     var named = totals.filter(function(t){ return !isNA(t.name) && t.sum > 0; });
     var na    = totals.filter(function(t){ return isNA(t.name) && t.sum > 0; });
     named.sort(function(a,b){ return b.sum - a.sum; });
-
     var n = Math.max(1, CHART.font.topNTaxa || 8);
-    var top = named.slice(0, n);
-    var rest = named.slice(n).concat(na);
-
+    var top = named.slice(0, n), rest = named.slice(n).concat(na);
     var out = top.map(function(t){
-      return {name:t.name, values:CHART.matrix[t.i].slice(), grouped:false};
-    });
+      return {name:t.name, values:S.matrix[t.i].slice(), grouped:false}; });
     if(rest.length){
-      var acc = CHART.samples.map(function(){ return 0; });
-      rest.forEach(function(t){
-        CHART.matrix[t.i].forEach(function(v, k){ acc[k] += v; });
-      });
-      out.push({name:"Other", values:acc, grouped:true,
-                members:rest.length, hasNA:na.length > 0});
+      var acc = S.samples.map(function(){ return 0; });
+      rest.forEach(function(t){ S.matrix[t.i].forEach(function(v,k){ acc[k] += v; }); });
+      out.push({name:"Other", values:acc, grouped:true, members:rest.length, hasNA:na.length>0});
     }
     return out;
   }
@@ -1653,290 +1811,616 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     return p[idx % p.length];
   }
 
-  function sampleOrderIdx(){
-    /* The user's chosen order, dropping names that are no longer present and
-       appending any the saved order did not know about. */
-    var known = CHART.samples.slice();
-    var idx = [];
-    CHART.order.forEach(function(nm){
-      var k = known.indexOf(nm);
-      if(k !== -1 && idx.indexOf(k) === -1) idx.push(k);
-    });
-    known.forEach(function(_, k){ if(idx.indexOf(k) === -1) idx.push(k); });
-    return idx;
-  }
+  /* ── drawing ─────────────────────────────────────────────────────────────
+     One frame, one renderer per kind. Marks follow the house rules: a 2px
+     surface gap between stacked fills, 4px rounded ends on the outermost
+     segments only, recessive grid and axes, text in text tokens rather than
+     series colour, a tooltip on every mark, and a legend whenever there are
+     two or more series. */
+  function chartSVG(o){
+    o = o || {};
+    var W = o.width || 900, H = o.height || 460;
+    if(!CHART.tab || !CHART.shape) return "";
+    var k = CHART.tab.kind;
+    var F = CHART.font, C = ink();
+    var legend = k === "stack" || k === "lines" || k === "grouped" || k === "multialpha";
+    var padL = 64, padR = legend ? 210 : 28, padT = F.titleText ? 46 : 24, padB = 80;
+    if(k === "taxheat") padR = 150;
+    if(k === "matrix")  padL = 128;
+    var P = {x:padL, y:padT, w:W - padL - padR, h:H - padT - padB, C:C, F:F, W:W, H:H};
+    if(P.w < 40 || P.h < 40) return "";
 
-  function labelOf(sample){ return CHART.aliases[sample] || sample; }
-
-  /* ── the chart ───────────────────────────────────────────────────────────
-     Hand-built SVG. Marks follow the house rules: a 2px surface gap between
-     stacked fills so segment boundaries survive a CVD-ambiguous adjacent pair,
-     4px rounded corners on the outermost ends only, grid and axes recessive,
-     and every piece of text in a text token rather than its series colour. */
-  function chartSVG(opts){
-    opts = opts || {};
-    var W = opts.width || 900, H = opts.height || 460;
-    var S  = series();
-    var ord = sampleOrderIdx();
-    var F  = CHART.font;
-    var C  = ink();
-    var pct = F.chartType === "bar100";
-
-    var padL = 62, padR = 210, padT = F.titleText ? 44 : 22, padB = 76;
-    var plotW = W - padL - padR, plotH = H - padT - padB;
-    if(plotW < 40 || plotH < 40) return "";
-
-    var totals = ord.map(function(si){
-      return S.reduce(function(a, s){ return a + (s.values[si] || 0); }, 0);
-    });
-    var yMax = pct ? 100 : Math.max.apply(null, totals.concat([1]));
-    /* A round number above the data, so the axis reads in human steps. */
-    if(!pct){
-      var mag = Math.pow(10, Math.floor(Math.log(yMax) / Math.LN10));
-      yMax = Math.ceil(yMax / (mag / 2)) * (mag / 2);
-    }
-
-    var n = ord.length || 1;
-    var slot = plotW / n;
-    var bw = Math.min(76, slot * 0.62);
-    var GAP = 2;                       /* surface gap between stacked fills */
-
-    var out = [];
-    out.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H
-      + '" viewBox="0 0 ' + W + ' ' + H + '" font-family="IBM Plex Sans, system-ui, sans-serif">');
-    out.push('<rect width="' + W + '" height="' + H + '" fill="' + C.surface + '"/>');
-
-    if(F.titleText){
-      out.push('<text x="' + padL + '" y="26" fill="' + C.fg + '" font-size="' + F.titleSize
+    var parts = ['<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H
+      + '" viewBox="0 0 ' + W + ' ' + H + '" font-family="IBM Plex Sans, system-ui, sans-serif">'];
+    parts.push('<rect width="' + W + '" height="' + H + '" fill="' + C.surface + '"/>');
+    if(F.titleText)
+      parts.push('<text x="' + padL + '" y="28" fill="' + C.fg + '" font-size="' + F.titleSize
         + '" font-weight="' + (F.titleBold ? 700 : 600) + '"'
         + (F.titleItalic ? ' font-style="italic"' : "") + '>' + esc(F.titleText) + '</text>');
-    }
 
-    /* y axis: grid first so marks sit on top of it */
-    var ticks = 5;
+    var body =
+        k === "stack"      ? drawStack(P)
+      : k === "taxheat"    ? drawTaxHeat(P)
+      : k === "matrix"     ? drawMatrix(P)
+      : k === "dendro"     ? drawDendro(P)
+      : k === "alpha"      ? drawBars(P)
+      : k === "scree"      ? drawScree(P)
+      : k === "grouped"    ? drawGrouped(P)
+      : k === "multialpha" ? drawMulti(P)
+      : k === "scatter"    ? drawScatter(P)
+      : k === "lines"      ? drawLines(P)
+      : k === "hist"       ? drawHist(P)
+      : k === "box"        ? drawBox(P)
+      : '<text x="' + padL + '" y="' + (padT + 20) + '" fill="' + C.fg2 + '">No renderer for this tab.</text>';
+
+    parts.push(body);
+    parts.push('</svg>');
+    return parts.join("");
+  }
+
+  /* shared y axis; returns {html, scale(v)->y} */
+  function yAxis(P, yMax, label, fmt){
+    var out = [], ticks = 5;
     for(var t = 0; t <= ticks; t++){
-      var val = yMax * t / ticks;
-      var y = padT + plotH - (plotH * t / ticks);
-      if(F.showGrid && t > 0)
-        out.push('<line x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (padL + plotW)
-          + '" y2="' + y.toFixed(1) + '" stroke="' + C.line + '" stroke-width="1"/>');
-      out.push('<text x="' + (padL - 10) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="end" fill="'
-        + C.fg2 + '" font-size="' + F.axisSize + '">'
-        + (pct ? val.toFixed(0) : shortNum(val)) + '</text>');
+      var v = yMax * t / ticks, y = P.y + P.h - (P.h * t / ticks);
+      if(P.F.showGrid && t > 0)
+        out.push('<line x1="' + P.x + '" y1="' + y.toFixed(1) + '" x2="' + (P.x + P.w)
+          + '" y2="' + y.toFixed(1) + '" stroke="' + P.C.line + '" stroke-width="1"/>');
+      out.push('<text x="' + (P.x - 10) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="end" fill="'
+        + P.C.fg2 + '" font-size="' + P.F.axisSize + '">' + (fmt ? fmt(v) : shortNum(v)) + '</text>');
     }
-    out.push('<line x1="' + padL + '" y1="' + (padT + plotH) + '" x2="' + (padL + plotW)
-      + '" y2="' + (padT + plotH) + '" stroke="' + C.line + '" stroke-width="1"/>');
-    out.push('<text transform="translate(16,' + (padT + plotH / 2) + ') rotate(-90)" '
-      + 'text-anchor="middle" fill="' + C.fg2 + '" font-size="' + F.axisSize + '">'
-      + (pct ? "Relative abundance (%)" : "Reads") + '</text>');
-
-    /* bars */
-    ord.forEach(function(si, k){
-      var x = padL + slot * k + (slot - bw) / 2;
-      var total = totals[k] || 0;
-      var acc = 0;
-      var drawn = [];
-      S.forEach(function(s, i){
-        var v = s.values[si] || 0;
-        if(v <= 0) return;
-        var frac = total > 0 ? v / total : 0;
-        var h = (pct ? frac * 100 : v) / yMax * plotH;
-        drawn.push({s:s, i:i, v:v, frac:frac, h:h, y0:acc});
-        acc += h;
-      });
-      drawn.forEach(function(d, j){
-        var yTop = padT + plotH - d.y0 - d.h;
-        var h = Math.max(0, d.h - (j < drawn.length - 1 ? GAP : 0));
-        if(h <= 0) return;
-        var isTop = j === drawn.length - 1, isBottom = j === 0;
-        var r = 4;
-        var path;
-        if(isTop && isBottom) path = roundRect(x, yTop, bw, h, r, r);
-        else if(isTop)        path = roundRect(x, yTop, bw, h, r, 0);
-        else if(isBottom)     path = roundRect(x, yTop, bw, h, 0, r);
-        else                  path = roundRect(x, yTop, bw, h, 0, 0);
-        out.push('<path d="' + path + '" fill="' + colourOf(d.s, d.i) + '"'
-          + ' data-t="' + esc(d.s.name) + '" data-s="' + esc(CHART.samples[si]) + '"'
-          + ' data-v="' + d.v + '" data-p="' + (d.frac * 100).toFixed(2) + '"'
-          + ' class="seg"><title>' + esc(d.s.name) + ' · ' + esc(labelOf(CHART.samples[si]))
-          + '\n' + nfmt(d.v) + ' reads · ' + (d.frac * 100).toFixed(1) + '%</title></path>');
-      });
-      var lbl = labelOf(CHART.samples[si]);
-      out.push('<text x="' + (x + bw / 2) + '" y="' + (padT + plotH + 18)
-        + '" text-anchor="end" fill="' + C.fg2 + '" font-size="' + F.xSize + '"'
-        + (F.xItalic ? ' font-style="italic"' : "") + (F.xBold ? ' font-weight="700"' : "")
-        + ' transform="rotate(-35 ' + (x + bw / 2) + ' ' + (padT + plotH + 18) + ')">'
-        + esc(lbl) + '</text>');
-    });
-
-    /* legend — always present for two or more series */
-    var ly = padT + 2;
-    S.forEach(function(s, i){
-      out.push('<rect x="' + (padL + plotW + 22) + '" y="' + ly + '" width="11" height="11" rx="2.5" fill="'
-        + colourOf(s, i) + '"/>');
-      var nm = s.name.length > 26 ? s.name.slice(0, 25) + "…" : s.name;
-      out.push('<text x="' + (padL + plotW + 39) + '" y="' + (ly + 10) + '" fill="' + C.fg
-        + '" font-size="' + F.legendSize + '">' + esc(nm) + '</text>');
-      ly += 18;
-    });
-    if(S.length && S[S.length - 1].grouped){
-      out.push('<text x="' + (padL + plotW + 22) + '" y="' + (ly + 10) + '" fill="' + C.fg3
-        + '" font-size="' + Math.max(9, F.legendSize - 1) + '">'
-        + esc(S[S.length - 1].members + " more"
-              + (S[S.length - 1].hasNA ? ", plus unassigned" : "")) + '</text>');
-    }
-    out.push('</svg>');
+    out.push('<line x1="' + P.x + '" y1="' + (P.y + P.h) + '" x2="' + (P.x + P.w) + '" y2="'
+      + (P.y + P.h) + '" stroke="' + P.C.line + '" stroke-width="1"/>');
+    if(label) out.push('<text transform="translate(16,' + (P.y + P.h/2) + ') rotate(-90)" '
+      + 'text-anchor="middle" fill="' + P.C.fg2 + '" font-size="' + P.F.axisSize + '">'
+      + esc(label) + '</text>');
     return out.join("");
   }
 
-  function roundRect(x, y, w, h, rTop, rBot){
-    rTop = Math.min(rTop, h / 2, w / 2); rBot = Math.min(rBot, h / 2, w / 2);
-    return "M" + (x + rTop) + "," + y
-      + "h" + (w - 2 * rTop) + "a" + rTop + "," + rTop + " 0 0 1 " + rTop + "," + rTop
-      + "v" + (h - rTop - rBot)
-      + "a" + rBot + "," + rBot + " 0 0 1 " + (-rBot) + "," + rBot
-      + "h" + (-(w - 2 * rBot))
-      + "a" + rBot + "," + rBot + " 0 0 1 " + (-rBot) + "," + (-rBot)
-      + "v" + (-(h - rTop - rBot))
-      + "a" + rTop + "," + rTop + " 0 0 1 " + rTop + "," + (-rTop) + "z";
+  function xTick(P, cx, text){
+    return '<text x="' + cx + '" y="' + (P.y + P.h + 18) + '" text-anchor="end" fill="' + P.C.fg2
+      + '" font-size="' + P.F.xSize + '"' + (P.F.xItalic ? ' font-style="italic"' : "")
+      + (P.F.xBold ? ' font-weight="700"' : "")
+      + ' transform="rotate(-35 ' + cx + ' ' + (P.y + P.h + 18) + ')">' + esc(text) + '</text>';
   }
 
-  function shortNum(v){
-    if(v >= 1e6) return (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + "M";
-    if(v >= 1e3) return (v / 1e3).toFixed(v >= 1e4 ? 0 : 1) + "k";
-    return String(Math.round(v));
+  function legendBox(P, items){
+    var out = [], ly = P.y + 2;
+    items.forEach(function(it){
+      out.push('<rect x="' + (P.x + P.w + 22) + '" y="' + ly + '" width="11" height="11" rx="2.5" fill="'
+        + it.c + '"/>');
+      var nm = it.n.length > 26 ? it.n.slice(0, 25) + "…" : it.n;
+      out.push('<text x="' + (P.x + P.w + 39) + '" y="' + (ly + 10) + '" fill="' + P.C.fg
+        + '" font-size="' + P.F.legendSize + '">' + esc(nm) + '</text>');
+      ly += 18;
+    });
+    return {html:out.join(""), y:ly};
   }
 
-  /* The table view. Not a nicety: three of the light-mode palette slots sit
-     below 3:1 against the surface, and the rule for that is relief — a reader
-     who cannot separate two fills must have somewhere to read the numbers. */
-  function chartTable(){
-    var S = series(), ord = sampleOrderIdx();
-    var pct = CHART.font.chartType === "bar100";
+  function drawStack(P){
+    var S = series(), SH = CHART.shape, ord = orderedIdx(SH.samples), F = P.F;
+    var pct = F.chartType === "bar100";
     var totals = ord.map(function(si){
-      return S.reduce(function(a, s){ return a + (s.values[si] || 0); }, 0); });
-    return '<div class="tblwrap"><table class="dtab"><thead><tr><th>Taxon</th>'
-      + ord.map(function(si){ return '<th style="text-align:right">'
-          + esc(labelOf(CHART.samples[si])) + '</th>'; }).join("")
+      return S.reduce(function(a,s){ return a + (s.values[si]||0); }, 0); });
+    var yMax = pct ? 100 : niceMax(Math.max.apply(null, totals.concat([1])));
+    var out = [yAxis(P, yMax, pct ? "Relative abundance (%)" : "Reads",
+                     pct ? function(v){ return v.toFixed(0); } : null)];
+    var n = ord.length || 1, slot = P.w / n, bw = Math.min(76, slot * 0.62), GAP = 2;
+    ord.forEach(function(si, k){
+      var x = P.x + slot * k + (slot - bw) / 2, total = totals[k] || 0, acc = 0, drawn = [];
+      S.forEach(function(s, i){
+        var v = s.values[si] || 0; if(v <= 0) return;
+        var frac = total > 0 ? v / total : 0;
+        var h = (pct ? frac * 100 : v) / yMax * P.h;
+        drawn.push({s:s, i:i, v:v, frac:frac, h:h, y0:acc}); acc += h;
+      });
+      drawn.forEach(function(d, j){
+        var yTop = P.y + P.h - d.y0 - d.h;
+        var h = Math.max(0, d.h - (j < drawn.length - 1 ? GAP : 0));
+        if(h <= 0) return;
+        var top = j === drawn.length - 1, bot = j === 0;
+        out.push('<path d="' + roundRect(x, yTop, bw, h, top ? 4 : 0, bot ? 4 : 0)
+          + '" fill="' + colourOf(d.s, d.i) + '" class="seg"><title>' + esc(d.s.name) + ' · '
+          + esc(labelOf(SH.samples[si])) + '\n' + nfmt(d.v) + ' reads · '
+          + (d.frac*100).toFixed(1) + '%</title></path>');
+      });
+      out.push(xTick(P, x + bw/2, labelOf(SH.samples[si])));
+    });
+    var L = legendBox(P, S.map(function(s,i){ return {n:s.name, c:colourOf(s,i)}; }));
+    out.push(L.html);
+    if(S.length && S[S.length-1].grouped)
+      out.push('<text x="' + (P.x + P.w + 22) + '" y="' + (L.y + 10) + '" fill="' + P.C.fg3
+        + '" font-size="' + Math.max(9, P.F.legendSize - 1) + '">'
+        + esc(S[S.length-1].members + " more" + (S[S.length-1].hasNA ? ", plus unassigned" : ""))
+        + '</text>');
+    return out.join("");
+  }
+
+  function drawTaxHeat(P){
+    var S = series().filter(function(s){ return !s.grouped; });
+    var SH = CHART.shape, ord = orderedIdx(SH.samples);
+    if(!S.length) return "";
+    /* Row-normalised: each taxon against its own maximum, which is what makes
+       a low-abundance taxon's pattern across samples visible at all. Said on
+       the axis so nobody reads the colours as comparable between rows. */
+    var out = [], cw = P.w / (ord.length || 1), ch = P.h / S.length;
+    S.forEach(function(s, ri){
+      var mx = Math.max.apply(null, ord.map(function(si){ return s.values[si]||0; }).concat([1]));
+      ord.forEach(function(si, ci){
+        var v = s.values[si] || 0, t = v / mx;
+        var col = rampColour(P.F.colorscale, t);
+        out.push('<rect x="' + (P.x + ci*cw + 1).toFixed(1) + '" y="' + (P.y + ri*ch + 1).toFixed(1)
+          + '" width="' + Math.max(0, cw-2).toFixed(1) + '" height="' + Math.max(0, ch-2).toFixed(1)
+          + '" rx="2" fill="' + col + '" class="seg"><title>' + esc(s.name) + ' · '
+          + esc(labelOf(SH.samples[si])) + '\n' + nfmt(v) + ' reads · '
+          + (t*100).toFixed(0) + '% of this taxon’s max</title></rect>');
+      });
+      out.push('<text x="' + (P.x + P.w + 10) + '" y="' + (P.y + ri*ch + ch/2 + 4) + '" fill="'
+        + P.C.fg + '" font-size="' + Math.min(P.F.legendSize, Math.max(7, ch - 3)) + '">'
+        + esc(s.name.length > 22 ? s.name.slice(0,21) + "…" : s.name) + '</text>');
+    });
+    ord.forEach(function(si, ci){ out.push(xTick(P, P.x + ci*cw + cw/2, labelOf(SH.samples[si]))); });
+    out.push(rampLegend(P, "row max", 0, 1));
+    return out.join("");
+  }
+
+  function drawMatrix(P){
+    var SH = CHART.shape, ord = orderedIdx(SH.names);
+    var flat = [];
+    SH.m.forEach(function(r){ r.forEach(function(v){ if(isFinite(v)) flat.push(v); }); });
+    var lo = Math.min.apply(null, flat), hi = Math.max.apply(null, flat);
+    if(!isFinite(lo)) { lo = 0; hi = 1; }
+    var out = [], cw = P.w / (ord.length||1), ch = P.h / (ord.length||1);
+    ord.forEach(function(ri, i){
+      ord.forEach(function(ci, j){
+        var v = (SH.m[ri] || [])[ci];
+        var t = hi > lo ? (v - lo) / (hi - lo) : 0;
+        var col = rampColour(P.F.colorscale, t);
+        out.push('<rect x="' + (P.x + j*cw + 1).toFixed(1) + '" y="' + (P.y + i*ch + 1).toFixed(1)
+          + '" width="' + Math.max(0,cw-2).toFixed(1) + '" height="' + Math.max(0,ch-2).toFixed(1)
+          + '" rx="2" fill="' + col + '" class="seg"><title>' + esc(labelOf(SH.names[ri])) + ' ↔ '
+          + esc(labelOf(SH.names[ci])) + '\n' + (isFinite(v) ? v.toFixed(3) : "—") + '</title></rect>');
+        if(cw > 54 && ch > 22)
+          out.push('<text x="' + (P.x + j*cw + cw/2) + '" y="' + (P.y + i*ch + ch/2 + 4)
+            + '" text-anchor="middle" fill="' + onColour(col) + '" font-size="'
+            + Math.min(11, P.F.axisSize) + '">' + (isFinite(v) ? v.toFixed(2) : "—") + '</text>');
+      });
+      out.push('<text x="' + (P.x - 10) + '" y="' + (P.y + i*ch + ch/2 + 4) + '" text-anchor="end" fill="'
+        + P.C.fg2 + '" font-size="' + P.F.axisSize + '">' + esc(labelOf(SH.names[ri])) + '</text>');
+      out.push(xTick(P, P.x + i*cw + cw/2, labelOf(SH.names[ri])));
+    });
+    out.push(rampLegend(P, "", lo, hi));
+    return out.join("");
+  }
+
+  function rampLegend(P, note, lo, hi){
+    var x = P.x + P.w + (CHART.tab.kind === "taxheat" ? 96 : 14), y = P.y, h = Math.min(160, P.h);
+    var out = ['<defs><linearGradient id="rmp" x1="0" y1="1" x2="0" y2="0">'];
+    (SCALES[P.F.colorscale] || SCALES.Viridis).forEach(function(c, i, a){
+      out.push('<stop offset="' + (i/(a.length-1)*100).toFixed(0) + '%" stop-color="' + c + '"/>');
+    });
+    out.push('</linearGradient></defs>');
+    out.push('<rect x="' + x + '" y="' + y + '" width="12" height="' + h + '" rx="2" fill="url(#rmp)"/>');
+    out.push('<text x="' + (x + 17) + '" y="' + (y + 9) + '" fill="' + P.C.fg2 + '" font-size="'
+      + Math.max(9, P.F.legendSize - 1) + '">' + esc(fmtNum(hi)) + '</text>');
+    out.push('<text x="' + (x + 17) + '" y="' + (y + h) + '" fill="' + P.C.fg2 + '" font-size="'
+      + Math.max(9, P.F.legendSize - 1) + '">' + esc(fmtNum(lo)) + '</text>');
+    if(note) out.push('<text x="' + x + '" y="' + (y + h + 18) + '" fill="' + P.C.fg3
+      + '" font-size="' + Math.max(9, P.F.legendSize - 1) + '">' + esc(note) + '</text>');
+    return out.join("");
+  }
+  function fmtNum(v){ return Math.abs(v) >= 1000 ? shortNum(v) : (Math.round(v*100)/100).toString(); }
+
+  function drawBars(P){
+    var SH = CHART.shape, F = P.F;
+    var ci = CHART.tab.metric ? SH.cols.map(function(c){ return c.toLowerCase(); })
+                 .indexOf(CHART.tab.metric.toLowerCase()) : 0;
+    if(ci === -1) ci = 0;
+    var ord = orderedIdx(SH.labels);
+    var vals = ord.map(function(i){ return (SH.vals[i]||[])[ci] || 0; });
+    var yMax = niceMax(Math.max.apply(null, vals.concat([1])));
+    var out = [yAxis(P, yMax, SH.cols[ci] || "Value")];
+    var n = ord.length||1, slot = P.w/n, bw = Math.min(84, slot*0.56);
+    /* One series, so no legend box — the axis label names it. Colour by entity
+       so a sample keeps its hue across every alpha tab. */
+    ord.forEach(function(si, k){
+      var v = vals[k], h = v / yMax * P.h, x = P.x + slot*k + (slot-bw)/2;
+      var nm = SH.labels[si];
+      var col = CHART.colors[nm] || seriesPalette()[si % seriesPalette().length];
+      out.push('<path d="' + roundRect(x, P.y + P.h - h, bw, h, 4, 0) + '" fill="' + col
+        + '" class="seg"><title>' + esc(labelOf(nm)) + '\n' + esc(SH.cols[ci]) + ': '
+        + fmtNum(v) + '</title></path>');
+      out.push('<text x="' + (x + bw/2) + '" y="' + (P.y + P.h - h - 7) + '" text-anchor="middle" fill="'
+        + P.C.fg2 + '" font-size="' + Math.max(9, P.F.axisSize - 1) + '">' + esc(fmtNum(v)) + '</text>');
+      out.push(xTick(P, x + bw/2, labelOf(nm)));
+    });
+    return out.join("");
+  }
+
+  function drawScree(P){
+    var SH = CHART.shape;
+    var vals = SH.vals.map(function(v){ return v[0] || 0; });
+    var yMax = niceMax(Math.max.apply(null, vals.concat([1])));
+    var out = [yAxis(P, yMax, SH.cols[0] || "Variance explained")];
+    var n = vals.length||1, slot = P.w/n, bw = Math.min(54, slot*0.6);
+    vals.forEach(function(v, k){
+      var h = v / yMax * P.h, x = P.x + slot*k + (slot-bw)/2;
+      out.push('<path d="' + roundRect(x, P.y + P.h - h, bw, h, 4, 0) + '" fill="'
+        + seriesPalette()[0] + '" class="seg"><title>' + esc(SH.labels[k]) + '\n'
+        + fmtNum(v) + '</title></path>');
+      out.push(xTick(P, x + bw/2, SH.labels[k]));
+    });
+    return out.join("");
+  }
+
+  function drawGrouped(P){
+    var SH = CHART.shape, ord = orderedIdx(SH.labels);
+    var mx = 0;
+    ord.forEach(function(i){ (SH.vals[i]||[]).forEach(function(v){ if(v > mx) mx = v; }); });
+    var yMax = niceMax(mx || 1);
+    var out = [yAxis(P, yMax, "Reads")];
+    var n = ord.length||1, slot = P.w/n, inner = Math.min(78, slot*0.74);
+    var bw = Math.max(2, (inner - 2*(SH.cols.length-1)) / SH.cols.length);
+    ord.forEach(function(si, k){
+      var x0 = P.x + slot*k + (slot-inner)/2;
+      SH.cols.forEach(function(c, ci){
+        var v = (SH.vals[si]||[])[ci] || 0, h = v / yMax * P.h;
+        var x = x0 + ci*(bw+2);
+        out.push('<path d="' + roundRect(x, P.y + P.h - h, bw, h, 3, 0) + '" fill="'
+          + (CHART.colors[c] || seriesPalette()[ci % seriesPalette().length])
+          + '" class="seg"><title>' + esc(labelOf(SH.labels[si])) + ' · ' + esc(c) + '\n'
+          + nfmt(v) + '</title></path>');
+      });
+      out.push(xTick(P, x0 + inner/2, labelOf(SH.labels[si])));
+    });
+    out.push(legendBox(P, SH.cols.map(function(c, i){
+      return {n:c, c:CHART.colors[c] || seriesPalette()[i % seriesPalette().length]}; })).html);
+    return out.join("");
+  }
+
+  /* Small multiples: the right answer for several measures on different
+     scales, and the reason this app never needs a second y axis. */
+  function drawMulti(P){
+    var SH = CHART.shape, ord = orderedIdx(SH.labels);
+    var cols = SH.cols.slice(0, 6);
+    var cw = P.w / cols.length, out = [];
+    cols.forEach(function(c, ci){
+      var vals = ord.map(function(i){ return (SH.vals[i]||[])[ci] || 0; });
+      var yMax = niceMax(Math.max.apply(null, vals.concat([1])));
+      var x0 = P.x + ci*cw + 8, w = cw - 16;
+      out.push('<text x="' + (x0 + w/2) + '" y="' + (P.y - 6) + '" text-anchor="middle" fill="'
+        + P.C.fg + '" font-size="' + P.F.legendSize + '" font-weight="600">' + esc(c) + '</text>');
+      out.push('<line x1="' + x0 + '" y1="' + (P.y + P.h) + '" x2="' + (x0 + w) + '" y2="'
+        + (P.y + P.h) + '" stroke="' + P.C.line + '" stroke-width="1"/>');
+      var slot = w / (ord.length||1), bw = Math.min(26, slot*0.6);
+      ord.forEach(function(si, k){
+        var v = vals[k], h = v / yMax * P.h, x = x0 + slot*k + (slot-bw)/2;
+        var nm = SH.labels[si];
+        out.push('<path d="' + roundRect(x, P.y + P.h - h, bw, h, 3, 0) + '" fill="'
+          + (CHART.colors[nm] || seriesPalette()[si % seriesPalette().length])
+          + '" class="seg"><title>' + esc(labelOf(nm)) + ' · ' + esc(c) + '\n'
+          + fmtNum(v) + '</title></path>');
+      });
+    });
+    out.push(legendBox(P, ord.map(function(si){
+      return {n:labelOf(SH.labels[si]),
+              c:CHART.colors[SH.labels[si]] || seriesPalette()[si % seriesPalette().length]}; })).html);
+    return out.join("");
+  }
+
+  function drawScatter(P){
+    var SH = CHART.shape, pts = SH.pts;
+    if(!pts.length) return "";
+    var xs = pts.map(function(p){ return p.x; }), ys = pts.map(function(p){ return p.y; });
+    var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    var padx = (x1-x0||1)*0.12, pady = (y1-y0||1)*0.12;
+    x0 -= padx; x1 += padx; y0 -= pady; y1 += pady;
+    var sx = function(v){ return P.x + (v - x0)/(x1-x0) * P.w; };
+    var sy = function(v){ return P.y + P.h - (v - y0)/(y1-y0) * P.h; };
+    var out = [];
+    if(P.F.showGrid)
+      for(var t = 0; t <= 4; t++){
+        var gy = P.y + P.h*t/4, gx = P.x + P.w*t/4;
+        out.push('<line x1="' + P.x + '" y1="' + gy + '" x2="' + (P.x+P.w) + '" y2="' + gy
+          + '" stroke="' + P.C.line + '" stroke-width="1"/>');
+        out.push('<line x1="' + gx + '" y1="' + P.y + '" x2="' + gx + '" y2="' + (P.y+P.h)
+          + '" stroke="' + P.C.line + '" stroke-width="1"/>');
+      }
+    /* zero lines, which is where an ordination is read from */
+    if(x0 < 0 && x1 > 0) out.push('<line x1="' + sx(0) + '" y1="' + P.y + '" x2="' + sx(0)
+      + '" y2="' + (P.y+P.h) + '" stroke="' + P.C.fg3 + '" stroke-width="1" stroke-dasharray="3 3"/>');
+    if(y0 < 0 && y1 > 0) out.push('<line x1="' + P.x + '" y1="' + sy(0) + '" x2="' + (P.x+P.w)
+      + '" y2="' + sy(0) + '" stroke="' + P.C.fg3 + '" stroke-width="1" stroke-dasharray="3 3"/>');
+    pts.forEach(function(p, i){
+      var col = CHART.colors[p.name] || seriesPalette()[i % seriesPalette().length];
+      /* 2px surface ring so overlapping points stay countable */
+      out.push('<circle cx="' + sx(p.x).toFixed(1) + '" cy="' + sy(p.y).toFixed(1)
+        + '" r="7" fill="' + col + '" stroke="' + P.C.surface + '" stroke-width="2" class="seg">'
+        + '<title>' + esc(labelOf(p.name)) + '\n' + esc(SH.xLab) + ' ' + p.x.toFixed(3)
+        + '\n' + esc(SH.yLab) + ' ' + p.y.toFixed(3) + '</title></circle>');
+      out.push('<text x="' + (sx(p.x)+11).toFixed(1) + '" y="' + (sy(p.y)+4).toFixed(1) + '" fill="'
+        + P.C.fg + '" font-size="' + P.F.legendSize + '">' + esc(labelOf(p.name)) + '</text>');
+    });
+    out.push('<line x1="' + P.x + '" y1="' + (P.y+P.h) + '" x2="' + (P.x+P.w) + '" y2="' + (P.y+P.h)
+      + '" stroke="' + P.C.line + '" stroke-width="1"/>');
+    out.push('<text x="' + (P.x+P.w/2) + '" y="' + (P.y+P.h+40) + '" text-anchor="middle" fill="'
+      + P.C.fg2 + '" font-size="' + P.F.axisSize + '">' + esc(SH.xLab) + '</text>');
+    out.push('<text transform="translate(16,' + (P.y+P.h/2) + ') rotate(-90)" text-anchor="middle" fill="'
+      + P.C.fg2 + '" font-size="' + P.F.axisSize + '">' + esc(SH.yLab) + '</text>');
+    return out.join("");
+  }
+
+  function drawLines(P){
+    var SH = CHART.shape;
+    var sers = SH.series.slice(0, 24);
+    var mx = 0;
+    SH.ys.forEach(function(row){ sers.forEach(function(_, i){ if(row[i] > mx) mx = row[i]; }); });
+    var yMax = niceMax(mx || 1);
+    var xmin = Math.min.apply(null, SH.xs), xmax = Math.max.apply(null, SH.xs);
+    var sx = function(v){ return P.x + (xmax > xmin ? (v-xmin)/(xmax-xmin) : 0) * P.w; };
+    var sy = function(v){ return P.y + P.h - v/yMax * P.h; };
+    var out = [yAxis(P, yMax, SH.series.length === 1 ? SH.series[0] : "Value")];
+    sers.forEach(function(s, i){
+      var col = CHART.colors[s] || seriesPalette()[i % seriesPalette().length];
+      var d = SH.xs.map(function(x, k){
+        return (k ? "L" : "M") + sx(x).toFixed(1) + "," + sy(SH.ys[k][i] || 0).toFixed(1); }).join("");
+      out.push('<path d="' + d + '" fill="none" stroke="' + col
+        + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" class="seg">'
+        + '<title>' + esc(s) + '</title></path>');
+    });
+    for(var t = 0; t <= 4; t++){
+      var xv = xmin + (xmax-xmin)*t/4;
+      out.push(xTick(P, sx(xv), shortNum(xv)));
+    }
+    out.push('<text x="' + (P.x+P.w/2) + '" y="' + (P.y+P.h+48) + '" text-anchor="middle" fill="'
+      + P.C.fg2 + '" font-size="' + P.F.axisSize + '">' + esc(SH.xLab || "") + '</text>');
+    if(sers.length > 1)
+      out.push(legendBox(P, sers.slice(0, 12).map(function(s, i){
+        return {n:s, c:CHART.colors[s] || seriesPalette()[i % seriesPalette().length]}; })).html);
+    return out.join("");
+  }
+
+  function drawHist(P){
+    var SH = CHART.shape;
+    var vals = SH.ys.map(function(r){ return r[0] || 0; });
+    var yMax = niceMax(Math.max.apply(null, vals.concat([1])));
+    var out = [yAxis(P, yMax, SH.series[0] || "Count")];
+    var n = vals.length||1, bw = Math.max(1, P.w/n - 1);
+    vals.forEach(function(v, k){
+      var h = v/yMax * P.h, x = P.x + (P.w/n)*k;
+      out.push('<path d="' + roundRect(x, P.y + P.h - h, bw, h, Math.min(3, bw/2), 0) + '" fill="'
+        + seriesPalette()[0] + '" class="seg"><title>' + esc(SH.xLab) + ' ' + SH.xs[k]
+        + '\n' + nfmt(v) + '</title></path>');
+    });
+    for(var t = 0; t <= 4; t++){
+      var k = Math.round((n-1)*t/4);
+      out.push(xTick(P, P.x + (P.w/n)*k + bw/2, String(SH.xs[k])));
+    }
+    out.push('<text x="' + (P.x+P.w/2) + '" y="' + (P.y+P.h+48) + '" text-anchor="middle" fill="'
+      + P.C.fg2 + '" font-size="' + P.F.axisSize + '">' + esc(SH.xLab || "") + '</text>');
+    return out.join("");
+  }
+
+  function drawBox(P){
+    var SH = CHART.shape, ord = orderedIdx(SH.labels);
+    var all = [];
+    ord.forEach(function(i){ (SH.vals[i]||[]).forEach(function(v){ all.push(v); }); });
+    var yMax = niceMax(Math.max.apply(null, all.concat([1])));
+    var out = [yAxis(P, yMax, "Value")];
+    var n = ord.length||1, slot = P.w/n, bw = Math.min(56, slot*0.42);
+    ord.forEach(function(si, k){
+      var v = (SH.vals[si]||[]).filter(function(x){ return isFinite(x); }).sort(function(a,b){ return a-b; });
+      if(!v.length) return;
+      function q(p){ var i = (v.length-1)*p, lo = Math.floor(i), hi = Math.ceil(i);
+                     return v[lo] + (v[hi]-v[lo])*(i-lo); }
+      var q1 = q(0.25), med = q(0.5), q3 = q(0.75), lo = v[0], hi = v[v.length-1];
+      var cx = P.x + slot*k + slot/2;
+      var sy = function(y){ return P.y + P.h - y/yMax*P.h; };
+      var col = CHART.colors[SH.labels[si]] || seriesPalette()[si % seriesPalette().length];
+      out.push('<line x1="' + cx + '" y1="' + sy(hi) + '" x2="' + cx + '" y2="' + sy(lo)
+        + '" stroke="' + P.C.fg3 + '" stroke-width="1.5"/>');
+      out.push('<rect x="' + (cx-bw/2) + '" y="' + sy(q3) + '" width="' + bw + '" height="'
+        + Math.max(1, sy(q1)-sy(q3)) + '" rx="3" fill="' + col + '" opacity=".85" class="seg">'
+        + '<title>' + esc(labelOf(SH.labels[si])) + '\nmedian ' + fmtNum(med)
+        + '\nIQR ' + fmtNum(q1) + '–' + fmtNum(q3) + '\nrange ' + fmtNum(lo) + '–' + fmtNum(hi)
+        + '</title></rect>');
+      out.push('<line x1="' + (cx-bw/2) + '" y1="' + sy(med) + '" x2="' + (cx+bw/2) + '" y2="'
+        + sy(med) + '" stroke="' + P.C.surface + '" stroke-width="2"/>');
+      out.push(xTick(P, cx, labelOf(SH.labels[si])));
+    });
+    return out.join("");
+  }
+
+  /* UPGMA, computed here from the distance matrix rather than read from a
+     picture. Average linkage, same as the pipeline's hclust(method="average"). */
+  function drawDendro(P){
+    var SH = CHART.shape, names = SH.names.slice();
+    var n = names.length;
+    if(n < 2) return '<text x="' + P.x + '" y="' + (P.y+20) + '" fill="' + P.C.fg2
+      + '">A dendrogram needs at least two samples.</text>';
+    var clusters = names.map(function(nm, i){ return {leaves:[i], h:0, x:null, kids:null}; });
+    var D = SH.m.map(function(r){ return r.slice(); });
+    function dist(a, b){
+      var s = 0, c = 0;
+      a.leaves.forEach(function(i){ b.leaves.forEach(function(j){
+        var v = (D[i]||[])[j]; if(isFinite(v)){ s += v; c++; } }); });
+      return c ? s/c : 0;
+    }
+    while(clusters.length > 1){
+      var bi = 0, bj = 1, bd = Infinity;
+      for(var i = 0; i < clusters.length; i++)
+        for(var j = i+1; j < clusters.length; j++){
+          var d = dist(clusters[i], clusters[j]);
+          if(d < bd){ bd = d; bi = i; bj = j; }
+        }
+      var merged = {leaves:clusters[bi].leaves.concat(clusters[bj].leaves), h:bd,
+                    kids:[clusters[bi], clusters[bj]]};
+      clusters = clusters.filter(function(_, k){ return k !== bi && k !== bj; });
+      clusters.push(merged);
+    }
+    var root = clusters[0];
+    var maxH = root.h || 1;
+    var leafOrder = [];
+    (function walk(c){ if(!c.kids) leafOrder.push(c.leaves[0]); else c.kids.forEach(walk); })(root);
+    var step = P.h / (leafOrder.length || 1);
+    var out = [];
+    var sx = function(h){ return P.x + P.w - (h / maxH) * (P.w - 12); };
+    (function place(c){
+      if(!c.kids){ c.y = P.y + step * (leafOrder.indexOf(c.leaves[0]) + 0.5); c.x = P.x + P.w; return c.y; }
+      var ys = c.kids.map(place);
+      c.y = (ys[0] + ys[1]) / 2; c.x = sx(c.h);
+      out.push('<path d="M' + c.kids[0].x.toFixed(1) + ',' + ys[0].toFixed(1)
+        + 'H' + c.x.toFixed(1) + 'V' + ys[1].toFixed(1) + 'H' + c.kids[1].x.toFixed(1)
+        + '" fill="none" stroke="' + P.C.fg2 + '" stroke-width="1.6" class="seg">'
+        + '<title>joins at ' + c.h.toFixed(3) + '</title></path>');
+      return c.y;
+    })(root);
+    leafOrder.forEach(function(li, k){
+      var y = P.y + step*(k + 0.5);
+      var col = CHART.colors[names[li]] || seriesPalette()[li % seriesPalette().length];
+      out.push('<circle cx="' + (P.x + P.w) + '" cy="' + y.toFixed(1) + '" r="4" fill="' + col + '"/>');
+      out.push('<text x="' + (P.x + P.w + 10) + '" y="' + (y + 4).toFixed(1) + '" fill="' + P.C.fg
+        + '" font-size="' + P.F.legendSize + '">' + esc(labelOf(names[li])) + '</text>');
+    });
+    out.push('<text x="' + P.x + '" y="' + (P.y + P.h + 24) + '" fill="' + P.C.fg3
+      + '" font-size="' + P.F.axisSize + '">average linkage · height = distance, '
+      + maxH.toFixed(2) + ' at the root</text>');
+    return out.join("");
+  }
+
+  function niceMax(v){
+    if(!isFinite(v) || v <= 0) return 1;
+    var mag = Math.pow(10, Math.floor(Math.log(v)/Math.LN10));
+    return Math.ceil(v / (mag/2)) * (mag/2);
+  }
+  function roundRect(x, y, w, h, rT, rB){
+    rT = Math.min(rT, h/2, w/2); rB = Math.min(rB, h/2, w/2);
+    return "M" + (x+rT) + "," + y + "h" + (w-2*rT) + "a" + rT + "," + rT + " 0 0 1 " + rT + "," + rT
+      + "v" + (h-rT-rB) + "a" + rB + "," + rB + " 0 0 1 " + (-rB) + "," + rB
+      + "h" + (-(w-2*rB)) + "a" + rB + "," + rB + " 0 0 1 " + (-rB) + "," + (-rB)
+      + "v" + (-(h-rT-rB)) + "a" + rT + "," + rT + " 0 0 1 " + rT + "," + (-rT) + "z";
+  }
+  function shortNum(v){
+    if(Math.abs(v) >= 1e6) return (v/1e6).toFixed(Math.abs(v) >= 1e7 ? 0 : 1) + "M";
+    if(Math.abs(v) >= 1e3) return (v/1e3).toFixed(Math.abs(v) >= 1e4 ? 0 : 1) + "k";
+    return String(Math.round(v*100)/100);
+  }
+
+  /* The table view. Not a nicety: three light-mode palette slots sit below 3:1
+     against the surface, and the rule for that is relief — a reader who cannot
+     separate two fills must be able to read the numbers somewhere. */
+  function chartTable(){
+    var k = CHART.tab.kind, S = CHART.shape;
+    if(k === "stack" || k === "taxheat"){
+      var ser = series(), ord = orderedIdx(S.samples);
+      var pct = CHART.font.chartType === "bar100" && k === "stack";
+      var tot = ord.map(function(si){
+        return ser.reduce(function(a,s){ return a + (s.values[si]||0); }, 0); });
+      return tbl(["Taxon"].concat(ord.map(function(si){ return labelOf(S.samples[si]); })),
+        ser.map(function(s, i){
+          return [swatch(colourOf(s,i)) + esc(s.name)].concat(ord.map(function(si, c){
+            var v = s.values[si] || 0;
+            return pct && tot[c] > 0 ? (v/tot[c]*100).toFixed(1) + "%" : nfmt(v); })); }));
+    }
+    if(k === "matrix" || k === "dendro"){
+      var o2 = orderedIdx(S.names);
+      return tbl([""].concat(o2.map(function(i){ return labelOf(S.names[i]); })),
+        o2.map(function(ri){
+          return [esc(labelOf(S.names[ri]))].concat(o2.map(function(ci){
+            var v = (S.m[ri]||[])[ci];
+            return isFinite(v) ? v.toFixed(3) : "—"; })); }));
+    }
+    if(k === "scatter"){
+      return tbl(["Sample", S.xLab, S.yLab],
+        S.pts.map(function(p, i){
+          return [swatch(CHART.colors[p.name] || seriesPalette()[i % seriesPalette().length])
+                  + esc(labelOf(p.name)), p.x.toFixed(4), p.y.toFixed(4)]; }));
+    }
+    if(k === "lines" || k === "hist"){
+      return tbl([S.xLab].concat(S.series),
+        S.xs.map(function(x, k2){
+          return [String(x)].concat(S.ys[k2].map(function(v){ return fmtNum(v); })); }));
+    }
+    var o3 = orderedIdx(S.labels);
+    return tbl(["Sample"].concat(S.cols),
+      o3.map(function(si){
+        return [swatch(CHART.colors[S.labels[si]] || seriesPalette()[si % seriesPalette().length])
+                + esc(labelOf(S.labels[si]))]
+          .concat((S.vals[si]||[]).map(function(v){ return fmtNum(v); })); }));
+  }
+  function swatch(c){
+    return '<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'
+      + c + ';margin-right:7px"></span>';
+  }
+  function tbl(head, rows){
+    return '<div class="tblwrap"><table class="dtab"><thead><tr>'
+      + head.map(function(h, i){
+          return '<th' + (i ? ' style="text-align:right"' : "") + '>' + esc(h) + '</th>'; }).join("")
       + '</tr></thead><tbody>'
-      + S.map(function(s, i){
-          return '<tr><td><span style="display:inline-block;width:9px;height:9px;border-radius:2px;'
-            + 'background:' + colourOf(s, i) + ';margin-right:7px"></span>' + esc(s.name) + '</td>'
-            + ord.map(function(si, k){
-                var v = s.values[si] || 0;
-                var show = pct && totals[k] > 0 ? (v / totals[k] * 100).toFixed(1) + "%" : nfmt(v);
-                return '<td class="n">' + show + '</td>'; }).join("") + '</tr>'; }).join("")
+      + rows.map(function(r){
+          return '<tr>' + r.map(function(c, i){
+            return '<td' + (i ? ' class="n"' : "") + '>' + c + '</td>'; }).join("") + '</tr>'; }).join("")
       + '</tbody></table></div>';
   }
 
-  /* ── the editor ──────────────────────────────────────────────────────── */
+  /* ── the editor shell ────────────────────────────────────────────────── */
   function paintCharts(){
     var body = document.getElementById("cBody");
     if(!body) return;
     var sub = document.getElementById("cSub");
+    var T = CHART.tab, F = CHART.font;
 
-    if(CHART.err){
-      body.innerHTML = '<div class="panel"><div class="errbox" style="border-radius:var(--r)">'
-        + '<b>Could not read ' + esc(CHART.rank) + '.</b>\n' + esc(CHART.err) + '</div></div>';
-      if(sub) sub.textContent = "";
-      return;
+    var tabsHtml = TAB_GROUPS.map(function(g){
+      var items = CHART.tabs.filter(function(t){ return t.g === g; });
+      if(!items.length) return "";
+      return '<div class="tabrow"><span class="tabg">' + esc(g) + '</span>'
+        + items.map(function(t){
+            return '<button class="tabb' + (T && t.id === T.id ? " on" : "") + '" data-tab="'
+              + esc(t.id) + '">' + esc(t.label) + '</button>'; }).join("")
+        + '</div>';
+    }).join("");
+
+    if(sub){
+      if(CHART.loading) sub.textContent = "Reading " + (T ? T.f : "") + "…";
+      else if(CHART.err) sub.textContent = "";
+      else {
+        var bits = [];
+        if(CHART.shape.taxa) bits.push(CHART.shape.taxa.length + " taxa × "
+          + CHART.shape.samples.length + " samples, read as <b>" + esc(CHART.orientation) + "</b>");
+        else if(CHART.shape.labels) bits.push(CHART.shape.labels.length + " rows × "
+          + CHART.shape.cols.length + " columns");
+        else if(CHART.shape.pts) bits.push(CHART.shape.pts.length + " points");
+        else if(CHART.shape.names) bits.push(CHART.shape.names.length + " × "
+          + CHART.shape.names.length + " matrix");
+        else if(CHART.shape.xs) bits.push(CHART.shape.xs.length + " points × "
+          + CHART.shape.series.length + " series");
+        bits.push('from <span class="mono">' + esc(T.f) + '</span>');
+        sub.innerHTML = bits.join(" · ");
+      }
     }
 
-    var S = series();
-    if(sub) sub.innerHTML = esc(CHART.taxa.length) + ' taxa × ' + esc(CHART.samples.length)
-      + ' samples, read as <b>' + esc(CHART.orientation || "taxa in rows") + '</b>'
-      + ' · showing the top ' + (S.length - (S[S.length-1] && S[S.length-1].grouped ? 1 : 0));
+    var canvas = CHART.loading ? '<div class="skel">Loading ' + esc(T ? T.f : "") + '…</div>'
+      : CHART.err ? '<div class="errbox" style="border-radius:0"><b>Could not read '
+          + esc(T.f) + '.</b>\n' + esc(CHART.err) + '</div>'
+      : CHART.view === "chart" ? chartSVG({width:900, height:470}) : chartTable();
 
-    var F = CHART.font;
     body.innerHTML =
-        '<div class="rescols" style="grid-template-columns:minmax(0,1fr) 320px">'
+        '<div class="panel" style="margin-bottom:12px"><div class="tabbar">' + tabsHtml + '</div></div>'
+      + '<div class="rescols" style="grid-template-columns:minmax(0,1fr) 330px">'
         + '<div class="panel">'
           + '<div class="resbar">'
             + '<div class="segbtns" role="group" aria-label="View">'
               + '<button class="segb' + (CHART.view === "chart" ? " on" : "") + '" data-view="chart">Chart</button>'
               + '<button class="segb' + (CHART.view === "table" ? " on" : "") + '" data-view="table">Table</button>'
-            + '</div>'
-            + '<span class="sp"></span>'
-            + '<button class="btn" id="pngBtn">Download PNG</button>'
+            + '</div><span class="sp"></span>'
+            + '<button class="btn" id="pngBtn"' + (CHART.err ? " disabled" : "") + '>Download PNG</button>'
           + '</div>'
           + '<div id="canvasBox" style="padding:' + (CHART.view === "chart" ? "14px" : "0") + '">'
-            + (CHART.view === "chart" ? chartSVG({width:900, height:460}) : chartTable())
-          + '</div>'
+            + canvas + '</div>'
         + '</div>'
-
-        + '<div class="panel">'
-          + '<div class="sechdr"><h3>Customise</h3><span class="hint" id="savedHint">'
-            + (CHART.dirty ? "unsaved" : CHART.saved ? "saved" : "") + '</span></div>'
-          + '<div class="grid2" style="grid-template-columns:1fr;padding:14px;gap:13px">'
-            + '<div class="f"><label for="c_rank">Rank</label><select id="c_rank">'
-              + CHART.ranks.map(function(r){
-                  var nm = r.replace(/^taxonomy_/, "").replace(/\.csv$/, "");
-                  return '<option value="' + esc(r) + '"' + (r === CHART.rank ? " selected" : "")
-                    + '>' + esc(nm.charAt(0).toUpperCase() + nm.slice(1)) + '</option>'; }).join("")
-              + '</select></div>'
-            + '<div class="f"><label for="c_type">Chart</label><select id="c_type">'
-              + '<option value="bar100"' + (F.chartType === "bar100" ? " selected" : "") + '>Relative abundance (100%)</option>'
-              + '<option value="bar"' + (F.chartType === "bar" ? " selected" : "") + '>Read counts</option>'
-              + '</select></div>'
-            + '<div class="f"><label for="c_top">Taxa shown separately</label><select id="c_top">'
-              + [4,6,8,10,12,15,20].map(function(k){
-                  return '<option value="' + k + '"' + (k === F.topNTaxa ? " selected" : "")
-                    + '>Top ' + k + '</option>'; }).join("")
-              + '</select>'
-              + '<span class="note" id="topNote"></span></div>'
-            + '<div class="f"><label for="c_title">Title</label>'
-              + '<input type="text" id="c_title" value="' + esc(F.titleText) + '" placeholder="leave blank for no title"></div>'
-            + '<div class="grid2" style="padding:0;gap:10px">'
-              + '<div class="f"><label for="c_ts">Title size</label>'
-                + '<input type="text" id="c_ts" value="' + F.titleSize + '"></div>'
-              + '<div class="f"><label for="c_as">Axis size</label>'
-                + '<input type="text" id="c_as" value="' + F.axisSize + '"></div>'
-              + '<div class="f"><label for="c_ls">Legend size</label>'
-                + '<input type="text" id="c_ls" value="' + F.legendSize + '"></div>'
-              + '<div class="f"><label for="c_xs">Sample label size</label>'
-                + '<input type="text" id="c_xs" value="' + F.xSize + '"></div>'
-            + '</div>'
-            + '<div class="grid2" style="padding:0;gap:10px">'
-              + '<div class="f"><label for="c_grid">Grid lines</label><select id="c_grid">'
-                + '<option value="true"' + (F.showGrid ? " selected" : "") + '>on</option>'
-                + '<option value="false"' + (!F.showGrid ? " selected" : "") + '>off</option></select></div>'
-              + '<div class="f"><label for="c_xi">Sample labels</label><select id="c_xi">'
-                + '<option value="n"' + (!F.xItalic && !F.xBold ? " selected" : "") + '>plain</option>'
-                + '<option value="i"' + (F.xItalic ? " selected" : "") + '>italic</option>'
-                + '<option value="b"' + (F.xBold && !F.xItalic ? " selected" : "") + '>bold</option></select></div>'
-            + '</div>'
-          + '</div>'
-
-          + '<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Colours</h3>'
-            + '<span class="hint"><button class="lnk" id="resetCol">reset to default</button></span></div>'
-          + '<div class="swatches">'
-          + S.map(function(s, i){
-              return '<label class="sw"><input type="color" data-tax="' + esc(s.name) + '" value="'
-                + esc(toHex(colourOf(s, i))) + '">'
-                + '<span class="nm">' + esc(s.name) + '</span>'
-                + (s.grouped ? '<span class="gr">' + s.members + ' taxa</span>' : "")
-                + '</label>'; }).join("")
-          + '</div>'
-
-          + '<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Samples</h3>'
-            + '<span class="hint">rename and reorder</span></div>'
-          + '<div class="samps" id="samps">'
-          + sampleOrderIdx().map(function(si, pos){
-              return '<div class="samp" data-s="' + esc(CHART.samples[si]) + '">'
-                + '<div class="ar">'
-                  + '<button class="mv" data-dir="-1" data-pos="' + pos + '" aria-label="Move up"'
-                    + (pos === 0 ? " disabled" : "") + '>&#9650;</button>'
-                  + '<button class="mv" data-dir="1" data-pos="' + pos + '" aria-label="Move down"'
-                    + (pos === CHART.samples.length - 1 ? " disabled" : "") + '>&#9660;</button>'
-                + '</div>'
-                + '<input type="text" class="alias" data-s="' + esc(CHART.samples[si]) + '" value="'
-                  + esc(labelOf(CHART.samples[si])) + '">'
-                + '<span class="raw" title="name in the data">' + esc(CHART.samples[si]) + '</span>'
-                + '</div>'; }).join("")
-          + '</div>'
-        + '</div>'
+        + '<div class="panel">' + controlsHtml() + '</div>'
       + '</div>'
-
       + '<div class="runbar">'
         + '<span class="msg" id="saveMsg">Saved into the job folder as '
           + '<span class="mono">edit_charts/settings.json</span> — the same file the production '
@@ -1949,57 +2433,154 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     wireCharts();
   }
 
+  function controlsHtml(){
+    var T = CHART.tab, F = CHART.font;
+    var S = CHART.shape || {};
+    /* While a tab is loading there is no shape yet, so the per-series controls
+       have nothing to list. Show the ones that do not depend on the data rather
+       than guessing at the ones that do. */
+    var k = (T && CHART.shape) ? T.kind : "";
+    var ramped = k === "taxheat" || k === "matrix";
+    var out = ['<div class="sechdr"><h3>Customise</h3><span class="hint" id="savedHint">'
+      + (CHART.dirty ? "unsaved" : CHART.saved ? "saved" : "") + '</span></div>'];
+
+    out.push('<div class="grid2" style="grid-template-columns:1fr;padding:14px;gap:13px">');
+    if(k === "stack")
+      out.push('<div class="f"><label for="c_type">Chart</label><select id="c_type">'
+        + '<option value="bar100"' + (F.chartType === "bar100" ? " selected" : "") + '>Relative abundance (100%)</option>'
+        + '<option value="bar"' + (F.chartType === "bar" ? " selected" : "") + '>Read counts</option>'
+        + '</select></div>');
+    if(k === "stack" || k === "taxheat")
+      out.push('<div class="f"><label for="c_top">Taxa shown separately</label><select id="c_top">'
+        + [4,6,8,10,12,15,20,30].map(function(n){
+            return '<option value="' + n + '"' + (n === F.topNTaxa ? " selected" : "")
+              + '>Top ' + n + '</option>'; }).join("")
+        + '</select><span class="note" id="topNote"></span></div>');
+    if(ramped){
+      out.push('<div class="f"><label>Colour scale</label><div class="ramps">'
+        + Object.keys(SCALES).map(function(nm){
+            return '<button class="ramp' + (nm === F.colorscale ? " on" : "") + '" data-ramp="'
+              + esc(nm) + '" title="' + esc(nm + (SCALE_WARN[nm] ? " — " + SCALE_WARN[nm] : ""))
+              + '"><span style="background:linear-gradient(to right,' + SCALES[nm].join(",")
+              + ')"></span>' + esc(nm) + '</button>'; }).join("")
+        + '</div>'
+        + (SCALE_WARN[F.colorscale]
+            ? '<span class="note" style="color:var(--warn)"><b>' + esc(F.colorscale) + '</b> is '
+              + esc(SCALE_WARN[F.colorscale]) + '. It is here because the production console offers '
+              + 'it; Viridis says the same thing and survives colour-blind simulation.</span>'
+            : '<span class="note">Monotonic in lightness, so the order is readable in greyscale '
+              + 'and under colour-blind simulation.</span>')
+        + '</div>');
+    }
+    out.push('<div class="f"><label for="c_title">Title</label>'
+      + '<input type="text" id="c_title" value="' + esc(F.titleText) + '" placeholder="leave blank for no title"></div>');
+    out.push('<div class="grid2" style="padding:0;gap:10px">'
+      + '<div class="f"><label for="c_ts">Title size</label><input type="text" id="c_ts" value="' + F.titleSize + '"></div>'
+      + '<div class="f"><label for="c_as">Axis size</label><input type="text" id="c_as" value="' + F.axisSize + '"></div>'
+      + '<div class="f"><label for="c_ls">Legend size</label><input type="text" id="c_ls" value="' + F.legendSize + '"></div>'
+      + '<div class="f"><label for="c_xs">Sample label size</label><input type="text" id="c_xs" value="' + F.xSize + '"></div>'
+      + '</div>');
+    out.push('<div class="grid2" style="padding:0;gap:10px">'
+      + '<div class="f"><label for="c_grid">Grid lines</label><select id="c_grid">'
+        + '<option value="true"' + (F.showGrid ? " selected" : "") + '>on</option>'
+        + '<option value="false"' + (!F.showGrid ? " selected" : "") + '>off</option></select></div>'
+      + '<div class="f"><label for="c_xi">Sample labels</label><select id="c_xi">'
+        + '<option value="n"' + (!F.xItalic && !F.xBold ? " selected" : "") + '>plain</option>'
+        + '<option value="i"' + (F.xItalic ? " selected" : "") + '>italic</option>'
+        + '<option value="b"' + (F.xBold && !F.xItalic ? " selected" : "") + '>bold</option></select></div>'
+      + '</div>');
+    out.push('</div>');
+
+    /* colours: taxa on a stacked chart, samples everywhere else */
+    var items = [];
+    if(k === "stack") items = series().map(function(s, i){
+      return {name:s.name, c:colourOf(s, i), sub:s.grouped ? s.members + " taxa" : ""}; });
+    else if(k === "taxheat" || k === "matrix") items = [];
+    else {
+      var names = S.labels || S.names || (S.pts ? S.pts.map(function(p){ return p.name; }) : null)
+                  || (k === "grouped" ? S.cols : null) || S.series || [];
+      if(k === "grouped") names = S.cols || [];
+      items = names.slice(0, 24).map(function(nm, i){
+        return {name:nm, c:CHART.colors[nm] || seriesPalette()[i % seriesPalette().length], sub:""}; });
+    }
+    if(items.length){
+      out.push('<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Colours</h3>'
+        + '<span class="hint"><button class="lnk" id="resetCol">reset to default</button></span></div>'
+        + '<div class="swatches">'
+        + items.map(function(it){
+            return '<label class="sw"><input type="color" data-tax="' + esc(it.name) + '" value="'
+              + esc(toHex(it.c)) + '"><span class="nm">' + esc(it.name) + '</span>'
+              + (it.sub ? '<span class="gr">' + esc(it.sub) + '</span>' : "") + '</label>'; }).join("")
+        + '</div>');
+    }
+
+    /* samples: rename and reorder, wherever the chart has samples */
+    var sampleNames = S.samples || S.labels || S.names
+      || (S.pts ? S.pts.map(function(p){ return p.name; }) : null);
+    if(sampleNames && sampleNames.length && k !== "lines" && k !== "hist" && k !== "scree"){
+      var ord = orderedIdx(sampleNames);
+      out.push('<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Samples</h3>'
+        + '<span class="hint">rename and reorder</span></div><div class="samps" id="samps">'
+        + ord.map(function(si, pos){
+            return '<div class="samp">'
+              + '<div class="ar">'
+                + '<button class="mv" data-dir="-1" data-pos="' + pos + '" aria-label="Move up"'
+                  + (pos === 0 ? " disabled" : "") + '>&#9650;</button>'
+                + '<button class="mv" data-dir="1" data-pos="' + pos + '" aria-label="Move down"'
+                  + (pos === ord.length - 1 ? " disabled" : "") + '>&#9660;</button></div>'
+              + '<input type="text" class="alias" data-s="' + esc(sampleNames[si]) + '" value="'
+                + esc(labelOf(sampleNames[si])) + '">'
+              + '<span class="raw" title="name in the data">' + esc(sampleNames[si]) + '</span>'
+              + '</div>'; }).join("")
+        + '</div>');
+    }
+    return out.join("");
+  }
+
   function toHex(c){
     if(/^#[0-9a-f]{6}$/i.test(c)) return c;
     var m = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i.exec(c || "");
     if(!m) return "#888888";
     return "#" + [1,2,3].map(function(k){
-      return ("0" + parseInt(m[k], 10).toString(16)).slice(-2); }).join("");
+      return ("0" + parseInt(m[k],10).toString(16)).slice(-2); }).join("");
   }
 
   function wireCharts(){
     var F = CHART.font;
     function touch(){ CHART.dirty = true; CHART.saved = false; paintCharts(); }
+    function on(id, ev, fn){ var el = document.getElementById(id); if(el) el.addEventListener(ev, fn); }
 
+    Array.prototype.forEach.call(document.querySelectorAll(".tabb"), function(b){
+      b.addEventListener("click", function(){
+        var t = CHART.tabs.filter(function(x){ return x.id === b.dataset.tab; })[0];
+        if(t) selectTab(t);
+      });
+    });
     Array.prototype.forEach.call(document.querySelectorAll(".segb"), function(b){
       b.addEventListener("click", function(){ CHART.view = b.dataset.view; paintCharts(); });
     });
+    Array.prototype.forEach.call(document.querySelectorAll(".ramp"), function(b){
+      b.addEventListener("click", function(){ F.colorscale = b.dataset.ramp; touch(); });
+    });
 
-    document.getElementById("c_rank").addEventListener("change", function(){
-      CHART.rank = this.value; loadRank();
-    });
-    document.getElementById("c_type").addEventListener("change", function(){
-      F.chartType = this.value; touch();
-    });
-    document.getElementById("c_top").addEventListener("change", function(){
-      F.topNTaxa = parseInt(this.value, 10); touch();
-    });
-    document.getElementById("c_title").addEventListener("input", function(){
-      F.titleText = this.value; touch();
-    });
+    on("c_type", "change", function(){ F.chartType = this.value; touch(); });
+    on("c_top", "change", function(){ F.topNTaxa = parseInt(this.value, 10); touch(); });
+    on("c_title", "input", function(){ F.titleText = this.value; touch(); });
     [["c_ts","titleSize"],["c_as","axisSize"],["c_ls","legendSize"],["c_xs","xSize"]]
       .forEach(function(p){
-        document.getElementById(p[0]).addEventListener("change", function(){
+        on(p[0], "change", function(){
           var v = parseFloat(this.value);
-          if(isFinite(v) && v >= 6 && v <= 40){ F[p[1]] = v; touch(); }
-          else this.value = F[p[1]];
+          if(isFinite(v) && v >= 6 && v <= 40){ F[p[1]] = v; touch(); } else this.value = F[p[1]];
         });
       });
-    document.getElementById("c_grid").addEventListener("change", function(){
-      F.showGrid = this.value === "true"; touch();
-    });
-    document.getElementById("c_xi").addEventListener("change", function(){
-      F.xItalic = this.value === "i"; F.xBold = this.value === "b"; touch();
-    });
+    on("c_grid", "change", function(){ F.showGrid = this.value === "true"; touch(); });
+    on("c_xi", "change", function(){
+      F.xItalic = this.value === "i"; F.xBold = this.value === "b"; touch(); });
 
     Array.prototype.forEach.call(document.querySelectorAll('.sw input[type="color"]'), function(inp){
-      inp.addEventListener("change", function(){
-        CHART.colors[inp.dataset.tax] = inp.value; touch();
-      });
+      inp.addEventListener("change", function(){ CHART.colors[inp.dataset.tax] = inp.value; touch(); });
     });
-    document.getElementById("resetCol").addEventListener("click", function(){
-      CHART.colors = {}; touch();
-    });
+    on("resetCol", "click", function(){ CHART.colors = {}; touch(); });
 
     Array.prototype.forEach.call(document.querySelectorAll(".alias"), function(inp){
       inp.addEventListener("change", function(){
@@ -2008,12 +2589,15 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         touch();
       });
     });
+    var S = CHART.shape || {};
+    var sampleNames = S.samples || S.labels || S.names
+      || (S.pts ? S.pts.map(function(p){ return p.name; }) : []);
     Array.prototype.forEach.call(document.querySelectorAll(".mv"), function(b){
       b.addEventListener("click", function(){
-        var ord = sampleOrderIdx().map(function(i){ return CHART.samples[i]; });
+        var ord = orderedIdx(sampleNames).map(function(i){ return sampleNames[i]; });
         var pos = parseInt(b.dataset.pos, 10), to = pos + parseInt(b.dataset.dir, 10);
         if(to < 0 || to >= ord.length) return;
-        var tmp = ord[pos]; ord[pos] = ord[to]; ord[to] = tmp;
+        var t = ord[pos]; ord[pos] = ord[to]; ord[to] = t;
         CHART.order = ord; touch();
       });
     });
@@ -2022,40 +2606,41 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(note){
       var pal = seriesPalette().length;
       note.innerHTML = F.topNTaxa > pal
-        ? "<b>Above " + pal + ", colours repeat and adjacent pairs stop being reliably "
-          + "distinguishable</b> — especially for colour-blind readers. Use the table view, "
-          + "or set your own colours below."
-        : "Everything past this falls into a single grey “Other”. Unassigned reads always "
-          + "go there rather than taking a colour slot.";
+        ? "<b>Above " + pal + " the colours repeat and adjacent pairs stop being reliably "
+          + "distinguishable</b>, especially for colour-blind readers. Use the table view, or set "
+          + "your own colours below."
+        : "Everything past this falls into a single grey “Other”. Unassigned reads always go "
+          + "there rather than taking a colour slot.";
     }
 
-    document.getElementById("pngBtn").addEventListener("click", downloadPNG);
-    document.getElementById("saveBtn").addEventListener("click", saveChartSettings);
-    document.getElementById("revertBtn").addEventListener("click", function(){
+    on("pngBtn", "click", downloadPNG);
+    on("saveBtn", "click", saveChartSettings);
+    on("revertBtn", "click", function(){
       CHART.font = defaultFont(); CHART.colors = {}; CHART.aliases = {};
-      CHART.order = CHART.samples.slice(); touch();
+      CHART.order = []; touch();
     });
   }
 
   function saveChartSettings(){
-    var btn = document.getElementById("saveBtn");
-    var msg = document.getElementById("saveMsg");
+    var btn = document.getElementById("saveBtn"), msg = document.getElementById("saveMsg");
     btn.disabled = true;
-    /* The production console's exact shape. Anything else here would split a
-       job's styling in two depending on which console last touched it. */
+    var S = CHART.shape || {};
+    var names = S.samples || S.labels || S.names
+      || (S.pts ? S.pts.map(function(p){ return p.name; }) : []);
+    /* The production console's exact shape. Anything else and a job's styling
+       splits in two depending on which console last touched it. */
     var payload = {
       font: CHART.font,
       colors: CHART.colors,
       sampleAliases: CHART.aliases,
-      sampleOrder: sampleOrderIdx().map(function(i){ return CHART.samples[i]; })
+      sampleOrder: names.length ? orderedIdx(names).map(function(i){ return names[i]; })
+                                : CHART.order
     };
     fetch("/results/" + encodeURIComponent(CHART.id) + "/edit_charts/settings", {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify(payload)
+      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)
     }).then(function(r){
       if(!r.ok) throw new Error("HTTP " + r.status);
-      CHART.dirty = false; CHART.saved = true;
-      paintCharts();
+      CHART.dirty = false; CHART.saved = true; paintCharts();
     }).catch(function(e){
       btn.disabled = false;
       if(msg) msg.innerHTML = '<span style="color:var(--err)">Could not save — '
@@ -2063,27 +2648,24 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     });
   }
 
-  /* PNG via canvas. The SVG is serialised with literal colours already, which
-     is why ink() resolves the theme tokens rather than emitting var(--fg). */
+  /* PNG via canvas. ink() resolved the theme tokens to literals precisely so
+     the serialised SVG still has its text when it leaves the document. */
   function downloadPNG(){
-    var scale = 2;
-    var W = 900, H = 460;
+    var W = 900, H = 470, scale = 2;
     var svg = chartSVG({width:W, height:H});
+    if(!svg) return;
     var img = new Image();
-    var blob = new Blob([svg], {type:"image/svg+xml;charset=utf-8"});
-    var url = URL.createObjectURL(blob);
+    var url = URL.createObjectURL(new Blob([svg], {type:"image/svg+xml;charset=utf-8"}));
     img.onload = function(){
       var cv = document.createElement("canvas");
-      cv.width = W * scale; cv.height = H * scale;
+      cv.width = W*scale; cv.height = H*scale;
       var ctx = cv.getContext("2d");
-      ctx.scale(scale, scale);
-      ctx.drawImage(img, 0, 0);
+      ctx.scale(scale, scale); ctx.drawImage(img, 0, 0);
       URL.revokeObjectURL(url);
       cv.toBlob(function(b){
         var a = document.createElement("a");
         a.href = URL.createObjectURL(b);
-        a.download = CHART.rank.replace(/\.csv$/, "") + "_"
-          + (CHART.font.chartType === "bar100" ? "relative" : "counts") + ".png";
+        a.download = CHART.id + "_" + CHART.tab.id + ".png";
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
       }, "image/png");
@@ -2092,7 +2674,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       URL.revokeObjectURL(url);
       var msg = document.getElementById("saveMsg");
       if(msg) msg.innerHTML = '<span style="color:var(--err)">The browser would not rasterise '
-        + 'the chart. Use Download CSV on the results screen and plot it elsewhere.</span>';
+        + 'this chart. The table view and Download CSV both still work.</span>';
     };
     img.src = url;
   }
