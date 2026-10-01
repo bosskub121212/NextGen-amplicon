@@ -990,6 +990,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       return {
         st:st, live:live, pct:pct, params:params, rows:rows, total:total, maxSeen:maxSeen,
         kpis:kpis, error:D.error || "", offtarget:D.offtarget_warning || "",
+        postWarn: Array.isArray(D.post_warnings) ? D.post_warnings : [],
         logs: (okP && Array.isArray(P.logs)) ? P.logs : null,
         fromDisk: !!(P && P.fromDisk), totalLines: P && P.totalLines,
         logGone: P && P.logGone,
@@ -1125,6 +1126,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + (M.offtarget
             ? '<div class="note hold"><b>Off-target warning from the pipeline.</b> ' + esc(M.offtarget) + '</div>'
             : "")
+        + (M.postWarn.length
+            ? '<div class="note hold"><b>A step after the pipeline did not finish.</b> '
+              + M.postWarn.map(esc).join(" · ")
+              + ' — the analysis itself completed and its results are on disk. '
+              + 'Usually this means the chart tables or the functional prediction were not built; '
+              + 'everything else is unaffected.</div>'
+            : "")
         + '<div class="two" style="margin-top:14px">'
           + '<div class="panel"><div class="sechdr"><h3>Pipeline</h3>'
             + '<span class="hint" id="stepsHint">'
@@ -1149,6 +1157,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                 + '<button class="btn" id="cancelBtn">Cancel job</button>'
                 + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>'
               : '<span class="msg">Nothing is running for this job.</span><span class="sp"></span>'
+                /* A failed run can still have written results — this one did:
+                   the pipeline finished and a step AFTER it threw. Hiding the
+                   results behind the status would mean 21 minutes of finished
+                   work being unreachable because of a label. */
+                + '<button class="btn" id="resBtn">View any results</button>'
                 + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>')
         + '</div>';
 

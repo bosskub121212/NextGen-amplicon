@@ -747,6 +747,13 @@ def run_r_pipeline(job_id: str, params: RunParams):
         Path.home() / "r16s-app" / "backend" / "databases" / "db_paths.json"
     )
 
+    # Which pipeline script ends up running is decided by the branch chain
+    # below, so record it THERE rather than re-deriving it later from the
+    # marker. A second copy of this decision is a second copy that can drift
+    # from the first — and the post-run step that needed to know had no copy at
+    # all: it referenced a name that was never defined anywhere.
+    _ran_dada2 = False
+
     if marker in ("ITS1", "ITS2", "ITS"):
         # ── ITS fungal pipeline ─────────────────────────────────────────────
         region = "ITS1" if marker in ("ITS1", "ITS") else "ITS2"
@@ -935,6 +942,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
 
     else:
         # ── 16S / 12S / 18S-nema — standard DADA2 pipeline ─────────────────
+        _ran_dada2 = True
         cmd = [
             "Rscript", str(R_SCRIPTS_DIR / "dada2_pipeline.R"),
             "--input",         input_dir,      "--output",        output_dir,
@@ -1199,72 +1207,100 @@ def run_r_pipeline(job_id: str, params: RunParams):
                 "status":     "completed" if proc.returncode == 0 else "error",
             })
 
-        # ── PICRUSt2 functional prediction (post-pipeline) ────────────────
-        if proc.returncode == 0 and params.run_picrust2:
+        # ── Post-run extras ───────────────────────────────────────────────
+        # PICRUSt2 and the chart tables are nice-to-haves that run AFTER the
+        # pipeline has already succeeded and written its results — but they sit
+        # inside the same try as the status decision below, so anything that
+        # escapes here is caught by the outer handler and the job is marked
+        # error, discarding a finished run.
+        #
+        # That is exactly what happened: the log read "dada2_pipeline.R
+        # completed successfully", the output folder was written, and 21 minutes
+        # of work was reported as a failure because of a NameError in an
+        # if-condition two lines later. Whether the chart tables got built has
+        # no bearing on whether the analysis ran.
+        #
+        # So nothing in here may reach the outer handler. A failure is recorded
+        # against the job and written to the log, and the run keeps whatever
+        # status the PIPELINE earned it.
+        try:
+          # ── PICRUSt2 functional prediction (post-pipeline) ────────────────
+          if proc.returncode == 0 and params.run_picrust2:
+              try:
+                  from picrust2_pipeline import run_picrust2
+                  with jobs_lock:
+                      jobs[job_id]["step_label"] = "PICRUSt2 functional prediction..."
+                      jobs[job_id]["progress"]   = 95
+
+                  asv_fasta = str(Path(output_dir) / "asvs.fasta")
+                  asv_table = str(Path(output_dir) / "asv_table.csv")
+                  pic_out   = str(Path(output_dir) / "PICRUSt2")
+
+                  if Path(asv_fasta).exists() and Path(asv_table).exists():
+                      pic_result = run_picrust2(
+                          job_id          = job_id,
+                          asv_fasta       = asv_fasta,
+                          asv_table_csv   = asv_table,
+                          output_dir      = pic_out,
+                          threads         = 4,
+                      )
+                      with jobs_lock:
+                          jobs[job_id]["picrust2"] = pic_result
+                  else:
+                      with jobs_lock:
+                          jobs[job_id]["picrust2"] = {
+                              "success": False,
+                              "message": "ASV FASTA or table not found — PICRUSt2 skipped"
+                          }
+              except Exception as e:
+                  with jobs_lock:
+                      jobs[job_id]["picrust2"] = {"success": False, "message": str(e)}
+
+          # ── Auto-run viz_pipeline.R for DADA2 pipelines ──────────────────────
+          # Generates r_tables/*.csv and r_plots/*.pdf used by Edit Charts.
+          _viz_script = R_SCRIPTS_DIR / "viz_pipeline.R"
+          if proc.returncode == 0 and _ran_dada2 and _viz_script.exists():
+              try:
+                  with jobs_lock:
+                      jobs[job_id]["step_label"] = "Building interactive charts (r_tables)..."
+                      jobs[job_id]["progress"]   = 97
+                  _viz_cmd = [
+                      shutil.which("Rscript") or "Rscript",
+                      str(_viz_script),
+                      "--output_dir", output_dir,
+                      "--marker",     params.marker,
+                      "--threads",    str(params.nThreads),
+                  ]
+                  if metadata_path and Path(metadata_path).exists():
+                      _viz_cmd += ["--metadata", metadata_path]
+                  _viz_proc = subprocess.run(
+                      _viz_cmd, capture_output=True, text=True, timeout=600
+                  )
+                  with open(log_file, "a") as _lf:
+                      _lf.write("\n--- viz_pipeline.R ---\n")
+                      if _viz_proc.stdout:
+                          _lf.write(_viz_proc.stdout)
+                      if _viz_proc.returncode != 0 and _viz_proc.stderr:
+                          _lf.write("\n[viz ERROR]\n" + _viz_proc.stderr[-1000:])
+                  if _viz_proc.returncode == 0:
+                      print(f"[viz] r_tables/ populated for job {job_id}")
+                  else:
+                      print(f"[viz] WARNING: viz_pipeline.R exited {_viz_proc.returncode} for job {job_id}")
+              except subprocess.TimeoutExpired:
+                  print(f"[viz] WARNING: viz_pipeline.R timed out for job {job_id}")
+              except Exception as _ve:
+                  print(f"[viz] WARNING: viz_pipeline.R failed: {_ve}")
+
+        except Exception as _pe:
+            _msg = f"Post-run step failed after a successful pipeline: {_pe}"
+            print(f"[post] WARNING: {_msg}")
             try:
-                from picrust2_pipeline import run_picrust2
-                with jobs_lock:
-                    jobs[job_id]["step_label"] = "PICRUSt2 functional prediction..."
-                    jobs[job_id]["progress"]   = 95
-
-                asv_fasta = str(Path(output_dir) / "asvs.fasta")
-                asv_table = str(Path(output_dir) / "asv_table.csv")
-                pic_out   = str(Path(output_dir) / "PICRUSt2")
-
-                if Path(asv_fasta).exists() and Path(asv_table).exists():
-                    pic_result = run_picrust2(
-                        job_id          = job_id,
-                        asv_fasta       = asv_fasta,
-                        asv_table_csv   = asv_table,
-                        output_dir      = pic_out,
-                        threads         = 4,
-                    )
-                    with jobs_lock:
-                        jobs[job_id]["picrust2"] = pic_result
-                else:
-                    with jobs_lock:
-                        jobs[job_id]["picrust2"] = {
-                            "success": False,
-                            "message": "ASV FASTA or table not found — PICRUSt2 skipped"
-                        }
-            except Exception as e:
-                with jobs_lock:
-                    jobs[job_id]["picrust2"] = {"success": False, "message": str(e)}
-
-        # ── Auto-run viz_pipeline.R for DADA2 pipelines ──────────────────────
-        # Generates r_tables/*.csv and r_plots/*.pdf used by Edit Charts.
-        _viz_script = R_SCRIPTS_DIR / "viz_pipeline.R"
-        if proc.returncode == 0 and _is_dada2_marker and _viz_script.exists():
-            try:
-                with jobs_lock:
-                    jobs[job_id]["step_label"] = "Building interactive charts (r_tables)..."
-                    jobs[job_id]["progress"]   = 97
-                _viz_cmd = [
-                    shutil.which("Rscript") or "Rscript",
-                    str(_viz_script),
-                    "--output_dir", output_dir,
-                    "--marker",     params.marker,
-                    "--threads",    str(params.nThreads),
-                ]
-                if metadata_path and Path(metadata_path).exists():
-                    _viz_cmd += ["--metadata", metadata_path]
-                _viz_proc = subprocess.run(
-                    _viz_cmd, capture_output=True, text=True, timeout=600
-                )
                 with open(log_file, "a") as _lf:
-                    _lf.write("\n--- viz_pipeline.R ---\n")
-                    if _viz_proc.stdout:
-                        _lf.write(_viz_proc.stdout)
-                    if _viz_proc.returncode != 0 and _viz_proc.stderr:
-                        _lf.write("\n[viz ERROR]\n" + _viz_proc.stderr[-1000:])
-                if _viz_proc.returncode == 0:
-                    print(f"[viz] r_tables/ populated for job {job_id}")
-                else:
-                    print(f"[viz] WARNING: viz_pipeline.R exited {_viz_proc.returncode} for job {job_id}")
-            except subprocess.TimeoutExpired:
-                print(f"[viz] WARNING: viz_pipeline.R timed out for job {job_id}")
-            except Exception as _ve:
-                print(f"[viz] WARNING: viz_pipeline.R failed: {_ve}")
+                    _lf.write("\n[post-run WARNING] " + _msg + "\n")
+            except Exception:
+                pass
+            with jobs_lock:
+                jobs[job_id].setdefault("post_warnings", []).append(_msg)
 
         with jobs_lock:
             if proc.returncode == 0:
