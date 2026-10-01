@@ -221,12 +221,57 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .stepgrp{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
   margin-bottom:12px;overflow:hidden}
 .stepgrp:last-child{margin-bottom:0}
-.stepgrp > h4{display:flex;align-items:baseline;gap:9px;margin:0;padding:12px 16px;
-  background:var(--surface-3);border-bottom:1px solid var(--line);
-  font-size:14.5px;font-weight:600;letter-spacing:-.005em;text-transform:none;color:var(--fg)}
-.stepgrp > h4 .n{flex:none;display:inline-grid;place-items:center;min-width:22px;height:22px;
-  padding:0 6px;border-radius:5px;background:var(--accent-soft);color:var(--accent);
-  font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}
+/* Each step carries a hue, keyed to the STEP NUMBER rather than to its position
+   in the list, so Step 5 is the same colour on a 16S job as on an ONT job where
+   the steps before it differ. The eight hues are the validated categorical
+   palette (adjacent-pair CVD ΔE 9.1 light / 8.4 dark); colour is never the only
+   signal — the number badge and the title carry the identity, the stripe just
+   makes the boundary findable when you are scrolling. Step 1b shares Step 1's
+   hue on purpose: it IS part of step 1. */
+.stepgrp > h4{display:flex;align-items:baseline;gap:10px;margin:0;
+  padding:13px 16px 13px 14px;background:var(--surface-3);
+  border-bottom:1px solid var(--line);border-left:4px solid var(--step, var(--accent));
+  font-size:15.5px;font-weight:600;letter-spacing:-.01em;text-transform:none;color:var(--fg)}
+.stepgrp > h4 .n{flex:none;display:inline-grid;place-items:center;min-width:24px;height:24px;
+  padding:0 7px;border-radius:6px;background:var(--step, var(--accent));color:#fff;
+  font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums;
+  letter-spacing:.01em}
+.stepgrp{border-left:none}
+.stepgrp[data-step="1"]{--step:#2a78d6}
+.stepgrp[data-step="1b"]{--step:#2a78d6}
+.stepgrp[data-step="2"]{--step:#eb6834}
+.stepgrp[data-step="3"]{--step:#1baf7a}
+.stepgrp[data-step="4"]{--step:#eda100}
+.stepgrp[data-step="5"]{--step:#e87ba4}
+.stepgrp[data-step="6"]{--step:#008300}
+.stepgrp[data-step="7"]{--step:#4a3aa7}
+.stepgrp[data-step="8"]{--step:#e34948}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --step-1:#3987e5; --step-2:#d95926; --step-3:#199e70; --step-4:#c98500;
+  --step-5:#d55181; --step-6:#008300; --step-7:#9085e9; --step-8:#e66767;
+}}
+:root[data-theme="dark"]{
+  --step-1:#3987e5; --step-2:#d95926; --step-3:#199e70; --step-4:#c98500;
+  --step-5:#d55181; --step-6:#008300; --step-7:#9085e9; --step-8:#e66767;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .stepgrp[data-step="1"],
+  :root:not([data-theme="light"]) .stepgrp[data-step="1b"]{--step:var(--step-1)}
+  :root:not([data-theme="light"]) .stepgrp[data-step="2"]{--step:var(--step-2)}
+  :root:not([data-theme="light"]) .stepgrp[data-step="3"]{--step:var(--step-3)}
+  :root:not([data-theme="light"]) .stepgrp[data-step="4"]{--step:var(--step-4)}
+  :root:not([data-theme="light"]) .stepgrp[data-step="5"]{--step:var(--step-5)}
+  :root:not([data-theme="light"]) .stepgrp[data-step="6"]{--step:var(--step-6)}
+  :root:not([data-theme="light"]) .stepgrp[data-step="7"]{--step:var(--step-7)}
+  :root:not([data-theme="light"]) .stepgrp[data-step="8"]{--step:var(--step-8)}}
+:root[data-theme="dark"] .stepgrp[data-step="1"],
+:root[data-theme="dark"] .stepgrp[data-step="1b"]{--step:var(--step-1)}
+:root[data-theme="dark"] .stepgrp[data-step="2"]{--step:var(--step-2)}
+:root[data-theme="dark"] .stepgrp[data-step="3"]{--step:var(--step-3)}
+:root[data-theme="dark"] .stepgrp[data-step="4"]{--step:var(--step-4)}
+:root[data-theme="dark"] .stepgrp[data-step="5"]{--step:var(--step-5)}
+:root[data-theme="dark"] .stepgrp[data-step="6"]{--step:var(--step-6)}
+:root[data-theme="dark"] .stepgrp[data-step="7"]{--step:var(--step-7)}
+:root[data-theme="dark"] .stepgrp[data-step="8"]{--step:var(--step-8)}
 .stepgrp > h4 .why{margin-left:auto;font-size:12px;font-weight:400;color:var(--fg-2);
   text-align:right;max-width:46ch}
 .stepgrp .grid2{padding:16px;gap:16px 18px}
@@ -247,6 +292,36 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .lockpanel p{margin:0 0 10px;font-size:12.5px;color:var(--fg-2);max-width:58ch}
 .kv{display:flex;flex-wrap:wrap;gap:6px}
 .kv span{font-size:11px;padding:3px 8px;border-radius:4px;background:var(--surface-2);color:var(--fg-2)}
+
+/* ── results view ───────────────────────────────────────────────────────── */
+.rescols{display:grid;grid-template-columns:290px minmax(0,1fr);gap:14px;align-items:start}
+.filelist{display:flex;flex-direction:column;max-height:560px;overflow:auto}
+.fitem{display:flex;align-items:center;gap:9px;padding:9px 13px;border:none;background:none;
+  border-bottom:1px solid var(--line);width:100%;text-align:left;font-size:12.5px;color:var(--fg)}
+.fitem:last-child{border-bottom:none}
+.fitem:hover{background:var(--surface-3)}
+.fitem[aria-current="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.fitem .ic{flex:none;opacity:.75}
+.fitem .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fgrp{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-3);
+  padding:11px 13px 5px;font-weight:600;background:var(--surface-3);
+  border-bottom:1px solid var(--line)}
+.tblwrap{overflow:auto;max-height:520px}
+.dtab{border-collapse:collapse;font-size:12px;width:100%}
+.dtab th{position:sticky;top:0;background:var(--surface-3);padding:8px 11px;text-align:left;
+  font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-2);
+  font-weight:600;border-bottom:1px solid var(--line-strong);white-space:nowrap}
+.dtab td{padding:7px 11px;border-bottom:1px solid var(--line);white-space:nowrap;
+  max-width:300px;overflow:hidden;text-overflow:ellipsis}
+.dtab td.n{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:11.5px}
+.dtab tr:last-child td{border-bottom:none}
+.dtab tbody tr:hover td{background:var(--surface-3)}
+.resbar{display:flex;align-items:center;gap:9px;padding:10px 13px;
+  border-bottom:1px solid var(--line);flex-wrap:wrap}
+.resbar .sp{margin-left:auto}
+.pdfbox{width:100%;height:580px;border:none;background:var(--surface-3);
+  border-radius:0 0 var(--r) var(--r);display:block}
+@media (max-width:860px){.rescols{grid-template-columns:minmax(0,1fr)}.filelist{max-height:230px}}
 
 /* job detail */
 .dhdr{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px}
@@ -629,6 +704,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(view.name === "history")  return renderHistory();
     if(view.name === "job")      return renderJob(view.id);
     if(view.name === "pipeline") return renderPipeline(view.key);
+    if(view.name === "results")  return renderResults(view.id);
   }
 
   /* ═══ home: project history ════════════════════════════════════════════ */
@@ -780,7 +856,33 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       Promise.all([
         api("/detail/"   + encodeURIComponent(id)).catch(function(e){ return {__err:e.message || String(e)}; }),
         api("/progress/" + encodeURIComponent(id)).catch(function(e){ return {__err:e.message || String(e)}; })
-      ]).then(function(r){ paintJob(id, r[0], r[1]); });
+      ]).then(function(r){
+        var D = r[0], P = r[1];
+        /* /progress serves the log from the in-memory job dict — capped at 500
+           lines and gone after a backend restart. A finished run therefore
+           showed an EMPTY log, which reads as "this produced no output" on
+           exactly the job someone is looking back at. The full log is on disk
+           the whole time; fetch it when the memory copy has nothing. */
+        var empty = !P || P.__err || !Array.isArray(P.logs) || !P.logs.length;
+        if(!empty) return paintJob(id, D, P);
+        return api("/results/" + encodeURIComponent(id) + "/log")
+          .then(function(L){
+            P = P && !P.__err ? P : {};
+            P.logs = Array.isArray(L.lines) ? L.lines : [];
+            P.fromDisk = true;
+            P.totalLines = L.total_lines;
+            paintJob(id, D, P);
+          })
+          .catch(function(e){
+            /* Both copies gone. Say that, rather than leaving an empty box
+               that reads as "this run produced no output" — the thing this
+               whole fallback exists to stop. */
+            P = P && !P.__err ? P : {};
+            P.logs = [];
+            P.logGone = e.message || String(e);
+            paintJob(id, D, P);
+          });
+      });
     }
 
     /* ── turn the two responses into one flat view model ───────────────────
@@ -842,6 +944,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         st:st, live:live, pct:pct, params:params, rows:rows, total:total, maxSeen:maxSeen,
         kpis:kpis, error:D.error || "", offtarget:D.offtarget_warning || "",
         logs: (okP && Array.isArray(P.logs)) ? P.logs : null,
+        fromDisk: !!(P && P.fromDisk), totalLines: P && P.totalLines,
+        logGone: P && P.logGone,
         logErr: P && P.__err ? P.__err : "",
         runAt:D.run_at, startedAt:D.started_at, finishedAt:D.finished_at,
         marker: listed.marker || params.marker || "—", D:D
@@ -852,6 +956,18 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var TICK_RUN  = '<svg class="tick" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.6"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
     var TICK_ERR  = '<svg class="tick" viewBox="0 0 24 24" fill="none" stroke="var(--err)" stroke-width="2.6"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
     var TICK_PEND = '<svg class="tick" viewBox="0 0 24 24" fill="none" stroke="var(--fg-3)" stroke-width="2" opacity=".5"><circle cx="12" cy="12" r="9"/></svg>';
+
+    function logHint(M){
+      if(M.logGone) return "not available";
+      if(!M.logs) return "no log";
+      var n = M.totalLines || M.logs.length;
+      return (M.live ? "live · updates every 2s"
+            : M.fromDisk ? "pipeline.log, from the job folder"
+            : "as written by the pipeline")
+        + " · " + n + " line" + (n === 1 ? "" : "s")
+        + (M.totalLines && M.totalLines > M.logs.length
+            ? " · showing the last " + M.logs.length : "");
+    }
 
     function stepsHtml(M){
       if(!M.rows.length)
@@ -877,7 +993,15 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         return M.logErr
           ? '<span class="e">Could not read the log: ' + esc(M.logErr) + '</span>'
           : '<span class="e">The backend returned no log for this job.</span>';
-      if(!M.logs.length) return "(no log lines yet)";
+      if(M.logGone)
+        return '<span class="e">No log is available for this run.</span>\n\n'
+          + esc(M.logGone)
+          + '\n\nThe backend keeps the last 500 lines in memory only until it restarts, '
+          + 'and pipeline.log was not found in the job folder either. This says nothing '
+          + 'about whether the run worked — the step list above and the result files do.';
+      if(!M.logs.length)
+        return M.live ? "(waiting for the first line)"
+             : '<span class="w">The log is empty.</span>';
       return M.logs.map(function(l){
         var s = String(l);
         var cls = STEP_RE.test(s) ? "s" : LOG_ERR.test(s) ? "e" : LOG_WARN.test(s) ? "w" : "";
@@ -931,8 +1055,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(sh) sh.textContent = M.total ? Math.min(M.maxSeen, M.total) + " of " + M.total
                                       : M.rows.length + " recorded";
       var lh = document.getElementById("logHint");
-      if(lh) lh.textContent = (M.live ? "live · updates every 2s" : "as written by the pipeline")
-        + (M.logs ? " · " + M.logs.length + " lines" : "");
+      if(lh) lh.textContent = logHint(M);
       var box = document.getElementById("logBox");
       if(box){
         var html = logHtml(M);
@@ -962,8 +1085,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + '</span></div>'
             + '<div class="steps" id="stepsBox">' + stepsHtml(M) + '</div></div>'
           + '<div class="panel"><div class="sechdr"><h3>Log</h3><span class="hint" id="logHint">'
-            + (M.live ? "live · updates every 2s" : "as written by the pipeline")
-            + (M.logs ? " · " + M.logs.length + " lines" : "") + '</span></div>'
+            + logHint(M) + '</span></div>'
             + '<div class="log" id="logBox">' + logHtml(M) + '</div>'
             + (M.error ? '<div class="errbox"><b>Run stopped.</b>\n' + esc(M.error) + '</div>' : "")
           + '</div>'
@@ -972,8 +1094,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<div class="runbar">'
           + (M.st === "completed"
               ? '<span class="msg">Results are on disk in the job folder.</span><span class="sp"></span>'
-                + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download results (.zip)</a>'
-                + '<a class="btn pri" href="/?job=' + encodeURIComponent(jid) + '">Open charts in the production UI</a>'
+                + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download (.zip)</a>'
+                + '<button class="btn pri" id="resBtn">View results</button>'
               : M.live
               ? '<span class="msg">The log updates as the pipeline writes it. Closing this page does not '
                 + 'affect the run.</span><span class="sp"></span>'
@@ -991,6 +1113,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
         });
       }
+
+      var rb = document.getElementById("resBtn");
+      if(rb) rb.addEventListener("click", function(){ go({name:"results", id:jid}); });
 
       var cb = document.getElementById("cancelBtn");
       if(cb) cb.addEventListener("click", function(){
@@ -1105,6 +1230,193 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + '<table class="parms">' + rows.map(function(r){
           return '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>'; }).join("")
       + '</table></div>';
+  }
+
+  /* ═══ results ══════════════════════════════════════════════════════════
+     What a finished run produced: the CSV tables and the PDF figures, read
+     from GET /results/{id}/tables and served one at a time.
+
+     The table preview is the point of this screen. "Complete · 1330 ASVs" tells
+     you a run finished; it does not tell you whether the result is any good.
+     Seeing the first rows of taxonomy_genus.csv does — a column of NA, one
+     sample with a tenth of the reads of the others, a genus you know cannot be
+     in that sample. That is the check people actually do before sending
+     anything to a customer, and until now it meant opening the folder. */
+  function renderResults(id){
+    var listed = STATE.jobs.filter(function(j){ return j.job_id === id; })[0] || {job_id:id};
+
+    work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
+        + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 6l-6 6 6 6"/></svg>'
+        + 'Back to the job</button></div>'
+      + '<h2 class="ttl">' + esc(listed.job_name || id) + ' — results</h2>'
+      + '<p class="sub" id="rSub">Reading the result folder…</p>'
+      + '<div id="rBody"><div class="panel"><div class="skel">Loading…</div></div></div>';
+
+    document.getElementById("backBtn").addEventListener("click", function(){
+      go({name:"job", id:id});
+    });
+
+    api("/results/" + encodeURIComponent(id) + "/tables").then(function(R){
+      paintResults(id, R);
+    }).catch(function(e){
+      document.getElementById("rBody").innerHTML =
+        '<div class="panel"><div class="errbox" style="border-radius:var(--r)">'
+        + '<b>Could not read the result folder.</b>\n' + esc(e.message || e)
+        + '\n\nThe run may have finished before the results step, or the folder may '
+        + 'have been moved. The job log says which.</div></div>';
+      var sub = document.getElementById("rSub");
+      if(sub) sub.textContent = "";
+    });
+  }
+
+  var CSV_ICON = '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/><path d="M8 13h8M8 17h5"/></svg>';
+  var PDF_ICON = '<svg class="ic" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/><path d="M9 17c3-1 4-4 3-6-1.5-2-3 1 0 4 2 2 4 2 5 1"/></svg>';
+
+  function paintResults(id, R){
+    var tables = Array.isArray(R.tables) ? R.tables : [];
+    var plots  = Array.isArray(R.plots)  ? R.plots  : [];
+    var sub = document.getElementById("rSub");
+    if(sub) sub.textContent = tables.length + " table" + (tables.length === 1 ? "" : "s")
+      + " · " + plots.length + " figure" + (plots.length === 1 ? "" : "s")
+      + " in the result folder";
+
+    if(!tables.length && !plots.length){
+      document.getElementById("rBody").innerHTML =
+        '<div class="panel"><div class="skel">The backend answered, and the result folder '
+        + 'holds no CSV tables and no PDF figures. A run that ended early can finish '
+        + '"complete" with nothing written — the job log says where it stopped.</div></div>';
+      return;
+    }
+
+    /* Put the tables people actually open first. The folder order is
+       alphabetical, which buries taxonomy_genus.csv under alpha_diversity.csv
+       and the heatmap matrices. */
+    var RANK = ["taxonomy_genus", "taxonomy_species", "taxonomy_family", "taxonomy_phylum",
+                "taxonomy_class", "taxonomy_order", "read_tracking", "alpha_diversity"];
+    function weight(n){
+      var base = n.replace(/\.(csv|pdf)$/i, "");
+      var i = RANK.indexOf(base);
+      return i === -1 ? RANK.length : i;
+    }
+    tables = tables.slice().sort(function(a, b){
+      var d = weight(a) - weight(b);
+      return d || a.localeCompare(b);
+    });
+
+    document.getElementById("rBody").innerHTML =
+        '<div class="rescols">'
+        + '<div class="panel">'
+          + '<div class="sechdr"><h3>Files</h3><span class="hint">' + (tables.length + plots.length) + '</span></div>'
+          + '<div class="filelist" id="fileList">'
+          + (tables.length ? '<div class="fgrp">Tables</div>' + tables.map(function(f){
+              return '<button class="fitem" data-kind="csv" data-f="' + esc(f) + '">'
+                + CSV_ICON + '<span class="nm">' + esc(f) + '</span></button>'; }).join("") : "")
+          + (plots.length ? '<div class="fgrp">Figures</div>' + plots.map(function(f){
+              return '<button class="fitem" data-kind="pdf" data-f="' + esc(f) + '">'
+                + PDF_ICON + '<span class="nm">' + esc(f) + '</span></button>'; }).join("") : "")
+          + '</div></div>'
+        + '<div class="panel" id="viewer"><div class="skel">Pick a file on the left.</div></div>'
+      + '</div>'
+      + '<div class="runbar">'
+        + '<span class="msg">Everything here is already on disk in the job folder.</span>'
+        + '<span class="sp"></span>'
+        + '<a class="btn" href="/?job=' + encodeURIComponent(id) + '&tab=charts">Customise charts</a>'
+        + '<a class="btn pri" href="/results/' + encodeURIComponent(id) + '/download">Download everything (.zip)</a>'
+      + '</div>'
+      + '<div class="note"><b>Customising charts opens the production console.</b> '
+        + 'The colour picker writes its settings into the job folder, and the beta does not '
+        + 'own that yet — pointing two editors at one settings file is how a saved palette '
+        + 'quietly loses half its colours.</div>';
+
+    var box = document.getElementById("fileList");
+    Array.prototype.forEach.call(box.querySelectorAll(".fitem"), function(el){
+      el.addEventListener("click", function(){
+        Array.prototype.forEach.call(box.querySelectorAll(".fitem"), function(x){
+          x.removeAttribute("aria-current"); });
+        el.setAttribute("aria-current", "true");
+        if(el.dataset.kind === "csv") showTable(id, el.dataset.f);
+        else showPlot(id, el.dataset.f);
+      });
+    });
+
+    var first = box.querySelector('.fitem[data-kind="csv"]') || box.querySelector(".fitem");
+    if(first) first.click();
+  }
+
+  function showPlot(id, name){
+    var v = document.getElementById("viewer");
+    var url = "/results/" + encodeURIComponent(id) + "/plot/" + encodeURIComponent(name);
+    v.innerHTML = '<div class="resbar"><b style="font-size:13px">' + esc(name) + '</b>'
+      + '<span class="sp"></span>'
+      + '<a class="btn" href="' + url + '" target="_blank" rel="noopener">Open in a new tab</a></div>'
+      /* An <object> rather than <embed>: it has a fallback for the case where
+         the browser has no PDF viewer, which is otherwise a blank grey box. */
+      + '<object class="pdfbox" data="' + url + '" type="application/pdf">'
+      + '<div class="skel">This browser will not display the PDF inline. '
+      + '<a href="' + url + '" target="_blank" rel="noopener">Open it in a new tab</a>.</div>'
+      + '</object>';
+  }
+
+  var PREVIEW_ROWS = 60;
+
+  function showTable(id, name){
+    var v = document.getElementById("viewer");
+    v.innerHTML = '<div class="skel">Reading ' + esc(name) + '…</div>';
+    var url = "/results/" + encodeURIComponent(id) + "/table/" + encodeURIComponent(name);
+
+    fetch(url, {cache:"no-store"})
+      .then(function(r){
+        if(!r.ok) throw new Error("HTTP " + r.status);
+        return r.text();
+      })
+      .then(function(text){
+        var rows = parseCSV(text);
+        if(!rows.length){
+          v.innerHTML = '<div class="resbar"><b style="font-size:13px">' + esc(name) + '</b></div>'
+            + '<div class="skel">The file is empty.</div>';
+          return;
+        }
+        var head = rows[0];
+        var body = rows.slice(1);
+        var shown = body.slice(0, PREVIEW_ROWS);
+        var isNum = head.map(function(_, c){
+          /* Judge the column, not the first cell: an id column of "1,2,3" and a
+             sample column that starts numeric both exist in these files. */
+          var seen = 0, num = 0;
+          shown.forEach(function(r){
+            var cell = (r[c] || "").trim();
+            if(!cell || cell === "NA") return;
+            seen++;
+            if(/^-?\d+(\.\d+)?([eE][-+]?\d+)?$/.test(cell)) num++;
+          });
+          return seen > 0 && num / seen > 0.8;
+        });
+
+        v.innerHTML =
+            '<div class="resbar">'
+            + '<b style="font-size:13px">' + esc(name) + '</b>'
+            + '<span class="act">' + nfmt(body.length) + ' row' + (body.length === 1 ? "" : "s")
+            + ' × ' + head.length + ' column' + (head.length === 1 ? "" : "s")
+            + (body.length > shown.length ? ' · showing the first ' + shown.length : "")
+            + '</span>'
+            + '<span class="sp"></span>'
+            + '<a class="btn" href="' + url + '" download="' + esc(name) + '">Download CSV</a>'
+            + '</div>'
+          + '<div class="tblwrap"><table class="dtab"><thead><tr>'
+          + head.map(function(h){ return '<th>' + esc(h) + '</th>'; }).join("")
+          + '</tr></thead><tbody>'
+          + shown.map(function(r){
+              return '<tr>' + head.map(function(_, c){
+                var cell = r[c] === undefined ? "" : r[c];
+                return '<td' + (isNum[c] ? ' class="n"' : "") + ' title="' + esc(cell) + '">'
+                  + esc(cell) + '</td>'; }).join("") + '</tr>'; }).join("")
+          + '</tbody></table></div>';
+      })
+      .catch(function(e){
+        v.innerHTML = '<div class="resbar"><b style="font-size:13px">' + esc(name) + '</b></div>'
+          + '<div class="errbox" style="border-radius:0 0 var(--r) var(--r)">'
+          + '<b>Could not read this table.</b> ' + esc(e.message || e) + '</div>';
+      });
   }
 
   /* ═══ pipeline pages ═══════════════════════════════════════════════════ */
@@ -1380,8 +1692,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(dada2) steps.push({n:"1b", title:"Read orientation repair",
       why:"Pairs that start at the reverse primer cannot be merged, and cutadapt only searches one orientation.",
       fields:[
-        ["reorient",          "Repair orientation", "select", "auto", ["auto","TRUE","FALSE"]],
-        ["reorientAmbiguous", "Ambiguous reads",    "select", "keep", ["keep","drop"]],
+        ["reorient", "Repair orientation", "select", "auto", [
+          ["auto",  "auto — check a subsample, repair only if mixed"],
+          ["TRUE",  "always repair"],
+          ["FALSE", "never repair"]]],
+        ["reorientAmbiguous", "Ambiguous reads", "select", "keep", [
+          ["keep", "Keep (pass through unchanged)"],
+          ["drop", "Drop (cleaner, loses those reads)"]]],
         ["reorientMinPct",    "Auto trigger at",    "num",    "5", "% of pairs found reversed"]
       ]});
 
@@ -1399,7 +1716,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(isPB) steps.push({n:2, title:"PacBio CCS filtering",
       why:"Full-length reads are filtered by length, not truncated.",
       fields:[
-        ["pb_region",  "Region",            "select", "V1-V9", ["V1-V9","V1-V3","V4","custom"]],
+        ["pb_region", "Region", "select", "V1-V9", [
+          ["V1-V9",  "V1–V9 (full-length, ~1500 bp)"],
+          ["V1-V3",  "V1–V3 (~450 bp)"],
+          ["V4",     "V4 (~250 bp)"],
+          ["custom", "Custom"]]],
         ["pb_min_len", "Minimum length",    "int",    "1000", "bp"],
         ["pb_max_len", "Maximum length",    "int",    "1600", "bp"],
         ["pb_maxEE",   "Maximum expected errors", "num", "3", ""]
@@ -1408,7 +1729,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(isONT) steps.push({n:2, title:"ONT reads and Emu",
       why:"V7–V8 is ~337 bp and resolves to genus; V1–V9 is ~1500 bp and can reach species.",
       fields:[
-        ["ont_region",        "16S region",        "select", "V1-V9", ["V1-V9","V7-V8"]],
+        ["ont_region", "16S region", "select", "V1-V9", [
+          ["V1-V9", "V1–V9 (full-length, ~1500 bp, species-level)"],
+          ["V7-V8", "V7–V8 (~337 bp, genus-level)"]]],
         ["ont_min_abundance", "Minimum abundance", "num",    "0.0001", "Emu abundance filter"],
         ["ont_db_path",       "Emu database",      "path",   "", "directory containing the Emu database"],
         ["ontMinLen",         "Minimum read length","int",   "300", "bp"],
@@ -1420,8 +1743,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       fields:[
         ["truncLen_cox1_f", "truncLen, forward", "int", "230", ""],
         ["truncLen_cox1_r", "truncLen, reverse", "int", "200", ""],
-        ["codon_table",     "Codon table",       "select", "5",
-                            ["5","2"]],
+        ["codon_table", "Codon table", "select", "5", [
+          ["5", "5 — Invertebrate Mitochondrial (default)"],
+          ["2", "2 — Vertebrate Mitochondrial"],
+          ["1", "1 — Standard (nuclear)"]]],
         ["cox1_min_len",    "Minimum ASV length","int", "300", "bp"],
         ["cox1_max_len",    "Maximum ASV length","int", "330", "bp"]
       ]});
@@ -1429,7 +1754,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(isITS) steps.push({n:2, title:"ITS region",
       why:"ITS length varies widely between taxa, so reads are not truncated to a fixed length.",
       fields:[
-        ["its_region", "ITS region", "select", key, ["ITS1","ITS2"]],
+        ["its_region", "ITS region", "select", key, [["ITS1","ITS1"],["ITS2","ITS2"]]],
         ["maxEE_F",    "maxEE, forward", "num", "2", ""],
         ["maxEE_R",    "maxEE, reverse", "num", "2", ""]
       ]});
@@ -1437,10 +1762,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(dada2 || isPB || isCOX1 || isITS) steps.push({n:3, title:"DADA2 — ASV denoising",
       why:"pseudo-pooling recovers low-abundance variants shared across samples.",
       fields:[
-        ["pool",          "Pooling mode",        "select", "pseudo", ["pseudo","TRUE","FALSE"]],
-        ["chimeraMethod", "Chimera method",      "select", "consensus", ["consensus","pooled","per-sample"]],
-        ["nbases",        "Bases to learn from", "int",    "100000000", "error-model training set"],
-        ["nThreads",      "CPU threads",         "int",    "4", ""]
+        ["pool", "Pooling mode", "select", "pseudo", [
+          ["FALSE",  "FALSE — fast (independent)"],
+          ["pseudo", "pseudo — balanced (recommended)"],
+          ["TRUE",   "TRUE — most sensitive, slowest"]]],
+        ["chimeraMethod", "Chimera method", "select", "consensus", [
+          ["consensus",  "consensus (recommended)"],
+          ["per-sample", "per-sample"],
+          ["pooled",     "pooled (slowest)"]]],
+        ["nbases", "Bases to learn from", "select", "100000000", [
+          ["10000000",  "10M bases (fast)"],
+          ["100000000", "100M bases (default)"],
+          ["500000000", "500M bases (accurate)"]]],
+        ["nThreads", "CPU threads", "int", "4", "cores for the denoiser"]
       ]});
 
     if(dada2) steps.push({n:4, title:"Phylogenetic tree",
@@ -1459,7 +1793,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     steps.push({n:6, title:"Diversity analysis",
       why:"PERMANOVA needs ≥2 groups with ≥2 samples each; below that it is skipped and says so.",
       fields:[
-        ["topN",             "Top taxa in plots",     "int",  "30", ""],
+        ["topN", "Top taxa in plots", "select", "30", [
+          ["30",  "Top 30"], ["50", "Top 50"], ["100", "Top 100"]]],
         ["offtargetWarnPct", "Off-target warning at", "num",  "20", "% of reads non-target"],
         ["filterOfftarget",  "Drop off-target ASVs",  "bool", "false",
                              "Eukaryota / Mitochondria / Chloroplast"]
@@ -1469,7 +1804,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       why:"Decontam needs negative-control samples named in the metadata.",
       fields:[
         ["run_lulu",          "LULU curation",      "bool",   "true", ""],
-        ["decontam",          "Decontam",           "select", "none", ["none","prevalence"]],
+        ["decontam", "Decontam", "select", "none", [
+          ["none",       "off"],
+          ["prevalence", "prevalence — needs negative controls"]]],
         ["decontamThreshold", "Decontam threshold", "num",    "0.1", ""],
         ["_controls",         "Negative controls",  "controls", "",
                               "sample IDs, comma separated — must match the Sample column above"]
@@ -1505,9 +1842,22 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ? "Sets both primers and the starting truncLen. The pipeline still measures the real truncLen from the trimmed reads."
         : "No preset for this marker — enter the primers below.";
     } else if(kind === "select"){
-      ctl = '<select id="' + id + '" data-k="' + esc(key) + '">'
+      /* Options are [value, label] pairs so the label can explain the choice —
+         "100M bases (default)" rather than a bare 100000000 that the user has
+         to count the zeros of. The VALUE is still what gets posted. Bare
+         strings are accepted too, for lists where the two are the same. */
+      var vals = extra.map(function(o){ return Array.isArray(o) ? o[0] : o; });
+      /* A select whose values are all numbers posts numbers. nbases went from a
+         text box to a dropdown and would otherwise have started arriving as the
+         STRING "100000000" — which pydantic does coerce, so nothing would have
+         failed loudly; it just stops being checkable here. */
+      var numeric = vals.every(function(v){ return /^-?\d+(\.\d+)?$/.test(v); });
+      ctl = '<select id="' + id + '" data-k="' + esc(key) + '"'
+        + (numeric ? ' data-kind="num"' : "") + '>'
         + extra.map(function(o){
-            return '<option' + (o === def ? " selected" : "") + '>' + esc(o) + '</option>'; }).join("")
+            var v = Array.isArray(o) ? o[0] : o, l = Array.isArray(o) ? o[1] : o;
+            return '<option value="' + esc(v) + '"' + (v === def ? " selected" : "")
+              + '>' + esc(l) + '</option>'; }).join("")
         + '</select>';
       hint = "";
     } else if(kind === "bool"){
@@ -1578,7 +1928,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   function stepCard(st, dbOpts, marker){
-    return '<div class="stepgrp"><h4><span class="n">' + st.n + '</span>' + esc(st.title)
+    return '<div class="stepgrp" data-step="' + esc(st.n) + '"><h4><span class="n">'
+      + esc(st.n) + '</span>' + esc(st.title)
       + '<span class="why">' + esc(st.why) + '</span></h4>'
       + '<div class="grid2">' + st.fields.map(function(f){ return field(f, dbOpts, marker); }).join("")
       + '</div></div>';

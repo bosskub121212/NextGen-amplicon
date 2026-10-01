@@ -2178,6 +2178,34 @@ async def save_preview_charts(job_id: str, request: Request):
     return {"saved": saved}
 
 
+@app.get("/results/{job_id}/log")
+def results_log(job_id: str, tail: int = 2000):
+    """Serve pipeline.log from the job folder.
+
+    /progress/{job_id} returns the log from the in-memory job dict, which is
+    capped at 500 lines and does not survive a backend restart. A finished job
+    whose process has long exited therefore shows an EMPTY log — which reads as
+    "this run produced no output" rather than "the copy I was holding is gone",
+    on exactly the run someone is most likely to be looking back at.
+
+    The full log is on disk the whole time. Serve it.
+    """
+    log_file = RESULTS_DIR / job_id / "pipeline.log"
+    if not log_file.exists():
+        return JSONResponse(status_code=404, content={
+            "error": "No pipeline.log for this job",
+            "expected": str(log_file),
+        })
+    try:
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Could not read the log: {e}"})
+    total = len(lines)
+    if tail and tail > 0 and total > tail:
+        lines = lines[-tail:]
+    return {"job_id": job_id, "lines": lines, "total_lines": total,
+            "truncated": total > len(lines)}
+
 @app.get("/results/{job_id}/download")
 def download_results(job_id: str):
     """Zip entire results directory and serve — all files included.
