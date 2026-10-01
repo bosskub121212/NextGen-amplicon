@@ -52,17 +52,26 @@ fi
 #     pipelines, that means update.sh could never pull again. Nothing reads
 #     this file; it is the place stray plots go to be lost.
 REGENERATED=("frontend/package-lock.json" "backend/Rplots.pdf")
-SWEPT=()
+
 for f in "${REGENERATED[@]}"; do
-  git ls-files --error-unmatch "$f" &>/dev/null || continue
-  if ! git diff --quiet -- "$f" 2>/dev/null; then
+  # REPAIR. An earlier version of this script ran `git rm --cached` here, which
+  # leaves a STAGED DELETION in the index for good. On the next run the file is
+  # no longer in the index, so the sweep below skips it — while the staged
+  # deletion still shows up as a change and stops the update. That version
+  # worked once per machine and then wedged it permanently, which is worse than
+  # the problem it was written for. Unstage it and the machine recovers itself.
+  if git diff --cached --name-only 2>/dev/null | grep -qxF "$f"; then
+    git reset -q HEAD -- "$f" 2>/dev/null || true
+    echo "  ℹ  Unstaged a leftover index change for $f"
+  fi
+
+  # Discard the working-tree copy if it is tracked and has been rewritten.
+  # DISCARD, not untrack: whether a file belongs in the repo is one decision,
+  # made once, in a commit from the development machine — not something each
+  # runtime machine does to its own index behind the other machines' backs.
+  if git ls-files --error-unmatch "$f" &>/dev/null && ! git diff --quiet -- "$f" 2>/dev/null; then
     echo "  ℹ  Discarding local changes to $f (machine output, not source)"
     git checkout -- "$f" 2>/dev/null || true
-  fi
-  # Stop tracking it so this stops happening. The working copy stays on disk.
-  if git rm --cached --quiet "$f" 2>/dev/null; then
-    echo "  ℹ  $f is no longer tracked (it is output, not source)"
-    SWEPT+=("$f")
   fi
 done
 
@@ -70,10 +79,11 @@ done
 # wall of text that does not say what to do; say it here, before the pull.
 DIRTY=$(git diff --name-only; git diff --cached --name-only)
 DIRTY=$(printf '%s\n' "$DIRTY" | sed '/^$/d' | sort -u)
-# A file the sweep above just untracked appears as a STAGED DELETION, which this
-# list would otherwise count as a local edit — so update.sh would stop on its own
-# cleanup and tell the user to stash build output. Drop exactly what was swept.
-for f in ${SWEPT+"${SWEPT[@]}"}; do
+# Nothing in REGENERATED is ever a local edit worth keeping — that is what being
+# on that list means — so none of it can be a reason to stop. Excluding the whole
+# list, rather than only what this run happened to touch, is what makes the check
+# the same on the first run and the hundredth.
+for f in "${REGENERATED[@]}"; do
   DIRTY=$(printf '%s\n' "$DIRTY" | grep -vxF "$f" || true)
 done
 if [ -n "$DIRTY" ]; then
