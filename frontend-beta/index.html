@@ -339,6 +339,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   border-radius:4px;background:none;cursor:pointer}
 .sw .nm{flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw .gr{flex:none;font-size:10.5px;color:var(--fg-3)}
+.samp2{align-items:flex-start}
+.samp2 .sfields{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.samp2 .sfields input{padding:5px 8px;font-size:12.5px}
+.samp2 .sgrp{font-size:12px}
+.samp2 .raw{padding-top:5px}
+.gsave{display:flex;align-items:center;gap:10px;padding:10px 14px;
+  border-top:1px solid var(--line);flex-wrap:wrap}
+.gsave .msg{flex:1;min-width:0;font-size:11.5px;color:var(--fg-2);line-height:1.45}
 .samps{display:flex;flex-direction:column;padding:6px 0;max-height:260px;overflow:auto}
 .samp{display:flex;align-items:center;gap:8px;padding:5px 14px}
 .samp:hover{background:var(--surface-3)}
@@ -1701,7 +1709,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var cs = getComputedStyle(document.documentElement);
     function v(n, fb){ return (cs.getPropertyValue(n) || "").trim() || fb; }
     return {fg:v("--fg","#0e1517"), fg2:v("--fg-2","#54646a"), fg3:v("--fg-3","#8a989e"),
-            line:v("--line","#d7dee1"), surface:v("--surface","#ffffff")};
+            line:v("--line","#d7dee1"), surface:v("--surface","#ffffff"),
+            surface3:v("--surface-3","#f6f8f9")};
   }
 
   var CHART = null;
@@ -1719,6 +1728,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var listed = STATE.jobs.filter(function(j){ return j.job_id === id; })[0] || {job_id:id};
     CHART = {id:id, tab:null, tabs:[], rows:null, err:"", loading:true,
              font:defaultFont(), colors:{}, aliases:{}, order:[],
+             /* sample -> group. Read from the job's metadata.csv and written
+                back there, because that is where the pipeline and the
+                production console both keep it — not invented in a settings
+                file only this editor understands. */
+             groups:{}, groupOn:true, groupDirty:false, groupSaved:false,
              view:"chart", dirty:false, saved:false};
 
     work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
@@ -1734,10 +1748,24 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     Promise.all([
       api("/results/" + encodeURIComponent(id) + "/tables"),
-      api("/results/" + encodeURIComponent(id) + "/edit_charts/settings").catch(function(){ return {}; })
+      api("/results/" + encodeURIComponent(id) + "/edit_charts/settings").catch(function(){ return {}; }),
+      api("/results/" + encodeURIComponent(id) + "/metadata").catch(function(){ return {rows:[]}; })
     ]).then(function(r){
       var have = Array.isArray(r[0].tables) ? r[0].tables : [];
       var saved = r[1] || {};
+      var meta = (r[2] && Array.isArray(r[2].rows)) ? r[2].rows : [];
+      /* Column names vary — the pipeline reads the id column case-insensitively
+         and the production console writes "SampleID,Group". Accept both rather
+         than requiring one spelling. */
+      meta.forEach(function(row){
+        var id_ = "", g = "";
+        Object.keys(row).forEach(function(k){
+          var lk = k.toLowerCase().replace(/[^a-z]/g, "");
+          if(!id_ && (lk === "sampleid" || lk === "sample")) id_ = (row[k] || "").trim();
+          if(!g   && lk === "group") g = (row[k] || "").trim();
+        });
+        if(id_ && g) CHART.groups[id_] = g;
+      });
       if(saved.font)          CHART.font    = Object.assign(defaultFont(), saved.font);
       if(saved.colors)        CHART.colors  = saved.colors;
       if(saved.sampleAliases) CHART.aliases = saved.sampleAliases;
@@ -1951,6 +1979,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var F = CHART.font, C = ink();
     var legend = k === "stack" || k === "lines" || k === "grouped" || k === "multialpha";
     var padL = 64, padR = legend ? 210 : 28, padT = F.titleText ? 46 : 24, padB = 80;
+    /* Facet headers sit above the plot, so make room for them before the
+       geometry is fixed — otherwise the first group's label lands on the title. */
+    if((k === "stack" || k === "alpha") && CHART.groupOn){
+      var nm0 = CHART.shape.samples || CHART.shape.labels || [];
+      if(nm0.some(function(x){ return (CHART.groups[x] || "").trim(); })) padT += 30;
+    }
     if(k === "taxheat") padR = 150;
     if(k === "matrix")  padL = 128;
     var P = {x:padL, y:padT, w:W - padL - padR, h:H - padT - padB, C:C, F:F, W:W, H:H};
@@ -1982,6 +2016,59 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     parts.push(body);
     parts.push('</svg>');
     return parts.join("");
+  }
+
+
+  /* ── faceting ────────────────────────────────────────────────────────────
+     Split the x axis into one band per group, each band sized to how many
+     samples it holds, with a header strip above it — the layout of the
+     reference figure (Normal | Stage B1).
+
+     ONE y axis, shared across the bands. Giving each facet its own scale would
+     make the panels look comparable while plotting them on different rulers,
+     which is the single worst thing a grouped chart can do.
+
+     Group order follows first appearance in the sample order, so dragging a
+     sample also moves its group — rather than groups silently re-sorting
+     alphabetically under the user. */
+  function groupsOf(names, ord){
+    if(!CHART.groupOn) return null;
+    var any = ord.some(function(i){ return (CHART.groups[names[i]] || "").trim(); });
+    if(!any) return null;
+    var seen = {}, out = [];
+    ord.forEach(function(i){
+      var g = (CHART.groups[names[i]] || "").trim() || "(no group)";
+      if(!(g in seen)){ seen[g] = out.length; out.push({name:g, idx:[]}); }
+      out[seen[g]].idx.push(i);
+    });
+    return out.length > 1 ? out : null;
+  }
+
+  /* Band geometry. Each band gets width in proportion to its sample count, so
+     a bar is the same width everywhere — a group with two samples must not get
+     bars twice as wide as a group with four. */
+  function bands(P, groups, gap){
+    gap = gap === undefined ? 26 : gap;
+    var total = groups.reduce(function(a, g){ return a + g.idx.length; }, 0) || 1;
+    var usable = P.w - gap * (groups.length - 1);
+    var x = P.x, out = [];
+    groups.forEach(function(g){
+      var w = usable * g.idx.length / total;
+      out.push({g:g, x:x, w:w});
+      x += w + gap;
+    });
+    return out;
+  }
+
+  function facetHeader(P, b){
+    var h = 22, y = P.y - h - 6;
+    return '<rect x="' + b.x.toFixed(1) + '" y="' + y + '" width="' + b.w.toFixed(1)
+      + '" height="' + h + '" rx="4" fill="' + P.C.surface3 + '" stroke="' + P.C.line
+      + '" stroke-width="1"/>'
+      + '<text x="' + (b.x + b.w/2).toFixed(1) + '" y="' + (y + 15)
+      + '" text-anchor="middle" fill="' + P.C.fg + '" font-size="'
+      + Math.max(10, P.F.legendSize) + '" font-weight="600">'
+      + esc(b.g.name.length > 28 ? b.g.name.slice(0, 27) + "…" : b.g.name) + '</text>';
   }
 
   /* shared y axis; returns {html, scale(v)->y} */
@@ -2031,9 +2118,29 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var yMax = pct ? 100 : niceMax(Math.max.apply(null, totals.concat([1])));
     var out = [yAxis(P, yMax, pct ? "Relative abundance (%)" : "Reads",
                      pct ? function(v){ return v.toFixed(0); } : null)];
-    var n = ord.length || 1, slot = P.w / n, bw = Math.min(76, slot * 0.62), GAP = 2;
+
+    /* Lay the samples out either across the whole plot, or band by band when a
+       grouping is set. Both paths produce the same per-sample geometry, so the
+       bar drawing below does not need to know which one it is in. */
+    var G = groupsOf(SH.samples, ord);
+    var pos = {};   /* sample index -> {x, bw} */
+    if(G){
+      bands(P, G).forEach(function(b){
+        out.push(facetHeader(P, b));
+        var n2 = b.g.idx.length || 1, slot2 = b.w / n2;
+        var bw2 = Math.min(76, slot2 * 0.62);
+        b.g.idx.forEach(function(si, k2){
+          pos[si] = {x: b.x + slot2*k2 + (slot2 - bw2)/2, bw: bw2};
+        });
+      });
+    } else {
+      var n = ord.length || 1, slot = P.w / n, bw0 = Math.min(76, slot * 0.62);
+      ord.forEach(function(si, k){ pos[si] = {x: P.x + slot*k + (slot - bw0)/2, bw: bw0}; });
+    }
+
+    var GAP = 2;
     ord.forEach(function(si, k){
-      var x = P.x + slot * k + (slot - bw) / 2, total = totals[k] || 0, acc = 0, drawn = [];
+      var x = pos[si].x, bw = pos[si].bw, total = totals[k] || 0, acc = 0, drawn = [];
       S.forEach(function(s, i){
         var v = s.values[si] || 0; if(v <= 0) return;
         var frac = total > 0 ? v / total : 0;
@@ -2045,10 +2152,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         var h = Math.max(0, d.h - (j < drawn.length - 1 ? GAP : 0));
         if(h <= 0) return;
         var top = j === drawn.length - 1, bot = j === 0;
+        var gnm = (CHART.groups[SH.samples[si]] || "").trim();
         out.push('<path d="' + roundRect(x, yTop, bw, h, top ? 4 : 0, bot ? 4 : 0)
           + '" fill="' + colourOf(d.s, d.i) + '" class="seg"><title>' + esc(d.s.name) + ' · '
-          + esc(labelOf(SH.samples[si])) + '\n' + nfmt(d.v) + ' reads · '
-          + (d.frac*100).toFixed(1) + '%</title></path>');
+          + esc(labelOf(SH.samples[si])) + (gnm ? ' (' + esc(gnm) + ')' : "")
+          + '\n' + nfmt(d.v) + ' reads · ' + (d.frac*100).toFixed(1) + '%</title></path>');
       });
       out.push(xTick(P, x + bw/2, labelOf(SH.samples[si])));
     });
@@ -2146,11 +2254,23 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var vals = ord.map(function(i){ return (SH.vals[i]||[])[ci] || 0; });
     var yMax = niceMax(Math.max.apply(null, vals.concat([1])));
     var out = [yAxis(P, yMax, SH.cols[ci] || "Value")];
-    var n = ord.length||1, slot = P.w/n, bw = Math.min(84, slot*0.56);
+    var G = groupsOf(SH.labels, ord);
+    var pos = {};
+    if(G){
+      bands(P, G).forEach(function(b){
+        out.push(facetHeader(P, b));
+        var n2 = b.g.idx.length || 1, slot2 = b.w / n2, bw2 = Math.min(84, slot2*0.56);
+        b.g.idx.forEach(function(si, k2){
+          pos[si] = {x: b.x + slot2*k2 + (slot2 - bw2)/2, bw: bw2}; });
+      });
+    } else {
+      var n = ord.length||1, slot = P.w/n, bw0 = Math.min(84, slot*0.56);
+      ord.forEach(function(si, k){ pos[si] = {x: P.x + slot*k + (slot-bw0)/2, bw: bw0}; });
+    }
     /* One series, so no legend box — the axis label names it. Colour by entity
        so a sample keeps its hue across every alpha tab. */
     ord.forEach(function(si, k){
-      var v = vals[k], h = v / yMax * P.h, x = P.x + slot*k + (slot-bw)/2;
+      var v = vals[k], h = v / yMax * P.h, x = pos[si].x, bw = pos[si].bw;
       var nm = SH.labels[si];
       var col = CHART.colors[nm] || seriesPalette()[si % seriesPalette().length];
       out.push('<path d="' + roundRect(x, P.y + P.h - h, bw, h, 4, 0) + '" fill="' + col
@@ -2645,20 +2765,72 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       || (S.pts ? S.pts.map(function(p){ return p.name; }) : null);
     if(sampleNames && sampleNames.length && k !== "lines" && k !== "hist" && k !== "scree"){
       var ord = orderedIdx(sampleNames);
+      var canFacet = k === "stack" || k === "alpha";
+      var nGrouped = sampleNames.filter(function(n){
+        return (CHART.groups[n] || "").trim(); }).length;
+      var gNames = [];
+      sampleNames.forEach(function(n){
+        var g = (CHART.groups[n] || "").trim();
+        if(g && gNames.indexOf(g) === -1) gNames.push(g);
+      });
+
+      out.push('<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Groups</h3>'
+        + '<span class="hint">' + (nGrouped
+            ? gNames.length + " group" + (gNames.length === 1 ? "" : "s")
+            : "none set") + '</span></div>'
+        + '<div class="grid2" style="grid-template-columns:1fr;padding:12px 14px;gap:10px">'
+        + (canFacet
+            ? '<div class="f"><label for="c_facet">Split the chart by group</label>'
+              + '<select id="c_facet">'
+              + '<option value="on"' + (CHART.groupOn ? " selected" : "") + '>on</option>'
+              + '<option value="off"' + (!CHART.groupOn ? " selected" : "") + '>off</option>'
+              + '</select><span class="note">'
+              + (nGrouped
+                  ? 'One panel per group, sharing a single y axis. '
+                    + (gNames.every(function(g){
+                         return sampleNames.filter(function(n){
+                           return (CHART.groups[n]||"").trim() === g; }).length < 2; })
+                      ? '<b>Every group here holds one sample</b>, so the panels label the '
+                        + 'samples rather than comparing groups — there is nothing to average '
+                        + 'and no test is possible.'
+                      : "")
+                  : 'Give the samples a group below and the chart splits into panels.')
+              + '</span></div>'
+            : '<div class="f"><span class="note">Splitting by group applies to the taxonomy '
+              + 'and alpha-diversity charts.</span></div>')
+        + '<div class="f"><div class="row" style="display:flex;gap:7px;flex-wrap:wrap">'
+          + '<button class="btn" id="gClear">Clear groups</button>'
+          + '<button class="btn" id="gEach">One group per sample</button>'
+          + '</div></div>'
+        + '</div>');
+
       out.push('<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Samples</h3>'
-        + '<span class="hint">rename and reorder</span></div><div class="samps" id="samps">'
+        + '<span class="hint">group, rename, reorder</span></div><div class="samps" id="samps">'
         + ord.map(function(si, pos){
-            return '<div class="samp">'
+            return '<div class="samp samp2">'
               + '<div class="ar">'
                 + '<button class="mv" data-dir="-1" data-pos="' + pos + '" aria-label="Move up"'
                   + (pos === 0 ? " disabled" : "") + '>&#9650;</button>'
                 + '<button class="mv" data-dir="1" data-pos="' + pos + '" aria-label="Move down"'
                   + (pos === ord.length - 1 ? " disabled" : "") + '>&#9660;</button></div>'
-              + '<input type="text" class="alias" data-s="' + esc(sampleNames[si]) + '" value="'
-                + esc(labelOf(sampleNames[si])) + '">'
+              + '<div class="sfields">'
+                + '<input type="text" class="alias" data-s="' + esc(sampleNames[si]) + '" value="'
+                  + esc(labelOf(sampleNames[si])) + '" placeholder="display name">'
+                + '<input type="text" class="sgrp" data-s="' + esc(sampleNames[si]) + '" value="'
+                  + esc(CHART.groups[sampleNames[si]] || "") + '" placeholder="group" list="grpList">'
+              + '</div>'
               + '<span class="raw" title="name in the data">' + esc(sampleNames[si]) + '</span>'
               + '</div>'; }).join("")
-        + '</div>');
+        + '</div>'
+        + '<datalist id="grpList">' + gNames.map(function(g){
+            return '<option value="' + esc(g) + '">'; }).join("") + '</datalist>'
+        + '<div class="gsave"><span class="msg" id="gMsg">'
+          + (CHART.groupDirty ? 'Groups not saved yet.'
+             : CHART.groupSaved ? 'Saved to the job\u2019s metadata.csv.'
+             : 'Groups are read from and written to the job\u2019s '
+               + '<span class="mono">metadata.csv</span>.')
+          + '</span><button class="btn' + (CHART.groupDirty ? " pri" : "")
+          + '" id="gSave"' + (CHART.groupDirty ? "" : " disabled") + '>Save groups</button></div>');
     }
     return out.join("");
   }
@@ -2728,6 +2900,28 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       });
     });
 
+    on("c_facet", "change", function(){ CHART.groupOn = this.value === "on"; paintCharts(); });
+
+    Array.prototype.forEach.call(document.querySelectorAll(".sgrp"), function(inp){
+      inp.addEventListener("change", function(){
+        var raw = inp.dataset.s, v = inp.value.trim();
+        if(v) CHART.groups[raw] = v; else delete CHART.groups[raw];
+        CHART.groupDirty = true; CHART.groupSaved = false;
+        paintCharts();
+      });
+    });
+    on("gClear", "click", function(){
+      CHART.groups = {}; CHART.groupDirty = true; CHART.groupSaved = false; paintCharts();
+    });
+    on("gEach", "click", function(){
+      var S2 = CHART.shape || {};
+      var nm = S2.samples || S2.labels || S2.names || [];
+      CHART.groups = {};
+      nm.forEach(function(n){ CHART.groups[n] = n; });
+      CHART.groupDirty = true; CHART.groupSaved = false; paintCharts();
+    });
+    on("gSave", "click", saveGroups);
+
     var note = document.getElementById("topNote");
     if(note){
       var pal = seriesPalette().length;
@@ -2745,6 +2939,43 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       CHART.font = defaultFont(); CHART.colors = {}; CHART.aliases = {};
       CHART.order = []; touch();
     });
+  }
+
+
+  /* Groups go back to the job's metadata.csv, in the production console's
+     column spelling. "SampleID,Group" is not a style choice: dada2_pipeline.R
+     reads the id column case-insensitively, but one merge in it is written
+     by.y="SampleID" — so that exact spelling is the one that works everywhere,
+     and it is what the production editor already writes. */
+  function saveGroups(){
+    var S = CHART.shape || {};
+    var names = S.samples || S.labels || S.names
+      || (S.pts ? S.pts.map(function(p){ return p.name; }) : []);
+    if(!names.length) return;
+    var btn = document.getElementById("gSave"), msg = document.getElementById("gMsg");
+    btn.disabled = true;
+    var csv = "SampleID,Group\n" + orderedIdx(names).map(function(i){
+      var n = names[i];
+      return csvCell(n) + "," + csvCell((CHART.groups[n] || "").trim());
+    }).join("\n") + "\n";
+    fetch("/results/" + encodeURIComponent(CHART.id) + "/metadata", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({csv: csv})
+    }).then(function(r){
+      if(!r.ok) throw new Error("HTTP " + r.status);
+      CHART.groupDirty = false; CHART.groupSaved = true; paintCharts();
+    }).catch(function(e){
+      btn.disabled = false;
+      if(msg) msg.innerHTML = '<span style="color:var(--err)">Could not save the groups — '
+        + esc(e.message || e) + '</span>';
+    });
+  }
+
+  /* A sample called R1,R2 would otherwise split into two columns and silently
+     shift every group by one. */
+  function csvCell(v){
+    v = String(v === undefined || v === null ? "" : v);
+    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   }
 
   function saveChartSettings(){
