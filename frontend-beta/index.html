@@ -339,6 +339,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   border-radius:4px;background:none;cursor:pointer}
 .sw .nm{flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw .gr{flex:none;font-size:10.5px;color:var(--fg-3)}
+.samp2 .shw{flex:none;width:15px;height:15px;margin-top:6px;accent-color:var(--accent);cursor:pointer}
+.samp2.off .sfields,.samp2.off .raw,.samp2.off .ar{opacity:.42}
+.hidnote{padding:9px 14px;font-size:11.5px;color:var(--warn);background:var(--warn-soft);
+  line-height:1.5;border-bottom:1px solid var(--line)}
 .samp2{align-items:flex-start}
 .samp2 .sfields{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
 .samp2 .sfields input{padding:5px 8px;font-size:12.5px}
@@ -1733,6 +1737,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                 production console both keep it — not invented in a settings
                 file only this editor understands. */
              groups:{}, groupOn:true, groupDirty:false, groupSaved:false,
+             hidden:{},
              view:"chart", dirty:false, saved:false};
 
     work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
@@ -1924,6 +1929,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   function num(v){ var n = parseFloat(v); return isFinite(n) ? n : 0; }
   function labelOf(s){ return CHART.aliases[s] || s; }
 
+  /* Samples the user has switched off. They stay in the data and in the saved
+     metadata — only the chart leaves them out. */
+  function visibleIdx(names){
+    return orderedIdx(names).filter(function(i){ return !CHART.hidden[names[i]]; });
+  }
+
   function orderedIdx(names){
     var idx = [];
     CHART.order.forEach(function(nm){
@@ -1941,8 +1952,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var S = CHART.shape;
     if(!S || !S.matrix) return [];
     var isNA = function(n){ return /^(na|unassigned|unclassified|)$/i.test(String(n).trim()); };
+    /* Rank over the samples on screen, not over every sample in the file.
+       Hiding Pre-R1 and Pre-R2 to show R1 vs R2 must also re-pick the top taxa
+       from R1 and R2 — otherwise the chart's eight colours were chosen by two
+       samples that are not in it, and "Other" is the wrong size. */
+    var vis = visibleIdx(S.samples);
     var totals = S.matrix.map(function(row, i){
-      return {i:i, name:S.taxa[i], sum:row.reduce(function(a,b){ return a+b; }, 0)}; });
+      return {i:i, name:S.taxa[i],
+              sum:vis.reduce(function(a, k){ return a + (row[k] || 0); }, 0)}; });
     var named = totals.filter(function(t){ return !isNA(t.name) && t.sum > 0; });
     var na    = totals.filter(function(t){ return isNA(t.name) && t.sum > 0; });
     named.sort(function(a,b){ return b.sum - a.sum; });
@@ -1953,6 +1970,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(rest.length){
       var acc = S.samples.map(function(){ return 0; });
       rest.forEach(function(t){ S.matrix[t.i].forEach(function(v,k){ acc[k] += v; }); });
+      /* acc covers every sample so the hidden ones stay correct if un-hidden. */
       out.push({name:"Other", values:acc, grouped:true, members:rest.length, hasNA:na.length>0});
     }
     return out;
@@ -2111,7 +2129,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   function drawStack(P){
-    var S = series(), SH = CHART.shape, ord = orderedIdx(SH.samples), F = P.F;
+    var S = series(), SH = CHART.shape, ord = visibleIdx(SH.samples), F = P.F;
     var pct = F.chartType === "bar100";
     var totals = ord.map(function(si){
       return S.reduce(function(a,s){ return a + (s.values[si]||0); }, 0); });
@@ -2172,7 +2190,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
   function drawTaxHeat(P){
     var S = series().filter(function(s){ return !s.grouped; });
-    var SH = CHART.shape, ord = orderedIdx(SH.samples);
+    var SH = CHART.shape, ord = visibleIdx(SH.samples);
     if(!S.length) return "";
     /* Row-normalised: each taxon against its own maximum, which is what makes
        a low-abundance taxon's pattern across samples visible at all. Said on
@@ -2199,7 +2217,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   function drawMatrix(P){
-    var SH = CHART.shape, ord = orderedIdx(SH.names);
+    var SH = CHART.shape, ord = visibleIdx(SH.names);
     var flat = [];
     SH.m.forEach(function(r){ r.forEach(function(v){ if(isFinite(v)) flat.push(v); }); });
     var lo = Math.min.apply(null, flat), hi = Math.max.apply(null, flat);
@@ -2250,7 +2268,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var ci = CHART.tab.metric ? SH.cols.map(function(c){ return c.toLowerCase(); })
                  .indexOf(CHART.tab.metric.toLowerCase()) : 0;
     if(ci === -1) ci = 0;
-    var ord = orderedIdx(SH.labels);
+    var ord = visibleIdx(SH.labels);
     var vals = ord.map(function(i){ return (SH.vals[i]||[])[ci] || 0; });
     var yMax = niceMax(Math.max.apply(null, vals.concat([1])));
     var out = [yAxis(P, yMax, SH.cols[ci] || "Value")];
@@ -2300,7 +2318,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   function drawGrouped(P){
-    var SH = CHART.shape, ord = orderedIdx(SH.labels);
+    var SH = CHART.shape, ord = visibleIdx(SH.labels);
     var mx = 0;
     ord.forEach(function(i){ (SH.vals[i]||[]).forEach(function(v){ if(v > mx) mx = v; }); });
     var yMax = niceMax(mx || 1);
@@ -2327,7 +2345,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   /* Small multiples: the right answer for several measures on different
      scales, and the reason this app never needs a second y axis. */
   function drawMulti(P){
-    var SH = CHART.shape, ord = orderedIdx(SH.labels);
+    var SH = CHART.shape, ord = visibleIdx(SH.labels);
     var cols = SH.cols.slice(0, 6);
     var cw = P.w / cols.length, out = [];
     cols.forEach(function(c, ci){
@@ -2355,7 +2373,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   function drawScatter(P){
-    var SH = CHART.shape, pts = SH.pts;
+    var SH = CHART.shape;
+    var pts = SH.pts.filter(function(p){ return !CHART.hidden[p.name]; });
     if(!pts.length) return "";
     var xs = pts.map(function(p){ return p.x; }), ys = pts.map(function(p){ return p.y; });
     var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
@@ -2449,7 +2468,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   function drawBox(P){
-    var SH = CHART.shape, ord = orderedIdx(SH.labels);
+    var SH = CHART.shape, ord = visibleIdx(SH.labels);
     var all = [];
     ord.forEach(function(i){ (SH.vals[i]||[]).forEach(function(v){ all.push(v); }); });
     var yMax = niceMax(Math.max.apply(null, all.concat([1])));
@@ -2559,7 +2578,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   function chartTable(){
     var k = CHART.tab.kind, S = CHART.shape;
     if(k === "stack" || k === "taxheat"){
-      var ser = series(), ord = orderedIdx(S.samples);
+      var ser = series(), ord = visibleIdx(S.samples);
       var pct = CHART.font.chartType === "bar100" && k === "stack";
       var tot = ord.map(function(si){
         return ser.reduce(function(a,s){ return a + (s.values[si]||0); }, 0); });
@@ -2570,7 +2589,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             return pct && tot[c] > 0 ? (v/tot[c]*100).toFixed(1) + "%" : nfmt(v); })); }));
     }
     if(k === "matrix" || k === "dendro"){
-      var o2 = orderedIdx(S.names);
+      var o2 = visibleIdx(S.names);
       return tbl([""].concat(o2.map(function(i){ return labelOf(S.names[i]); })),
         o2.map(function(ri){
           return [esc(labelOf(S.names[ri]))].concat(o2.map(function(ci){
@@ -2579,7 +2598,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }
     if(k === "scatter"){
       return tbl(["Sample", S.xLab, S.yLab],
-        S.pts.map(function(p, i){
+        S.pts.filter(function(p){ return !CHART.hidden[p.name]; }).map(function(p, i){
           return [swatch(CHART.colors[p.name] || seriesPalette()[i % seriesPalette().length])
                   + esc(labelOf(p.name)), p.x.toFixed(4), p.y.toFixed(4)]; }));
     }
@@ -2588,7 +2607,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         S.xs.map(function(x, k2){
           return [String(x)].concat(S.ys[k2].map(function(v){ return fmtNum(v); })); }));
     }
-    var o3 = orderedIdx(S.labels);
+    var o3 = visibleIdx(S.labels);
     return tbl(["Sample"].concat(S.cols),
       o3.map(function(si){
         return [swatch(CHART.colors[S.labels[si]] || seriesPalette()[si % seriesPalette().length])
@@ -2766,12 +2785,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(sampleNames && sampleNames.length && k !== "lines" && k !== "hist" && k !== "scree"){
       var ord = orderedIdx(sampleNames);
       var canFacet = k === "stack" || k === "alpha";
-      var nGrouped = sampleNames.filter(function(n){
+      /* Describe the chart on screen, not the metadata file. A group whose only
+         members are hidden is not a panel, and a group that looks replicated in
+         metadata.csv can be one-sample-per-group once samples are hidden —
+         which is exactly the R1-vs-R2 case. The warning has to follow what is
+         actually plotted or it says the wrong thing at the worst moment. */
+      var shownNames = sampleNames.filter(function(n){ return !CHART.hidden[n]; });
+      var nGrouped = shownNames.filter(function(n){
         return (CHART.groups[n] || "").trim(); }).length;
-      var gNames = [];
-      sampleNames.forEach(function(n){
+      var gNames = [], gCount = {};
+      shownNames.forEach(function(n){
         var g = (CHART.groups[n] || "").trim();
-        if(g && gNames.indexOf(g) === -1) gNames.push(g);
+        if(!g) return;
+        if(gNames.indexOf(g) === -1) gNames.push(g);
+        gCount[g] = (gCount[g] || 0) + 1;
       });
 
       out.push('<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Groups</h3>'
@@ -2787,9 +2814,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
               + '</select><span class="note">'
               + (nGrouped
                   ? 'One panel per group, sharing a single y axis. '
-                    + (gNames.every(function(g){
-                         return sampleNames.filter(function(n){
-                           return (CHART.groups[n]||"").trim() === g; }).length < 2; })
+                    + (gNames.every(function(g){ return gCount[g] < 2; })
                       ? '<b>Every group here holds one sample</b>, so the panels label the '
                         + 'samples rather than comparing groups — there is nothing to average '
                         + 'and no test is possible.'
@@ -2804,10 +2829,25 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + '</div></div>'
         + '</div>');
 
+      var nHidden = sampleNames.filter(function(n){ return CHART.hidden[n]; }).length;
       out.push('<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Samples</h3>'
-        + '<span class="hint">group, rename, reorder</span></div><div class="samps" id="samps">'
+        + '<span class="hint">' + (nHidden
+            ? (sampleNames.length - nHidden) + " of " + sampleNames.length + " shown"
+            : "show, group, rename, reorder") + '</span></div>'
+        + (nHidden
+            ? '<div class="hidnote">' + nHidden + ' sample' + (nHidden === 1 ? " is" : "s are")
+              + ' hidden. The top taxa are re-ranked from the samples still shown, so the colours '
+              + 'and the size of “Other” describe this chart and not the whole run. Nothing is '
+              + 'removed from the data or from the saved metadata.</div>'
+            : "")
+        + '<div class="samps" id="samps">'
         + ord.map(function(si, pos){
-            return '<div class="samp samp2">'
+            var nm0 = sampleNames[si];
+            return '<div class="samp samp2' + (CHART.hidden[nm0] ? " off" : "") + '">'
+              + '<input type="checkbox" class="shw" data-s="' + esc(nm0) + '"'
+                + (CHART.hidden[nm0] ? "" : " checked")
+                + ' title="Show this sample in the chart"'
+                + ' aria-label="Show ' + esc(nm0) + ' in the chart">'
               + '<div class="ar">'
                 + '<button class="mv" data-dir="-1" data-pos="' + pos + '" aria-label="Move up"'
                   + (pos === 0 ? " disabled" : "") + '>&#9650;</button>'
@@ -2910,6 +2950,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         paintCharts();
       });
     });
+    Array.prototype.forEach.call(document.querySelectorAll(".shw"), function(cb){
+      cb.addEventListener("change", function(){
+        if(cb.checked) delete CHART.hidden[cb.dataset.s];
+        else CHART.hidden[cb.dataset.s] = true;
+        paintCharts();
+      });
+    });
+
     on("gClear", "click", function(){
       CHART.groups = {}; CHART.groupDirty = true; CHART.groupSaved = false; paintCharts();
     });
@@ -2943,10 +2991,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
 
   /* Groups go back to the job's metadata.csv, in the production console's
-     column spelling. "SampleID,Group" is not a style choice: dada2_pipeline.R
-     reads the id column case-insensitively, but one merge in it is written
-     by.y="SampleID" — so that exact spelling is the one that works everywhere,
-     and it is what the production editor already writes. */
+     column spelling. "SampleID,Group" is what the production editor already
+     writes, and dada2_pipeline.R's loader accepts it along with sampleid /
+     sample_id / sample / #sampleid, case-insensitively.
+
+     Until 2.9.13 one merge in that pipeline was hardcoded by.y="SampleID",
+     which made this the only spelling that worked everywhere. That merge is
+     gone (it joined against a variable that did not exist, so the plot it fed
+     had never been produced). Writing one spelling is still the right thing —
+     the fewer spellings in circulation, the fewer places a future reader has
+     to check — but it is now a convention rather than a constraint. */
   function saveGroups(){
     var S = CHART.shape || {};
     var names = S.samples || S.labels || S.names

@@ -1741,8 +1741,21 @@ if (!is.null(meta_df)) {
     vals <- trimws(as.character(meta_df[[col]]))
     vals[vals == "NA" | is.na(vals)] <- ""
     n_uniq <- length(unique(vals[nchar(vals) > 0]))
-    # Keep as grouping if 2–20 unique values and not all unique (i.e., not a row-ID)
-    if (n_uniq >= 2 && n_uniq <= 20 && n_uniq < n_samp) {
+    # Keep as grouping if 2–20 unique values and not all unique (i.e., not a row-ID).
+    #
+    # The "not all unique" rule is there to reject ID-like and free-text columns
+    # we are only GUESSING are groupings. It must not reject the column the user
+    # explicitly named Group/Treatment/Grp: a one-sample-per-group design (four
+    # samples, four conditions — U2BI-139) is a real design, and under the old
+    # rule n_uniq == n_samp silently dropped it, so the group-mean stacked bars,
+    # prevalence-by-group, annotated taxonomy heatmaps and per-column PCoA were
+    # all skipped for exactly the grouping the user had asked for. A declared
+    # column is a declaration; the heuristic stays in force for every other one.
+    #
+    # This does not make a test appear: perm_feasible() still refuses PERMANOVA
+    # and betadisper at one sample per group, and beta_stats.txt still says so.
+    is_declared <- !is.na(grp_col) && identical(col, grp_col)
+    if (n_uniq >= 2 && n_uniq <= 20 && (n_uniq < n_samp || is_declared)) {
       gv  <- setNames(vals, sample_names)
       lvs <- unique(gv[nchar(gv) > 0])
       # Offset colours so each column gets a visually distinct palette
@@ -3115,11 +3128,29 @@ tryCatch({
     obs_df <- data.frame(Sample=sample_names,
                          ObservedASVs=as.integer(rowSums(seqtab_nochim > 0)),
                          stringsAsFactors=FALSE)
-    # Merge metadata
-    if (nrow(metadata_df) > 0) {
-      obs_df <- merge(obs_df, metadata_df, by.x="Sample", by.y="SampleID", all.x=TRUE)
+    # Attach the grouping columns.
+    #
+    # This used to read `metadata_df`, a name that is defined NOWHERE in this
+    # file — the loader above calls it `meta_df`. Every run that supplied
+    # metadata threw "object 'metadata_df' not found", the enclosing tryCatch
+    # swallowed it, and the only symptom was one "[skip] ASV richness by group"
+    # line in the log. ASV_richness_by_*.pdf has therefore never been written.
+    #
+    # It also merged on by.y="SampleID", which is one of the FOUR id spellings
+    # the loader accepts (sampleid / sample_id / sample / #sampleid), so even
+    # with the right variable a file headed `sampleId` would have failed. There
+    # is nothing to merge: meta_df was already re-indexed to sample_names, and
+    # meta_cols is keyed by sample name, so align by name and skip the join.
+    for (col_name in names(meta_cols)) {
+      obs_df[[col_name]] <- unname(meta_cols[[col_name]][obs_df$Sample])
     }
-    for (col_name in meta_cols) {
+    # names(), not the list itself: `for (x in meta_cols)` binds x to each
+    # named VECTOR of group values, so col_name was c("Feed","Reactor",...) and
+    # paste0() vectorised into one filename per sample. Every other loop over
+    # meta_cols in this file already uses names(); this one site did not, and
+    # the undefined `metadata_df` above aborted the section before the loop ran,
+    # so the mistake was never reached and never reported.
+    for (col_name in names(meta_cols)) {
       tryCatch({
         out_f <- file.path(plots_dir, paste0("ASV_richness_by_", col_name, ".pdf"))
         obs_df[[col_name]] <- factor(obs_df[[col_name]])
