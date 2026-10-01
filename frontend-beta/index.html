@@ -136,7 +136,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 
 /* job list */
 .jobs{display:flex;flex-direction:column}
-.job{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;
+.job{display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;
   padding:13px 14px;border-bottom:1px solid var(--line);cursor:pointer}
 .job:last-child{border-bottom:none}
 .job:hover{background:var(--surface-3)}
@@ -293,6 +293,22 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .kv{display:flex;flex-wrap:wrap;gap:6px}
 .kv span{font-size:11px;padding:3px 8px;border-radius:4px;background:var(--surface-2);color:var(--fg-2)}
 
+.delbar{display:flex;align-items:center;gap:12px;margin-top:14px;padding:13px 14px;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);flex-wrap:wrap}
+.delbar .msg{font-size:12px;color:var(--fg-2)}
+.delbar .sp{margin-left:auto}
+.del{display:flex;flex-direction:column;gap:9px;margin-top:14px;padding:13px 14px;
+  background:var(--err-soft);border:1px solid var(--err);border-radius:var(--r)}
+.del b{color:var(--err)}
+.del .what{font-size:12.5px;color:var(--fg-2);line-height:1.5}
+.del .what .mono{color:var(--fg)}
+.del .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn.danger{border-color:var(--err);color:var(--err);background:var(--surface)}
+.btn.danger:hover{background:var(--err);color:#fff;border-color:var(--err)}
+.jdel{flex:none;display:grid;place-items:center;width:26px;height:26px;padding:0;
+  border:1px solid transparent;border-radius:5px;background:none;color:var(--fg-3);opacity:0}
+.job:hover .jdel,.jdel:focus-visible{opacity:1}
+.jdel:hover{border-color:var(--err);color:var(--err);background:var(--err-soft)}
 /* ── chart editor ───────────────────────────────────────────────────────── */
 .tabbar{display:flex;flex-direction:column;gap:2px;padding:10px 12px}
 .tabrow{display:flex;align-items:center;gap:5px;flex-wrap:wrap;padding:3px 0}
@@ -846,8 +862,24 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<div class="act">' + (nFiles ? nFiles + " file" + (nFiles === 1 ? "" : "s") : "no files")
           + '<br>' + esc(j.started_at ? (isLive(j.status) ? "started " + ago(j.started_at) : when(j.started_at))
                                       : "not started") + '</div>'
+        /* Delete from the list goes to the job's own screen rather than acting
+           here. A one-click delete on a hover target, in a list people scroll
+           and click to open, is a destroyed result folder away from a misclick —
+           and the confirmation needs the file counts anyway. */
+        + (isLive(j.status) ? '<span style="width:26px"></span>'
+            : '<button class="jdel" data-del="' + esc(j.job_id) + '" title="Delete this job"'
+              + ' aria-label="Delete ' + esc(j.job_name || j.job_id) + '">'
+              + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">'
+              + '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button>')
       + '</div>';
     }).join("") + '</div>';
+
+    Array.prototype.forEach.call(box.querySelectorAll(".jdel"), function(b){
+      b.addEventListener("click", function(ev){
+        ev.stopPropagation();
+        go({name:"job", id:b.dataset.del, del:true});
+      });
+    });
 
     Array.prototype.forEach.call(box.querySelectorAll(".job"), function(el){
       function open(){ go({name:"job", id:el.dataset.id}); }
@@ -1146,6 +1178,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + '</div>'
         + '</div>'
         + renderParams(M.params, M.D)
+        + (M.live ? "" : '<div id="delBox"></div>')
         + '<div class="runbar">'
           + (M.st === "completed"
               ? '<span class="msg">Results are on disk in the job folder.</span><span class="sp"></span>'
@@ -1174,6 +1207,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         });
       }
 
+      if(!M.live){
+        mountDelete(jid);
+        /* Arrived by clicking the bin in the list: open the confirmation, once. */
+        if(STATE.view.del){
+          STATE.view.del = false;
+          var d = document.getElementById("delBtn");
+          if(d){ d.click(); d.scrollIntoView({block:"center"}); }
+        }
+      }
+
       var rb = document.getElementById("resBtn");
       if(rb) rb.addEventListener("click", function(){ go({name:"results", id:jid}); });
 
@@ -1190,6 +1233,76 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       });
 
       if(M.st === "waiting_checkpoint") loadCheckpoint(jid);
+    }
+
+    /* Deleting a job is rmtree on the results folder AND on the uploaded reads.
+       There is no trash and no undo, and the uploads may be the only copy on
+       this machine — so the confirmation names what is about to go, in files
+       and megabytes, read from the server rather than guessed. A dialog that
+       says "Are you sure?" is a dialog people click through. */
+    function mountDelete(jid){
+      var box = document.getElementById("delBox");
+      if(!box) return;
+      /* Its own class, not .runbar: two bars sharing one class made "the action
+         bar" ambiguous the moment a second one existed. */
+      box.innerHTML = '<div class="delbar"><span class="msg">Finished with this job?</span>'
+        + '<span class="sp"></span><button class="btn danger" id="delBtn">Delete job</button></div>';
+      document.getElementById("delBtn").addEventListener("click", function(){
+        box.innerHTML = '<div class="del"><div class="what">Checking what this would remove…</div></div>';
+        api("/history/" + encodeURIComponent(jid) + "/usage").then(function(U){
+          if(!U.deletable){
+            box.innerHTML = '<div class="del"><b>This job is ' + esc(U.status) + '.</b>'
+              + '<div class="what">Cancel it first — deleting it now would remove the folder '
+              + 'a running process is still writing to.</div>'
+              + '<div class="row"><button class="btn" id="delNo">Back</button></div></div>';
+            document.getElementById("delNo").addEventListener("click", function(){ mountDelete(jid); });
+            return;
+          }
+          var bits = [];
+          if(U.results_files) bits.push('<b>' + nfmt(U.results_files) + ' result file'
+            + (U.results_files === 1 ? "" : "s") + '</b> (' + U.results_mb + ' MB)');
+          if(U.upload_files) bits.push('<b>' + nfmt(U.upload_files) + ' uploaded read file'
+            + (U.upload_files === 1 ? "" : "s") + '</b> (' + U.upload_mb + ' MB)');
+          box.innerHTML = '<div class="del">'
+            + '<b>Delete “' + esc(U.job_name || jid) + '” permanently?</b>'
+            + '<div class="what">'
+            + (bits.length
+                ? 'This removes ' + bits.join(" and ") + ' from disk, and the job from the list.'
+                : 'This job has no files left on disk. Only the entry in the list goes.')
+            + (U.upload_files
+                ? ' <br>The uploaded reads go too — if this is the only copy on this machine, '
+                  + 'the job cannot be re-run afterwards.'
+                : "")
+            + ' There is no undo.</div>'
+            + '<div class="row"><button class="btn danger" id="delYes">Delete permanently</button>'
+            + '<button class="btn" id="delNo">Keep it</button></div></div>';
+          document.getElementById("delNo").addEventListener("click", function(){ mountDelete(jid); });
+          document.getElementById("delYes").addEventListener("click", function(){
+            var y = document.getElementById("delYes");
+            y.disabled = true; y.textContent = "Deleting…";
+            fetch("/history/" + encodeURIComponent(jid), {method:"DELETE"})
+              .then(function(r){
+                return r.json().then(function(j){
+                  if(!r.ok) throw new Error(j.message || j.error || ("HTTP " + r.status));
+                  return j;
+                });
+              })
+              .then(function(){ stopTimer(); return refreshJobs(); })
+              .then(function(){ go({name:"history"}); })
+              .catch(function(e){
+                y.disabled = false; y.textContent = "Delete permanently";
+                box.querySelector(".what").innerHTML =
+                  '<span style="color:var(--err)">Could not delete — ' + esc(e.message || e)
+                  + '</span>';
+              });
+          });
+        }).catch(function(e){
+          box.innerHTML = '<div class="del"><b>Could not check this job.</b>'
+            + '<div class="what">' + esc(e.message || e) + '</div>'
+            + '<div class="row"><button class="btn" id="delNo">Back</button></div></div>';
+          document.getElementById("delNo").addEventListener("click", function(){ mountDelete(jid); });
+        });
+      });
     }
 
     /* A checkpoint is the pipeline stopping to ask a question, and the question

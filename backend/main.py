@@ -1711,6 +1711,32 @@ def replot_job(job_id: str, body: ReplotBody):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ── helpers: delete files on disk for a job ──────────────────────────────────
+def _job_disk_usage(job_id: str) -> dict:
+    """What deleting this job would actually destroy.
+
+    Callers show this to the user BEFORE they confirm. "Delete job" sounds like
+    it removes a row from a list; it also removes the uploaded FASTQ files,
+    which may be the only copy on this machine.
+    """
+    info = {"results_files": 0, "results_mb": 0.0,
+            "upload_files": 0, "upload_mb": 0.0}
+    for folder, nkey, mkey in ((RESULTS_DIR / job_id, "results_files", "results_mb"),
+                               (UPLOAD_DIR / job_id,  "upload_files",  "upload_mb")):
+        if not folder.exists():
+            continue
+        n = 0
+        b = 0
+        for f in folder.rglob("*"):
+            if f.is_file():
+                n += 1
+                try:
+                    b += f.stat().st_size
+                except OSError:
+                    pass
+        info[nkey] = n
+        info[mkey] = round(b / 1_048_576, 1)
+    return info
+
 def _delete_job_files(job_id: str):
     """Delete upload folder and results folder for a job (best-effort)."""
     for folder in (UPLOAD_DIR / job_id, RESULTS_DIR / job_id):
@@ -1722,25 +1748,57 @@ def _delete_job_files(job_id: str):
                 print(f"[delete] Could not remove {folder}: {e}")
 
 # ── 8. Delete single job from history ─────────────────────────────────────────
-@app.delete("/history/{job_id}")
-def delete_history(job_id: str):
-    """Remove a finished job from history and delete its files on disk."""
+# Statuses where the job is still the executor's business. "running" was the
+# only one refused, but a QUEUED job has a future waiting on it and a job paused
+# at a checkpoint has a live R process polling for the signal file — deleting
+# either removes the folder out from under a process that is about to use it.
+_LIVE_STATUSES = ("running", "queued", "waiting_checkpoint")
+
+@app.get("/history/{job_id}/usage")
+def history_usage(job_id: str):
+    """What deleting this job would destroy — for a confirmation prompt."""
     if job_id not in jobs:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
-    if jobs[job_id].get("status") == "running":
-        return JSONResponse(status_code=400, content={"error": "Cannot delete a running job"})
+    st = jobs[job_id].get("status")
+    info = _job_disk_usage(job_id)
+    info["job_id"]    = job_id
+    info["job_name"]  = jobs[job_id].get("job_name", "")
+    info["status"]    = st
+    info["deletable"] = st not in _LIVE_STATUSES
+    return info
+
+@app.delete("/history/{job_id}")
+def delete_history(job_id: str):
+    """Remove a finished job from history and delete its files on disk.
+
+    This is permanent: shutil.rmtree on the results folder AND on the uploaded
+    reads. There is no trash. The response says what went, so the caller can
+    report something true rather than just "deleted".
+    """
+    if job_id not in jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    st = jobs[job_id].get("status")
+    if st in _LIVE_STATUSES:
+        return JSONResponse(status_code=400, content={
+            "error": f"Cannot delete a job that is {st}",
+            "message": "Cancel it first, then delete it.",
+        })
+    removed = _job_disk_usage(job_id)
     _delete_job_files(job_id)
     with jobs_lock:
         del jobs[job_id]
         save_jobs()
-    return {"deleted": job_id}
+    return {"deleted": job_id, "removed": removed}
 
 # -- 9a. Clear all finished history ------------------------------------------
 @app.delete("/history")
 def clear_history():
     with jobs_lock:
+        # Same rule as the single delete: anything the executor still owns is
+        # left alone. Listing the safe statuses rather than excluding the live
+        # ones means a status nobody has thought of yet is kept, not destroyed.
         to_del = [jid for jid, j in jobs.items()
-                  if j.get("status") in ("completed", "cancelled", "error")]
+                  if j.get("status") in ("completed", "cancelled", "error", "uploaded")]
         for jid in to_del:
             _delete_job_files(jid)
             del jobs[jid]
