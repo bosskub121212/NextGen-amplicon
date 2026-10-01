@@ -293,6 +293,38 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .kv{display:flex;flex-wrap:wrap;gap:6px}
 .kv span{font-size:11px;padding:3px 8px;border-radius:4px;background:var(--surface-2);color:var(--fg-2)}
 
+/* ── chart editor ───────────────────────────────────────────────────────── */
+.segbtns{display:inline-flex;border:1px solid var(--line-strong);border-radius:5px;overflow:hidden}
+.segb{padding:5px 13px;border:none;background:var(--surface);font-size:12.5px;font-weight:600;
+  color:var(--fg-2);border-right:1px solid var(--line-strong)}
+.segb:last-child{border-right:none}
+.segb.on{background:var(--accent);color:var(--accent-ink)}
+.segb:not(.on):hover{background:var(--surface-2);color:var(--fg)}
+.lnk{border:none;background:none;padding:0;font-size:11.5px;color:var(--accent);
+  text-decoration:underline;font-weight:500}
+.swatches{display:flex;flex-direction:column;padding:6px 0}
+.sw{display:flex;align-items:center;gap:10px;padding:6px 14px;cursor:pointer}
+.sw:hover{background:var(--surface-3)}
+.sw input[type=color]{flex:none;width:28px;height:22px;padding:0;border:1px solid var(--line-strong);
+  border-radius:4px;background:none;cursor:pointer}
+.sw .nm{flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw .gr{flex:none;font-size:10.5px;color:var(--fg-3)}
+.samps{display:flex;flex-direction:column;padding:6px 0;max-height:260px;overflow:auto}
+.samp{display:flex;align-items:center;gap:8px;padding:5px 14px}
+.samp:hover{background:var(--surface-3)}
+.samp .ar{display:flex;flex-direction:column;gap:1px;flex:none}
+.samp .mv{width:18px;height:13px;line-height:11px;padding:0;border:1px solid var(--line);
+  background:var(--surface);border-radius:3px;font-size:7px;color:var(--fg-2)}
+.samp .mv:hover:not([disabled]){border-color:var(--accent);color:var(--accent)}
+.samp .mv[disabled]{opacity:.3;cursor:not-allowed}
+.samp .alias{flex:1;min-width:0;padding:5px 8px;font-size:12.5px}
+.samp .raw{flex:none;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:var(--mono);font-size:10.5px;color:var(--fg-3)}
+#canvasBox svg{max-width:100%;height:auto;display:block}
+#canvasBox .seg{transition:opacity .12s}
+#canvasBox:hover .seg{opacity:.82}
+#canvasBox .seg:hover{opacity:1}
+
 /* ── results view ───────────────────────────────────────────────────────── */
 .rescols{display:grid;grid-template-columns:290px minmax(0,1fr);gap:14px;align-items:start}
 .filelist{display:flex;flex-direction:column;max-height:560px;overflow:auto}
@@ -705,6 +737,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(view.name === "job")      return renderJob(view.id);
     if(view.name === "pipeline") return renderPipeline(view.key);
     if(view.name === "results")  return renderResults(view.id);
+    if(view.name === "charts")   return renderCharts(view.id);
   }
 
   /* ═══ home: project history ════════════════════════════════════════════ */
@@ -1320,13 +1353,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + '<div class="runbar">'
         + '<span class="msg">Everything here is already on disk in the job folder.</span>'
         + '<span class="sp"></span>'
-        + '<a class="btn" href="/?job=' + encodeURIComponent(id) + '&tab=charts">Customise charts</a>'
+        + '<button class="btn" id="chartBtn">Customise charts</button>'
         + '<a class="btn pri" href="/results/' + encodeURIComponent(id) + '/download">Download everything (.zip)</a>'
       + '</div>'
-      + '<div class="note"><b>Customising charts opens the production console.</b> '
-        + 'The colour picker writes its settings into the job folder, and the beta does not '
-        + 'own that yet — pointing two editors at one settings file is how a saved palette '
-        + 'quietly loses half its colours.</div>';
+      + '<div class="note">The figures above are the ones R drew during the run. '
+        + '<b>Customise charts</b> redraws the taxonomy table here, with your own colours, '
+        + 'labels and sample order — and writes them into the same settings file the '
+        + 'production console uses.</div>';
+
+    var cb = document.getElementById("chartBtn");
+    if(cb) cb.addEventListener("click", function(){ go({name:"charts", id:id}); });
 
     var box = document.getElementById("fileList");
     Array.prototype.forEach.call(box.querySelectorAll(".fitem"), function(el){
@@ -1417,6 +1453,648 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + '<div class="errbox" style="border-radius:0 0 var(--r) var(--r)">'
           + '<b>Could not read this table.</b> ' + esc(e.message || e) + '</div>';
       });
+  }
+
+  /* ═══ chart editor ═════════════════════════════════════════════════════
+     Draws the taxonomy table as a stacked bar chart and lets you restyle it,
+     in this console rather than by bouncing to the other one.
+
+     It reads and writes the SAME file the production editor does —
+     edit_charts/settings.json, shape {font, colors, sampleAliases,
+     sampleOrder} — so a palette set here opens there and vice versa, and the
+     R re-plot picks it up either way. A second settings file with its own
+     schema would have been much easier to write and would have split every
+     job's styling in two depending on which console last touched it.
+
+     The chart is hand-built SVG: this page has no bundler and no network on a
+     lab machine, so a plotting library is not available to it. That turns out
+     to be a feature — the marks follow the house rules exactly (2px gaps
+     between stacked fills, 4px rounded ends at the outer edges only, recessive
+     axes, text in text tokens rather than series colour). */
+
+  /* The validated categorical palette: adjacent-pair CVD ΔE 9.1 light /
+     8.4 dark. Assigned in fixed order to the most abundant taxa; everything
+     past the eighth folds into "Other" in neutral grey rather than being given
+     a ninth generated hue nobody can tell from the first eight. */
+  var SERIES_LIGHT = ["#2a78d6","#eb6834","#1baf7a","#eda100",
+                      "#e87ba4","#008300","#4a3aa7","#e34948"];
+  var SERIES_DARK  = ["#3987e5","#d95926","#199e70","#c98500",
+                      "#d55181","#008300","#9085e9","#e66767"];
+  var OTHER_LIGHT = "#8a989e", OTHER_DARK = "#6d8087";
+
+  function isDark(){
+    var r = document.documentElement;
+    return r.getAttribute("data-theme") === "dark"
+      || (!r.getAttribute("data-theme") && matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+  function seriesPalette(){ return isDark() ? SERIES_DARK : SERIES_LIGHT; }
+  function otherColour(){ return isDark() ? OTHER_DARK : OTHER_LIGHT; }
+
+  /* Resolve the theme tokens to literal colours. The SVG is serialised for PNG
+     export, and a var(--fg) inside a detached SVG string resolves to nothing —
+     the exported image would come out with invisible text. */
+  function ink(){
+    var cs = getComputedStyle(document.documentElement);
+    function v(n, fb){ return (cs.getPropertyValue(n) || "").trim() || fb; }
+    return {
+      fg:      v("--fg", "#0e1517"),
+      fg2:     v("--fg-2", "#54646a"),
+      fg3:     v("--fg-3", "#8a989e"),
+      line:    v("--line", "#d7dee1"),
+      surface: v("--surface", "#ffffff")
+    };
+  }
+
+  var CHART = null;
+
+  function defaultFont(){
+    return {titleSize:16, axisSize:12, legendSize:11,
+            titleText:"", titleBold:false, titleItalic:false,
+            chartType:"bar100", showGrid:true,
+            xItalic:false, xBold:false, xSize:12,
+            colorscale:"Viridis", topNTaxa:8};
+  }
+
+  function renderCharts(id){
+    var listed = STATE.jobs.filter(function(j){ return j.job_id === id; })[0] || {job_id:id};
+    CHART = {
+      id: id, rank: "", ranks: [],
+      taxa: [], samples: [], matrix: [],   /* matrix[taxonIndex][sampleIndex] */
+      font: defaultFont(), colors: {}, aliases: {}, order: [],
+      view: "chart", dirty: false, saved: false, err: ""
+    };
+
+    work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
+        + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 6l-6 6 6 6"/></svg>'
+        + 'Back to results</button></div>'
+      + '<h2 class="ttl">' + esc(listed.job_name || id) + ' — chart editor</h2>'
+      + '<p class="sub" id="cSub">Loading the taxonomy table…</p>'
+      + '<div id="cBody"><div class="panel"><div class="skel">Loading…</div></div></div>';
+
+    document.getElementById("backBtn").addEventListener("click", function(){
+      go({name:"results", id:id});
+    });
+
+    Promise.all([
+      api("/results/" + encodeURIComponent(id) + "/tables"),
+      api("/results/" + encodeURIComponent(id) + "/edit_charts/settings").catch(function(){ return {}; })
+    ]).then(function(r){
+      var tables = Array.isArray(r[0].tables) ? r[0].tables : [];
+      var saved  = r[1] || {};
+      if(saved.font)          CHART.font    = Object.assign(defaultFont(), saved.font);
+      if(saved.colors)        CHART.colors  = saved.colors;
+      if(saved.sampleAliases) CHART.aliases = saved.sampleAliases;
+      if(saved.sampleOrder)   CHART.order   = saved.sampleOrder;
+
+      CHART.ranks = tables.filter(function(t){ return /^taxonomy_[a-z]+\.csv$/i.test(t); });
+      if(!CHART.ranks.length){
+        document.getElementById("cBody").innerHTML =
+          '<div class="panel"><div class="skel">No taxonomy_*.csv in this job’s result folder, '
+          + 'so there is nothing to plot here. The figures the pipeline already drew are on the '
+          + 'results screen.</div></div>';
+        document.getElementById("cSub").textContent = "";
+        return;
+      }
+      /* Genus is the rank people look at first; fall back to whatever exists. */
+      var pref = ["taxonomy_genus.csv","taxonomy_phylum.csv","taxonomy_family.csv"];
+      CHART.rank = pref.filter(function(p){ return CHART.ranks.indexOf(p) !== -1; })[0]
+                   || CHART.ranks[0];
+      loadRank();
+    }).catch(function(e){
+      document.getElementById("cBody").innerHTML =
+        '<div class="panel"><div class="errbox" style="border-radius:var(--r)">'
+        + '<b>Could not open the chart editor.</b>\n' + esc(e.message || e) + '</div></div>';
+    });
+  }
+
+  function loadRank(){
+    var sub = document.getElementById("cSub");
+    if(sub) sub.textContent = "Reading " + CHART.rank + "…";
+    fetch("/results/" + encodeURIComponent(CHART.id) + "/table/" + encodeURIComponent(CHART.rank),
+          {cache:"no-store"})
+      .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+      .then(function(text){
+        var rows = parseCSV(text);
+        if(rows.length < 2) throw new Error("The table has no data rows.");
+        var head = rows[0];
+
+        /* Taxon-per-row or sample-per-row? Decide from the first header, and
+           SAY which way it was read — a silently transposed chart looks
+           perfectly plausible and is completely wrong. */
+        var first = (head[0] || "").trim().toLowerCase();
+        var byRow = !/^(sample|sampleid|id)$/.test(first);
+        CHART.orientation = byRow ? "taxa in rows" : "samples in rows";
+
+        var taxa = [], samples = [], matrix = [];
+        if(byRow){
+          samples = head.slice(1).map(function(h){ return h.trim(); });
+          rows.slice(1).forEach(function(r){
+            var name = (r[0] || "").trim();
+            if(!name) return;
+            taxa.push(name);
+            matrix.push(samples.map(function(_, i){
+              var v = parseFloat(r[i+1]); return isFinite(v) ? v : 0; }));
+          });
+        } else {
+          taxa = head.slice(1).map(function(h){ return h.trim(); });
+          var bySample = rows.slice(1).filter(function(r){ return (r[0]||"").trim(); });
+          samples = bySample.map(function(r){ return r[0].trim(); });
+          taxa.forEach(function(_, ti){
+            matrix.push(bySample.map(function(r){
+              var v = parseFloat(r[ti+1]); return isFinite(v) ? v : 0; }));
+          });
+        }
+        CHART.taxa = taxa; CHART.samples = samples; CHART.matrix = matrix;
+        if(!CHART.order.length) CHART.order = samples.slice();
+        CHART.err = "";
+        paintCharts();
+      })
+      .catch(function(e){
+        CHART.err = e.message || String(e);
+        paintCharts();
+      });
+  }
+
+  /* Rank the taxa by total abundance, keep the top N, fold the rest into
+     "Other". This is the step that keeps the palette honest. */
+  function series(){
+    var totals = CHART.matrix.map(function(row, i){
+      return {i:i, name:CHART.taxa[i], sum:row.reduce(function(a,b){ return a+b; }, 0)};
+    });
+    /* Unassigned reads are not a taxon and must not win a colour slot by being
+       numerous — NA is routinely the biggest "genus" in a 16S table. */
+    var isNA = function(n){ return /^(na|unassigned|unclassified|)$/i.test(String(n).trim()); };
+    var named = totals.filter(function(t){ return !isNA(t.name) && t.sum > 0; });
+    var na    = totals.filter(function(t){ return isNA(t.name) && t.sum > 0; });
+    named.sort(function(a,b){ return b.sum - a.sum; });
+
+    var n = Math.max(1, CHART.font.topNTaxa || 8);
+    var top = named.slice(0, n);
+    var rest = named.slice(n).concat(na);
+
+    var out = top.map(function(t){
+      return {name:t.name, values:CHART.matrix[t.i].slice(), grouped:false};
+    });
+    if(rest.length){
+      var acc = CHART.samples.map(function(){ return 0; });
+      rest.forEach(function(t){
+        CHART.matrix[t.i].forEach(function(v, k){ acc[k] += v; });
+      });
+      out.push({name:"Other", values:acc, grouped:true,
+                members:rest.length, hasNA:na.length > 0});
+    }
+    return out;
+  }
+
+  function colourOf(s, idx){
+    if(CHART.colors[s.name]) return CHART.colors[s.name];
+    if(s.grouped) return otherColour();
+    var p = seriesPalette();
+    return p[idx % p.length];
+  }
+
+  function sampleOrderIdx(){
+    /* The user's chosen order, dropping names that are no longer present and
+       appending any the saved order did not know about. */
+    var known = CHART.samples.slice();
+    var idx = [];
+    CHART.order.forEach(function(nm){
+      var k = known.indexOf(nm);
+      if(k !== -1 && idx.indexOf(k) === -1) idx.push(k);
+    });
+    known.forEach(function(_, k){ if(idx.indexOf(k) === -1) idx.push(k); });
+    return idx;
+  }
+
+  function labelOf(sample){ return CHART.aliases[sample] || sample; }
+
+  /* ── the chart ───────────────────────────────────────────────────────────
+     Hand-built SVG. Marks follow the house rules: a 2px surface gap between
+     stacked fills so segment boundaries survive a CVD-ambiguous adjacent pair,
+     4px rounded corners on the outermost ends only, grid and axes recessive,
+     and every piece of text in a text token rather than its series colour. */
+  function chartSVG(opts){
+    opts = opts || {};
+    var W = opts.width || 900, H = opts.height || 460;
+    var S  = series();
+    var ord = sampleOrderIdx();
+    var F  = CHART.font;
+    var C  = ink();
+    var pct = F.chartType === "bar100";
+
+    var padL = 62, padR = 210, padT = F.titleText ? 44 : 22, padB = 76;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    if(plotW < 40 || plotH < 40) return "";
+
+    var totals = ord.map(function(si){
+      return S.reduce(function(a, s){ return a + (s.values[si] || 0); }, 0);
+    });
+    var yMax = pct ? 100 : Math.max.apply(null, totals.concat([1]));
+    /* A round number above the data, so the axis reads in human steps. */
+    if(!pct){
+      var mag = Math.pow(10, Math.floor(Math.log(yMax) / Math.LN10));
+      yMax = Math.ceil(yMax / (mag / 2)) * (mag / 2);
+    }
+
+    var n = ord.length || 1;
+    var slot = plotW / n;
+    var bw = Math.min(76, slot * 0.62);
+    var GAP = 2;                       /* surface gap between stacked fills */
+
+    var out = [];
+    out.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H
+      + '" viewBox="0 0 ' + W + ' ' + H + '" font-family="IBM Plex Sans, system-ui, sans-serif">');
+    out.push('<rect width="' + W + '" height="' + H + '" fill="' + C.surface + '"/>');
+
+    if(F.titleText){
+      out.push('<text x="' + padL + '" y="26" fill="' + C.fg + '" font-size="' + F.titleSize
+        + '" font-weight="' + (F.titleBold ? 700 : 600) + '"'
+        + (F.titleItalic ? ' font-style="italic"' : "") + '>' + esc(F.titleText) + '</text>');
+    }
+
+    /* y axis: grid first so marks sit on top of it */
+    var ticks = 5;
+    for(var t = 0; t <= ticks; t++){
+      var val = yMax * t / ticks;
+      var y = padT + plotH - (plotH * t / ticks);
+      if(F.showGrid && t > 0)
+        out.push('<line x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (padL + plotW)
+          + '" y2="' + y.toFixed(1) + '" stroke="' + C.line + '" stroke-width="1"/>');
+      out.push('<text x="' + (padL - 10) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="end" fill="'
+        + C.fg2 + '" font-size="' + F.axisSize + '">'
+        + (pct ? val.toFixed(0) : shortNum(val)) + '</text>');
+    }
+    out.push('<line x1="' + padL + '" y1="' + (padT + plotH) + '" x2="' + (padL + plotW)
+      + '" y2="' + (padT + plotH) + '" stroke="' + C.line + '" stroke-width="1"/>');
+    out.push('<text transform="translate(16,' + (padT + plotH / 2) + ') rotate(-90)" '
+      + 'text-anchor="middle" fill="' + C.fg2 + '" font-size="' + F.axisSize + '">'
+      + (pct ? "Relative abundance (%)" : "Reads") + '</text>');
+
+    /* bars */
+    ord.forEach(function(si, k){
+      var x = padL + slot * k + (slot - bw) / 2;
+      var total = totals[k] || 0;
+      var acc = 0;
+      var drawn = [];
+      S.forEach(function(s, i){
+        var v = s.values[si] || 0;
+        if(v <= 0) return;
+        var frac = total > 0 ? v / total : 0;
+        var h = (pct ? frac * 100 : v) / yMax * plotH;
+        drawn.push({s:s, i:i, v:v, frac:frac, h:h, y0:acc});
+        acc += h;
+      });
+      drawn.forEach(function(d, j){
+        var yTop = padT + plotH - d.y0 - d.h;
+        var h = Math.max(0, d.h - (j < drawn.length - 1 ? GAP : 0));
+        if(h <= 0) return;
+        var isTop = j === drawn.length - 1, isBottom = j === 0;
+        var r = 4;
+        var path;
+        if(isTop && isBottom) path = roundRect(x, yTop, bw, h, r, r);
+        else if(isTop)        path = roundRect(x, yTop, bw, h, r, 0);
+        else if(isBottom)     path = roundRect(x, yTop, bw, h, 0, r);
+        else                  path = roundRect(x, yTop, bw, h, 0, 0);
+        out.push('<path d="' + path + '" fill="' + colourOf(d.s, d.i) + '"'
+          + ' data-t="' + esc(d.s.name) + '" data-s="' + esc(CHART.samples[si]) + '"'
+          + ' data-v="' + d.v + '" data-p="' + (d.frac * 100).toFixed(2) + '"'
+          + ' class="seg"><title>' + esc(d.s.name) + ' · ' + esc(labelOf(CHART.samples[si]))
+          + '\n' + nfmt(d.v) + ' reads · ' + (d.frac * 100).toFixed(1) + '%</title></path>');
+      });
+      var lbl = labelOf(CHART.samples[si]);
+      out.push('<text x="' + (x + bw / 2) + '" y="' + (padT + plotH + 18)
+        + '" text-anchor="end" fill="' + C.fg2 + '" font-size="' + F.xSize + '"'
+        + (F.xItalic ? ' font-style="italic"' : "") + (F.xBold ? ' font-weight="700"' : "")
+        + ' transform="rotate(-35 ' + (x + bw / 2) + ' ' + (padT + plotH + 18) + ')">'
+        + esc(lbl) + '</text>');
+    });
+
+    /* legend — always present for two or more series */
+    var ly = padT + 2;
+    S.forEach(function(s, i){
+      out.push('<rect x="' + (padL + plotW + 22) + '" y="' + ly + '" width="11" height="11" rx="2.5" fill="'
+        + colourOf(s, i) + '"/>');
+      var nm = s.name.length > 26 ? s.name.slice(0, 25) + "…" : s.name;
+      out.push('<text x="' + (padL + plotW + 39) + '" y="' + (ly + 10) + '" fill="' + C.fg
+        + '" font-size="' + F.legendSize + '">' + esc(nm) + '</text>');
+      ly += 18;
+    });
+    if(S.length && S[S.length - 1].grouped){
+      out.push('<text x="' + (padL + plotW + 22) + '" y="' + (ly + 10) + '" fill="' + C.fg3
+        + '" font-size="' + Math.max(9, F.legendSize - 1) + '">'
+        + esc(S[S.length - 1].members + " more"
+              + (S[S.length - 1].hasNA ? ", plus unassigned" : "")) + '</text>');
+    }
+    out.push('</svg>');
+    return out.join("");
+  }
+
+  function roundRect(x, y, w, h, rTop, rBot){
+    rTop = Math.min(rTop, h / 2, w / 2); rBot = Math.min(rBot, h / 2, w / 2);
+    return "M" + (x + rTop) + "," + y
+      + "h" + (w - 2 * rTop) + "a" + rTop + "," + rTop + " 0 0 1 " + rTop + "," + rTop
+      + "v" + (h - rTop - rBot)
+      + "a" + rBot + "," + rBot + " 0 0 1 " + (-rBot) + "," + rBot
+      + "h" + (-(w - 2 * rBot))
+      + "a" + rBot + "," + rBot + " 0 0 1 " + (-rBot) + "," + (-rBot)
+      + "v" + (-(h - rTop - rBot))
+      + "a" + rTop + "," + rTop + " 0 0 1 " + rTop + "," + (-rTop) + "z";
+  }
+
+  function shortNum(v){
+    if(v >= 1e6) return (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + "M";
+    if(v >= 1e3) return (v / 1e3).toFixed(v >= 1e4 ? 0 : 1) + "k";
+    return String(Math.round(v));
+  }
+
+  /* The table view. Not a nicety: three of the light-mode palette slots sit
+     below 3:1 against the surface, and the rule for that is relief — a reader
+     who cannot separate two fills must have somewhere to read the numbers. */
+  function chartTable(){
+    var S = series(), ord = sampleOrderIdx();
+    var pct = CHART.font.chartType === "bar100";
+    var totals = ord.map(function(si){
+      return S.reduce(function(a, s){ return a + (s.values[si] || 0); }, 0); });
+    return '<div class="tblwrap"><table class="dtab"><thead><tr><th>Taxon</th>'
+      + ord.map(function(si){ return '<th style="text-align:right">'
+          + esc(labelOf(CHART.samples[si])) + '</th>'; }).join("")
+      + '</tr></thead><tbody>'
+      + S.map(function(s, i){
+          return '<tr><td><span style="display:inline-block;width:9px;height:9px;border-radius:2px;'
+            + 'background:' + colourOf(s, i) + ';margin-right:7px"></span>' + esc(s.name) + '</td>'
+            + ord.map(function(si, k){
+                var v = s.values[si] || 0;
+                var show = pct && totals[k] > 0 ? (v / totals[k] * 100).toFixed(1) + "%" : nfmt(v);
+                return '<td class="n">' + show + '</td>'; }).join("") + '</tr>'; }).join("")
+      + '</tbody></table></div>';
+  }
+
+  /* ── the editor ──────────────────────────────────────────────────────── */
+  function paintCharts(){
+    var body = document.getElementById("cBody");
+    if(!body) return;
+    var sub = document.getElementById("cSub");
+
+    if(CHART.err){
+      body.innerHTML = '<div class="panel"><div class="errbox" style="border-radius:var(--r)">'
+        + '<b>Could not read ' + esc(CHART.rank) + '.</b>\n' + esc(CHART.err) + '</div></div>';
+      if(sub) sub.textContent = "";
+      return;
+    }
+
+    var S = series();
+    if(sub) sub.innerHTML = esc(CHART.taxa.length) + ' taxa × ' + esc(CHART.samples.length)
+      + ' samples, read as <b>' + esc(CHART.orientation || "taxa in rows") + '</b>'
+      + ' · showing the top ' + (S.length - (S[S.length-1] && S[S.length-1].grouped ? 1 : 0));
+
+    var F = CHART.font;
+    body.innerHTML =
+        '<div class="rescols" style="grid-template-columns:minmax(0,1fr) 320px">'
+        + '<div class="panel">'
+          + '<div class="resbar">'
+            + '<div class="segbtns" role="group" aria-label="View">'
+              + '<button class="segb' + (CHART.view === "chart" ? " on" : "") + '" data-view="chart">Chart</button>'
+              + '<button class="segb' + (CHART.view === "table" ? " on" : "") + '" data-view="table">Table</button>'
+            + '</div>'
+            + '<span class="sp"></span>'
+            + '<button class="btn" id="pngBtn">Download PNG</button>'
+          + '</div>'
+          + '<div id="canvasBox" style="padding:' + (CHART.view === "chart" ? "14px" : "0") + '">'
+            + (CHART.view === "chart" ? chartSVG({width:900, height:460}) : chartTable())
+          + '</div>'
+        + '</div>'
+
+        + '<div class="panel">'
+          + '<div class="sechdr"><h3>Customise</h3><span class="hint" id="savedHint">'
+            + (CHART.dirty ? "unsaved" : CHART.saved ? "saved" : "") + '</span></div>'
+          + '<div class="grid2" style="grid-template-columns:1fr;padding:14px;gap:13px">'
+            + '<div class="f"><label for="c_rank">Rank</label><select id="c_rank">'
+              + CHART.ranks.map(function(r){
+                  var nm = r.replace(/^taxonomy_/, "").replace(/\.csv$/, "");
+                  return '<option value="' + esc(r) + '"' + (r === CHART.rank ? " selected" : "")
+                    + '>' + esc(nm.charAt(0).toUpperCase() + nm.slice(1)) + '</option>'; }).join("")
+              + '</select></div>'
+            + '<div class="f"><label for="c_type">Chart</label><select id="c_type">'
+              + '<option value="bar100"' + (F.chartType === "bar100" ? " selected" : "") + '>Relative abundance (100%)</option>'
+              + '<option value="bar"' + (F.chartType === "bar" ? " selected" : "") + '>Read counts</option>'
+              + '</select></div>'
+            + '<div class="f"><label for="c_top">Taxa shown separately</label><select id="c_top">'
+              + [4,6,8,10,12,15,20].map(function(k){
+                  return '<option value="' + k + '"' + (k === F.topNTaxa ? " selected" : "")
+                    + '>Top ' + k + '</option>'; }).join("")
+              + '</select>'
+              + '<span class="note" id="topNote"></span></div>'
+            + '<div class="f"><label for="c_title">Title</label>'
+              + '<input type="text" id="c_title" value="' + esc(F.titleText) + '" placeholder="leave blank for no title"></div>'
+            + '<div class="grid2" style="padding:0;gap:10px">'
+              + '<div class="f"><label for="c_ts">Title size</label>'
+                + '<input type="text" id="c_ts" value="' + F.titleSize + '"></div>'
+              + '<div class="f"><label for="c_as">Axis size</label>'
+                + '<input type="text" id="c_as" value="' + F.axisSize + '"></div>'
+              + '<div class="f"><label for="c_ls">Legend size</label>'
+                + '<input type="text" id="c_ls" value="' + F.legendSize + '"></div>'
+              + '<div class="f"><label for="c_xs">Sample label size</label>'
+                + '<input type="text" id="c_xs" value="' + F.xSize + '"></div>'
+            + '</div>'
+            + '<div class="grid2" style="padding:0;gap:10px">'
+              + '<div class="f"><label for="c_grid">Grid lines</label><select id="c_grid">'
+                + '<option value="true"' + (F.showGrid ? " selected" : "") + '>on</option>'
+                + '<option value="false"' + (!F.showGrid ? " selected" : "") + '>off</option></select></div>'
+              + '<div class="f"><label for="c_xi">Sample labels</label><select id="c_xi">'
+                + '<option value="n"' + (!F.xItalic && !F.xBold ? " selected" : "") + '>plain</option>'
+                + '<option value="i"' + (F.xItalic ? " selected" : "") + '>italic</option>'
+                + '<option value="b"' + (F.xBold && !F.xItalic ? " selected" : "") + '>bold</option></select></div>'
+            + '</div>'
+          + '</div>'
+
+          + '<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Colours</h3>'
+            + '<span class="hint"><button class="lnk" id="resetCol">reset to default</button></span></div>'
+          + '<div class="swatches">'
+          + S.map(function(s, i){
+              return '<label class="sw"><input type="color" data-tax="' + esc(s.name) + '" value="'
+                + esc(toHex(colourOf(s, i))) + '">'
+                + '<span class="nm">' + esc(s.name) + '</span>'
+                + (s.grouped ? '<span class="gr">' + s.members + ' taxa</span>' : "")
+                + '</label>'; }).join("")
+          + '</div>'
+
+          + '<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Samples</h3>'
+            + '<span class="hint">rename and reorder</span></div>'
+          + '<div class="samps" id="samps">'
+          + sampleOrderIdx().map(function(si, pos){
+              return '<div class="samp" data-s="' + esc(CHART.samples[si]) + '">'
+                + '<div class="ar">'
+                  + '<button class="mv" data-dir="-1" data-pos="' + pos + '" aria-label="Move up"'
+                    + (pos === 0 ? " disabled" : "") + '>&#9650;</button>'
+                  + '<button class="mv" data-dir="1" data-pos="' + pos + '" aria-label="Move down"'
+                    + (pos === CHART.samples.length - 1 ? " disabled" : "") + '>&#9660;</button>'
+                + '</div>'
+                + '<input type="text" class="alias" data-s="' + esc(CHART.samples[si]) + '" value="'
+                  + esc(labelOf(CHART.samples[si])) + '">'
+                + '<span class="raw" title="name in the data">' + esc(CHART.samples[si]) + '</span>'
+                + '</div>'; }).join("")
+          + '</div>'
+        + '</div>'
+      + '</div>'
+
+      + '<div class="runbar">'
+        + '<span class="msg" id="saveMsg">Saved into the job folder as '
+          + '<span class="mono">edit_charts/settings.json</span> — the same file the production '
+          + 'console reads, so a palette set here opens there too.</span>'
+        + '<span class="sp"></span>'
+        + '<button class="btn" id="revertBtn">Revert</button>'
+        + '<button class="btn pri" id="saveBtn">Save settings</button>'
+      + '</div>';
+
+    wireCharts();
+  }
+
+  function toHex(c){
+    if(/^#[0-9a-f]{6}$/i.test(c)) return c;
+    var m = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/i.exec(c || "");
+    if(!m) return "#888888";
+    return "#" + [1,2,3].map(function(k){
+      return ("0" + parseInt(m[k], 10).toString(16)).slice(-2); }).join("");
+  }
+
+  function wireCharts(){
+    var F = CHART.font;
+    function touch(){ CHART.dirty = true; CHART.saved = false; paintCharts(); }
+
+    Array.prototype.forEach.call(document.querySelectorAll(".segb"), function(b){
+      b.addEventListener("click", function(){ CHART.view = b.dataset.view; paintCharts(); });
+    });
+
+    document.getElementById("c_rank").addEventListener("change", function(){
+      CHART.rank = this.value; loadRank();
+    });
+    document.getElementById("c_type").addEventListener("change", function(){
+      F.chartType = this.value; touch();
+    });
+    document.getElementById("c_top").addEventListener("change", function(){
+      F.topNTaxa = parseInt(this.value, 10); touch();
+    });
+    document.getElementById("c_title").addEventListener("input", function(){
+      F.titleText = this.value; touch();
+    });
+    [["c_ts","titleSize"],["c_as","axisSize"],["c_ls","legendSize"],["c_xs","xSize"]]
+      .forEach(function(p){
+        document.getElementById(p[0]).addEventListener("change", function(){
+          var v = parseFloat(this.value);
+          if(isFinite(v) && v >= 6 && v <= 40){ F[p[1]] = v; touch(); }
+          else this.value = F[p[1]];
+        });
+      });
+    document.getElementById("c_grid").addEventListener("change", function(){
+      F.showGrid = this.value === "true"; touch();
+    });
+    document.getElementById("c_xi").addEventListener("change", function(){
+      F.xItalic = this.value === "i"; F.xBold = this.value === "b"; touch();
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.sw input[type="color"]'), function(inp){
+      inp.addEventListener("change", function(){
+        CHART.colors[inp.dataset.tax] = inp.value; touch();
+      });
+    });
+    document.getElementById("resetCol").addEventListener("click", function(){
+      CHART.colors = {}; touch();
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll(".alias"), function(inp){
+      inp.addEventListener("change", function(){
+        var raw = inp.dataset.s, v = inp.value.trim();
+        if(v && v !== raw) CHART.aliases[raw] = v; else delete CHART.aliases[raw];
+        touch();
+      });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".mv"), function(b){
+      b.addEventListener("click", function(){
+        var ord = sampleOrderIdx().map(function(i){ return CHART.samples[i]; });
+        var pos = parseInt(b.dataset.pos, 10), to = pos + parseInt(b.dataset.dir, 10);
+        if(to < 0 || to >= ord.length) return;
+        var tmp = ord[pos]; ord[pos] = ord[to]; ord[to] = tmp;
+        CHART.order = ord; touch();
+      });
+    });
+
+    var note = document.getElementById("topNote");
+    if(note){
+      var pal = seriesPalette().length;
+      note.innerHTML = F.topNTaxa > pal
+        ? "<b>Above " + pal + ", colours repeat and adjacent pairs stop being reliably "
+          + "distinguishable</b> — especially for colour-blind readers. Use the table view, "
+          + "or set your own colours below."
+        : "Everything past this falls into a single grey “Other”. Unassigned reads always "
+          + "go there rather than taking a colour slot.";
+    }
+
+    document.getElementById("pngBtn").addEventListener("click", downloadPNG);
+    document.getElementById("saveBtn").addEventListener("click", saveChartSettings);
+    document.getElementById("revertBtn").addEventListener("click", function(){
+      CHART.font = defaultFont(); CHART.colors = {}; CHART.aliases = {};
+      CHART.order = CHART.samples.slice(); touch();
+    });
+  }
+
+  function saveChartSettings(){
+    var btn = document.getElementById("saveBtn");
+    var msg = document.getElementById("saveMsg");
+    btn.disabled = true;
+    /* The production console's exact shape. Anything else here would split a
+       job's styling in two depending on which console last touched it. */
+    var payload = {
+      font: CHART.font,
+      colors: CHART.colors,
+      sampleAliases: CHART.aliases,
+      sampleOrder: sampleOrderIdx().map(function(i){ return CHART.samples[i]; })
+    };
+    fetch("/results/" + encodeURIComponent(CHART.id) + "/edit_charts/settings", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    }).then(function(r){
+      if(!r.ok) throw new Error("HTTP " + r.status);
+      CHART.dirty = false; CHART.saved = true;
+      paintCharts();
+    }).catch(function(e){
+      btn.disabled = false;
+      if(msg) msg.innerHTML = '<span style="color:var(--err)">Could not save — '
+        + esc(e.message || e) + '</span>';
+    });
+  }
+
+  /* PNG via canvas. The SVG is serialised with literal colours already, which
+     is why ink() resolves the theme tokens rather than emitting var(--fg). */
+  function downloadPNG(){
+    var scale = 2;
+    var W = 900, H = 460;
+    var svg = chartSVG({width:W, height:H});
+    var img = new Image();
+    var blob = new Blob([svg], {type:"image/svg+xml;charset=utf-8"});
+    var url = URL.createObjectURL(blob);
+    img.onload = function(){
+      var cv = document.createElement("canvas");
+      cv.width = W * scale; cv.height = H * scale;
+      var ctx = cv.getContext("2d");
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      cv.toBlob(function(b){
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(b);
+        a.download = CHART.rank.replace(/\.csv$/, "") + "_"
+          + (CHART.font.chartType === "bar100" ? "relative" : "counts") + ".png";
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+      }, "image/png");
+    };
+    img.onerror = function(){
+      URL.revokeObjectURL(url);
+      var msg = document.getElementById("saveMsg");
+      if(msg) msg.innerHTML = '<span style="color:var(--err)">The browser would not rasterise '
+        + 'the chart. Use Download CSV on the results screen and plot it elsewhere.</span>';
+    };
+    img.src = url;
   }
 
   /* ═══ pipeline pages ═══════════════════════════════════════════════════ */
