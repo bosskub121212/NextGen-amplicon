@@ -401,11 +401,32 @@ save_pdf <- function(plot_obj, filename, width=10, height=7) {
 cat("\n── Section 1: ASV Summary ────────────────────────────────────\n")
 tryCatch({
   asv_counts <- sort(sample_sums(ps), decreasing=TRUE)
+
+  # Richness per sample, matched BY NAME.
+  #
+  # This used to be apply(otu_table(ps), 2, ...), which returns the counts in
+  # the table's own sample order, and then zipped them against Sample and Reads,
+  # which sort() had just put in descending read order. Two different orders
+  # pasted together column by column: every sample was shown another sample's
+  # ASV count, with no error and no warning. In the U2BI-139 run, Pre-R2 was
+  # reported with Pre-R1's 133 ASVs. Sorting is also why this looked right on
+  # any test where the samples happened to arrive sorted by depth.
+  #
+  # MARGIN 2 was wrong a second way: it is only the sample margin when taxa are
+  # rows. With taxa in columns it counts taxa, and the length no longer even
+  # matches the number of samples.
+  otu_m    <- as(otu_table(ps), "matrix")
+  rich_vec <- if (taxa_are_rows(ps)) apply(otu_m, 2, function(x) sum(x > 0))
+              else                   apply(otu_m, 1, function(x) sum(x > 0))
   asv_tbl <- data.frame(
     Sample    = names(asv_counts),
     Reads     = as.integer(asv_counts),
-    n_ASV     = apply(otu_table(ps), 2, function(x) sum(x > 0))
+    n_ASV     = as.integer(rich_vec[names(asv_counts)]),
+    stringsAsFactors = FALSE
   )
+  if (any(is.na(asv_tbl$n_ASV)))
+    cat("[WARN] ASV summary: richness missing for",
+        paste(asv_tbl$Sample[is.na(asv_tbl$n_ASV)], collapse=", "), "\n")
   write.csv(asv_tbl, file.path(TABLES_DIR, "asv_summary.csv"), row.names=FALSE)
 
   if (has_ggplot2) {
@@ -426,7 +447,20 @@ cat("\n── Section 2: Alpha Diversity ─────────────
 tryCatch({
   alpha_measures <- c("Observed","Shannon","Simpson","Chao1","ACE")
   alpha_df <- estimate_richness(ps, measures=alpha_measures)
-  alpha_df$Sample <- rownames(alpha_df)
+
+  # estimate_richness() hands back make.names() row names, so a sample called
+  # "Bacteria_Pre-R1" comes back as "Bacteria_Pre.R1". Writing that into the CSV
+  # put a second spelling of the same sample into the result folder: every other
+  # file there says Pre-R1, this one said Pre.R1, and anything that joins the
+  # two by name — the chart editor's grouping, colours and per-sample
+  # visibility — silently matched nothing. Map the mangled names back.
+  real <- sample_names(ps)
+  hit  <- match(rownames(alpha_df), make.names(real))
+  alpha_df$Sample <- ifelse(is.na(hit), rownames(alpha_df), real[hit])
+
+  # Sample FIRST. estimate_richness() leaves it last, and a reader that assumes
+  # the label is column 0 then labels the chart with the Observed counts.
+  alpha_df <- alpha_df[, c("Sample", setdiff(names(alpha_df), "Sample")), drop=FALSE]
 
   # Add metadata grouping if available
   if (has_meta) {
