@@ -2092,6 +2092,69 @@ async def save_preview_settings(job_id: str, request: Request):
     (ec_dir / "settings.json").write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True}
 
+# ── Chart presets ─────────────────────────────────────────────────────────────
+#
+# A job's edit_charts/settings.json belongs to that job. A preset is the same
+# shape of settings stored OUTSIDE any job, so a look worked out once — palette,
+# fonts, how many taxa, group means on or off — can be applied to every job that
+# goes out to the same customer. Without it the only way to make two deliveries
+# match is to redo the styling by hand and hope.
+#
+# One flat file, because that is the whole data model: a name to a settings
+# object. It is written atomically (temp file then replace) so an interrupted
+# save cannot leave a half-written JSON file that loses every preset at once.
+
+PRESETS_PATH = BASE_DIR / "chart_presets.json"
+
+def _read_presets() -> dict:
+    if not PRESETS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(PRESETS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        # Say it out loud. Returning {} quietly would look exactly like "no
+        # presets saved yet", and the next save would then overwrite the file
+        # that could not be parsed, losing every preset in it.
+        print(f"[presets] chart_presets.json is unreadable: {e}")
+        return {}
+
+def _write_presets(data: dict) -> None:
+    tmp = PRESETS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(PRESETS_PATH)
+
+@app.get("/chart_presets")
+def list_chart_presets():
+    """Every saved preset, newest-named first is NOT assumed — order is the
+    file's own, so the list does not reshuffle between visits."""
+    return {"presets": _read_presets()}
+
+@app.post("/chart_presets")
+async def save_chart_preset(request: Request):
+    body = await request.json()
+    name = str(body.get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="A preset needs a name")
+    if len(name) > 80:
+        raise HTTPException(status_code=400, detail="Preset names are limited to 80 characters")
+    settings = body.get("settings")
+    if not isinstance(settings, dict):
+        raise HTTPException(status_code=400, detail="settings must be an object")
+    data = _read_presets()
+    data[name] = settings
+    _write_presets(data)
+    return {"ok": True, "name": name, "count": len(data)}
+
+@app.delete("/chart_presets/{name}")
+def delete_chart_preset(name: str):
+    data = _read_presets()
+    if name not in data:
+        raise HTTPException(status_code=404, detail="No preset by that name")
+    del data[name]
+    _write_presets(data)
+    return {"ok": True, "count": len(data)}
+
 # ── Edit Charts folder endpoints ──────────────────────────────────────────────
 
 @app.get("/results/{job_id}/edit_charts/settings")
