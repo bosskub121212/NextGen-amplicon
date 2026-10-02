@@ -832,7 +832,25 @@ def run_r_pipeline(job_id: str, params: RunParams):
                         break
         except Exception:
             pass
-        ont_db = params.ont_db_path or _emu_db_auto or db_path
+        # The database the user chose wins. This used to read
+        #   params.ont_db_path or _emu_db_auto or db_path
+        # so whenever emu_db_mar2026 existed it was used no matter what was
+        # selected, while run_params.json and Job Detail recorded the selection —
+        # a run with emu_silva on record actually ran against emu_db_mar2026.
+        # The auto-lookup is now only a fallback for a choice that is not an Emu
+        # database at all, and it says so in the log.
+        _chosen = params.ont_db_path or db_path or ""
+        if _chosen and Path(_chosen).is_file():
+            _chosen = str(Path(_chosen).parent)
+        _chosen_is_emu = bool(_chosen) and (Path(_chosen) / "taxonomy.tsv").exists()
+        if _chosen_is_emu:
+            ont_db = _chosen
+        else:
+            ont_db = _emu_db_auto or _chosen
+            if _emu_db_auto and _chosen:
+                print(f"[emu] WARNING: {_chosen} is not an Emu database (no taxonomy.tsv) "
+                      f"— using {ont_db} instead")
+        print(f"[emu] database: {ont_db}")
         # Validate: if ont_db points to a FILE (e.g. species_taxid.fasta was selected),
         # use the parent directory instead
         if ont_db and Path(ont_db).is_file():
