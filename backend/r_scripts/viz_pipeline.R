@@ -846,6 +846,14 @@ tryCatch({
         # same taxa, and ps is wider than the tree.
         otu_mat <- t(as.matrix(otu_table(ps_tree)))
         tree_obj <- phy_tree(ps_tree)
+        # picante needs a rooted tree for include.root=TRUE, and the tree the
+        # pipeline builds is unrooted ("Rooted tree required" in the log).
+        # Midpoint rooting is the usual choice when there is no outgroup.
+        if (!ape::is.rooted(tree_obj)) {
+          tree_obj <- if (requireNamespace("phangorn", quietly=TRUE))
+            phangorn::midpoint(tree_obj) else ape::root(tree_obj, outgroup=1, resolve.root=TRUE)
+          cat("  Tree was unrooted — midpoint-rooted for Faith's PD\n")
+        }
         pd_res <- pd(otu_mat, tree_obj, include.root=TRUE)
         cat(sprintf("  Faith's PD over %d of %d ASVs (the tree's tips)\n",
                     ntaxa(ps_tree), ntaxa(ps)))
@@ -974,20 +982,24 @@ if (has_vegan && has_ggplot2) {
 cat("\n── Section 3c: Rank Abundance Curve ───────────────────────────\n")
 if (has_ggplot2) {
   tryCatch({
-    otu_ra <- as.matrix(otu_table(ps))
+    otu_ra <- as(otu_table(ps), "matrix")
     if (taxa_are_rows(ps)) otu_ra <- t(otu_ra)
-
-    ra_list <- lapply(seq_len(nrow(otu_ra)), function(i) {
-      x   <- sort(otu_ra[i, otu_ra[i,] > 0], decreasing=TRUE)
-      if (length(x) == 0) return(NULL)
-      rel <- x / sum(x) * 100
-      data.frame(Sample=rownames(otu_ra)[i], Rank=seq_along(rel),
-                 RelAbundance=as.numeric(rel), stringsAsFactors=FALSE)
+    # Built as plain vectors and one data.frame: the per-sample rbind failed on
+    # the run machine with "subscript out of bounds".
+    smp_ra <- rownames(otu_ra); if (is.null(smp_ra)) smp_ra <- sample_names(ps)
+    parts  <- lapply(seq_len(nrow(otu_ra)), function(i) {
+      x <- sort(as.numeric(otu_ra[i, ]), decreasing=TRUE); x <- x[x > 0]
+      if (!length(x)) return(NULL)
+      list(s=rep(smp_ra[i], length(x)), r=seq_along(x), a=x / sum(x) * 100)
     })
-    ra_df <- do.call(rbind, Filter(Negate(is.null), ra_list))
+    parts  <- parts[!vapply(parts, is.null, logical(1))]
+    ra_df  <- data.frame(Sample=unlist(lapply(parts, `[[`, "s")),
+                         Rank=unlist(lapply(parts, `[[`, "r")),
+                         RelAbundance=unlist(lapply(parts, `[[`, "a")),
+                         stringsAsFactors=FALSE)
 
-    if (!is.null(ra_df) && nrow(ra_df) > 0) {
-      if (has_meta) ra_df[[GROUP_COL]] <- meta_df[ra_df$Sample, GROUP_COL]
+    if (nrow(ra_df) > 0) {
+      if (has_meta) ra_df[[GROUP_COL]] <- as.character(meta_df[[GROUP_COL]][match(ra_df$Sample, rownames(meta_df))])
       write.csv(ra_df, file.path(TABLES_DIR, "rank_abundance.csv"), row.names=FALSE)
       n_ra  <- length(unique(ra_df$Sample))
       pal_ra <- make_palette(n_ra)
@@ -1001,7 +1013,8 @@ if (has_ggplot2) {
         theme(legend.text=element_text(size=8), legend.key.size=unit(0.5,"cm"))
       save_pdf(p_ra, "03c_rank_abundance.pdf", width=10, height=6)
     }
-  }, error=function(e) cat(sprintf("[WARN] Rank abundance: %s\n", e$message)))
+  }, error=function(e) cat(sprintf("[WARN] Rank abundance: %s (in %s)\n", e$message,
+                                    paste(deparse(conditionCall(e)), collapse=" "))))
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1878,7 +1891,9 @@ if (has_meta && has_ggplot2 &&
         rl <- sub("^[a-z]__", "",
                   as.character(tax_table(ps_sig_ds)[rownames(mat_ds), "Genus"]))
         rl[is.na(rl) | rl == ""] <- rownames(mat_ds)[is.na(rl) | rl == ""]
-        rownames(mat_ds) <- rl
+        # Several ASVs can carry the same genus label ("Unclassified" twice
+        # stopped the heatmap: duplicate row.names). Keep them apart.
+        rownames(mat_ds) <- make.unique(rl, sep=" #")
       }
 
       ann_col_ds <- data.frame(
@@ -2161,7 +2176,17 @@ if (has_meta && has_ggplot2 && has_phyloseq &&
         colData = S4Vectors::DataFrame(group=grp_lef)
       )
 
-      res_lef <- lefser(se_lef, groupCol="group", lda.threshold=2)
+      grp_lef <- droplevels(grp_lef)
+      SummarizedExperiment::colData(se_lef)$group <- grp_lef
+      # lefser renamed groupCol to classCol; passing the old name to a new
+      # lefser is silently ignored and it then looks for a column "GROUP".
+      lef_args <- list(se_lef, lda.threshold=2)
+      if ("classCol" %in% names(formals(lefser::lefser))) lef_args$classCol <- "group"
+      else lef_args$groupCol <- "group"
+      res_lef <- do.call(lefser::lefser, lef_args)
+      res_lef <- as.data.frame(res_lef)
+      if (!"Names" %in% names(res_lef) && "features" %in% names(res_lef))
+        res_lef$Names <- res_lef$features
 
       if (!is.null(res_lef) && nrow(res_lef) > 0) {
         # Annotate with genus names
@@ -2273,11 +2298,11 @@ if (has_phyloseq && has_vegan && has_ggplot2 &&
     dend_data <- ggdendro::dendro_data(hc_ct, type="rectangle")
 
     p_dend <- ggplot() +
-      ggdendro::geom_segment(
+      ggplot2::geom_segment(
         data = ggdendro::segment(dend_data),
         aes(x=x, y=y, xend=xend, yend=yend),
         linewidth=0.5, colour="#475569") +
-      ggdendro::geom_text(
+      ggplot2::geom_text(
         data = ggdendro::label(dend_data),
         aes(x=x, y=y, label=label),
         hjust=1, size=2.8, colour="#1e293b") +
@@ -2365,6 +2390,8 @@ if (has_phyloseq && has_meta && has_ggplot2) {
                       as.character(tax_table(ps_ms)[, ranks_ms]))
         tax_ms[is.na(tax_ms) | tax_ms == ""] <- taxa_names(ps_ms)[is.na(tax_ms) | tax_ms == ""]
         colnames(otu_ms) <- tax_ms
+        if (anyDuplicated(colnames(otu_ms)))
+          otu_ms <- t(rowsum(t(otu_ms), colnames(otu_ms)))
 
         for (pair_ms in grp_pairs_ms) {
           g1 <- pair_ms[1]; g2 <- pair_ms[2]
@@ -2377,18 +2404,18 @@ if (has_phyloseq && has_meta && has_ggplot2) {
           mat1 <- otu_ms[s1, , drop=FALSE]
           mat2 <- otu_ms[s2, , drop=FALSE]
 
-          meta_res <- do.call(rbind, lapply(colnames(otu_ms), function(tx) {
-            tryCatch({
-              tt <- t.test(mat1[, tx], mat2[, tx], var.equal=FALSE)
-              data.frame(
-                taxon   = tx,
-                mean_g1 = round(mean(mat1[, tx]), 4),
-                mean_g2 = round(mean(mat2[, tx]), 4),
-                p_value = tt$p.value,
-                stringsAsFactors = FALSE
-              )
-            }, error=function(e) NULL)
-          }))
+          # Column by column, as STAMP: the per-taxon rbind failed with
+          # "names do not match previous names" once Bioconductor's rbind
+          # was in place. A taxon t.test cannot test (constant) gets NA.
+          meta_res <- data.frame(
+            taxon   = colnames(otu_ms),
+            mean_g1 = round(colMeans(mat1), 4),
+            mean_g2 = round(colMeans(mat2), 4),
+            p_value = vapply(seq_len(ncol(otu_ms)), function(j)
+              tryCatch(t.test(mat1[, j], mat2[, j], var.equal=FALSE)$p.value,
+                       error=function(e) NA_real_), 0),
+            stringsAsFactors = FALSE, row.names = NULL)
+          meta_res <- meta_res[!is.na(meta_res$p_value), , drop=FALSE]
 
           if (is.null(meta_res) || nrow(meta_res) == 0) next
           meta_res$p_adj <- p.adjust(meta_res$p_value, method="BH")
@@ -3012,10 +3039,12 @@ if (has_phyloseq && has_meta && has_ggplot2) {
                  subtitle=sprintf("Top 25 by abundance · mean ± 1.96 SE · n = %d vs %d · * = q < 0.05%s",
                                   length(s1s), length(s2s),
                                   if (min(length(s1s), length(s2s)) < 3)
-                                    " · too few samples per group for a reliable test" else ""),
+                                    "\nToo few samples per group for a reliable test" else ""),
                  x="", y="Mean Relative Abundance (%)", colour="Group") +
             theme_bw(base_size=10) +
-            theme(legend.position="top")
+            # title and subtitle start at the figure's left edge, not over the
+            # plot panel, so the long subtitle is not cut off at the right
+            theme(legend.position="top", plot.title.position="plot")
 
           fname_st <- sprintf("19_stamp_%s_%s_vs_%s.pdf",
                               tolower(rank_st), g1s, g2s)
@@ -3038,8 +3067,13 @@ if (has_phyloseq && has_meta && has_ggplot2) {
 cat("\n── Section 20: UniFrac PCoA + NMDS ─────────────────────────────\n")
 if (has_phyloseq && has_ggplot2) {
   tryCatch({
-    ps_uf    <- ps
+    # ps carries no tree (it is kept wider than the tree on purpose); the
+    # tree lives on ps_tree. Using ps here gave "phy_tree slot is empty" for
+    # all four UniFrac figures.
+    ps_uf    <- if (has_tree) ps_tree else ps
     tree_ok  <- has_tree
+    if (has_tree && !ape::is.rooted(phy_tree(ps_uf)) && requireNamespace("phangorn", quietly=TRUE))
+      phy_tree(ps_uf) <- phangorn::midpoint(phy_tree(ps_uf))
 
     # Auto-build NJ tree if not present and rep-seqs FASTA available
     if (!tree_ok && file.exists(seq_fasta) &&
