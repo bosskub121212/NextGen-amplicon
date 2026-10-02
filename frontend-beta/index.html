@@ -4352,6 +4352,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
       var nOut = ungroupedCount();
       var nHiddenNow = sampleNames.filter(function(n){ return CHART.hidden[n]; }).length;
+      /* Hidden samples that still hold a value in this grouping. Unticking
+         them and pressing Save is how people set up "R1 vs R2" — so Save
+         does that rather than sitting greyed out with nothing to do. */
+      var nTake = sampleNames.filter(function(n){
+        return CHART.hidden[n] && CHART.groups[n]; }).length;
+      var canSave = CHART.groupDirty || nTake > 0;
       out.push('<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Groups</h3>'
         + '<span class="hint">' + (nGrouped
             ? gNames.length + " group" + (gNames.length === 1 ? "" : "s")
@@ -4460,15 +4466,15 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
            one and is not. */
         + '<div class="gsave"><span class="msg" id="gMsg">'
           + (CHART.groupDirty ? 'Groups not saved yet.'
+             : nTake
+             ? nTake + ' unticked sample' + (nTake === 1 ? "" : "s") + ' will be taken out of “'
+               + esc(CHART.groupCol || "Group") + '” (left blank in metadata.csv) when you save, '
+               + 'so this grouping holds only the ticked ones. The other groupings are not touched.'
              : CHART.groupSaved ? 'Saved to the job\u2019s metadata.csv.'
-             : nHiddenNow
-             ? 'Nothing to save — the groups match metadata.csv. Hiding a sample only '
-               + 'affects the chart; use “Take hidden samples out of this grouping” to '
-               + 'put that into the file.'
              : 'Groups are read from and written to the job\u2019s '
                + '<span class="mono">metadata.csv</span>.')
-          + '</span><button class="btn' + (CHART.groupDirty ? " pri" : "")
-          + '" id="gSave"' + (CHART.groupDirty ? "" : " disabled") + '>Save groups</button></div>');
+          + '</span><button class="btn' + (canSave ? " pri" : "")
+          + '" id="gSave"' + (canSave ? "" : " disabled") + '>Save groups</button></div>');
     }
     return out.join("");
   }
@@ -4595,7 +4601,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     /* Turn a hidden sample into a blank cell in this grouping — the same thing
        the chart is already showing, but written down, so it survives a reload
        and a re-run instead of having to be re-ticked every time. */
-    on("gDropHidden", "click", function(){
+    on("gDropHidden", "click", dropHidden);
+    function dropHidden(){
       var S2 = CHART.shape || {};
       var nm = S2.samples || S2.labels || S2.names || [];
       var n = 0;
@@ -4606,7 +4613,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       CHART.groupDirty = true; CHART.groupSaved = false;
       CHART.presetMsg = "";
       paintCharts();
-    });
+    }
     on("gClear", "click", function(){
       CHART.groups = {}; CHART.groupDirty = true; CHART.groupSaved = false; paintCharts();
     });
@@ -4617,7 +4624,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       nm.forEach(function(n){ CHART.groups[n] = n; });
       CHART.groupDirty = true; CHART.groupSaved = false; paintCharts();
     });
-    on("gSave", "click", saveGroups);
+    on("gSave", "click", function(){
+      var S2 = CHART.shape || {};
+      var nm = S2.samples || S2.labels || S2.names || [];
+      if(nm.some(function(x){ return CHART.hidden[x] && CHART.groups[x]; })){
+        dropHidden(); syncGroupCol();
+      }
+      saveGroups();
+    });
 
     var note = document.getElementById("topNote");
     if(note){

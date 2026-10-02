@@ -929,8 +929,13 @@ tryCatch({
         v <- melt_df[[rank]]; v[is.na(v) | trimws(v) == ""] <- "Unclassified"; v
       }
 
-      # Top N taxa (per job's Top Taxa setting); merge rest as "Other"
+      # Top N taxa (per job's Top Taxa setting); merge rest as "Other".
+      # Rank on each taxon's TOTAL per sample — a name split across several
+      # lineages would otherwise be ranked on the average of its pieces and
+      # drop out of the Top N while being one of the biggest.
       top_taxa <- melt_df %>%
+        dplyr::group_by(Sample, .data[[rank]]) %>%
+        dplyr::summarise(Abundance = sum(Abundance, na.rm=TRUE), .groups="drop") %>%
         dplyr::group_by(.data[[rank]]) %>%
         dplyr::summarise(mean_abund = mean(Abundance, na.rm=TRUE)) %>%
         dplyr::arrange(dplyr::desc(mean_abund)) %>%
@@ -1015,6 +1020,8 @@ if (has_pheatmap && has_ggplot2 && has_dplyr && has_tidyr) {
 
       top_n_hm    <- min(TOP_N, length(unique(melt_hm[[hm_lvl]])))
       top_taxa_hm <- melt_hm %>%
+        dplyr::group_by(Sample, .data[[hm_lvl]]) %>%
+        dplyr::summarise(Abundance = sum(Abundance, na.rm=TRUE), .groups="drop") %>%
         dplyr::group_by(.data[[hm_lvl]]) %>%
         dplyr::summarise(mean_abund = mean(Abundance, na.rm=TRUE), .groups="drop") %>%
         dplyr::arrange(dplyr::desc(mean_abund)) %>%
@@ -1084,10 +1091,23 @@ if (has_meta && has_ggplot2) {
       melt2[[rank2]][is.na(melt2[[rank2]])] <- "Unclassified"
       melt2[[GROUP_COL]] <- meta_df[melt2$Sample, GROUP_COL]
 
-      # Aggregate by group (mean)
-      group_melt2 <- melt2 %>%
+      # Sum within each sample FIRST, then average across the group's samples.
+      #
+      # tax_glom() groups by the whole lineage down to this rank, so one name
+      # can be several rows: a family of the same name under two different
+      # orders, or "Unclassified" reached from different parents. On the
+      # U2BI-139 run that is 30 duplicated family names and 81 genus names.
+      # This used to take mean() straight over those rows, which AVERAGES the
+      # pieces of a taxon instead of adding them, and the bar fell short of
+      # 100% by exactly what was lost: Pre-R2 came out at 95.7% at Family and
+      # 88.4% at Genus — reproduced from asv_table.csv and taxonomy_table.csv,
+      # both values to the decimal.
+      per_s2 <- melt2 %>%
+        dplyr::group_by(Sample, .data[[GROUP_COL]], .data[[rank2]]) %>%
+        dplyr::summarise(A=sum(Abundance, na.rm=TRUE), .groups="drop")
+      group_melt2 <- per_s2 %>%
         dplyr::group_by(.data[[GROUP_COL]], .data[[rank2]]) %>%
-        dplyr::summarise(Abundance=mean(Abundance, na.rm=TRUE), .groups="drop")
+        dplyr::summarise(Abundance=mean(A, na.rm=TRUE), .groups="drop")
 
       top_t2 <- group_melt2 %>%
         dplyr::group_by(.data[[rank2]]) %>%
@@ -1097,12 +1117,27 @@ if (has_meta && has_ggplot2) {
         dplyr::pull(.data[[rank2]])
       group_melt2$TaxLabel <- ifelse(group_melt2[[rank2]] %in% top_t2,
                                       group_melt2[[rank2]], "Other")
-      n_col2 <- length(unique(group_melt2$TaxLabel))
-      pal2   <- c(make_palette(min(n_col2 - 1, TOP_N)), "grey80")[seq_len(n_col2)]
+      # One row per (group, label): "Other" is one segment, not a stack of
+      # slivers that happen to share a colour.
+      group_melt2 <- group_melt2 %>%
+        dplyr::group_by(.data[[GROUP_COL]], TaxLabel) %>%
+        dplyr::summarise(Abundance=sum(Abundance), .groups="drop")
+
+      # Biggest first and "Other" last, coloured from the same function as the
+      # per-sample bars. The old palette put grey on whichever label sorted
+      # LAST alphabetically, so "Other" got a real colour and some genus —
+      # Synergistaceae, on this run — was painted grey as if it were the rest.
+      lv2 <- c(top_t2[top_t2 %in% group_melt2$TaxLabel],
+               if ("Other" %in% group_melt2$TaxLabel) "Other")
+      group_melt2$TaxLabel <- factor(group_melt2$TaxLabel, levels=lv2)
+      pal2 <- if (has_plot_helpers) tax_colors(lv2) else {
+        oth <- "Other" %in% lv2
+        setNames(c(make_palette(length(lv2) - oth), if (oth) "grey80"), lv2)
+      }
 
       p2 <- ggplot(group_melt2, aes_string(x=GROUP_COL, y="Abundance", fill="TaxLabel")) +
-        geom_bar(stat="identity", width=0.7) +
-        scale_fill_manual(values=pal2, name=rank2) +
+        geom_bar(stat="identity", width=0.7, position=position_stack(reverse=TRUE)) +
+        scale_fill_manual(values=pal2, name=rank2, breaks=lv2) +
         labs(title=sprintf("Group-level Relative Abundance — %s", rank2),
              x="Group", y="Mean Relative Abundance (%)") +
         theme_bw() +
