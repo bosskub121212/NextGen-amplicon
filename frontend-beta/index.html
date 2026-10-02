@@ -281,6 +281,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
 .runbar{display:flex;align-items:center;gap:12px;margin-top:14px;padding:13px 14px;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r);flex-wrap:wrap}
+/* The chart editor's action bar stays on screen. It used to sit after the
+   Colours list, which at Top 50 is fifty rows long, so "Save settings" was
+   several screens below whatever the user had just changed and read as
+   missing. Sticky, not fixed: it stays inside the page flow and still scrolls
+   away at the very end of the document. */
+.runbar.sticky{position:sticky;bottom:10px;z-index:5;
+  box-shadow:0 -2px 14px rgba(0,0,0,.10)}
 .runbar .msg{font-size:12px;color:var(--fg-2)}
 .runbar .sp{margin-left:auto}
 
@@ -1752,6 +1759,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
              /* named looks, stored outside this job so one can be applied to
                 every job that goes to the same customer */
              presets:{}, presetMsg:"", presetSel:"",
+             /* the R re-render: state, message and the files it produced */
+             rr:{state:"idle", msg:"", files:[], log:""},
              /* every grouping column found in metadata.csv, and which one the
                 chart is currently split by */
              groupCols:[], groupCol:"Group", groupAll:{},
@@ -1836,6 +1845,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       });
       CHART.groups = Object.assign({}, CHART.groupAll[CHART.groupCol] || {});
       loadPresets();
+      rrPoll();
       if(saved.font)          CHART.font    = Object.assign(defaultFont(), saved.font);
       if(saved.colors)        CHART.colors  = saved.colors;
       if(saved.sampleAliases) CHART.aliases = saved.sampleAliases;
@@ -2535,7 +2545,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   function groupLegendDx(P){
     var k = CHART.tab.kind;
     return k === "taxheat" ? (P && P.taxW ? P.taxW : 196) + 92
-         : k === "matrix" ? 112 : 22;
+         : k === "matrix" ? 112
+         : k === "dendro" ? (P && P.leafW ? P.leafW : 150)
+         : 22;
   }
   function groupLegend(P, below){
     if(!CHART.groupOn || !anyGrouped()) return "";
@@ -2667,6 +2679,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
        the longest is 36 characters. Reserve what they actually need, measured,
        so the colour ramp and the group key sit clear of them instead of being
        printed through them. */
+    /* A dendrogram writes its leaf names to the right of the tree, and nothing
+       reserved room for them: the names ran off the edge of the figure and the
+       group key was drawn straight over whatever was left. Measure them. */
+    var leafW = 0;
+    if(k === "dendro" && CHART.shape && CHART.shape.names){
+      visibleIdx(CHART.shape.names).forEach(function(i){
+        leafW = Math.max(leafW, textW(labelOf(CHART.shape.names[i]), F.legendSize)); });
+      leafW = Math.ceil(leafW) + 26;
+      padR = Math.max(padR, leafW + 16);
+    }
     var taxW = 0;
     if(k === "taxheat"){
       var tn = series().filter(function(x){ return !x.grouped; });
@@ -2690,14 +2712,17 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(annot){
       var gw = 0;
       allGroupNames().forEach(function(g){ gw = Math.max(gw, textW(g, F.legendSize)); });
-      var dx = k === "taxheat" ? taxW + 92 : k === "matrix" ? 112 : 22;
+      var dx = k === "taxheat" ? taxW + 92 : k === "matrix" ? 112
+             : k === "dendro" ? leafW : 22;
       padR = Math.max(padR, dx + 17 + Math.ceil(gw) + 20);
       padT += 22;
       if(k === "matrix") padL += 30;
     }
-    if(rep && k === "taxheat") W = Math.max(W, padL + 520 + padR);
+    if(rep && (k === "taxheat" || k === "dendro" || k === "matrix"))
+      W = Math.max(W, padL + 520 + padR);
     var P = {x:padL, y:padT, w:W - padL - padR, h:H - padT - padB, C:C, F:F, W:W, H:H,
-             report:rep, legendTitle:rep ? legendTitleFor() : "", treeW:treeW, taxW:taxW};
+             report:rep, legendTitle:rep ? legendTitleFor() : "", treeW:treeW, taxW:taxW,
+             leafW:leafW};
     if(P.w < 40 || P.h < 40) return "";
 
     var parts = ['<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H
@@ -4107,22 +4132,43 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
               + '<button class="segb' + (CHART.view === "table" ? " on" : "") + '" data-view="table">Table</button>'
             + '</div><span class="sp"></span>'
             + '<span class="msg" id="allPngMsg" style="margin-right:10px">' + esc(EXPORT.msg) + '</span>'
+            + '<button class="btn" id="rrBtn"'
+              + (CHART.rr.state === "running" ? " disabled" : "") + '>'
+              + (CHART.rr.state === "running" ? "R is drawing…" : "Re-render in R") + '</button>'
+            + (CHART.rr.files && CHART.rr.files.length
+                ? '<button class="btn" id="rrZip">Download R figures ('
+                  + CHART.rr.files.length + ')</button>' : "")
             + '<button class="btn" id="allPngBtn"' + (EXPORT.busy ? " disabled" : "") + '>'
             + (EXPORT.busy ? "Exporting…" : "Export all charts (ZIP)") + '</button>'
             + '<button class="btn" id="pngBtn"' + (CHART.err ? " disabled" : "") + '>Download PNG</button>'
           + '</div>'
+          + (CHART.rr.msg
+              ? '<div class="hidnote">' + esc(CHART.rr.msg)
+                + (CHART.rr.state === "failed" && CHART.rr.log
+                    ? '<div class="mono" style="white-space:pre-wrap;max-height:160px;'
+                      + 'overflow:auto;margin-top:6px;font-size:11px">'
+                      + esc(CHART.rr.log.split("\n").slice(-14).join("\n")) + '</div>'
+                    : "")
+                + (CHART.rr.state === "done"
+                    ? ' These are R\u2019s own figures, drawn with the colours and Top-N saved '
+                      + 'here, written to edit_charts/r_png/ \u2014 the originals in r_plots/ '
+                      + 'are untouched.'
+                    : "")
+                + '</div>'
+              : "")
           + '<div id="canvasBox" style="padding:' + (CHART.view === "chart" ? "14px" : "0") + '">'
             + canvas + '</div>'
         + '</div>'
         + '<div class="panel">' + controlsHtml() + '</div>'
       + '</div>'
-      + '<div class="runbar">'
+      + '<div class="runbar sticky">'
         + '<span class="msg" id="saveMsg">Saved into the job folder as '
           + '<span class="mono">edit_charts/settings.json</span> — the same file the production '
           + 'console reads, so a palette set here opens there too.</span>'
         + '<span class="sp"></span>'
         + '<button class="btn" id="revertBtn">Revert</button>'
-        + '<button class="btn pri" id="saveBtn">Save settings</button>'
+        + '<button class="btn' + (CHART.dirty ? " pri" : "") + '" id="saveBtn">'
+        + (CHART.dirty ? "Save settings \u2022 unsaved" : "Save settings") + '</button>'
       + '</div>';
 
     wireCharts();
@@ -4608,6 +4654,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     on("pngBtn", "click", downloadPNG);
     on("allPngBtn", "click", exportAllPNG);
+    on("rrBtn", "click", startRRender);
+    on("rrZip", "click", downloadRZip);
     on("saveBtn", "click", saveChartSettings);
     on("revertBtn", "click", function(){
       CHART.font = defaultFont(); CHART.colors = {}; CHART.aliases = {};
@@ -4721,9 +4769,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   }
 
-  function saveChartSettings(){
+  function saveChartSettings(then){
     var btn = document.getElementById("saveBtn"), msg = document.getElementById("saveMsg");
-    btn.disabled = true;
+    if(btn) btn.disabled = true;
     var S = CHART.shape || {};
     var names = S.samples || S.labels || S.names
       || (S.pts ? S.pts.map(function(p){ return p.name; }) : []);
@@ -4741,10 +4789,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }).then(function(r){
       if(!r.ok) throw new Error("HTTP " + r.status);
       CHART.dirty = false; CHART.saved = true; paintCharts();
+      if(typeof then === "function") then();
     }).catch(function(e){
-      btn.disabled = false;
+      if(btn) btn.disabled = false;
       if(msg) msg.innerHTML = '<span style="color:var(--err)">Could not save — '
         + esc(e.message || e) + '</span>';
+      /* Do not run the follow-up: whatever it was going to do would have been
+         done against settings the server never received. */
+      if(typeof then === "function"){
+        CHART.rr.state = "failed";
+        CHART.rr.msg = "The settings could not be saved, so R was not started: "
+          + (e.message || e);
+        paintCharts();
+      }
     });
   }
 
@@ -4795,6 +4852,86 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      several tabs writing CHART.shape at once and the PNGs would carry each
      other's data — the failure this editor already had once, when a tab switch
      left the previous tab's shape in place. */
+  /* ── the R figures ───────────────────────────────────────────────────────
+     Everything above draws in the browser, which is right for working: it is
+     instant and it responds to every control. It is not what the reports are
+     made of. Those come from R, and a customer comparing a PNG from here with
+     a PDF from r_plots/ is comparing two renderers.
+
+     So: save the settings, hand them to viz_pipeline.R, and let R draw its own
+     forty figures again with the chosen colours and Top-N — into a SEPARATE
+     folder, edit_charts/r_png/, so the delivered figures in r_plots/ are still
+     there to compare against and a re-render cannot destroy them. Then the
+     same ZIP button brings them down. */
+  function rrPoll(){
+    fetch("/results/" + encodeURIComponent(CHART.id) + "/render_r", {cache:"no-store"})
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(j){
+        if(!j) return;
+        CHART.rr.state = j.state || "idle";
+        CHART.rr.files = j.files || [];
+        CHART.rr.log   = j.log || "";
+        if(j.state === "running"){
+          CHART.rr.msg = "R is drawing the figures… this takes a few minutes.";
+          paintCharts();
+          setTimeout(rrPoll, 4000);
+          return;
+        }
+        CHART.rr.msg = j.state === "done"
+          ? CHART.rr.files.length + " figures rendered by R."
+          : j.state === "failed"
+          ? "R could not finish. " + (CHART.rr.log ? "Last lines are below." : "")
+          : "";
+        paintCharts();
+      })
+      .catch(function(){ /* a dropped poll is not a failure; the next one tells us */ });
+  }
+
+  function startRRender(){
+    if(CHART.rr.state === "running") return;
+    CHART.rr.state = "running";
+    CHART.rr.msg = "Saving the settings, then starting R…";
+    paintCharts();
+    /* Save first, unconditionally. R reads the settings FILE, so a palette that
+       is only in the browser's memory would not reach it — the figures would
+       come back in the default colours and look like the button had not
+       worked. */
+    saveChartSettings(function(){
+      syncGroupCol();
+      fetch("/results/" + encodeURIComponent(CHART.id) + "/render_r", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({group_col: CHART.groupCol || ""})
+      }).then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(function(){ setTimeout(rrPoll, 1500); })
+        .catch(function(e){
+          CHART.rr.state = "failed";
+          CHART.rr.msg = "Could not start the render: " + (e.message || e);
+          paintCharts();
+        });
+    });
+  }
+
+  function downloadRZip(){
+    var files = CHART.rr.files || [];
+    if(!files.length) return;
+    CHART.rr.msg = "Collecting " + files.length + " figures…";
+    paintCharts();
+    var base = "/results/" + encodeURIComponent(CHART.id) + "/render_r/";
+    Promise.all(files.map(function(f){
+      return fetch(base + encodeURIComponent(f), {cache:"no-store"})
+        .then(function(r){ if(!r.ok) throw new Error(f + ": HTTP " + r.status);
+                           return r.arrayBuffer(); })
+        .then(function(ab){ return {name:f, bytes:new Uint8Array(ab)}; });
+    })).then(function(got){
+      saveBlob(zipStore(got), CHART.id + "_r_figures.zip");
+      CHART.rr.msg = got.length + " figures saved to " + CHART.id + "_r_figures.zip";
+      paintCharts();
+    }).catch(function(e){
+      CHART.rr.msg = "Could not build the archive: " + (e.message || e);
+      paintCharts();
+    });
+  }
+
   var EXPORT = {busy:false, msg:""};
   var REPORT_W = 1240, REPORT_H = 780;
 
