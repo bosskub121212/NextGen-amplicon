@@ -594,9 +594,13 @@ dev.off <- function(which = dev.cur()) {
 }
 .dev_cleanup <- function() {
   if (!is.null(.OPEN_DEV) && .OPEN_DEV$dev %in% dev.list()) {
-    try(dev.off(.OPEN_DEV$dev), silent=TRUE)
-    if (file.exists(.OPEN_DEV$path)) unlink(.OPEN_DEV$path)
-    cat(sprintf("  ✗ %s: not finished, removed\n", basename(.OPEN_DEV$path)))
+    # Read the path first: dev.off() above forgets .OPEN_DEV, and reading it
+    # afterwards gave file.exists(NULL) -> "invalid 'file' argument", which is
+    # how 17_beta_heatmap_jaccard failed in 2.9.27.
+    p <- .OPEN_DEV$path
+    try(grDevices::dev.off(.OPEN_DEV$dev), silent=TRUE)
+    if (file.exists(p)) unlink(p)
+    cat(sprintf("  ✗ %s: not finished, removed\n", basename(p)))
   }
   .OPEN_DEV <<- NULL
 }
@@ -639,6 +643,13 @@ save_pdf <- function(plot_obj, filename, width=10, height=7) {
 # PNG folder, where nothing listed them and they never reached the download.
 open_dev <- function(filename, width=10, height=7) {
   .dev_cleanup()
+  # Start from no open device at all. ggplot opens R's default device on its
+  # own when it builds a figure, and that stray device used to survive here.
+  # pheatmap measures text on a throw-away pdf(NULL) and, on closing it, R makes
+  # the NEXT device current — the stray one, not ours. The heatmap was then
+  # drawn into the stray device, our PNG never got a page, and no file was
+  # written: 17_beta_heatmap_bray "saved" but missing in 2.9.25 and 2.9.27.
+  while (!is.null(dev.list())) grDevices::dev.off()
   if (DEVICE == "png") filename <- sub("\\.pdf$", ".png", filename)
   path <- file.path(PLOTS_DIR, filename)
   if (DEVICE == "png") png(path, width=width, height=height, units="in", res=DPI, bg="white")
@@ -1736,6 +1747,15 @@ if (has_ancombc && has_meta && has_ggplot2) {
     if (!any(ok_v)) cat("  Volcano skipped — no taxon has both a fold change and a q-value",
                         "(usual with 2 samples per group)\n")
 
+    # "lfc_Grouping4Reactor" -> "Reactor vs feed": ANCOMBC2 names the contrast
+    # after the column and the level, and the reference is the level left out.
+    volc_contrast <- function(col) {
+      lv  <- unique(as.character(meta_df[[GROUP_COL]])); lv <- lv[!is.na(lv) & lv != ""]
+      tst <- sub(paste0("^lfc_", GROUP_COL), "", col)
+      ref <- setdiff(sort(lv), sub(paste0("^lfc_", GROUP_COL), "",
+                                   grep("^lfc_", colnames(res$res), value=TRUE)))[1]
+      if (tst %in% lv && !is.na(ref)) sprintf("%s vs %s", tst, ref) else sub("^lfc_", "", col)
+    }
     if (any(ok_v)) {
       res_df <- res_df[ok_v, , drop=FALSE]
       res_df$neg_log10_q <- -log10(res_df[[padj_col]] + 1e-10)
@@ -1751,7 +1771,7 @@ if (has_ancombc && has_meta && has_ggplot2) {
         geom_vline(xintercept=0, linetype=2, color="#6b7280") +
         labs(title="ANCOMBC2 — Differential Abundance",
              subtitle=sprintf("%s · %d taxa tested, %d with q < 0.05",
-                              sub("^lfc_", "", lfc_col), nrow(res_df),
+                              volc_contrast(lfc_col), nrow(res_df),
                               sum(res_df$Significant, na.rm=TRUE)),
              x="Log2 Fold Change", y="-log10(q-value)") +
         theme_bw()
@@ -2928,6 +2948,10 @@ if (has_phyloseq && has_meta && has_ggplot2) {
         tax_st[is.na(tax_st) | tax_st == ""] <-
           taxa_names(ps_st)[is.na(tax_st) | tax_st == ""]
         colnames(otu_st) <- tax_st
+        # A name reached through two lineages is one taxon here: add the pieces
+        # (as the group bars do), or factor() below fails on duplicated levels.
+        if (anyDuplicated(colnames(otu_st)))
+          otu_st <- t(rowsum(t(otu_st), colnames(otu_st)))
 
         for (pair_st in pairs_st) {
           g1s <- pair_st[1]; g2s <- pair_st[2]
@@ -2938,17 +2962,19 @@ if (has_phyloseq && has_meta && has_ggplot2) {
           if (length(s1s) < 2 || length(s2s) < 2) next
 
           # Mean ± SE per group, t-test p-value
-          stamp_rows <- do.call(rbind, lapply(colnames(otu_st), function(tx) {
-            x1 <- otu_st[s1s, tx]; x2 <- otu_st[s2s, tx]
-            p  <- tryCatch(t.test(x1, x2)$p.value, error=function(e) NA)
-            data.frame(
-              taxon    = tx,
-              mean1    = mean(x1), se1 = sd(x1)/sqrt(length(x1)),
-              mean2    = mean(x2), se2 = sd(x2)/sqrt(length(x2)),
-              p_value  = p,
-              stringsAsFactors = FALSE
-            )
-          }))
+          # One column at a time, then one data.frame. The old version
+          # rbind()-ed one data.frame per taxon and failed on the run machine
+          # with "names do not match previous names" once the Bioconductor
+          # packages loaded earlier had replaced rbind with their own generic.
+          x1m <- otu_st[s1s, , drop=FALSE]; x2m <- otu_st[s2s, , drop=FALSE]
+          se_of <- function(m) apply(m, 2, sd) / sqrt(nrow(m))
+          stamp_rows <- data.frame(
+            taxon   = colnames(otu_st),
+            mean1   = colMeans(x1m), se1 = se_of(x1m),
+            mean2   = colMeans(x2m), se2 = se_of(x2m),
+            p_value = vapply(seq_len(ncol(otu_st)), function(j)
+              tryCatch(t.test(x1m[, j], x2m[, j])$p.value, error=function(e) NA_real_), 0),
+            stringsAsFactors = FALSE, row.names = NULL)
           stamp_rows$p_adj <- p.adjust(stamp_rows$p_value, method="BH")
           stamp_rows       <- stamp_rows[order(stamp_rows$p_adj), ]
 
