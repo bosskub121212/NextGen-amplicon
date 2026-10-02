@@ -584,6 +584,14 @@ cat(sprintf("\n  has_metadata: %s | has_tree: %s | group_col: '%s'\n",
 # wrong file, and the blank one is delivered as if it were a figure. Close and
 # delete it before anything else is opened.
 .OPEN_DEV <- NULL
+# Closing a figure normally has to forget it. Without this, the next device R
+# opened on its own (ggplot builds a grob on Rplots.pdf when nothing is open)
+# took the same device number, the check below mistook it for the figure that
+# had just been finished, and deleted a good PNG — 12_upgma_jaccard in 2.9.26.
+dev.off <- function(which = dev.cur()) {
+  if (!is.null(.OPEN_DEV) && which == .OPEN_DEV$dev) .OPEN_DEV <<- NULL
+  grDevices::dev.off(which)
+}
 .dev_cleanup <- function() {
   if (!is.null(.OPEN_DEV) && .OPEN_DEV$dev %in% dev.list()) {
     try(dev.off(.OPEN_DEV$dev), silent=TRUE)
@@ -1736,10 +1744,15 @@ if (has_ancombc && has_meta && has_ggplot2) {
       p_volc <- ggplot(res_df, aes_string(x=lfc_col, y="neg_log10_q",
                                            color="Significant")) +
         geom_point(alpha=0.7, size=2) +
-        scale_color_manual(values=c("grey60","#ef4444")) +
+        scale_color_manual(values=c(`FALSE`="grey60", `TRUE`="#ef4444"),
+                           labels=c(`FALSE`="not significant", `TRUE`="q < 0.05"),
+                           name=NULL, drop=FALSE) +
         geom_hline(yintercept=-log10(0.05), linetype=2, color="#6b7280") +
         geom_vline(xintercept=0, linetype=2, color="#6b7280") +
         labs(title="ANCOMBC2 — Differential Abundance",
+             subtitle=sprintf("%s · %d taxa tested, %d with q < 0.05",
+                              sub("^lfc_", "", lfc_col), nrow(res_df),
+                              sum(res_df$Significant, na.rm=TRUE)),
              x="Log2 Fold Change", y="-log10(q-value)") +
         theme_bw()
       save_pdf(p_volc, "06_ancombc2_volcano.pdf")
