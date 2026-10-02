@@ -1634,6 +1634,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     {id:"faiths",   g:"Alpha", label:"Faith's PD", f:"faiths_pd.csv",     kind:"alpha", metric:"PD"},
     {id:"shan_rar", g:"Alpha", label:"Shannon Rar.", f:"shannon_rarefaction.csv", kind:"lines"},
     {id:"multi",    g:"Alpha", label:"All Alpha Metrics", f:"alpha_diversity.csv", kind:"multialpha"},
+    {id:"alphagrp", g:"Alpha", label:"Alpha by group", f:"alpha_diversity.csv", kind:"alphagrp"},
 
     {id:"pcoa",     g:"Beta", label:"PCoA",         f:"pca_scores.csv",   kind:"scatter"},
     {id:"scree",    g:"Beta", label:"PCA Scree",    f:"pca_scree.csv",    kind:"scree"},
@@ -1724,7 +1725,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             titleText:"", titleBold:false, titleItalic:false,
             chartType:"bar100", showGrid:true,
             xItalic:false, xBold:false, xSize:12,
-            colorscale:"Viridis", topNTaxa:8};
+            colorscale:"Viridis", topNTaxa:8, alphaMetric:"Shannon",
+            aggMode:"sample"};
   }
 
   /* ── loading ─────────────────────────────────────────────────────────── */
@@ -1738,6 +1740,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                 file only this editor understands. */
              groups:{}, groupOn:true, groupDirty:false, groupSaved:false,
              hidden:{},
+             /* key -> the spelling to display. metadata.csv fills it first, so
+                the user's own spelling wins over whatever R's make.names() did
+                to a sample name on the way into one particular CSV. */
+             canon:{},
+             /* every grouping column found in metadata.csv, and which one the
+                chart is currently split by */
+             groupCols:[], groupCol:"Group", groupAll:{},
              view:"chart", dirty:false, saved:false};
 
     work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
@@ -1761,16 +1770,63 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var meta = (r[2] && Array.isArray(r[2].rows)) ? r[2].rows : [];
       /* Column names vary — the pipeline reads the id column case-insensitively
          and the production console writes "SampleID,Group". Accept both rather
-         than requiring one spelling. */
+         than requiring one spelling.
+
+         Every column that is not the id is a candidate grouping, which is how
+         dada2_pipeline.R already reads this file: it loops over all of them and
+         draws a figure per column. So a job can hold Grouping1 and Grouping2
+         side by side, and the chart picks which one to split by. The whole row
+         is kept, so a column this editor did not write — the description column
+         the metadata was prepared with, for one — survives being saved. */
+      var idKeys = ["sampleid", "sample", "sampleid", "id"];
+      CHART.metaRows = [];
+      CHART.metaIdCol = "SampleID";
       meta.forEach(function(row){
-        var id_ = "", g = "";
+        var id_ = "", idk = "";
         Object.keys(row).forEach(function(k){
           var lk = k.toLowerCase().replace(/[^a-z]/g, "");
-          if(!id_ && (lk === "sampleid" || lk === "sample")) id_ = (row[k] || "").trim();
-          if(!g   && lk === "group") g = (row[k] || "").trim();
+          if(!id_ && (lk === "sampleid" || lk === "sample" || lk === "id")){
+            id_ = (row[k] || "").trim(); idk = k;
+          }
         });
-        if(id_ && g) CHART.groups[id_] = g;
+        if(!id_) return;
+        if(idk) CHART.metaIdCol = idk;
+        learnNames([id_]);
+        var rec = {id: id_};
+        Object.keys(row).forEach(function(k){
+          if(k === idk) return;
+          rec[k] = (row[k] == null ? "" : String(row[k])).trim();
+        });
+        CHART.metaRows.push(rec);
       });
+      /* Columns worth offering as a grouping: anything with at least one value
+         that is not unique to a single row stays a candidate, but a free-text
+         column (a description, one sentence per sample) is not a grouping and
+         is only kept so it is not lost on save. */
+      var colNames = [];
+      CHART.metaRows.forEach(function(rec){
+        Object.keys(rec).forEach(function(k){
+          if(k !== "id" && colNames.indexOf(k) === -1) colNames.push(k); });
+      });
+      CHART.groupCols = colNames.filter(function(k){
+        var vals = CHART.metaRows.map(function(r){ return r[k] || ""; })
+                     .filter(function(v){ return v !== ""; });
+        if(!vals.length) return false;
+        var longest = Math.max.apply(null, vals.map(function(v){ return v.length; }));
+        return longest <= 40;
+      });
+      if(!CHART.groupCols.length) CHART.groupCols = ["Group"];
+      /* Prefer a column actually called Group; otherwise the first one. */
+      var prefCol = CHART.groupCols.filter(function(k){
+        return k.toLowerCase().replace(/[^a-z]/g, "") === "group"; })[0];
+      CHART.groupCol = prefCol || CHART.groupCols[0];
+      CHART.groupAll = {};
+      CHART.groupCols.forEach(function(k){
+        var m = {};
+        CHART.metaRows.forEach(function(rec){ if(rec[k]) m[canonName(rec.id)] = rec[k]; });
+        CHART.groupAll[k] = m;
+      });
+      CHART.groups = Object.assign({}, CHART.groupAll[CHART.groupCol] || {});
       if(saved.font)          CHART.font    = Object.assign(defaultFont(), saved.font);
       if(saved.colors)        CHART.colors  = saved.colors;
       if(saved.sampleAliases) CHART.aliases = saved.sampleAliases;
@@ -1863,29 +1919,43 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         taxa.forEach(function(_, ti){
           matrix.push(bs.map(function(r){ return num(r[ti+1]); })); });
       }
+      learnNames(samples);
+      samples = canonList(samples);
       CHART.shape = {taxa:taxa, samples:samples, matrix:matrix};
       if(!CHART.order.length) CHART.order = samples.slice();
 
-    } else if(kind === "alpha" || kind === "grouped" || kind === "scree" || kind === "box"){
-      /* first column labels, remaining columns numeric */
-      var cols = head.slice(1).map(function(h){ return h.trim(); });
+    } else if(kind === "alpha" || kind === "alphagrp" || kind === "grouped"
+              || kind === "scree" || kind === "box"){
+      /* labels in whichever column holds them, every other column numeric */
+      var body = rows.slice(1);
+      var li = labelCol(head, body);
+      var ci = otherCols(head, li);
+      var cols = ci.map(function(i){ return String(head[i] || "").trim(); });
       var labels = [], vals = [];
-      rows.slice(1).forEach(function(r){
-        var nm = (r[0]||"").trim(); if(!nm) return;
-        labels.push(nm);
-        vals.push(cols.map(function(_, i){ return num(r[i+1]); }));
+      body.forEach(function(r){
+        var nm = String(r[li] == null ? "" : r[li]).trim(); if(!nm) return;
+        labels.push(canonName(nm));
+        vals.push(ci.map(function(i){ return num(r[i]); }));
       });
+      learnNames(labels);
+      labels = canonList(labels);
       CHART.shape = {labels:labels, cols:cols, vals:vals};
-      if(kind === "alpha" && !CHART.order.length) CHART.order = labels.slice();
+      if((kind === "alpha" || kind === "alphagrp") && !CHART.order.length)
+        CHART.order = labels.slice();
 
     } else if(kind === "multialpha"){
-      var cols2 = head.slice(1).map(function(h){ return h.trim(); });
+      var body2 = rows.slice(1);
+      var li2 = labelCol(head, body2);
+      var ci2 = otherCols(head, li2);
+      var cols2 = ci2.map(function(i){ return String(head[i] || "").trim(); });
       var labels2 = [], vals2 = [];
-      rows.slice(1).forEach(function(r){
-        var nm = (r[0]||"").trim(); if(!nm) return;
-        labels2.push(nm);
-        vals2.push(cols2.map(function(_, i){ return num(r[i+1]); }));
+      body2.forEach(function(r){
+        var nm = String(r[li2] == null ? "" : r[li2]).trim(); if(!nm) return;
+        labels2.push(canonName(nm));
+        vals2.push(ci2.map(function(i){ return num(r[i]); }));
       });
+      learnNames(labels2);
+      labels2 = canonList(labels2);
       CHART.shape = {labels:labels2, cols:cols2, vals:vals2};
       if(!CHART.order.length) CHART.order = labels2.slice();
 
@@ -1896,13 +1966,17 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         for(var i = 0; i < names.length; i++){ var k = lx.indexOf(names[i]); if(k !== -1) return k; }
         return fb;
       }
-      var cx = col(["pc1","axis1","mds1","nmds1","dim1","x"], 1);
-      var cy = col(["pc2","axis2","mds2","nmds2","dim2","y"], 2);
+      var bodyS = rows.slice(1);
+      var liS = labelCol(head, bodyS);
+      var cx = col(["pc1","axis1","mds1","nmds1","dim1","x"], liS === 1 ? 0 : 1);
+      var cy = col(["pc2","axis2","mds2","nmds2","dim2","y"], liS === 2 ? 0 : 2);
       var pts = [];
-      rows.slice(1).forEach(function(r){
-        var nm = (r[0]||"").trim(); if(!nm) return;
-        pts.push({name:nm, x:num(r[cx]), y:num(r[cy]), group:""});
+      bodyS.forEach(function(r){
+        var nm = String(r[liS] == null ? "" : r[liS]).trim(); if(!nm) return;
+        pts.push({name:canonName(nm), x:num(r[cx]), y:num(r[cy]), group:""});
       });
+      learnNames(pts.map(function(p){ return p.name; }));
+      pts.forEach(function(p){ p.name = canonName(p.name); });
       CHART.shape = {pts:pts, xLab:head[cx] || "Axis 1", yLab:head[cy] || "Axis 2"};
 
     } else if(kind === "matrix" || kind === "dendro"){
@@ -1911,23 +1985,123 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var m = [];
       rows.slice(1).forEach(function(r){ m.push(names.map(function(_, i){ return num(r[i+1]); })); });
       var rowNames = rows.slice(1).map(function(r){ return (r[0]||"").trim(); });
-      CHART.shape = {names:rowNames.length === names.length ? rowNames : names, m:m};
+      var useNames = rowNames.length === names.length ? rowNames : names;
+      learnNames(useNames);
+      CHART.shape = {names:canonList(useNames), m:m};
       if(!CHART.order.length) CHART.order = CHART.shape.names.slice();
 
     } else if(kind === "lines" || kind === "hist"){
-      var xcol = head[0];
-      var sers = head.slice(1).map(function(h){ return h.trim(); });
-      var xs = [], ys = [];
-      rows.slice(1).forEach(function(r){
-        xs.push(num(r[0]));
-        ys.push(sers.map(function(_, i){ return num(r[i+1]); }));
+      /* Wide — one column per series — or long, one row per (series, x, y).
+         shannon_rarefaction.csv is long: Sample,Depth,Shannon. Read as wide its
+         first column is the sample NAME, num() turned every x into 0, and the
+         chart drew four flat lines stacked on the origin with an axis reading
+         0 0 0 0 0. A file whose first column is text is not a wide table. */
+      var bodyL = rows.slice(1);
+      var liL = labelCol(head, bodyL);
+      var numCols = otherCols(head, liL).filter(function(i){
+        return bodyL.some(function(r){ return isFinite(parseFloat(r[i])); });
       });
-      CHART.shape = {xLab:xcol, series:sers, xs:xs, ys:ys};
+      var isLong = kind === "lines" && numCols.length >= 2
+        && bodyL.some(function(r){
+             var v = String(r[liL] == null ? "" : r[liL]).trim();
+             return v !== "" && !isFinite(parseFloat(v)); });
+
+      if(isLong){
+        var xi = numCols[0], yi = numCols[1];
+        var lowH = head.map(function(h){ return String(h||"").trim().toLowerCase(); });
+        ["depth","sites","x","reads"].forEach(function(n){
+          var k = lowH.indexOf(n); if(k !== -1 && k !== liL) xi = k; });
+        if(yi === xi) yi = numCols.filter(function(i){ return i !== xi; })[0];
+        var serN = [], xvals = [], cell = {};
+        bodyL.forEach(function(r){
+          var s = canonName(String(r[liL] == null ? "" : r[liL]).trim());
+          if(!s) return;
+          var xv = num(r[xi]);
+          if(serN.indexOf(s) === -1) serN.push(s);
+          if(xvals.indexOf(xv) === -1) xvals.push(xv);
+          cell[s + "\u0000" + xv] = num(r[yi]);
+        });
+        learnNames(serN);
+        serN = canonList(serN);
+        xvals.sort(function(a, b){ return a - b; });
+        CHART.shape = {xLab: head[xi] || "", series: serN, xs: xvals,
+          ys: xvals.map(function(xv){
+            return serN.map(function(s){
+              var v = cell[s + "\u0000" + xv];
+              return v == null ? NaN : v; }); })};
+      } else {
+        var xcol = head[0];
+        var sers = head.slice(1).map(function(h){ return h.trim(); });
+        var xs = [], ys = [];
+        bodyL.forEach(function(r){
+          xs.push(num(r[0]));
+          /* NaN, not 0. rarefaction.csv writes NA past a sample's own read
+             depth, and num() turned that into a real zero — the curve plunged
+             from 295 species to none at the right-hand edge, which reads as a
+             collapse rather than as the end of the data. A curve has to stop
+             where the sample stops. */
+          ys.push(sers.map(function(_, i){
+            var v = parseFloat(r[i+1]);
+            return isFinite(v) ? v : NaN; }));
+        });
+        learnNames(sers);
+        CHART.shape = {xLab:xcol, series:canonList(sers), xs:xs, ys:ys};
+      }
     }
   }
 
   function num(v){ var n = parseFloat(v); return isFinite(n) ? n : 0; }
   function labelOf(s){ return CHART.aliases[s] || s; }
+
+  /* ── one sample is one entity, however a given file spells it ───────────
+     estimate_richness() hands back make.names() row names, so
+     r_tables/alpha_diversity.csv calls a sample "Bacteria_Pre.R1" while every
+     other file in the same folder calls it "Bacteria_Pre-R1". Two spellings
+     are two different strings, and that is enough to break everything keyed on
+     a sample name: the group never matches, the colour differs between tabs,
+     and hiding a sample on the taxonomy tab leaves it on the alpha tab.
+     Fold case and punctuation into a key, and let metadata.csv — the file both
+     the user and the pipeline edit — own the spelling that gets shown. */
+  function sampKey(n){ return String(n).toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+  function learnNames(list){
+    (list || []).forEach(function(n){
+      var k = sampKey(n);
+      if(k && !CHART.canon[k]) CHART.canon[k] = String(n).trim();
+    });
+  }
+  function canonName(n){ return CHART.canon[sampKey(n)] || String(n).trim(); }
+  function canonList(list){ return (list || []).map(canonName); }
+
+  /* ── where the labels are ────────────────────────────────────────────────
+     Not always column 0. r_tables/alpha_diversity.csv appends Sample LAST,
+     because that is where estimate_richness() leaves it; nmds_bray.csv puts it
+     third, after the two coordinates. Taking column 0 turned the Observed
+     counts into the sample names — the Shannon chart was labelled
+     133 / 295 / 168 / 295, and every lookup keyed on a sample name then missed
+     in silence. Find the column by its header, and when the header is no help
+     fall back to the first column whose data does not parse as a number. */
+  function labelCol(head, body){
+    var known = ["sample","sampleid","sample_id","#sampleid","samples",
+                 "id","name","label","taxon"];
+    for(var i = 0; i < head.length; i++){
+      if(known.indexOf(String(head[i] || "").trim().toLowerCase()) !== -1) return i;
+    }
+    for(var c = 0; c < head.length; c++){
+      var textual = body.some(function(r){
+        var v = String(r[c] == null ? "" : r[c]).trim();
+        return v !== "" && !isFinite(parseFloat(v));
+      });
+      if(textual) return c;
+    }
+    return 0;
+  }
+
+  /* Every column except the label one, in file order. */
+  function otherCols(head, li){
+    var idx = [];
+    head.forEach(function(_, i){ if(i !== li) idx.push(i); });
+    return idx;
+  }
 
   /* Samples the user has switched off. They stay in the data and in the saved
      metadata — only the chart leaves them out. */
@@ -1949,7 +2123,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      "Other". Unassigned reads never take a colour slot however numerous they
      are — NA is routinely the biggest "genus" in a 16S table. */
   function series(){
-    var S = CHART.shape;
+    var S = viewShape();
     if(!S || !S.matrix) return [];
     var isNA = function(n){ return /^(na|unassigned|unclassified|)$/i.test(String(n).trim()); };
     /* Rank over the samples on screen, not over every sample in the file.
@@ -1976,11 +2150,90 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     return out;
   }
 
+  /* ── past the eighth colour ─────────────────────────────────────────────
+     The palette holds eight hues that stay apart from each other, including
+     under colour-blind simulation. Asked for thirty taxa, the old code did
+     idx % 8, so taxon 1 and taxon 9 came out the SAME colour — not merely
+     similar, identical, which makes the legend ambiguous rather than just
+     hard. That is the one outcome worth avoiding: a reader can work with two
+     close colours, but not with two equal ones.
+
+     So each pass through the eight shifts hue and lightness, giving about
+     twenty-four usable colours before anything repeats. They are not all
+     comfortably distinguishable — nothing with thirty categories is, which is
+     what the warning above the control says — but no two are the same swatch. */
+  function shiftHex(hex, dh, dl){
+    var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || "");
+    if(!m) return hex;
+    var r = parseInt(m[1],16)/255, g = parseInt(m[2],16)/255, b = parseInt(m[3],16)/255;
+    var mx = Math.max(r,g,b), mn = Math.min(r,g,b), l = (mx+mn)/2, h = 0, s = 0;
+    if(mx !== mn){
+      var d = mx - mn;
+      s = l > 0.5 ? d/(2-mx-mn) : d/(mx+mn);
+      h = mx === r ? (g-b)/d + (g < b ? 6 : 0) : mx === g ? (b-r)/d + 2 : (r-g)/d + 4;
+      h /= 6;
+    }
+    h = (h + dh/360 + 1) % 1;
+    l = Math.min(0.82, Math.max(0.22, l + dl));
+    function hue(p2, q2, t){
+      if(t < 0) t += 1; if(t > 1) t -= 1;
+      if(t < 1/6) return p2 + (q2-p2)*6*t;
+      if(t < 1/2) return q2;
+      if(t < 2/3) return p2 + (q2-p2)*(2/3-t)*6;
+      return p2;
+    }
+    var q = l < 0.5 ? l*(1+s) : l+s-l*s, p = 2*l-q;
+    var o = [hue(p,q,h+1/3), hue(p,q,h), hue(p,q,h-1/3)].map(function(v){
+      return ("0" + Math.round(Math.min(1, Math.max(0, v))*255).toString(16)).slice(-2); });
+    return "#" + o.join("");
+  }
+
+  function seriesColour(idx){
+    var p = seriesPalette(), n = p.length;
+    var base = p[idx % n], pass = Math.floor(idx / n);
+    if(pass === 0) return base;
+    var steps = [[0,0], [14, -0.16], [-14, 0.15], [26, -0.06]];
+    var st = steps[pass % steps.length];
+    return shiftHex(base, st[0], st[1]);
+  }
+
+  /* ── one bar per GROUP instead of one per sample ─────────────────────────
+     The BI report's grouped figures are not facets: they are the mean relative
+     abundance of each group, one bar per group. Faceting shows the samples side
+     by side inside a panel; this replaces them with their average, which is the
+     figure that gets read when the point is "Cattle versus Buffalo" rather than
+     "these 34 animals".
+
+     Hidden samples are dropped BEFORE the mean is taken, so a sample switched
+     off does not quietly keep contributing to its group's bar. The values in
+     taxonomy_*.csv are already per-sample percentages, so a plain mean across
+     the samples of a group is the right summary and is what the report
+     computes. */
+  function viewShape(){
+    var S = CHART.shape;
+    if(!S || !S.matrix || CHART.font.aggMode !== "group") return S;
+    var vis = visibleIdx(S.samples);
+    var gN = [], gIdx = {};
+    vis.forEach(function(i){
+      var g = (CHART.groups[S.samples[i]] || "").trim() || "(no group)";
+      if(gN.indexOf(g) === -1){ gN.push(g); gIdx[g] = []; }
+      gIdx[g].push(i);
+    });
+    if(!gN.length) return S;
+    return {taxa:S.taxa, samples:gN, agg:gIdx,
+      matrix:S.matrix.map(function(row){
+        return gN.map(function(g){
+          var ix = gIdx[g];
+          return ix.reduce(function(a, i){ return a + (row[i] || 0); }, 0) / ix.length;
+        }); })};
+  }
+  /* With one bar per group there is nothing left to facet by. */
+  function aggOn(){ return CHART.font.aggMode === "group"; }
+
   function colourOf(s, idx){
     if(CHART.colors[s.name]) return CHART.colors[s.name];
     if(s.grouped) return otherColour();
-    var p = seriesPalette();
-    return p[idx % p.length];
+    return seriesColour(idx);
   }
 
   /* ── drawing ─────────────────────────────────────────────────────────────
@@ -1989,32 +2242,106 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      segments only, recessive grid and axes, text in text tokens rather than
      series colour, a tooltip on every mark, and a legend whenever there are
      two or more series. */
+  /* What the figure is called when nobody typed a title. The R PDFs carry one,
+     and a chart that leaves the conversation — into a report, an email, a slide
+     — has to say what it is without the screen around it. */
+  function autoTitle(){
+    var t = CHART.tab, k = t.kind;
+    if(k === "stack")
+      return (CHART.font.chartType === "bar100" ? "Relative Abundance" : "Read Counts")
+             + " – " + t.label + " level";
+    if(k === "taxheat") return t.label.replace(/^Tax\. /, "Taxonomic ");
+    if(k === "alpha" || k === "alphagrp")
+      return (t.metric || CHART.font.alphaMetric || t.label)
+             + (k === "alphagrp" ? " by group" : " – alpha diversity");
+    return t.label;
+  }
+  function axisTitleX(){
+    var k = CHART.tab.kind;
+    if(k === "stack" || k === "alpha" || k === "taxheat" || k === "matrix") return "Sample";
+    if(k === "alphagrp") return "Group";
+    /* drawLines prints its own x label, so leave it alone rather than
+       stacking a second copy under the first. */
+    return "";
+  }
+  function legendTitleFor(){
+    var t = CHART.tab, k = t.kind;
+    if(k === "stack" || k === "taxheat") return t.label.replace(/^Tax\. Heatmap /, "");
+    if(k === "lines" || k === "grouped") return "Sample";
+    if(k === "multialpha") return "Metric";
+    return "";
+  }
+
   function chartSVG(o){
     o = o || {};
-    var W = o.width || 900, H = o.height || 460;
+    /* "report" is the figure as it leaves the app: bigger, titled, framed, with
+       axis titles and a headed legend — the shape of the PDFs the pipeline
+       writes. On screen the chrome around the chart already says all of that,
+       so the screen version stays plain. */
+    var rep = !!o.report;
+    var W = o.width || (rep ? 1240 : 900), H = o.height || (rep ? 780 : 460);
     if(!CHART.tab || !CHART.shape) return "";
     var k = CHART.tab.kind;
     var F = CHART.font, C = ink();
     var legend = k === "stack" || k === "lines" || k === "grouped" || k === "multialpha";
-    var padL = 64, padR = legend ? 210 : 28, padT = F.titleText ? 46 : 24, padB = 80;
+    var padL = rep ? 88 : 64;
+    var padR = legend ? (rep ? 320 : 210) : (rep ? 52 : 28);
+    var padT = rep ? 66 : (F.titleText ? 46 : 24);
+    var padB = rep ? 118 : 80;
+
+    /* Size the exported figure around its legend instead of cropping the
+       legend to fit the figure. With Top 50 the names are the deliverable:
+       "ถ้าผลมี top 30-50 ผลต้องขึ้นทั้งหมดทุกชื่อ". So measure the longest
+       name, work out how many columns of entries will fit between the title
+       and the foot, and grow the canvas until every one of them has a place. */
+    if(rep && legend){
+      var lnames = legendNames();
+      if(lnames.length){
+        var lh0 = 16;
+        var availH = H - padT - padB - 26;              /* minus the legend heading */
+        var rowsFit = Math.max(1, Math.floor(availH / lh0));
+        var ncol = Math.ceil(lnames.length / rowsFit);
+        /* If the entries would need more than three columns, make the figure
+           taller rather than endlessly wider — a very wide strip of text reads
+           worse than a taller block. */
+        while(ncol > 3){
+          H += 160;
+          availH = H - padT - padB - 26;
+          rowsFit = Math.max(1, Math.floor(availH / lh0));
+          ncol = Math.ceil(lnames.length / rowsFit);
+        }
+        var widest = 0;
+        lnames.forEach(function(n){ widest = Math.max(widest, textW(n, F.legendSize)); });
+        var colW0 = Math.ceil(widest) + 17 + 18;
+        padR = Math.max(padR, ncol * colW0 + 26);
+        /* Grow the canvas rather than squeezing the plot. At Top 50 the legend
+           wants more than half of a 1240-wide figure, and a chart whose bars
+           have been narrowed to make room for its own key is the wrong trade:
+           the picture is the deliverable and the names have to be in it. */
+        W = Math.max(W, padL + 680 + padR);
+      }
+    }
     /* Facet headers sit above the plot, so make room for them before the
        geometry is fixed — otherwise the first group's label lands on the title. */
-    if((k === "stack" || k === "alpha") && CHART.groupOn){
+    if(((k === "stack" && !aggOn()) || k === "alpha") && CHART.groupOn){
       var nm0 = CHART.shape.samples || CHART.shape.labels || [];
       if(nm0.some(function(x){ return (CHART.groups[x] || "").trim(); })) padT += 30;
     }
-    if(k === "taxheat") padR = 150;
-    if(k === "matrix")  padL = 128;
-    var P = {x:padL, y:padT, w:W - padL - padR, h:H - padT - padB, C:C, F:F, W:W, H:H};
+    if(k === "taxheat") padR = rep ? 210 : 150;
+    if(k === "matrix")  padL = rep ? 180 : 128;
+    var P = {x:padL, y:padT, w:W - padL - padR, h:H - padT - padB, C:C, F:F, W:W, H:H,
+             report:rep, legendTitle:rep ? legendTitleFor() : ""};
     if(P.w < 40 || P.h < 40) return "";
 
     var parts = ['<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H
       + '" viewBox="0 0 ' + W + ' ' + H + '" font-family="IBM Plex Sans, system-ui, sans-serif">'];
     parts.push('<rect width="' + W + '" height="' + H + '" fill="' + C.surface + '"/>');
-    if(F.titleText)
-      parts.push('<text x="' + padL + '" y="28" fill="' + C.fg + '" font-size="' + F.titleSize
+    var ttl = F.titleText || (rep ? autoTitle() : "");
+    if(ttl)
+      parts.push('<text x="' + padL + '" y="' + (rep ? 34 : 28) + '" fill="' + C.fg
+        + '" font-size="' + (rep ? F.titleSize + 3 : F.titleSize)
         + '" font-weight="' + (F.titleBold ? 700 : 600) + '"'
-        + (F.titleItalic ? ' font-style="italic"' : "") + '>' + esc(F.titleText) + '</text>');
+        + (F.titleItalic ? ' font-style="italic"' : "") + '>' + esc(ttl) + '</text>');
 
     var body =
         k === "stack"      ? drawStack(P)
@@ -2029,9 +2356,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       : k === "lines"      ? drawLines(P)
       : k === "hist"       ? drawHist(P)
       : k === "box"        ? drawBox(P)
+      : k === "alphagrp"   ? drawAlphaGroup(P)
       : '<text x="' + padL + '" y="' + (padT + 20) + '" fill="' + C.fg2 + '">No renderer for this tab.</text>';
 
     parts.push(body);
+    if(rep && body){
+      /* The frame goes on last so it sits over the bars rather than under
+         them, which is where theme_bw() puts it. */
+      parts.push('<rect x="' + P.x + '" y="' + P.y + '" width="' + P.w + '" height="' + P.h
+        + '" fill="none" stroke="' + C.fg3 + '" stroke-width="1"/>');
+      var xt = axisTitleX();
+      if(xt) parts.push('<text x="' + (P.x + P.w/2) + '" y="' + (H - 26)
+        + '" text-anchor="middle" fill="' + C.fg2 + '" font-size="' + (F.axisSize + 1) + '">'
+        + esc(xt) + '</text>');
+    }
     parts.push('</svg>');
     return parts.join("");
   }
@@ -2102,7 +2440,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }
     out.push('<line x1="' + P.x + '" y1="' + (P.y + P.h) + '" x2="' + (P.x + P.w) + '" y2="'
       + (P.y + P.h) + '" stroke="' + P.C.line + '" stroke-width="1"/>');
-    if(label) out.push('<text transform="translate(16,' + (P.y + P.h/2) + ') rotate(-90)" '
+    if(label) out.push('<text transform="translate(' + (P.report ? 30 : 16) + ',' + (P.y + P.h/2) + ') rotate(-90)" '
       + 'text-anchor="middle" fill="' + P.C.fg2 + '" font-size="' + P.F.axisSize + '">'
       + esc(label) + '</text>');
     return out.join("");
@@ -2115,21 +2453,70 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + ' transform="rotate(-35 ' + cx + ' ' + (P.y + P.h + 18) + ')">' + esc(text) + '</text>';
   }
 
-  function legendBox(P, items){
-    var out = [], ly = P.y + 2;
+  /* IBM Plex Sans at the legend size, averaged over mixed-case Latin text. It
+     only has to be an over-estimate: too wide leaves a margin, too narrow puts
+     the last letters of a name outside the image. */
+  function textW(str, size){ return String(str).length * size * 0.58; }
+
+  function legendColW(items, P){
+    var w = 0;
     items.forEach(function(it){
-      out.push('<rect x="' + (P.x + P.w + 22) + '" y="' + ly + '" width="11" height="11" rx="2.5" fill="'
+      var n = P.report ? it.n : String(it.n).slice(0, 26);
+      w = Math.max(w, textW(n, P.F.legendSize));
+    });
+    return Math.ceil(w) + 17 + 18;
+  }
+
+  /* What the legend of the current tab will hold, worked out BEFORE the
+     geometry is fixed, so the figure can be made wide enough to carry it. */
+  function legendNames(){
+    var k = CHART.tab.kind, S = viewShape() || {};
+    if(k === "stack") return series().map(function(s){ return s.name; });
+    if(k === "lines") return (S.series || []).filter(function(n){
+      return !CHART.hidden[n]; }).slice(0, 24);
+    if(k === "grouped") return S.cols || [];
+    if(k === "multialpha") return S.cols || [];
+    return [];
+  }
+
+  function legendBox(P, items){
+    var out = [], x0 = P.x + P.w + 22, top = P.y + 2;
+    var lh = P.report ? 16 : 18;
+    if(P.report && P.legendTitle){
+      out.push('<text x="' + x0 + '" y="' + (top + 10) + '" fill="' + P.C.fg
+        + '" font-size="' + (P.F.legendSize + 1) + '" font-weight="600">'
+        + esc(P.legendTitle) + '</text>');
+      top += lh + 6;
+    }
+    /* Wrap into columns instead of running off the bottom edge. A 30-taxon
+       legend is taller than the plot, and the entries past the edge were simply
+       not in the picture — the chart showed colours whose names had been
+       cropped away. */
+    var avail = Math.max(1, Math.floor((P.y + P.h - top) / lh));
+    var cols = Math.max(1, Math.ceil(items.length / avail));
+    var perCol = Math.ceil(items.length / cols);
+    var colW = cols > 1 ? legendColW(items, P) : 0;
+    var ly = top;
+    items.forEach(function(it, i){
+      var c = Math.floor(i / perCol), r = i % perCol;
+      var bx = x0 + c * colW, by = top + r * lh;
+      out.push('<rect x="' + bx + '" y="' + by + '" width="11" height="11" rx="2.5" fill="'
         + it.c + '"/>');
-      var nm = it.n.length > 26 ? it.n.slice(0, 25) + "…" : it.n;
-      out.push('<text x="' + (P.x + P.w + 39) + '" y="' + (ly + 10) + '" fill="' + P.C.fg
+      /* In the exported figure a name is never shortened. A legend reading
+         "Christensenellaceae R-7 g…" is a legend that cannot be used: the
+         reader cannot tell which taxon the colour belongs to, and the picture
+         is the deliverable. On screen the panel width is fixed, so names are
+         still clipped there and the full one is in the tooltip and the table. */
+      var nm = P.report || it.n.length <= 26 ? it.n : it.n.slice(0, 25) + "…";
+      out.push('<text x="' + (bx + 17) + '" y="' + (by + 10) + '" fill="' + P.C.fg
         + '" font-size="' + P.F.legendSize + '">' + esc(nm) + '</text>');
-      ly += 18;
+      ly = Math.max(ly, by + lh);
     });
     return {html:out.join(""), y:ly};
   }
 
   function drawStack(P){
-    var S = series(), SH = CHART.shape, ord = visibleIdx(SH.samples), F = P.F;
+    var S = series(), SH = viewShape(), ord = visibleIdx(SH.samples), F = P.F;
     var pct = F.chartType === "bar100";
     var totals = ord.map(function(si){
       return S.reduce(function(a,s){ return a + (s.values[si]||0); }, 0); });
@@ -2140,7 +2527,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     /* Lay the samples out either across the whole plot, or band by band when a
        grouping is set. Both paths produce the same per-sample geometry, so the
        bar drawing below does not need to know which one it is in. */
-    var G = groupsOf(SH.samples, ord);
+    /* No facets over group means: the columns already ARE the groups, and
+       faceting them would wrap each single bar in a panel of its own. */
+    var G = aggOn() ? null : groupsOf(SH.samples, ord);
     var pos = {};   /* sample index -> {x, bw} */
     if(G){
       bands(P, G).forEach(function(b){
@@ -2190,7 +2579,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
   function drawTaxHeat(P){
     var S = series().filter(function(s){ return !s.grouped; });
-    var SH = CHART.shape, ord = visibleIdx(SH.samples);
+    var SH = viewShape(), ord = visibleIdx(SH.samples);
     if(!S.length) return "";
     /* Row-normalised: each taxon against its own maximum, which is what makes
        a low-abundance taxon's pattern across samples visible at all. Said on
@@ -2290,7 +2679,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     ord.forEach(function(si, k){
       var v = vals[k], h = v / yMax * P.h, x = pos[si].x, bw = pos[si].bw;
       var nm = SH.labels[si];
-      var col = CHART.colors[nm] || seriesPalette()[si % seriesPalette().length];
+      var col = CHART.colors[nm] || seriesColour(si);
       out.push('<path d="' + roundRect(x, P.y + P.h - h, bw, h, 4, 0) + '" fill="' + col
         + '" class="seg"><title>' + esc(labelOf(nm)) + '\n' + esc(SH.cols[ci]) + ': '
         + fmtNum(v) + '</title></path>');
@@ -2298,6 +2687,80 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + P.C.fg2 + '" font-size="' + Math.max(9, P.F.axisSize - 1) + '">' + esc(fmtNum(v)) + '</text>');
       out.push(xTick(P, x + bw/2, labelOf(nm)));
     });
+    return out.join("");
+  }
+
+  /* ── alpha diversity summarised per group ───────────────────────────────
+     The comparison the BI analyst described: one mark per group rather than one
+     per sample, so two groupings can be read against each other.
+
+     The bar is the group MEAN and every sample in the group is drawn on top of
+     it as a dot, because a mean of two numbers hides whether they agreed. With
+     one sample per group the bar and the dot are the same number, and the chart
+     says so rather than letting a lone value look like a group average. */
+  function drawAlphaGroup(P){
+    var SH = CHART.shape, F = P.F;
+    var metric = F.alphaMetric || "Shannon";
+    var ci = SH.cols.map(function(c){ return c.toLowerCase(); }).indexOf(metric.toLowerCase());
+    if(ci === -1) ci = 0;
+
+    var ord = visibleIdx(SH.labels);
+    var gNames = [], gIdx = {};
+    ord.forEach(function(i){
+      var g = (CHART.groups[SH.labels[i]] || "").trim() || "(no group)";
+      if(gNames.indexOf(g) === -1){ gNames.push(g); gIdx[g] = []; }
+      gIdx[g].push(i);
+    });
+    if(!gNames.length)
+      return '<text x="' + P.x + '" y="' + (P.y + 20) + '" fill="' + P.C.fg2
+        + '">No samples to compare.</text>';
+    if(gNames.length === 1 && gNames[0] === "(no group)")
+      return '<text x="' + P.x + '" y="' + (P.y + 20) + '" fill="' + P.C.fg2
+        + '">Give the samples a group in the panel on the right and this chart '
+        + 'compares the groups.</text>';
+
+    var stat = gNames.map(function(g){
+      var vs = gIdx[g].map(function(i){ return (SH.vals[i] || [])[ci] || 0; });
+      var mean = vs.reduce(function(a, b){ return a + b; }, 0) / (vs.length || 1);
+      return {g:g, vs:vs, mean:mean,
+              lo:Math.min.apply(null, vs), hi:Math.max.apply(null, vs), n:vs.length};
+    });
+    var yMax = niceMax(Math.max.apply(null, stat.map(function(s){ return s.hi; }).concat([1])));
+    var out = [yAxis(P, yMax, metric)];
+    var slot = P.w / (stat.length || 1), bw = Math.min(110, slot * 0.5);
+    var sy = function(v){ return P.y + P.h - v / yMax * P.h; };
+
+    stat.forEach(function(s, k){
+      var x = P.x + slot * k + (slot - bw) / 2;
+      var col = CHART.colors[s.g] || seriesColour(k);
+      out.push('<path d="' + roundRect(x, sy(s.mean), bw, P.y + P.h - sy(s.mean), 4, 0)
+        + '" fill="' + col + '" fill-opacity="0.55" class="seg"><title>' + esc(s.g)
+        + '\nmean ' + fmtNum(s.mean) + '\nn = ' + s.n + '</title></path>');
+      /* range whisker — only when there is a range to show */
+      if(s.n > 1){
+        var cx = x + bw / 2;
+        out.push('<line x1="' + cx + '" y1="' + sy(s.hi) + '" x2="' + cx + '" y2="' + sy(s.lo)
+          + '" stroke="' + col + '" stroke-width="2"/>');
+      }
+      s.vs.forEach(function(v, j){
+        var jitter = s.n > 1 ? (j / (s.n - 1) - 0.5) * bw * 0.5 : 0;
+        out.push('<circle cx="' + (x + bw/2 + jitter).toFixed(1) + '" cy="' + sy(v).toFixed(1)
+          + '" r="5" fill="' + col + '" stroke="' + P.C.surface + '" stroke-width="2"/>');
+      });
+      out.push('<text x="' + (x + bw/2) + '" y="' + (sy(s.hi) - 9) + '" text-anchor="middle" fill="'
+        + P.C.fg2 + '" font-size="' + Math.max(9, F.axisSize - 1) + '">'
+        + esc(fmtNum(s.mean)) + '</text>');
+      out.push(xTick(P, x + bw/2, s.g + " (n=" + s.n + ")"));
+    });
+
+    /* On the exported figure this goes under the title, where there is room.
+       At the foot of a report-sized chart it lands on the rotated group
+       labels, and a caveat printed through the axis is a caveat nobody reads. */
+    if(stat.every(function(s){ return s.n < 2; }))
+      out.push('<text x="' + P.x + '" y="' + (P.report ? P.y - 10 : P.y + P.h + 62)
+        + '" fill="' + P.C.fg3
+        + '" font-size="' + F.axisSize + '">Every group holds one sample, so each bar is that '
+        + 'sample’s own value — a label, not an average.</text>');
     return out.join("");
   }
 
@@ -2331,14 +2794,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         var v = (SH.vals[si]||[])[ci] || 0, h = v / yMax * P.h;
         var x = x0 + ci*(bw+2);
         out.push('<path d="' + roundRect(x, P.y + P.h - h, bw, h, 3, 0) + '" fill="'
-          + (CHART.colors[c] || seriesPalette()[ci % seriesPalette().length])
+          + (CHART.colors[c] || seriesColour(ci))
           + '" class="seg"><title>' + esc(labelOf(SH.labels[si])) + ' · ' + esc(c) + '\n'
           + nfmt(v) + '</title></path>');
       });
       out.push(xTick(P, x0 + inner/2, labelOf(SH.labels[si])));
     });
     out.push(legendBox(P, SH.cols.map(function(c, i){
-      return {n:c, c:CHART.colors[c] || seriesPalette()[i % seriesPalette().length]}; })).html);
+      return {n:c, c:CHART.colors[c] || seriesColour(i)}; })).html);
     return out.join("");
   }
 
@@ -2361,14 +2824,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         var v = vals[k], h = v / yMax * P.h, x = x0 + slot*k + (slot-bw)/2;
         var nm = SH.labels[si];
         out.push('<path d="' + roundRect(x, P.y + P.h - h, bw, h, 3, 0) + '" fill="'
-          + (CHART.colors[nm] || seriesPalette()[si % seriesPalette().length])
+          + (CHART.colors[nm] || seriesColour(si))
           + '" class="seg"><title>' + esc(labelOf(nm)) + ' · ' + esc(c) + '\n'
           + fmtNum(v) + '</title></path>');
       });
     });
     out.push(legendBox(P, ord.map(function(si){
       return {n:labelOf(SH.labels[si]),
-              c:CHART.colors[SH.labels[si]] || seriesPalette()[si % seriesPalette().length]}; })).html);
+              c:CHART.colors[SH.labels[si]] || seriesColour(si)}; })).html);
     return out.join("");
   }
 
@@ -2398,7 +2861,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(y0 < 0 && y1 > 0) out.push('<line x1="' + P.x + '" y1="' + sy(0) + '" x2="' + (P.x+P.w)
       + '" y2="' + sy(0) + '" stroke="' + P.C.fg3 + '" stroke-width="1" stroke-dasharray="3 3"/>');
     pts.forEach(function(p, i){
-      var col = CHART.colors[p.name] || seriesPalette()[i % seriesPalette().length];
+      var col = CHART.colors[p.name] || seriesColour(i);
       /* 2px surface ring so overlapping points stay countable */
       out.push('<circle cx="' + sx(p.x).toFixed(1) + '" cy="' + sy(p.y).toFixed(1)
         + '" r="7" fill="' + col + '" stroke="' + P.C.surface + '" stroke-width="2" class="seg">'
@@ -2418,18 +2881,31 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
   function drawLines(P){
     var SH = CHART.shape;
-    var sers = SH.series.slice(0, 24);
+    /* A curve per sample is a curve that a hidden sample must not draw. */
+    var keep = SH.series.map(function(s, i){ return i; })
+      .filter(function(i){ return !CHART.hidden[SH.series[i]]; });
+    var sers = keep.slice(0, 24).map(function(i){ return SH.series[i]; });
+    var cols = keep.slice(0, 24);
     var mx = 0;
-    SH.ys.forEach(function(row){ sers.forEach(function(_, i){ if(row[i] > mx) mx = row[i]; }); });
+    SH.ys.forEach(function(row){ cols.forEach(function(i){
+      if(isFinite(row[i]) && row[i] > mx) mx = row[i]; }); });
     var yMax = niceMax(mx || 1);
     var xmin = Math.min.apply(null, SH.xs), xmax = Math.max.apply(null, SH.xs);
     var sx = function(v){ return P.x + (xmax > xmin ? (v-xmin)/(xmax-xmin) : 0) * P.w; };
     var sy = function(v){ return P.y + P.h - v/yMax * P.h; };
-    var out = [yAxis(P, yMax, SH.series.length === 1 ? SH.series[0] : "Value")];
+    var out = [yAxis(P, yMax, sers.length === 1 ? sers[0] : "Value")];
     sers.forEach(function(s, i){
-      var col = CHART.colors[s] || seriesPalette()[i % seriesPalette().length];
+      var ci = cols[i];
+      var col = CHART.colors[s] || seriesColour(i);
+      /* Lift the pen over a gap rather than drawing through it at zero. */
+      var pen = false;
       var d = SH.xs.map(function(x, k){
-        return (k ? "L" : "M") + sx(x).toFixed(1) + "," + sy(SH.ys[k][i] || 0).toFixed(1); }).join("");
+        var v = SH.ys[k][ci];
+        if(!isFinite(v)){ pen = false; return ""; }
+        var cmd = (pen ? "L" : "M") + sx(x).toFixed(1) + "," + sy(v).toFixed(1);
+        pen = true; return cmd;
+      }).join("");
+      if(!d) return;
       out.push('<path d="' + d + '" fill="none" stroke="' + col
         + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" class="seg">'
         + '<title>' + esc(s) + '</title></path>');
@@ -2442,7 +2918,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + P.C.fg2 + '" font-size="' + P.F.axisSize + '">' + esc(SH.xLab || "") + '</text>');
     if(sers.length > 1)
       out.push(legendBox(P, sers.slice(0, 12).map(function(s, i){
-        return {n:s, c:CHART.colors[s] || seriesPalette()[i % seriesPalette().length]}; })).html);
+        return {n:s, c:CHART.colors[s] || seriesColour(i)}; })).html);
     return out.join("");
   }
 
@@ -2482,7 +2958,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var q1 = q(0.25), med = q(0.5), q3 = q(0.75), lo = v[0], hi = v[v.length-1];
       var cx = P.x + slot*k + slot/2;
       var sy = function(y){ return P.y + P.h - y/yMax*P.h; };
-      var col = CHART.colors[SH.labels[si]] || seriesPalette()[si % seriesPalette().length];
+      var col = CHART.colors[SH.labels[si]] || seriesColour(si);
       out.push('<line x1="' + cx + '" y1="' + sy(hi) + '" x2="' + cx + '" y2="' + sy(lo)
         + '" stroke="' + P.C.fg3 + '" stroke-width="1.5"/>');
       out.push('<rect x="' + (cx-bw/2) + '" y="' + sy(q3) + '" width="' + bw + '" height="'
@@ -2500,12 +2976,21 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   /* UPGMA, computed here from the distance matrix rather than read from a
      picture. Average linkage, same as the pipeline's hclust(method="average"). */
   function drawDendro(P){
-    var SH = CHART.shape, names = SH.names.slice();
+    /* Cluster the samples that are on screen. Clustering all four and then
+       labelling two is a different tree: average linkage merges in the order
+       the distances dictate, so a hidden sample changes where the visible ones
+       join. The tree has to be built from the submatrix. */
+    var SH = CHART.shape;
+    var keep = visibleIdx(SH.names);
+    var names = keep.map(function(i){ return SH.names[i]; });
     var n = names.length;
     if(n < 2) return '<text x="' + P.x + '" y="' + (P.y+20) + '" fill="' + P.C.fg2
-      + '">A dendrogram needs at least two samples.</text>';
+      + '">A dendrogram needs at least two samples' + (keep.length < SH.names.length
+        ? ' — ' + (SH.names.length - keep.length) + ' of ' + SH.names.length + ' are hidden.' : '.')
+      + '</text>';
     var clusters = names.map(function(nm, i){ return {leaves:[i], h:0, x:null, kids:null}; });
-    var D = SH.m.map(function(r){ return r.slice(); });
+    var D = keep.map(function(i){
+      return keep.map(function(j){ return (SH.m[i] || [])[j]; }); });
     function dist(a, b){
       var s = 0, c = 0;
       a.leaves.forEach(function(i){ b.leaves.forEach(function(j){
@@ -2543,7 +3028,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     })(root);
     leafOrder.forEach(function(li, k){
       var y = P.y + step*(k + 0.5);
-      var col = CHART.colors[names[li]] || seriesPalette()[li % seriesPalette().length];
+      var col = CHART.colors[names[li]] || seriesColour(li);
       out.push('<circle cx="' + (P.x + P.w) + '" cy="' + y.toFixed(1) + '" r="4" fill="' + col + '"/>');
       out.push('<text x="' + (P.x + P.w + 10) + '" y="' + (y + 4).toFixed(1) + '" fill="' + P.C.fg
         + '" font-size="' + P.F.legendSize + '">' + esc(labelOf(names[li])) + '</text>');
@@ -2578,6 +3063,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   function chartTable(){
     var k = CHART.tab.kind, S = CHART.shape;
     if(k === "stack" || k === "taxheat"){
+      S = viewShape();
       var ser = series(), ord = visibleIdx(S.samples);
       var pct = CHART.font.chartType === "bar100" && k === "stack";
       var tot = ord.map(function(si){
@@ -2599,7 +3085,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(k === "scatter"){
       return tbl(["Sample", S.xLab, S.yLab],
         S.pts.filter(function(p){ return !CHART.hidden[p.name]; }).map(function(p, i){
-          return [swatch(CHART.colors[p.name] || seriesPalette()[i % seriesPalette().length])
+          return [swatch(CHART.colors[p.name] || seriesColour(i))
                   + esc(labelOf(p.name)), p.x.toFixed(4), p.y.toFixed(4)]; }));
     }
     if(k === "lines" || k === "hist"){
@@ -2610,7 +3096,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var o3 = visibleIdx(S.labels);
     return tbl(["Sample"].concat(S.cols),
       o3.map(function(si){
-        return [swatch(CHART.colors[S.labels[si]] || seriesPalette()[si % seriesPalette().length])
+        return [swatch(CHART.colors[S.labels[si]] || seriesColour(si))
                 + esc(labelOf(S.labels[si]))]
           .concat((S.vals[si]||[]).map(function(v){ return fmtNum(v); })); }));
   }
@@ -2679,6 +3165,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
               + '<button class="segb' + (CHART.view === "chart" ? " on" : "") + '" data-view="chart">Chart</button>'
               + '<button class="segb' + (CHART.view === "table" ? " on" : "") + '" data-view="table">Table</button>'
             + '</div><span class="sp"></span>'
+            + '<span class="msg" id="allPngMsg" style="margin-right:10px">' + esc(EXPORT.msg) + '</span>'
+            + '<button class="btn" id="allPngBtn"' + (EXPORT.busy ? " disabled" : "") + '>'
+            + (EXPORT.busy ? "Exporting…" : "Export all charts (PNG)") + '</button>'
             + '<button class="btn" id="pngBtn"' + (CHART.err ? " disabled" : "") + '>Download PNG</button>'
           + '</div>'
           + '<div id="canvasBox" style="padding:' + (CHART.view === "chart" ? "14px" : "0") + '">'
@@ -2715,9 +3204,30 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<option value="bar100"' + (F.chartType === "bar100" ? " selected" : "") + '>Relative abundance (100%)</option>'
         + '<option value="bar"' + (F.chartType === "bar" ? " selected" : "") + '>Read counts</option>'
         + '</select></div>');
+    if(k === "alphagrp")
+      out.push('<div class="f"><label for="c_metric">Metric</label><select id="c_metric">'
+        + (CHART.shape.cols || []).filter(function(c){
+            return !/^(se\.|total)/i.test(c); }).map(function(c){
+            return '<option value="' + esc(c) + '"'
+              + (c.toLowerCase() === String(F.alphaMetric || "").toLowerCase() ? " selected" : "")
+              + '>' + esc(c) + '</option>'; }).join("")
+        + '</select><span class="note">Bars are the group mean; every sample in the group is '
+        + 'drawn on it as a dot. Set the grouping in the panel below, then switch grouping to '
+        + 'compare one against another.</span></div>');
+    if(k === "stack" || k === "taxheat")
+      out.push('<div class="f"><label for="c_agg">Columns</label><select id="c_agg">'
+        + '<option value="sample"' + (F.aggMode !== "group" ? " selected" : "") + '>One per sample</option>'
+        + '<option value="group"' + (F.aggMode === "group" ? " selected" : "") + '>Group mean</option>'
+        + '</select><span class="note">'
+        + (F.aggMode === "group"
+            ? 'One column per group, holding the mean of its samples. Hidden samples are left '
+              + 'out of the mean, and the top taxa are re-ranked on the group means.'
+            : 'Switch to a group mean for the “by Breeding / by Region” figure — one bar per '
+              + 'group instead of one per sample.')
+        + '</span></div>');
     if(k === "stack" || k === "taxheat")
       out.push('<div class="f"><label for="c_top">Taxa shown separately</label><select id="c_top">'
-        + [4,6,8,10,12,15,20,30].map(function(n){
+        + [4,6,8,10,12,15,20,30,40,50].map(function(n){
             return '<option value="' + n + '"' + (n === F.topNTaxa ? " selected" : "")
               + '>Top ' + n + '</option>'; }).join("")
         + '</select><span class="note" id="topNote"></span></div>');
@@ -2766,7 +3276,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                   || (k === "grouped" ? S.cols : null) || S.series || [];
       if(k === "grouped") names = S.cols || [];
       items = names.slice(0, 24).map(function(nm, i){
-        return {name:nm, c:CHART.colors[nm] || seriesPalette()[i % seriesPalette().length], sub:""}; });
+        return {name:nm, c:CHART.colors[nm] || seriesColour(i), sub:""}; });
     }
     if(items.length){
       out.push('<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Colours</h3>'
@@ -2784,7 +3294,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       || (S.pts ? S.pts.map(function(p){ return p.name; }) : null);
     if(sampleNames && sampleNames.length && k !== "lines" && k !== "hist" && k !== "scree"){
       var ord = orderedIdx(sampleNames);
-      var canFacet = k === "stack" || k === "alpha";
+      var canFacet = (k === "stack" && !aggOn()) || k === "alpha";
       /* Describe the chart on screen, not the metadata file. A group whose only
          members are hidden is not a panel, and a group that looks replicated in
          metadata.csv can be one-sample-per-group once samples are hidden —
@@ -2806,6 +3316,23 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             ? gNames.length + " group" + (gNames.length === 1 ? "" : "s")
             : "none set") + '</span></div>'
         + '<div class="grid2" style="grid-template-columns:1fr;padding:12px 14px;gap:10px">'
+        /* A job can carry more than one grouping. dada2_pipeline.R already reads
+           every non-id column of metadata.csv as a grouping and draws a figure
+           per column, so keeping Grouping1 and Grouping2 in the same file is
+           not a private convention of this editor — a re-run honours both. */
+        + '<div class="f"><label for="gCol">Grouping</label>'
+          + '<select id="gCol">'
+          + CHART.groupCols.map(function(k){
+              return '<option value="' + esc(k) + '"'
+                + (k === CHART.groupCol ? " selected" : "") + '>' + esc(k) + '</option>'; }).join("")
+          + '<option value="__newgrouping__">＋ New grouping…</option>'
+          + '</select><span class="note">'
+          + (CHART.groupCols.length > 1
+              ? 'This job holds ' + CHART.groupCols.length + ' groupings. The chart splits by '
+                + 'the one selected here; all of them are written to metadata.csv when you save.'
+              : 'Add a second grouping to keep, say, “all four” and “R1 vs R2” in one job '
+                + 'instead of one run each.')
+          + '</span></div>'
         + (canFacet
             ? '<div class="f"><label for="c_facet">Split the chart by group</label>'
               + '<select id="c_facet">'
@@ -2826,6 +3353,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<div class="f"><div class="row" style="display:flex;gap:7px;flex-wrap:wrap">'
           + '<button class="btn" id="gClear">Clear groups</button>'
           + '<button class="btn" id="gEach">One group per sample</button>'
+          + (CHART.groupCols.length > 1
+              ? '<button class="btn" id="gDrop">Delete this grouping</button>' : "")
           + '</div></div>'
         + '</div>');
 
@@ -2903,6 +3432,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     on("c_type", "change", function(){ F.chartType = this.value; touch(); });
     on("c_top", "change", function(){ F.topNTaxa = parseInt(this.value, 10); touch(); });
+    on("c_metric", "change", function(){ F.alphaMetric = this.value; touch(); });
+    on("c_agg", "change", function(){ F.aggMode = this.value; touch(); });
     on("c_title", "input", function(){ F.titleText = this.value; touch(); });
     [["c_ts","titleSize"],["c_as","axisSize"],["c_ls","legendSize"],["c_xs","xSize"]]
       .forEach(function(p){
@@ -2958,6 +3489,35 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       });
     });
 
+    on("gCol", "change", function(){
+      var v = this.value;
+      syncGroupCol();
+      if(v === "__newgrouping__"){
+        var nm = prompt("Name for the new grouping (it becomes a column in metadata.csv):",
+                        nextGroupingName());
+        nm = (nm || "").trim().replace(/[,\n\r"]/g, "");
+        if(!nm || CHART.groupCols.indexOf(nm) !== -1){ paintCharts(); return; }
+        CHART.groupCols.push(nm);
+        CHART.groupAll[nm] = {};
+        CHART.groupCol = nm;
+        CHART.groups = {};
+        CHART.groupDirty = true; CHART.groupSaved = false;
+      } else {
+        CHART.groupCol = v;
+        CHART.groups = Object.assign({}, CHART.groupAll[v] || {});
+      }
+      paintCharts();
+    });
+    on("gDrop", "click", function(){
+      if(CHART.groupCols.length < 2) return;
+      var gone = CHART.groupCol;
+      CHART.groupCols = CHART.groupCols.filter(function(k){ return k !== gone; });
+      delete CHART.groupAll[gone];
+      CHART.groupCol = CHART.groupCols[0];
+      CHART.groups = Object.assign({}, CHART.groupAll[CHART.groupCol] || {});
+      CHART.groupDirty = true; CHART.groupSaved = false;
+      paintCharts();
+    });
     on("gClear", "click", function(){
       CHART.groups = {}; CHART.groupDirty = true; CHART.groupSaved = false; paintCharts();
     });
@@ -2973,15 +3533,21 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var note = document.getElementById("topNote");
     if(note){
       var pal = seriesPalette().length;
+      /* The picker tops out at 30 and the sequence yields 32 distinct swatches,
+         so nothing here can reach an exact repeat. If a larger option is ever
+         added, extend the steps in seriesColour() rather than letting two taxa
+         share one colour. */
       note.innerHTML = F.topNTaxa > pal
-        ? "<b>Above " + pal + " the colours repeat and adjacent pairs stop being reliably "
-          + "distinguishable</b>, especially for colour-blind readers. Use the table view, or set "
-          + "your own colours below."
+        ? "<b>Only the first " + pal + " colours are chosen to stay apart from each other</b>, "
+          + "including for colour-blind readers. Past that they are shifted shades of those "
+          + "eight: every taxon still has its own swatch, but neighbouring ones get harder to "
+          + "tell apart. The table view carries the exact numbers."
         : "Everything past this falls into a single grey “Other”. Unassigned reads always go "
           + "there rather than taking a colour slot.";
     }
 
     on("pngBtn", "click", downloadPNG);
+    on("allPngBtn", "click", exportAllPNG);
     on("saveBtn", "click", saveChartSettings);
     on("revertBtn", "click", function(){
       CHART.font = defaultFont(); CHART.colors = {}; CHART.aliases = {};
@@ -3001,6 +3567,27 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      had never been produced). Writing one spelling is still the right thing —
      the fewer spellings in circulation, the fewer places a future reader has
      to check — but it is now a convention rather than a constraint. */
+  /* The editor works on one grouping at a time; this puts the edits back into
+     the set of all of them before anything reads or writes the whole file. */
+  function syncGroupCol(){
+    if(!CHART.groupCol) return;
+    var m = {};
+    Object.keys(CHART.groups).forEach(function(n){
+      var v = (CHART.groups[n] || "").trim();
+      if(v) m[canonName(n)] = v;
+    });
+    CHART.groupAll[CHART.groupCol] = m;
+    if(CHART.groupCols.indexOf(CHART.groupCol) === -1) CHART.groupCols.push(CHART.groupCol);
+  }
+
+  function nextGroupingName(){
+    for(var i = 1; i < 99; i++){
+      var n = "Grouping" + i;
+      if(CHART.groupCols.indexOf(n) === -1) return n;
+    }
+    return "Grouping";
+  }
+
   function saveGroups(){
     var S = CHART.shape || {};
     var names = S.samples || S.labels || S.names
@@ -3008,10 +3595,43 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(!names.length) return;
     var btn = document.getElementById("gSave"), msg = document.getElementById("gMsg");
     btn.disabled = true;
-    var csv = "SampleID,Group\n" + orderedIdx(names).map(function(i){
-      var n = names[i];
-      return csvCell(n) + "," + csvCell((CHART.groups[n] || "").trim());
-    }).join("\n") + "\n";
+
+    /* Write the whole file back, not just the column being edited.
+       Every grouping column goes out, so Grouping1 and Grouping2 live together
+       in one metadata.csv and a re-run draws a figure for each. Columns this
+       editor does not understand — the description column the U2BI-139
+       metadata was prepared with — are carried through untouched: saving a
+       grouping is not a reason to delete someone else's column.
+       Rows come from the file first, then any sample the chart has that the
+       file does not, so a sample is never dropped by being off-screen. */
+    syncGroupCol();
+    var cols = CHART.groupCols.slice();
+    (CHART.metaRows || []).forEach(function(rec){
+      Object.keys(rec).forEach(function(k){
+        if(k !== "id" && cols.indexOf(k) === -1) cols.push(k); });
+    });
+    if(!cols.length) cols = ["Group"];
+
+    var seen = {}, order = [];
+    (CHART.metaRows || []).forEach(function(rec){
+      var cn = canonName(rec.id);
+      if(!seen[sampKey(cn)]){ seen[sampKey(cn)] = rec; order.push(cn); }
+    });
+    orderedIdx(names).forEach(function(i){
+      var cn = canonName(names[i]);
+      if(!seen[sampKey(cn)]){ seen[sampKey(cn)] = {id: cn}; order.push(cn); }
+    });
+
+    var csv = [csvCell(CHART.metaIdCol || "SampleID")]
+      .concat(cols.map(csvCell)).join(",") + "\n"
+      + order.map(function(n){
+          var rec = seen[sampKey(n)] || {};
+          return [csvCell(n)].concat(cols.map(function(k){
+            var m = CHART.groupAll[k];
+            var v = m && m[n] !== undefined ? m[n] : rec[k];
+            return csvCell((v == null ? "" : String(v)).trim());
+          })).join(",");
+        }).join("\n") + "\n";
     fetch("/results/" + encodeURIComponent(CHART.id) + "/metadata", {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({csv: csv})
@@ -3062,9 +3682,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   /* PNG via canvas. ink() resolved the theme tokens to literals precisely so
      the serialised SVG still has its text when it leaves the document. */
   function downloadPNG(){
-    var W = 900, H = 470, scale = 2;
-    var svg = chartSVG({width:W, height:H});
+    /* The file that leaves the app is the report figure, not a picture of the
+       screen: titled, framed, with axis titles and a headed legend, at a size
+       that survives being dropped into a document. The on-screen chart keeps
+       its plain look because the page around it already supplies the rest. */
+    var svg = chartSVG({width:REPORT_W, height:REPORT_H, report:true});
     if(!svg) return;
+    var sz = svgSize(svg), W = sz.w, H = sz.h, scale = 2;
     var img = new Image();
     var url = URL.createObjectURL(new Blob([svg], {type:"image/svg+xml;charset=utf-8"}));
     img.onload = function(){
@@ -3088,6 +3712,111 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + 'this chart. The table view and Download CSV both still work.</span>';
     };
     img.src = url;
+  }
+
+  /* ── export every tab in one go ────────────────────────────────────────
+     Coming back to change a palette and then clicking through twenty-odd tabs,
+     saving each one by hand, is the part of this screen that wastes the most
+     time. The colours, fonts, grouping, sample order and hidden samples are
+     already settled by the time anyone wants pictures, so render each tab with
+     those settings and hand over the files.
+
+     Sequential on purpose: one tab's CSV is fetched, shaped, drawn and
+     rasterised before the next starts. Firing them in parallel would have
+     several tabs writing CHART.shape at once and the PNGs would carry each
+     other's data — the failure this editor already had once, when a tab switch
+     left the previous tab's shape in place. */
+  var EXPORT = {busy:false, msg:""};
+  var REPORT_W = 1240, REPORT_H = 780;
+
+  /* The report figure grows to fit its legend, so its size is whatever
+     chartSVG decided — reading it back off the markup rather than assuming the
+     starting size, which would crop the extra legend columns straight off the
+     right-hand edge of the PNG. */
+  function svgSize(svg){
+    var w = /width="(\d+)"/.exec(svg), h = /height="(\d+)"/.exec(svg);
+    return {w: w ? +w[1] : REPORT_W, h: h ? +h[1] : REPORT_H};
+  }
+
+  function pngOf(name){
+    return new Promise(function(resolve){
+      var svg = chartSVG({width:REPORT_W, height:REPORT_H, report:true});
+      if(!svg) return resolve(false);
+      var sz = svgSize(svg), W = sz.w, H = sz.h, scale = 2;
+      var img = new Image();
+      var url = URL.createObjectURL(new Blob([svg], {type:"image/svg+xml;charset=utf-8"}));
+      img.onload = function(){
+        var cv = document.createElement("canvas");
+        cv.width = W*scale; cv.height = H*scale;
+        var ctx = cv.getContext("2d");
+        ctx.scale(scale, scale); ctx.drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+        cv.toBlob(function(b){
+          if(!b) return resolve(false);
+          var a = document.createElement("a");
+          a.href = URL.createObjectURL(b);
+          a.download = name;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+          resolve(true);
+        }, "image/png");
+      };
+      img.onerror = function(){ URL.revokeObjectURL(url); resolve(false); };
+      img.src = url;
+    });
+  }
+
+  function exportAllPNG(){
+    if(!CHART || !CHART.tabs.length || EXPORT.busy) return;
+    var back = CHART.tab, tabs = CHART.tabs.slice();
+    var done = 0, skipped = [];
+    EXPORT.busy = true;
+    /* Disable the live button now, not at the next repaint. The flag alone only
+       reaches the DOM when paintCharts() next runs, which is after the first
+       tab has been fetched — a window in which the button still looks ready and
+       a second click would start a second export over the top of this one. */
+    var liveBtn = document.getElementById("allPngBtn");
+    if(liveBtn){ liveBtn.disabled = true; liveBtn.textContent = "Exporting…"; }
+    /* The progress line lives outside the DOM, because every tab rendered
+       during the export calls paintCharts() and rebuilds that bar. Held in a
+       node it would be wiped on the first tab and the export would look frozen
+       for however long it takes. */
+    function say(t){
+      EXPORT.msg = t;
+      var el = document.getElementById("allPngMsg");
+      if(el) el.textContent = t;
+    }
+
+    function step(i){
+      if(i >= tabs.length){
+        /* Put the editor back on the tab it was on. Leaving it on the last tab
+           of the list would look like the export navigated away. */
+        EXPORT.busy = false;
+        say(done + " chart" + (done === 1 ? "" : "s") + " saved"
+            + (skipped.length ? " · " + skipped.length + " skipped ("
+                 + skipped.slice(0, 3).join(", ")
+                 + (skipped.length > 3 ? "…" : "") + ")" : "")
+            + ". Your browser may ask once to allow multiple downloads.");
+        return selectTab(back);
+      }
+      var t = tabs[i];
+      say("Rendering " + (i + 1) + " of " + tabs.length + " — " + t.label + "…");
+      fetch("/results/" + encodeURIComponent(CHART.id) + "/table/" + encodeURIComponent(t.f),
+            {cache:"no-store"})
+        .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+        .then(function(text){
+          var rows = parseCSV(text);
+          if(rows.length < 2) throw new Error("no data rows");
+          CHART.tab = t; CHART.rows = rows; CHART.loading = false; CHART.err = "";
+          shapeData();
+          paintCharts();
+          return pngOf(CHART.id + "_" + t.id + ".png");
+        })
+        .then(function(ok){ if(ok) done++; else skipped.push(t.label); })
+        .catch(function(){ skipped.push(t.label); })
+        .then(function(){ say(EXPORT.msg); setTimeout(function(){ step(i + 1); }, 260); });
+    }
+    step(0);
   }
 
   /* ═══ pipeline pages ═══════════════════════════════════════════════════ */
