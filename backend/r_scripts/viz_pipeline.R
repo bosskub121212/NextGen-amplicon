@@ -38,7 +38,20 @@ option_list <- list(
   make_option("--topN",       type="integer",   default=30,
               help="Top N taxa to display [default: 30]"),
   make_option("--threads",    type="integer",   default=4,
-              help="Threads (passed through)")
+              help="Threads (passed through)"),
+  # ── re-rendering with the chart editor's settings ──────────────────────────
+  # The editor's figures are drawn in a browser; these are the R figures, which
+  # is what the reports are made of. Pointing this script at a settings file and
+  # a separate plots directory lets the same run be re-rendered with the colours
+  # and the Top-N the user settled on, without touching the originals.
+  make_option("--settings",   type="character", default=NULL,
+              help="edit_charts/settings.json from the chart editor (optional)"),
+  make_option("--plots_dir",  type="character", default=NULL,
+              help="Write figures here instead of <output_dir>/r_plots"),
+  make_option("--device",     type="character", default="pdf",
+              help="pdf or png [default: pdf]"),
+  make_option("--dpi",        type="integer",   default=200,
+              help="Raster resolution when --device png [default: 200]")
 )
 
 opt <- parse_args(OptionParser(option_list=option_list))
@@ -57,9 +70,43 @@ OUTPUT_DIR  <- normalizePath(opt$output_dir, mustWork=FALSE)
 MARKER      <- opt$marker
 GROUP_COL   <- opt$group_col
 METADATA_FILE <- opt$metadata
+DEVICE     <- if (tolower(opt$device) %in% c("png","pdf")) tolower(opt$device) else "pdf"
+DPI        <- if (!is.null(opt$dpi) && opt$dpi > 0) opt$dpi else 200
+
+# ── the chart editor's settings ───────────────────────────────────────────────
+# Only the parts that mean the same thing in R: the colours the user chose per
+# taxon, and how many taxa to show. Font sizes and canvas dimensions belong to
+# the browser renderer and have no equivalent here; carrying them across would
+# produce a figure that matches neither.
+CUSTOM_COLS <- character(0)
+if (!is.null(opt$settings) && nchar(opt$settings) > 0 && file.exists(opt$settings)) {
+  tryCatch({
+    st <- jsonlite::fromJSON(opt$settings, simplifyVector=TRUE)
+    if (!is.null(st$colors) && length(st$colors) > 0) {
+      cc <- unlist(st$colors)
+      cc <- cc[grepl("^#[0-9A-Fa-f]{6}$", cc)]
+      if (length(cc)) {
+        CUSTOM_COLS <- setNames(as.character(cc), names(cc))
+        cat(sprintf("  Chart settings: %d custom colour(s)\n", length(CUSTOM_COLS)))
+      }
+    }
+    tn <- suppressWarnings(as.integer(st$font$topNTaxa))
+    if (length(tn) == 1 && !is.na(tn) && tn > 0) {
+      opt$topN <- tn
+      cat(sprintf("  Chart settings: Top %d taxa\n", tn))
+    }
+  }, error=function(e) cat(sprintf("  [WARN] settings unreadable: %s\n", e$message)))
+}
+
 TOP_N       <- if (!is.null(opt$topN) && opt$topN > 0) opt$topN else 30
 
-PLOTS_DIR  <- file.path(OUTPUT_DIR, "r_plots")
+# Braces, not a bare line break: at top level R closes the `if` at the end of
+# the line and then meets a stray `else`.
+PLOTS_DIR  <- if (!is.null(opt$plots_dir) && nchar(opt$plots_dir) > 0) {
+  normalizePath(opt$plots_dir, mustWork=FALSE)
+} else {
+  file.path(OUTPUT_DIR, "r_plots")
+}
 TABLES_DIR <- file.path(OUTPUT_DIR, "r_tables")
 EXP_DIR    <- file.path(OUTPUT_DIR, "exported")
 
@@ -147,6 +194,22 @@ make_palette <- function(n) {
 })
 if (file.exists(.plot_helper_path)) source(.plot_helper_path)
 has_plot_helpers <- exists("tax_clean_labels", mode = "function")
+
+# Shadow tax_colors() the way tax_glom() is shadowed above. It is the single
+# place every taxonomy figure asks for its fill colours, so overriding it here
+# reaches all of them at once instead of being patched into twenty call sites
+# that would drift apart.
+if (exists("tax_colors", mode = "function")) {
+  .tax_colors_default <- tax_colors
+  tax_colors <- function(levels, ...) {
+    v <- .tax_colors_default(levels, ...)
+    if (length(CUSTOM_COLS)) {
+      hit <- intersect(names(v), names(CUSTOM_COLS))
+      if (length(hit)) v[hit] <- unname(CUSTOM_COLS[hit])
+    }
+    v
+  }
+}
 if (!has_plot_helpers)
   cat("[WARN] plot_helpers.R not found - taxonomy bars will not match the interactive chart\n")
 
@@ -403,12 +466,23 @@ cat(sprintf("\n  has_metadata: %s | has_tree: %s | group_col: '%s'\n",
 
 # ── Helper: safe PDF save ──────────────────────────────────────────────────────
 save_pdf <- function(plot_obj, filename, width=10, height=7) {
+  # Every figure in this script goes through here, so the device is decided in
+  # one place. PNG keeps the same inch dimensions and adds a resolution, so a
+  # re-render is the same figure rasterised, not a differently-shaped one.
+  if (DEVICE == "png") filename <- sub("\\.pdf$", ".png", filename)
   path <- file.path(PLOTS_DIR, filename)
   tryCatch({
     if (inherits(plot_obj, "ggplot")) {
-      ggsave(path, plot=plot_obj, width=width, height=height, device="pdf")
+      if (DEVICE == "png")
+        ggsave(path, plot=plot_obj, width=width, height=height,
+               device="png", dpi=DPI, bg="white", limitsize=FALSE)
+      else
+        ggsave(path, plot=plot_obj, width=width, height=height, device="pdf")
     } else {
-      pdf(path, width=width, height=height)
+      if (DEVICE == "png")
+        png(path, width=width, height=height, units="in", res=DPI, bg="white")
+      else
+        pdf(path, width=width, height=height)
       if (is.function(plot_obj)) plot_obj() else print(plot_obj)
       dev.off()
     }

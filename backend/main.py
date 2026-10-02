@@ -2092,6 +2092,109 @@ async def save_preview_settings(job_id: str, request: Request):
     (ec_dir / "settings.json").write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True}
 
+# ── Re-render the R figures with the chart editor's settings ──────────────────
+#
+# The chart editor draws in a browser. Those figures are good for working, but
+# the report figures are the ones R makes, and that is what a customer gets.
+# This re-runs viz_pipeline.R over the SAME result folder with the colours and
+# Top-N chosen in the editor, writing PNGs into edit_charts/r_png/ — a separate
+# folder, so the originals in r_plots/ are still there to compare against and a
+# re-render can never destroy the delivered figures.
+
+R_RENDER: dict = {}          # job_id -> {"state", "started", "log", "n"}
+R_RENDER_LOCK = threading.Lock()
+
+def _r_png_dir(job_id: str) -> Path:
+    return RESULTS_DIR / job_id / "edit_charts" / "r_png"
+
+def _run_r_render(job_id: str, group_col: str) -> None:
+    out_dir = RESULTS_DIR / job_id
+    png_dir = _r_png_dir(job_id)
+    try:
+        if png_dir.exists():
+            shutil.rmtree(png_dir)
+        png_dir.mkdir(parents=True, exist_ok=True)
+        script = R_SCRIPTS_DIR / "viz_pipeline.R"
+        if not script.exists():
+            raise FileNotFoundError("viz_pipeline.R not found")
+        params_file = out_dir / "run_params.json"
+        marker = "16S"
+        try:
+            marker = json.loads(params_file.read_text(encoding="utf-8")).get("marker") or "16S"
+        except Exception:
+            pass
+        cmd = [
+            shutil.which("Rscript") or "Rscript", str(script),
+            "--output_dir", str(out_dir),
+            "--plots_dir",  str(png_dir),
+            "--device",     "png",
+            "--dpi",        "200",
+            "--marker",     marker,
+        ]
+        settings = out_dir / "edit_charts" / "settings.json"
+        if settings.exists():
+            cmd += ["--settings", str(settings)]
+        meta = out_dir / "metadata.csv"
+        if meta.exists():
+            cmd += ["--metadata", str(meta)]
+        if group_col:
+            cmd += ["--group_col", group_col]
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        n = len(list(png_dir.glob("*.png")))
+        with R_RENDER_LOCK:
+            R_RENDER[job_id] = {
+                "state": "done" if n else "failed",
+                "n": n,
+                # The tail is what a failure actually looks like; without it the
+                # only thing the user could be told is "it did not work".
+                "log": (proc.stdout or "")[-4000:] + (("\n--- stderr ---\n" + proc.stderr[-2000:])
+                                                     if proc.returncode != 0 and proc.stderr else ""),
+                "returncode": proc.returncode,
+            }
+    except Exception as e:
+        with R_RENDER_LOCK:
+            R_RENDER[job_id] = {"state": "failed", "n": 0, "log": str(e), "returncode": -1}
+
+@app.post("/results/{job_id}/render_r")
+async def start_r_render(job_id: str, request: Request):
+    if not (RESULTS_DIR / job_id).is_dir():
+        raise HTTPException(status_code=404, detail="No such job")
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    group_col = str(body.get("group_col") or "").strip()
+    with R_RENDER_LOCK:
+        cur = R_RENDER.get(job_id)
+        if cur and cur.get("state") == "running":
+            return {"state": "running", "already": True}
+        R_RENDER[job_id] = {"state": "running", "n": 0, "log": "", "returncode": None}
+    threading.Thread(target=_run_r_render, args=(job_id, group_col), daemon=True).start()
+    return {"state": "running"}
+
+@app.get("/results/{job_id}/render_r")
+def r_render_status(job_id: str):
+    with R_RENDER_LOCK:
+        st = dict(R_RENDER.get(job_id) or {})
+    png_dir = _r_png_dir(job_id)
+    files = sorted(f.name for f in png_dir.glob("*.png")) if png_dir.is_dir() else []
+    if not st:
+        # Nothing running, but a previous render may still be on disk.
+        st = {"state": "done" if files else "idle", "n": len(files), "log": ""}
+    st["files"] = files
+    return st
+
+@app.get("/results/{job_id}/render_r/{filename}")
+def r_render_file(job_id: str, filename: str):
+    if not _re.match(r'^[\w\-. ]+\.png$', filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    path = _r_png_dir(job_id) / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(str(path), media_type="image/png")
+
 # ── Chart presets ─────────────────────────────────────────────────────────────
 #
 # A job's edit_charts/settings.json belongs to that job. A preset is the same
