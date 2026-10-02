@@ -289,6 +289,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .runbar.sticky{position:sticky;bottom:10px;z-index:5;
   box-shadow:0 -2px 14px rgba(0,0,0,.10)}
 .runbar .msg{font-size:12px;color:var(--fg-2)}
+.tophead{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.tophead .thl{flex:1 1 320px;min-width:0}
+.tophead .thr{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:flex-end;
+  padding-top:2px;margin-bottom:12px}
 .runbar .sp{margin-left:auto}
 
 /* license panel */
@@ -953,9 +957,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
         + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 6l-6 6 6 6"/></svg>'
         + 'Project history</button></div>'
+      + '<div class="tophead"><div class="thl">'
       + '<h2 class="ttl" id="dTtl">' + esc(listed.job_name || id) + '</h2>'
       + '<p class="sub" id="dSub">' + chip(listed.status) + ' <span class="chip mk">'
         + esc(listed.marker || "—") + '</span></p>'
+      + '</div><div class="thr" id="dActs"></div></div>'
       + '<div id="dBody"><div class="panel"><div class="skel">Reading job detail…</div></div></div>';
 
     document.getElementById("backBtn").addEventListener("click", function(){ go({name:"history"}); });
@@ -1181,8 +1187,27 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     function build(jid, M){
       var body = document.getElementById("dBody");
+      /* The actions sit top-right, beside the job name, so they are on screen
+         when the page opens instead of below the settings table. */
+      var acts = document.getElementById("dActs");
+      if(acts) acts.innerHTML = M.st === "completed"
+          ? (M.live ? "" : '<button class="btn danger" id="delBtn">Delete job</button>')
+            + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download (.zip)</a>'
+            + '<button class="btn pri" id="resBtn">View results</button>'
+          : M.live
+          ? '<button class="btn" id="cancelBtn" title="The log updates as the pipeline writes it. '
+              + 'Closing this page does not affect the run.">Cancel job</button>'
+            + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>'
+          /* A failed run can still have written results — this one did: the
+             pipeline finished and a step AFTER it threw. Hiding the results
+             behind the status would mean 21 minutes of finished work being
+             unreachable because of a label. */
+          : '<button class="btn danger" id="delBtn">Delete job</button>'
+            + '<button class="btn" id="resBtn">View any results</button>'
+            + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>';
       body.innerHTML =
-          '<div class="kpis">' + M.kpis.map(function(x){
+          (M.live ? "" : '<div id="delBox"></div>')
+        + '<div class="kpis">' + M.kpis.map(function(x){
               return '<div class="kpi"><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></div>'; }).join("")
         + '</div>'
         + (M.live ? '<div class="bar" id="dBar" style="max-width:none;margin:-4px 0 14px">'
@@ -1198,6 +1223,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
               + 'Usually this means the chart tables or the functional prediction were not built; '
               + 'everything else is unaffected.</div>'
             : "")
+        + renderParams(M.params, M.D)
         + '<div class="two" style="margin-top:14px">'
           + '<div class="panel"><div class="sechdr"><h3>Pipeline</h3>'
             + '<span class="hint" id="stepsHint">'
@@ -1210,26 +1236,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + (M.error ? '<div class="errbox"><b>Run stopped.</b>\n' + esc(M.error) + '</div>' : "")
           + '</div>'
         + '</div>'
-        + renderParams(M.params, M.D)
-        + (M.live ? "" : '<div id="delBox"></div>')
-        + '<div class="runbar">'
-          + (M.st === "completed"
-              ? '<span class="msg">Results are on disk in the job folder.</span><span class="sp"></span>'
-                + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download (.zip)</a>'
-                + '<button class="btn pri" id="resBtn">View results</button>'
-              : M.live
-              ? '<span class="msg">The log updates as the pipeline writes it. Closing this page does not '
-                + 'affect the run.</span><span class="sp"></span>'
-                + '<button class="btn" id="cancelBtn">Cancel job</button>'
-                + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>'
-              : '<span class="msg">Nothing is running for this job.</span><span class="sp"></span>'
-                /* A failed run can still have written results — this one did:
-                   the pipeline finished and a step AFTER it threw. Hiding the
-                   results behind the status would mean 21 minutes of finished
-                   work being unreachable because of a label. */
-                + '<button class="btn" id="resBtn">View any results</button>'
-                + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>')
-        + '</div>';
+        + '';
 
       var box = document.getElementById("logBox");
       if(box){
@@ -1278,9 +1285,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(!box) return;
       /* Its own class, not .runbar: two bars sharing one class made "the action
          bar" ambiguous the moment a second one existed. */
-      box.innerHTML = '<div class="delbar"><span class="msg">Finished with this job?</span>'
-        + '<span class="sp"></span><button class="btn danger" id="delBtn">Delete job</button></div>';
-      document.getElementById("delBtn").addEventListener("click", function(){
+      box.innerHTML = "";
+      var hb = document.getElementById("delBtn");
+      if(!hb) return;
+      /* onclick, not addEventListener: "Keep it" calls mountDelete again, and a
+         second listener on the same button would run the check twice. */
+      hb.onclick = function(){
         box.innerHTML = '<div class="del"><div class="what">Checking what this would remove…</div></div>';
         api("/history/" + encodeURIComponent(jid) + "/usage").then(function(U){
           if(!U.deletable){
@@ -1335,7 +1345,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + '<div class="row"><button class="btn" id="delNo">Back</button></div></div>';
           document.getElementById("delNo").addEventListener("click", function(){ mountDelete(jid); });
         });
-      });
+      };
     }
 
     /* A checkpoint is the pipeline stopping to ask a question, and the question
@@ -1454,9 +1464,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
         + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 6l-6 6 6 6"/></svg>'
         + 'Back to the job</button></div>'
+      + '<div class="tophead"><div class="thl">'
       + '<h2 class="ttl">' + esc(listed.job_name || id) + ' — results</h2>'
       + '<p class="sub" id="rSub">Reading the result folder…</p>'
+      + '</div><div class="thr">'
+        + '<button class="btn" id="chartBtn">Customise charts</button>'
+        + '<a class="btn pri" href="/results/' + encodeURIComponent(id) + '/download">Download everything (.zip)</a>'
+      + '</div></div>'
       + '<div id="rBody"><div class="panel"><div class="skel">Loading…</div></div></div>';
+    var cbt = document.getElementById("chartBtn");
+    if(cbt) cbt.addEventListener("click", function(){ go({name:"charts", id:id}); });
 
     document.getElementById("backBtn").addEventListener("click", function(){
       go({name:"job", id:id});
@@ -1523,19 +1540,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + '</div></div>'
         + '<div class="panel" id="viewer"><div class="skel">Pick a file on the left.</div></div>'
       + '</div>'
-      + '<div class="runbar">'
-        + '<span class="msg">Everything here is already on disk in the job folder.</span>'
-        + '<span class="sp"></span>'
-        + '<button class="btn" id="chartBtn">Customise charts</button>'
-        + '<a class="btn pri" href="/results/' + encodeURIComponent(id) + '/download">Download everything (.zip)</a>'
-      + '</div>'
-      + '<div class="note">The figures above are the ones R drew during the run. '
+      + '<div class="note">Everything here is already on disk in the job folder. '
+        + 'The figures are the ones R drew during the run. '
         + '<b>Customise charts</b> redraws the taxonomy table here, with your own colours, '
         + 'labels and sample order — and writes them into the same settings file the '
         + 'production console uses.</div>';
 
-    var cb = document.getElementById("chartBtn");
-    if(cb) cb.addEventListener("click", function(){ go({name:"charts", id:id}); });
 
     var box = document.getElementById("fileList");
     Array.prototype.forEach.call(box.querySelectorAll(".fitem"), function(el){

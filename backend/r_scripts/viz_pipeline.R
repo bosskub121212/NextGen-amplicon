@@ -604,6 +604,18 @@ save_pdf <- function(plot_obj, filename, width=10, height=7) {
   }, error=function(e) cat(sprintf("  ✗ %s: %s\n", basename(path), e$message)))
 }
 
+# For the figures drawn straight onto a device (pheatmap, base plot(), igraph)
+# rather than handed over as an object. These used to call pdf() directly, so a
+# re-render with --device png wrote heatmaps and UPGMA trees as .pdf into the
+# PNG folder, where nothing listed them and they never reached the download.
+open_dev <- function(filename, width=10, height=7) {
+  if (DEVICE == "png") filename <- sub("\\.pdf$", ".png", filename)
+  path <- file.path(PLOTS_DIR, filename)
+  if (DEVICE == "png") png(path, width=width, height=height, units="in", res=DPI, bg="white")
+  else pdf(path, width=width, height=height)
+  invisible(path)
+}
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — Read tracking & ASV summary
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -722,6 +734,26 @@ tryCatch({
               legend.position="none")
       save_pdf(gg, sprintf("02_alpha_%s.pdf", tolower(m)))
     }
+
+    # All metrics side by side in one figure — the editor's "All Alpha Metrics".
+    tryCatch({
+      x_a <- if (has_meta) as.character(alpha_df[[GROUP_COL]]) else as.character(alpha_df$Sample)
+      long_a <- do.call(rbind, lapply(plot_measures, function(m)
+        data.frame(X=x_a, Metric=m, Value=alpha_df[[m]], stringsAsFactors=FALSE)))
+      long_a$Metric <- factor(long_a$Metric, levels=plot_measures)
+      long_a$X <- factor(long_a$X, levels=unique(x_a))
+      ga <- ggplot(long_a, aes(x=X, y=Value, fill=X)) +
+        (if (has_meta) geom_boxplot(outlier.shape=NA, alpha=0.7) else geom_col(alpha=0.85)) +
+        (if (has_meta) geom_jitter(width=0.15, size=1.8, alpha=0.8) else NULL) +
+        facet_wrap(~Metric, scales="free_y", nrow=1) +
+        labs(title="Alpha Diversity — all metrics",
+             x=if (has_meta) GROUP_COL else "Sample", y=NULL) +
+        theme_bw() +
+        theme(axis.text.x=element_text(angle=30, hjust=1), legend.position="none",
+              strip.text=element_text(face="bold"))
+      save_pdf(ga, "02_alpha_all_metrics.pdf",
+               width=max(10, length(plot_measures) * (1.2 + 0.5 * nlevels(long_a$X))), height=5.5)
+    }, error=function(e) cat(sprintf("  [WARN] All alpha metrics: %s\n", e$message)))
 
     # Faith's PD if tree
     if (has_tree && has_vegan) {
@@ -1070,7 +1102,8 @@ if (has_pheatmap && has_ggplot2 && has_dplyr && has_tidyr) {
         Phylum = colorRampPalette(c("#f0fff4","#22c55e","#14532d"))(100)
       )
       hm_title <- sprintf("Top %d %s — Relative Abundance Heatmap", nrow(mat_hm), hm_lvl)
-      hm_file  <- file.path(PLOTS_DIR, sprintf("04b_taxonomy_heatmap_%s.pdf", tolower(hm_lvl)))
+      hm_file  <- file.path(PLOTS_DIR, sprintf("04b_taxonomy_heatmap_%s.%s", tolower(hm_lvl),
+                                               if (DEVICE == "png") "png" else "pdf"))
       hm_w <- max(8, ncol(mat_hm) * 0.6 + 4)
       hm_h <- max(6, nrow(mat_hm) * 0.35 + 3)
 
@@ -1298,7 +1331,7 @@ tryCatch({
         data.frame(row.names=rownames(dist_mat),
                    Group=meta_df[rownames(dist_mat), GROUP_COL])
       else NULL
-      pdf(file.path(PLOTS_DIR, "05_beta_heatmap.pdf"), width=9, height=8)
+      open_dev("05_beta_heatmap.pdf", width=9, height=8)
       pheatmap::pheatmap(1 - dist_mat,
                          annotation_col=annt,
                          annotation_row=annt,
@@ -1312,7 +1345,7 @@ tryCatch({
   # ── UPGMA dendrogram ──
   tryCatch({
     upgma_tree <- hclust(dist_bc, method="average")
-    pdf(file.path(PLOTS_DIR, "05_beta_UPGMA.pdf"), width=10, height=6)
+    open_dev("05_beta_UPGMA.pdf", width=10, height=6)
     plot(upgma_tree, main="UPGMA Dendrogram (Bray-Curtis)",
          xlab="", sub="", cex=0.85)
     dev.off()
@@ -1768,7 +1801,7 @@ if (has_meta && has_ggplot2 &&
         ann_row_ds <- NULL
       }
 
-      pdf(file.path(PLOTS_DIR, "06b_deseq2_heatmap.pdf"),
+      open_dev("06b_deseq2_heatmap.pdf",
           width=max(7, nsamples(ps)*0.5+4),
           height=max(6, length(sig_taxa_ds)*0.4+3))
       pheatmap::pheatmap(
@@ -2094,7 +2127,7 @@ if (has_phyloseq && has_vegan && has_ggplot2) {
         }
 
         fname <- sprintf("12_upgma_%s.pdf", dm)
-        pdf(file.path(PLOTS_DIR, fname), width=max(8, nsamples(ps)*0.6), height=6)
+        open_dev(fname, width=max(8, nsamples(ps)*0.6), height=6)
         par(mar=c(5,4,3,2))
         plot(hc_upg,
              main=sprintf("UPGMA Clustering — %s distance", dm),
@@ -2201,10 +2234,8 @@ if (has_phyloseq && has_vegan && has_ggplot2 &&
 
       w_ct <- max(10, nsamples(ps) * 0.45 + 5)
       h_ct <- max(5,  nsamples(ps) * 0.28 + 2)
-      fname_ct <- "12b_clustertree_bar.pdf"
-      ggsave(file.path(PLOTS_DIR, fname_ct), plot=combined_ct,
-             width=w_ct, height=h_ct, device="pdf")
-      cat(sprintf("  ✓ Saved: %s\n", fname_ct))
+      # patchwork object, which inherits from ggplot, so save_pdf handles both devices
+      save_pdf(combined_ct, "12b_clustertree_bar.pdf", width=w_ct, height=h_ct)
     }
   }, error=function(e) cat(sprintf("  [WARN] ClusterTree+Bar: %s\n", e$message)))
 } else {
@@ -2473,7 +2504,7 @@ if (has_phyloseq && has_ggplot2 &&
           save_pdf(p_net, "15a_cooccurrence_network.pdf", width=10, height=9)
         } else {
           # Fallback: base R plot
-          pdf(file.path(PLOTS_DIR, "15a_cooccurrence_network.pdf"), width=10, height=9)
+          open_dev("15a_cooccurrence_network.pdf", width=10, height=9)
           igraph::plot.igraph(g_net,
             vertex.label      = tax_lab_net,
             vertex.label.cex  = 0.6,
@@ -2691,7 +2722,7 @@ if (has_phyloseq && has_vegan && requireNamespace("pheatmap", quietly=TRUE)) {
         }
 
         fname_bh <- sprintf("17_beta_heatmap_%s.pdf", dm_bh)
-        pdf(file.path(PLOTS_DIR, fname_bh),
+        open_dev(fname_bh,
             width=max(7, ncol(d_bh)*0.5+2),
             height=max(6, nrow(d_bh)*0.5+2))
         pheatmap::pheatmap(
@@ -3166,7 +3197,7 @@ if (has_phyloseq && has_ggplot2 && requireNamespace("igraph", quietly=TRUE)) {
                   plot.subtitle=element_text(hjust=0.5))
           save_pdf(p_clad, "23_lefse_cladogram.pdf", width=12, height=12)
         } else {
-          pdf(file.path(PLOTS_DIR, "23_lefse_cladogram.pdf"), width=12, height=12)
+          open_dev("23_lefse_cladogram.pdf", width=12, height=12)
           igraph::plot.igraph(g_cl,
             layout           = igraph::layout_as_tree(g_cl, circular=TRUE),
             vertex.color     = node_col_cl,
@@ -3190,8 +3221,107 @@ if (has_phyloseq && has_ggplot2 && requireNamespace("igraph", quietly=TRUE)) {
   cat("  Skipped (requires phyloseq + ggplot2 + igraph)\n")
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECTION 24 — Prevalence vs abundance, and the taxa detected per sample
+# ═══════════════════════════════════════════════════════════════════════════════
+# The chart editor has had both of these for a while; R had neither, so a
+# re-render could not hand them over. They work from the plain count and
+# taxonomy matrices, so they need nothing beyond ggplot2.
+cat("\n── Section 24: Prevalence vs Abundance / Taxa detected ───────\n")
+if (has_ggplot2) {
+  tryCatch({
+    om22 <- as(otu_table(ps), "matrix"); if (!taxa_are_rows(ps)) om22 <- t(om22)
+    tx22 <- as(tax_table(ps), "matrix")[rownames(om22), , drop=FALSE]
+    rk_all <- intersect(c("Kingdom","Domain","Phylum","Class","Order","Family","Genus","Species"),
+                        colnames(tx22))
+    grp22 <- if (has_meta) as.character(meta_df[colnames(om22), GROUP_COL]) else
+               rep("All samples", ncol(om22))
+    grp22[is.na(grp22) | grp22 == ""] <- "(no group)"
+    g_lv22 <- unique(grp22)
+
+    # ── 22a: prevalence vs mean abundance, at genus (or the deepest rank) ──
+    tryCatch({
+      rk <- intersect(c("Genus","Family","Order","Phylum"), colnames(tx22))[1]
+      lab <- as.character(tx22[, rk]); lab[is.na(lab) | trimws(lab) == ""] <- "Unclassified"
+      rel <- sweep(om22, 2, pmax(colSums(om22), 1), "/") * 100
+      m <- rowsum(rel, lab)          # a name split across lineages is one taxon
+      pv <- do.call(rbind, lapply(g_lv22, function(g) {
+        cols <- grp22 == g
+        a <- rowMeans(m[, cols, drop=FALSE])
+        p <- rowMeans(m[, cols, drop=FALSE] > 0) * 100
+        d <- data.frame(Taxon=rownames(m), Group=g, n=sum(cols), Abundance=a, Prevalence=p,
+                        stringsAsFactors=FALSE)
+        d[d$Abundance > 0, , drop=FALSE]
+      }))
+      write.csv(pv, file.path(TABLES_DIR, "prevalence_abundance.csv"), row.names=FALSE)
+      pv$Panel <- factor(sprintf("%s (n=%d)", pv$Group, pv$n),
+                         levels=unique(sprintf("%s (n=%d)", pv$Group, pv$n)))
+      top_lab <- do.call(rbind, lapply(split(pv, pv$Panel), function(d)
+        head(d[order(-d$Abundance), , drop=FALSE], 8)))
+      p22 <- ggplot(pv, aes(x=Abundance, y=Prevalence)) +
+        geom_point(aes(colour=Prevalence >= 100), alpha=0.75, size=2) +
+        scale_colour_manual(values=c(`TRUE`="#2563eb", `FALSE`="grey55"),
+                            labels=c(`TRUE`="in every sample", `FALSE`="in some samples"),
+                            name=NULL) +
+        geom_text(data=top_lab, aes(label=Taxon), size=2.7, vjust=-0.8,
+                  fontface="italic", check_overlap=TRUE) +
+        scale_x_log10() +
+        scale_y_continuous(limits=c(0, 112), breaks=seq(0, 100, 25)) +
+        labs(title=sprintf("Prevalence vs Abundance — %s", rk),
+             x="Mean relative abundance (% , log scale)",
+             y=if (length(g_lv22) > 1) "Prevalence within group (% of samples)"
+               else "Prevalence (% of samples)") +
+        theme_bw() + theme(legend.position="bottom", strip.text=element_text(face="bold"))
+      if (length(g_lv22) > 1) p22 <- p22 + facet_wrap(~Panel, nrow=1)
+      save_pdf(p22, "22_prevalence_abundance.pdf",
+               width=max(7, 4.2 * length(g_lv22) + 1.5), height=6)
+    }, error=function(e) cat(sprintf("  [WARN] Prevalence: %s\n", e$message)))
+
+    # ── 22b: how many taxa each sample holds at each rank ──
+    tryCatch({
+      rks <- intersect(c("Phylum","Class","Order","Family","Genus","Species"), colnames(tx22))
+      det <- do.call(rbind, lapply(seq_along(rks), function(i) {
+        r <- rks[i]; upto <- rk_all[seq_len(match(r, rk_all))]
+        v <- as.character(tx22[, r]); ok <- !is.na(v) & trimws(v) != ""
+        # Count lineages, not names: "subtilis" under two genera is two species.
+        lin <- apply(tx22[, upto, drop=FALSE], 1, paste, collapse=";")
+        data.frame(Sample=colnames(om22), Group=grp22, Rank=r,
+                   N=vapply(seq_len(ncol(om22)), function(j)
+                     length(unique(lin[ok & om22[, j] > 0])), 0L),
+                   stringsAsFactors=FALSE)
+      }))
+      det <- rbind(det, data.frame(Sample=colnames(om22), Group=grp22, Rank="ASVs",
+                                   N=as.integer(colSums(om22 > 0)), stringsAsFactors=FALSE))
+      wide <- reshape(det[, c("Sample","Group","Rank","N")], idvar=c("Sample","Group"),
+                      timevar="Rank", direction="wide")
+      names(wide) <- sub("^N\\.", "", names(wide))
+      write.csv(wide, file.path(TABLES_DIR, "species_summary.csv"), row.names=FALSE)
+      det$Rank <- factor(det$Rank, levels=c(rks, "ASVs"))
+      det$Sample <- factor(det$Sample, levels=rev(colnames(om22)))
+      det$Group <- factor(det$Group, levels=g_lv22)
+      # shade within each column, so a column of 300 ASVs does not wash out the phyla
+      det <- do.call(rbind, lapply(split(det, det$Rank), function(d) {
+        d$Shade <- if (max(d$N) > 0) d$N / max(d$N) else 0; d }))
+      p22b <- ggplot(det, aes(x=Rank, y=Sample, fill=Shade)) +
+        geom_tile(colour="white") +
+        geom_text(aes(label=N), size=3.4) +
+        scale_fill_gradient(low="#eff6ff", high="#60a5fa", guide="none") +
+        scale_x_discrete(position="top") +
+        labs(title="Taxa detected per sample", x=NULL, y=NULL) +
+        theme_minimal() + theme(panel.grid=element_blank(),
+                                axis.text.x=element_text(face="bold"),
+                                strip.text.y=element_text(angle=0, face="bold"))
+      if (has_meta && length(g_lv22) > 1)
+        p22b <- p22b + facet_grid(rows=vars(Group), scales="free_y", space="free_y")
+      save_pdf(p22b, "22b_species_summary.pdf",
+               width=max(7, 1.0 * (length(rks) + 1) + 3),
+               height=max(3, 0.45 * ncol(om22) + 1.6))
+    }, error=function(e) cat(sprintf("  [WARN] Taxa detected: %s\n", e$message)))
+  }, error=function(e) cat(sprintf("[WARN] Section 24: %s\n", e$message)))
+}
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
-plots_made <- list.files(PLOTS_DIR, pattern="\\.pdf$")
+plots_made <- list.files(PLOTS_DIR, pattern="\\.(pdf|png)$")
 tables_made <- list.files(TABLES_DIR, pattern="\\.csv$")
 
 cat("\n============================================================\n")
