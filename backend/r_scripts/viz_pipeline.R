@@ -2276,12 +2276,10 @@ if (has_phyloseq && has_vegan && has_ggplot2) {
 # ═══════════════════════════════════════════════════════════════════════════════
 cat("\n── Section 12b: ClusterTree + Bar ─────────────────────────────\n")
 if (has_phyloseq && has_vegan && has_ggplot2 &&
-    requireNamespace("ggdendro", quietly=TRUE) &&
     requireNamespace("patchwork", quietly=TRUE) &&
     requireNamespace("tidyr",    quietly=TRUE)) {
   tryCatch({
     suppressPackageStartupMessages({
-      library(ggdendro)
       library(patchwork)
       library(tidyr)
     })
@@ -2295,21 +2293,38 @@ if (has_phyloseq && has_vegan && has_ggplot2 &&
     sample_order <- hc_ct$labels[hc_ct$order]
 
     # ── Dendrogram ──────────────────────────────────────────────────────────
-    dend_data <- ggdendro::dendro_data(hc_ct, type="rectangle")
+    # The tree's segments, computed here rather than with ggdendro. Leaf i of
+    # the tree sits at x = its position in hc$order, which is exactly where
+    # the bar of the same sample sits, so the two panels line up row for row.
+    n_ct <- length(hc_ct$order)
+    leaf_x <- numeric(n_ct); leaf_x[hc_ct$order] <- seq_len(n_ct)
+    node_x <- numeric(nrow(hc_ct$merge))
+    seg_ct <- matrix(0, nrow=3 * nrow(hc_ct$merge), ncol=4,
+                     dimnames=list(NULL, c("x", "y", "xend", "yend")))
+    for (k in seq_len(nrow(hc_ct$merge))) {
+      a <- hc_ct$merge[k, 1]; b <- hc_ct$merge[k, 2]
+      xa <- if (a < 0) leaf_x[-a] else node_x[a]; ya <- if (a < 0) 0 else hc_ct$height[a]
+      xb <- if (b < 0) leaf_x[-b] else node_x[b]; yb <- if (b < 0) 0 else hc_ct$height[b]
+      hk <- hc_ct$height[k]
+      seg_ct[3*k - 2, ] <- c(xa, ya, xa, hk)
+      seg_ct[3*k - 1, ] <- c(xb, yb, xb, hk)
+      seg_ct[3*k,     ] <- c(xa, hk, xb, hk)
+      node_x[k] <- (xa + xb) / 2
+    }
+    seg_ct <- as.data.frame(seg_ct)
 
-    p_dend <- ggplot() +
-      ggplot2::geom_segment(
-        data = ggdendro::segment(dend_data),
-        aes(x=x, y=y, xend=xend, yend=yend),
-        linewidth=0.5, colour="#475569") +
-      ggplot2::geom_text(
-        data = ggdendro::label(dend_data),
-        aes(x=x, y=y, label=label),
-        hjust=1, size=2.8, colour="#1e293b") +
+    # No names on the tree. They used to be drawn at the leaf tips with
+    # hjust=1, i.e. back over the tree's own branches, so every leaf line ran
+    # through its sample name. The names are on the bar panel's axis instead,
+    # between the tree and the bars. Both panels use the same fixed row range.
+    p_dend <- ggplot(seg_ct) +
+      geom_segment(aes(x=x, y=y, xend=xend, yend=yend),
+                   linewidth=0.5, colour="#475569") +
+      scale_y_reverse(expand=expansion(mult=c(0.06, 0.02))) +
+      scale_x_continuous(limits=c(0.5, n_ct + 0.5), expand=c(0, 0)) +
       coord_flip() +
-      scale_y_reverse(expand=c(0.15, 0)) +
       theme_void(base_size=9) +
-      theme(plot.margin=margin(4,0,4,4))
+      theme(plot.margin=margin(4, 0, 4, 4))
 
     # ── Stacked bar (Phylum) ────────────────────────────────────────────────
     tax_rank_ct <- if ("Phylum" %in% rank_names(ps)) "Phylum" else rank_names(ps)[min(2, length(rank_names(ps)))]
@@ -2340,12 +2355,13 @@ if (has_phyloseq && has_vegan && has_ggplot2 &&
         scale_fill_manual(values=pal_ct) +
         scale_y_continuous(labels=scales::percent_format(accuracy=1),
                            expand=c(0,0)) +
+        scale_x_discrete(limits=sample_order, expand=c(0, 0.5)) +
         coord_flip() +
         labs(y="Relative Abundance", x=NULL,
              fill=tax_rank_ct,
              title=sprintf("ClusterTree — Bray-Curtis UPGMA + %s", tax_rank_ct)) +
         theme_bw(base_size=9) +
-        theme(axis.text.y=element_blank(),
+        theme(axis.text.y=element_text(size=8, colour="#1e293b"),
               axis.ticks.y=element_blank(),
               panel.grid.major.y=element_blank(),
               panel.grid.minor=element_blank(),
