@@ -2107,6 +2107,15 @@ R_RENDER_LOCK = threading.Lock()
 def _r_png_dir(job_id: str) -> Path:
     return RESULTS_DIR / job_id / "edit_charts" / "r_png"
 
+def _r_warnings(text: str) -> list:
+    """The lines where viz_pipeline.R says a figure was skipped or failed."""
+    out = []
+    for ln in (text or "").splitlines():
+        t = ln.strip()
+        if "[WARN]" in t or t.startswith("✗") or "Skipped" in t:
+            out.append(t[:300])
+    return out[:60]
+
 def _run_r_render(job_id: str, group_col: str) -> None:
     out_dir = RESULTS_DIR / job_id
     png_dir = _r_png_dir(job_id)
@@ -2142,10 +2151,19 @@ def _run_r_render(job_id: str, group_col: str) -> None:
 
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
         n = len(list(png_dir.glob("*.png")))
+        # The whole log goes to disk. A render that "worked" can still have
+        # skipped figures (a [WARN] line per figure), and those lines were only
+        # ever in memory, so nobody could see which figure was missing or why.
+        full = (proc.stdout or "") + ("\n--- stderr ---\n" + proc.stderr if proc.stderr else "")
+        try:
+            (out_dir / "edit_charts" / "r_render.log").write_text(full, encoding="utf-8")
+        except Exception as e:
+            print(f"[render_r] could not write r_render.log: {e}")
         with R_RENDER_LOCK:
             R_RENDER[job_id] = {
                 "state": "done" if n else "failed",
                 "n": n,
+                "warnings": _r_warnings(full),
                 # The tail is what a failure actually looks like; without it the
                 # only thing the user could be told is "it did not work".
                 "log": (proc.stdout or "")[-4000:] + (("\n--- stderr ---\n" + proc.stderr[-2000:])
@@ -2183,6 +2201,12 @@ def r_render_status(job_id: str):
     if not st:
         # Nothing running, but a previous render may still be on disk.
         st = {"state": "done" if files else "idle", "n": len(files), "log": ""}
+        lf = RESULTS_DIR / job_id / "edit_charts" / "r_render.log"
+        if lf.is_file():
+            try:
+                st["warnings"] = _r_warnings(lf.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                pass
     st["files"] = files
     return st
 

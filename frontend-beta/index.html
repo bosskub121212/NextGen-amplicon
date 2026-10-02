@@ -4180,6 +4180,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                       + 'here, written to edit_charts/r_png/ \u2014 the originals in r_plots/ '
                       + 'are untouched.'
                     : "")
+                /* A finished render can still have skipped figures. Say which,
+                   with R's own reason, instead of leaving the user to notice a
+                   file is missing from the archive. */
+                + (CHART.rr.state === "done" && CHART.rr.warn && CHART.rr.warn.length
+                    ? '<details id="rrWarn" style="margin-top:6px"><summary style="cursor:pointer">'
+                      + CHART.rr.warn.length + ' figure' + (CHART.rr.warn.length === 1 ? "" : "s")
+                      + ' or step' + (CHART.rr.warn.length === 1 ? " was" : "s were")
+                      + ' skipped or failed \u2014 R\u2019s reasons</summary>'
+                      + '<div class="mono" style="white-space:pre-wrap;max-height:180px;overflow:auto;'
+                      + 'margin-top:6px;font-size:11px">' + esc(CHART.rr.warn.join("\n")) + '</div>'
+                      + '<div style="margin-top:4px">Full log: <span class="mono">edit_charts/r_render.log</span></div>'
+                      + '</details>'
+                    : "")
                 + '</div>'
               : "")
           + '<div id="canvasBox" style="padding:' + (CHART.view === "chart" ? "14px" : "0") + '">'
@@ -4944,6 +4957,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         CHART.rr.state = j.state || "idle";
         CHART.rr.files = j.files || [];
         CHART.rr.log   = j.log || "";
+        CHART.rr.warn  = j.warnings || [];
         if(j.state === "running"){
           CHART.rr.msg = "R is drawing the figures… this takes a few minutes.";
           paintCharts();

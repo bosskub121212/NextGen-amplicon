@@ -579,10 +579,25 @@ cat(sprintf("\n  has_metadata: %s | has_tree: %s | group_col: '%s'\n",
             has_meta, has_tree, GROUP_COL))
 
 # ── Helper: safe PDF save ──────────────────────────────────────────────────────
+# A figure drawn straight onto a device (open_dev) that fails half-way leaves
+# that device open and a blank file behind: the next figure then draws into the
+# wrong file, and the blank one is delivered as if it were a figure. Close and
+# delete it before anything else is opened.
+.OPEN_DEV <- NULL
+.dev_cleanup <- function() {
+  if (!is.null(.OPEN_DEV) && .OPEN_DEV$dev %in% dev.list()) {
+    try(dev.off(.OPEN_DEV$dev), silent=TRUE)
+    if (file.exists(.OPEN_DEV$path)) unlink(.OPEN_DEV$path)
+    cat(sprintf("  ✗ %s: not finished, removed\n", basename(.OPEN_DEV$path)))
+  }
+  .OPEN_DEV <<- NULL
+}
+
 save_pdf <- function(plot_obj, filename, width=10, height=7) {
   # Every figure in this script goes through here, so the device is decided in
   # one place. PNG keeps the same inch dimensions and adds a resolution, so a
   # re-render is the same figure rasterised, not a differently-shaped one.
+  .dev_cleanup()
   if (DEVICE == "png") filename <- sub("\\.pdf$", ".png", filename)
   path <- file.path(PLOTS_DIR, filename)
   tryCatch({
@@ -601,7 +616,13 @@ save_pdf <- function(plot_obj, filename, width=10, height=7) {
       dev.off()
     }
     cat(sprintf("  ✓ Saved: %s\n", basename(path)))
-  }, error=function(e) cat(sprintf("  ✗ %s: %s\n", basename(path), e$message)))
+  }, error=function(e) {
+    # ggsave closes its own device; a base-graphics one may still be open.
+    if (!inherits(plot_obj, "ggplot") && dev.cur() > 1) try(dev.off(), silent=TRUE)
+    # A half-drawn file is worse than none: it was being delivered as a blank PNG.
+    if (file.exists(path)) unlink(path)
+    cat(sprintf("  ✗ %s: %s\n", basename(path), e$message))
+  })
 }
 
 # For the figures drawn straight onto a device (pheatmap, base plot(), igraph)
@@ -609,11 +630,54 @@ save_pdf <- function(plot_obj, filename, width=10, height=7) {
 # re-render with --device png wrote heatmaps and UPGMA trees as .pdf into the
 # PNG folder, where nothing listed them and they never reached the download.
 open_dev <- function(filename, width=10, height=7) {
+  .dev_cleanup()
   if (DEVICE == "png") filename <- sub("\\.pdf$", ".png", filename)
   path <- file.path(PLOTS_DIR, filename)
   if (DEVICE == "png") png(path, width=width, height=height, units="in", res=DPI, bg="white")
   else pdf(path, width=width, height=height)
+  .OPEN_DEV <<- list(dev=dev.cur(), path=path)
   invisible(path)
+}
+
+# One colour per group, in the order the groups first appear in metadata, so
+# "feed" is the same colour on the heatmaps, the dendrograms and the PCoA.
+group_pal <- function(grp) {
+  grp <- as.character(grp); grp[is.na(grp) | grp == ""] <- "Unknown"
+  lv <- if (exists("meta_df") && !is.null(meta_df) && GROUP_COL %in% colnames(meta_df))
+          unique(as.character(meta_df[[GROUP_COL]])) else character(0)
+  lv <- c(lv[lv %in% grp], setdiff(unique(grp), lv))
+  setNames(make_palette(length(lv)), lv)
+}
+
+# UPGMA tree with each sample's branch and name in its group's colour and a key.
+# The previous version drew rect.hclust() boxes coloured "by group" — but those
+# boxes are clusters, not groups, so with Pre-R2 and R2 clustering together the
+# "feed" box held a Reactor sample.
+plot_upgma <- function(hc, main, grp=NULL) {
+  dd <- as.dendrogram(hc)
+  pal <- NULL
+  if (!is.null(grp)) {
+    grp <- as.character(grp); grp[is.na(grp) | grp == ""] <- "Unknown"
+    pal <- group_pal(grp)
+    col_of <- setNames(pal[grp], hc$labels)
+    dd <- dendrapply(dd, function(n) {
+      if (is.leaf(n)) {
+        cl <- col_of[[attr(n, "label")]]
+        attr(n, "nodePar") <- list(lab.col=cl, col=cl, pch=19, cex=1.2)
+        attr(n, "edgePar") <- list(col=cl, lwd=2.5)
+      }
+      n
+    })
+  }
+  op <- par(mar=c(max(6, max(nchar(hc$labels)) * 0.55), 4.5, 3.5, if (is.null(pal)) 2 else 9),
+            xpd=NA)
+  on.exit(par(op))
+  plot(dd, main=main, ylab="Distance (average linkage)", cex.main=1.2)
+  if (!is.null(pal)) {
+    usr <- par("usr")
+    legend(usr[2] + diff(usr[1:2]) * 0.02, usr[4], legend=names(pal), col=pal, pch=19,
+           lwd=2.5, bty="n", title=GROUP_COL, title.adj=0)
+  }
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1105,7 +1169,7 @@ if (has_pheatmap && has_ggplot2 && has_dplyr && has_tidyr) {
       hm_file  <- file.path(PLOTS_DIR, sprintf("04b_taxonomy_heatmap_%s.%s", tolower(hm_lvl),
                                                if (DEVICE == "png") "png" else "pdf"))
       hm_w <- max(8, ncol(mat_hm) * 0.6 + 4)
-      hm_h <- max(6, nrow(mat_hm) * 0.35 + 3)
+      hm_h <- max(6, nrow(mat_hm) * 0.24 + 3)
 
       pheatmap::pheatmap(
         mat_hm,
@@ -1335,6 +1399,7 @@ tryCatch({
       pheatmap::pheatmap(1 - dist_mat,
                          annotation_col=annt,
                          annotation_row=annt,
+                         annotation_colors=if (!is.null(annt)) list(Group=group_pal(annt$Group)) else NA,
                          color=colorRampPalette(c("white","#2563eb"))(100),
                          main="Sample similarity (1 − Bray-Curtis)")
       dev.off()
@@ -1345,9 +1410,9 @@ tryCatch({
   # ── UPGMA dendrogram ──
   tryCatch({
     upgma_tree <- hclust(dist_bc, method="average")
-    open_dev("05_beta_UPGMA.pdf", width=10, height=6)
-    plot(upgma_tree, main="UPGMA Dendrogram (Bray-Curtis)",
-         xlab="", sub="", cex=0.85)
+    open_dev("05_beta_UPGMA.pdf", width=10, height=6.5)
+    plot_upgma(upgma_tree, "UPGMA Dendrogram (Bray-Curtis)",
+               if (has_meta) meta_df[upgma_tree$labels, GROUP_COL] else NULL)
     dev.off()
     cat(sprintf("  ✓ Saved: 05_beta_UPGMA.pdf\n"))
   }, error=function(e) cat(sprintf("  [WARN] UPGMA: %s\n", e$message)))
@@ -1652,10 +1717,19 @@ if (has_ancombc && has_meta && has_ggplot2) {
     cat(sprintf("  ANCOMBC2: %d significant taxa (p_adj < 0.05)\n", nrow(sig_df)))
 
     # Volcano plot
-    lfc_col  <- grep("^lfc_",  colnames(res_df), value=TRUE)[1]
-    padj_col <- grep("^q_",    colnames(res_df), value=TRUE)[1]
+    # The first lfc_/q_ columns are the intercept's, not the group contrast —
+    # take the first that is not, and only the rows that have both numbers.
+    lfc_col  <- grep("Intercept", grep("^lfc_", colnames(res_df), value=TRUE),
+                     value=TRUE, invert=TRUE)[1]
+    padj_col <- if (!is.na(lfc_col)) sub("^lfc_", "q_", lfc_col) else NA
+    if (!is.na(padj_col) && !padj_col %in% colnames(res_df)) padj_col <- NA
+    ok_v <- if (!is.na(lfc_col) && !is.na(padj_col))
+      is.finite(res_df[[lfc_col]]) & is.finite(res_df[[padj_col]]) else FALSE
+    if (!any(ok_v)) cat("  Volcano skipped — no taxon has both a fold change and a q-value",
+                        "(usual with 2 samples per group)\n")
 
-    if (!is.na(lfc_col) && !is.na(padj_col)) {
+    if (any(ok_v)) {
+      res_df <- res_df[ok_v, , drop=FALSE]
       res_df$neg_log10_q <- -log10(res_df[[padj_col]] + 1e-10)
       res_df$Significant <- res_df[[padj_col]] < 0.05
 
@@ -2127,15 +2201,9 @@ if (has_phyloseq && has_vegan && has_ggplot2) {
         }
 
         fname <- sprintf("12_upgma_%s.pdf", dm)
-        open_dev(fname, width=max(8, nsamples(ps)*0.6), height=6)
-        par(mar=c(5,4,3,2))
-        plot(hc_upg,
-             main=sprintf("UPGMA Clustering — %s distance", dm),
-             xlab="", sub="", cex=0.85)
-        if (has_meta) {
-          rect.hclust(hc_upg, k=min(length(unique(grp_upg)), nsamples(ps)-1),
-                      border=pal_upg)
-        }
+        open_dev(fname, width=max(8, nsamples(ps)*0.6 + 2), height=6.5)
+        plot_upgma(hc_upg, sprintf("UPGMA Clustering — %s distance", dm),
+                   if (has_meta) grp_upg else NULL)
         dev.off()
         cat(sprintf("  ✓ Saved: %s\n", fname))
       }, error=function(e) cat(sprintf("  [WARN] UPGMA %s: %s\n", dm, e$message)))
@@ -2717,8 +2785,7 @@ if (has_phyloseq && has_vegan && requireNamespace("pheatmap", quietly=TRUE)) {
           grp_bh <- meta_df[rownames(d_bh), GROUP_COL]
           grp_bh[is.na(grp_bh)] <- "Unknown"
           ann_col_bh <- data.frame(Group=grp_bh, row.names=rownames(d_bh))
-          pal_bh <- make_palette(length(unique(grp_bh)))
-          ann_col_colors <- list(Group=setNames(pal_bh, unique(grp_bh)))
+          ann_col_colors <- list(Group=group_pal(grp_bh))
         }
 
         fname_bh <- sprintf("17_beta_heatmap_%s.pdf", dm_bh)
@@ -3282,7 +3349,13 @@ if (has_ggplot2) {
       rks <- intersect(c("Phylum","Class","Order","Family","Genus","Species"), colnames(tx22))
       det <- do.call(rbind, lapply(seq_along(rks), function(i) {
         r <- rks[i]; upto <- rk_all[seq_len(match(r, rk_all))]
-        v <- as.character(tx22[, r]); ok <- !is.na(v) & trimws(v) != ""
+        v <- trimws(as.character(tx22[, r]))
+        # The taxonomy reaching here is already cleaned, so an unassigned rank
+        # reads "Unclassified", not blank. Counting that as a taxon put one
+        # extra "species" in every genus without one (Species 128 > Genus 106).
+        ok <- !is.na(v) & v != "" &
+          !grepl("^(na|nan|null|unknown|unassigned|unclassified|uncultured|undetermined)$",
+                 v, ignore.case=TRUE)
         # Count lineages, not names: "subtilis" under two genera is two species.
         lin <- apply(tx22[, upto, drop=FALSE], 1, paste, collapse=";")
         data.frame(Sample=colnames(om22), Group=grp22, Rank=r,
@@ -3321,6 +3394,7 @@ if (has_ggplot2) {
 }
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
+.dev_cleanup()
 plots_made <- list.files(PLOTS_DIR, pattern="\\.(pdf|png)$")
 tables_made <- list.files(TABLES_DIR, pattern="\\.csv$")
 
