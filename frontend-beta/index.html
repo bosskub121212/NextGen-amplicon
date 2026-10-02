@@ -4696,13 +4696,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     return "Grouping";
   }
 
-  function saveGroups(){
+  function saveGroups(then){
     var S = CHART.shape || {};
     var names = S.samples || S.labels || S.names
       || (S.pts ? S.pts.map(function(p){ return p.name; }) : []);
-    if(!names.length) return;
+    if(!names.length){ if(typeof then === "function") then(); return; }
     var btn = document.getElementById("gSave"), msg = document.getElementById("gMsg");
-    btn.disabled = true;
+    if(btn) btn.disabled = true;
 
     /* Write the whole file back, not just the column being edited.
        Every grouping column goes out, so Grouping1 and Grouping2 live together
@@ -4755,10 +4755,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }).then(function(r){
       if(!r.ok) throw new Error("HTTP " + r.status);
       CHART.groupDirty = false; CHART.groupSaved = true; paintCharts();
+      if(typeof then === "function") then();
     }).catch(function(e){
-      btn.disabled = false;
+      if(btn) btn.disabled = false;
       if(msg) msg.innerHTML = '<span style="color:var(--err)">Could not save the groups — '
         + esc(e.message || e) + '</span>';
+      if(typeof then === "function"){
+        CHART.rr.state = "failed";
+        CHART.rr.msg = "The groups could not be saved, so R was not started: " + (e.message || e);
+        paintCharts();
+      }
     });
   }
 
@@ -4777,12 +4783,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       || (S.pts ? S.pts.map(function(p){ return p.name; }) : []);
     /* The production console's exact shape. Anything else and a job's styling
        splits in two depending on which console last touched it. */
+    /* groupCol, hiddenSamples and ungrouped are for R. The re-render reads this
+       file, and without them it drew every sample in the run whatever the
+       editor showed — a grouping set to two of four samples came back as four.
+       The production console ignores keys it does not know, so adding them
+       does not split the file between the two consoles. */
     var payload = {
       font: CHART.font,
       colors: CHART.colors,
       sampleAliases: CHART.aliases,
       sampleOrder: names.length ? orderedIdx(names).map(function(i){ return names[i]; })
-                                : CHART.order
+                                : CHART.order,
+      groupCol: CHART.groupCol || "",
+      hiddenSamples: Object.keys(CHART.hidden).filter(function(k){ return CHART.hidden[k]; }),
+      ungrouped: CHART.font.ungrouped || "drop"
     };
     fetch("/results/" + encodeURIComponent(CHART.id) + "/edit_charts/settings", {
       method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)
@@ -4878,7 +4892,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           return;
         }
         CHART.rr.msg = j.state === "done"
-          ? CHART.rr.files.length + " figures rendered by R."
+          ? CHART.rr.files.length + " figures rendered by R" + rrScope() + "."
           : j.state === "failed"
           ? "R could not finish. " + (CHART.rr.log ? "Last lines are below." : "")
           : "";
@@ -4887,16 +4901,32 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       .catch(function(){ /* a dropped poll is not a failure; the next one tells us */ });
   }
 
+  /* Which samples R was asked to draw, in words — so a render of two of four
+     says so instead of leaving the user to count bars to find out. */
+  function rrScope(){
+    var all = shapeNames(), shown = all.filter(isShown);
+    if(!all.length || shown.length === all.length) return "";
+    return ", drawing " + shown.length + " of " + all.length + " samples ("
+      + shown.map(labelOf).join(", ") + ") from \u201c" + (CHART.groupCol || "Group") + "\u201d";
+  }
+
   function startRRender(){
     if(CHART.rr.state === "running") return;
     CHART.rr.state = "running";
-    CHART.rr.msg = "Saving the settings, then starting R…";
+    CHART.rr.msg = "Saving the groups and settings, then starting R…";
     paintCharts();
-    /* Save first, unconditionally. R reads the settings FILE, so a palette that
-       is only in the browser's memory would not reach it — the figures would
-       come back in the default colours and look like the button had not
-       worked. */
-    saveChartSettings(function(){
+    /* Save first, unconditionally, and in this order: the groups go into
+       metadata.csv, the colours, Top-N and hidden samples into settings.json,
+       and R reads both FILES. Anything that is only in the browser's memory
+       does not reach it — the figures come back looking like the button had
+       not worked. Groups first because a grouping the user has just typed
+       is not in metadata.csv until it is saved. */
+    var go = function(){ saveChartSettings(launchR); };
+    if(CHART.groupDirty) saveGroups(go); else go();
+  }
+
+  function launchR(){
+    (function(){
       syncGroupCol();
       fetch("/results/" + encodeURIComponent(CHART.id) + "/render_r", {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -4908,7 +4938,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           CHART.rr.msg = "Could not start the render: " + (e.message || e);
           paintCharts();
         });
-    });
+    })();
   }
 
   function downloadRZip(){

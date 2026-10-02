@@ -78,7 +78,9 @@ DPI        <- if (!is.null(opt$dpi) && opt$dpi > 0) opt$dpi else 200
 # taxon, and how many taxa to show. Font sizes and canvas dimensions belong to
 # the browser renderer and have no equivalent here; carrying them across would
 # produce a figure that matches neither.
-CUSTOM_COLS <- character(0)
+CUSTOM_COLS  <- character(0)
+ST_HIDDEN    <- character(0)
+ST_UNGROUPED <- "drop"
 if (!is.null(opt$settings) && nchar(opt$settings) > 0 && file.exists(opt$settings)) {
   tryCatch({
     st <- jsonlite::fromJSON(opt$settings, simplifyVector=TRUE)
@@ -90,6 +92,12 @@ if (!is.null(opt$settings) && nchar(opt$settings) > 0 && file.exists(opt$setting
         cat(sprintf("  Chart settings: %d custom colour(s)\n", length(CUSTOM_COLS)))
       }
     }
+    if (!is.null(st$hiddenSamples) && length(st$hiddenSamples))
+      ST_HIDDEN <- as.character(unlist(st$hiddenSamples))
+    if (!is.null(st$ungrouped)) ST_UNGROUPED <- as.character(st$ungrouped)
+    if (!is.null(st$groupCol) && nchar(as.character(st$groupCol)) > 0 &&
+        identical(opt$group_col, "treatment"))
+      opt$group_col <- as.character(st$groupCol)
     tn <- suppressWarnings(as.integer(st$font$topNTaxa))
     if (length(tn) == 1 && !is.na(tn) && tn > 0) {
       opt$topN <- tn
@@ -99,6 +107,7 @@ if (!is.null(opt$settings) && nchar(opt$settings) > 0 && file.exists(opt$setting
 }
 
 TOP_N       <- if (!is.null(opt$topN) && opt$topN > 0) opt$topN else 30
+GROUP_COL   <- opt$group_col
 
 # Braces, not a bare line break: at top level R closes the `if` at the end of
 # the line and then meets a stray `else`.
@@ -107,7 +116,15 @@ PLOTS_DIR  <- if (!is.null(opt$plots_dir) && nchar(opt$plots_dir) > 0) {
 } else {
   file.path(OUTPUT_DIR, "r_plots")
 }
-TABLES_DIR <- file.path(OUTPUT_DIR, "r_tables")
+# A re-render into its own plots directory writes its tables beside them, not
+# into r_tables/. Otherwise drawing two of four samples would rewrite the tables
+# the chart editor reads, and the editor would show two samples from then on —
+# the re-render would have quietly edited the job.
+TABLES_DIR <- if (!is.null(opt$plots_dir) && nchar(opt$plots_dir) > 0) {
+  file.path(PLOTS_DIR, "tables")
+} else {
+  file.path(OUTPUT_DIR, "r_tables")
+}
 EXP_DIR    <- file.path(OUTPUT_DIR, "exported")
 
 dir.create(PLOTS_DIR,  recursive=TRUE, showWarnings=FALSE)
@@ -429,24 +446,121 @@ if (file.exists(tree_file) && has_phyloseq && !is.null(ps)) {
 }
 
 # Load metadata
+#
+# This used to be read.table(sep="\t", quote="") whatever the file was. The app
+# writes metadata.csv — COMMA-separated — so every line came in as a single
+# column whose name was the whole header row, GROUP_COL was never among the
+# column names, and has_meta was FALSE on every run that used the app's own
+# metadata. Fifty-six branches in this script key off has_meta; none of them had
+# ever run for such a job, and the log said so in one line nobody reads
+# ("has_metadata: FALSE"). quote="" broke it a second way: a description with a
+# comma in it, quoted the way any CSV writer quotes it, split into two cells.
+#
+# So: sniff the delimiter from the header, read with normal quoting, and find the
+# id column by name the way dada2_pipeline.R and the chart editor already do.
 meta_df <- NULL
 if (!is.null(METADATA_FILE) && file.exists(METADATA_FILE)) {
   tryCatch({
-    meta_df <- read.table(METADATA_FILE, header=TRUE, sep="\t",
-                          comment.char="#", quote="", stringsAsFactors=FALSE)
-    colnames(meta_df)[1] <- "SampleID"
-    rownames(meta_df)    <- meta_df$SampleID
-    cat(sprintf("  Loaded metadata: %d samples × %d columns\n",
-                nrow(meta_df), ncol(meta_df)))
-    if (has_phyloseq && !is.null(ps)) {
-      common_samps <- intersect(sample_names(ps), rownames(meta_df))
-      if (length(common_samps) > 0) {
-        sample_data(ps) <- sample_data(meta_df[common_samps, , drop=FALSE])
-        cat(sprintf("  Matched %d samples between BIOM and metadata\n",
-                    length(common_samps)))
+    hdr  <- readLines(METADATA_FILE, n=1, warn=FALSE, encoding="UTF-8")
+    hdr  <- sub("^\ufeff", "", hdr)
+    sep_ <- if (grepl("\t", hdr)) "\t" else ","
+    meta_df <- read.table(METADATA_FILE, header=TRUE, sep=sep_, quote="\"",
+                          comment.char="", stringsAsFactors=FALSE,
+                          check.names=FALSE, fill=TRUE, na.strings=c("NA"),
+                          fileEncoding="UTF-8-BOM")
+    low  <- tolower(gsub("[^a-z0-9#_]", "", tolower(names(meta_df))))
+    idc  <- which(low %in% c("sampleid","sample_id","sample","#sampleid","id"))[1]
+    if (is.na(idc)) idc <- 1
+    names(meta_df)[idc] <- "SampleID"
+    meta_df$SampleID <- trimws(as.character(meta_df$SampleID))
+    meta_df <- meta_df[nchar(meta_df$SampleID) > 0, , drop=FALSE]
+    rownames(meta_df) <- meta_df$SampleID
+    for (cn in names(meta_df)) {
+      if (is.character(meta_df[[cn]])) meta_df[[cn]] <- trimws(meta_df[[cn]])
+      meta_df[[cn]][is.na(meta_df[[cn]])] <- ""
+    }
+
+    # The grouping column. --group_col may be spelled with a different case
+    # than the file ("Group" vs "group"), and its default, "treatment", is a
+    # column almost no metadata file has — so fall back to one named group,
+    # then to the first column that actually holds groups.
+    gc_hit <- names(meta_df)[tolower(names(meta_df)) == tolower(GROUP_COL)]
+    if (length(gc_hit)) {
+      GROUP_COL <- gc_hit[1]
+    } else {
+      cand <- names(meta_df)[tolower(names(meta_df)) %in% c("group","treatment","grp")]
+      if (!length(cand)) {
+        cand <- Filter(function(cn) {
+          if (cn == "SampleID") return(FALSE)
+          v <- meta_df[[cn]]; v <- v[nchar(v) > 0]
+          length(v) > 0 && max(nchar(v)) <= 40 && length(unique(v)) <= 20
+        }, names(meta_df))
+      }
+      if (length(cand)) {
+        cat(sprintf("  Grouping column '%s' not in metadata — using '%s'\n",
+                    GROUP_COL, cand[1]))
+        GROUP_COL <- cand[1]
       }
     }
+    cat(sprintf("  Loaded metadata: %d samples x %d columns (sep '%s', group '%s')\n",
+                nrow(meta_df), ncol(meta_df), if (sep_ == "\t") "tab" else ",",
+                GROUP_COL))
   }, error=function(e) cat(sprintf("[WARN] Metadata load error: %s\n", e$message)))
+}
+
+# ── which samples go into the figures ─────────────────────────────────────────
+# The same rule the chart editor draws by, so a re-render is the figure that was
+# on screen: a sample the user switched off is out, and a sample with no value in
+# the active grouping is not part of that comparison and is out too — unless the
+# editor was set to show ungrouped samples. A grouping that holds two of four
+# samples therefore renders two of four, which is what it was set up to do.
+KEEP_SAMPLES <- NULL
+if (!is.null(ps)) {
+  keep <- sample_names(ps)
+  if (exists("ST_HIDDEN") && length(ST_HIDDEN)) {
+    gone <- intersect(keep, ST_HIDDEN)
+    if (length(gone)) cat(sprintf("  Hidden in the editor: %s\n", paste(gone, collapse=", ")))
+    keep <- setdiff(keep, ST_HIDDEN)
+  }
+  if (!is.null(meta_df) && GROUP_COL %in% names(meta_df) &&
+      !(exists("ST_UNGROUPED") && identical(ST_UNGROUPED, "show"))) {
+    gv <- meta_df[keep, GROUP_COL]
+    gv[is.na(gv)] <- ""
+    if (any(nchar(gv) > 0)) {
+      blank <- keep[nchar(gv) == 0]
+      if (length(blank))
+        cat(sprintf("  No value in '%s', left out: %s\n", GROUP_COL,
+                    paste(blank, collapse=", ")))
+      keep <- keep[nchar(gv) > 0]
+    }
+  }
+  if (length(keep) < nsamples(ps)) {
+    if (length(keep) < 1) {
+      cat("[ERROR] Every sample is hidden or ungrouped — nothing left to draw\n")
+      quit(status=1)
+    }
+    ps <- prune_samples(keep, ps)
+    ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+    if (exists("ps_tree") && !is.null(ps_tree)) {
+      ps_tree <- prune_samples(intersect(keep, sample_names(ps_tree)), ps_tree)
+      ps_tree <- prune_taxa(taxa_sums(ps_tree) > 0, ps_tree)
+    }
+    KEEP_SAMPLES <- keep
+    cat(sprintf("  Drawing %d of the run's samples: %s\n",
+                length(keep), paste(keep, collapse=", ")))
+  }
+  if (!is.null(meta_df) && has_phyloseq) {
+    common_samps <- intersect(sample_names(ps), rownames(meta_df))
+    if (length(common_samps) > 0) {
+      sample_data(ps) <- sample_data(meta_df[common_samps, , drop=FALSE])
+      if (exists("ps_tree") && !is.null(ps_tree))
+        sample_data(ps_tree) <- sample_data(meta_df[intersect(common_samps,
+                                                   sample_names(ps_tree)), , drop=FALSE])
+      cat(sprintf("  Matched %d samples to metadata\n", length(common_samps)))
+    }
+    # Downstream code indexes meta_df by sample; keep it to the samples drawn.
+    meta_df <- meta_df[intersect(rownames(meta_df), sample_names(ps)), , drop=FALSE]
+  }
 }
 
 if (is.null(ps) || ntaxa(ps) == 0) {
