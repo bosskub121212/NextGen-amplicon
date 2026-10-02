@@ -2999,15 +2999,20 @@ if (has_phyloseq && has_meta && has_ggplot2) {
           p_st <- ggplot(df_long_st,
                          aes(x=taxon, y=mean, colour=group)) +
             geom_point(position=position_dodge(0.5), size=3) +
-            geom_errorbar(aes(ymin=pmax(mean-se*1.96, 0), ymax=mean+se*1.96),
+            # A relative abundance cannot pass 100%; with 2 samples per group
+            # mean + 1.96 SE did (Bacillota in feed reached ~140%).
+            geom_errorbar(aes(ymin=pmax(mean-se*1.96, 0), ymax=pmin(mean+se*1.96, 100)),
                           position=position_dodge(0.5), width=0.3, linewidth=0.7) +
             geom_text(data=subset(df_long_st, group==g1s & sig=="*"),
                       aes(label=sig, y=mean+se*1.96+0.3),
                       colour="black", size=5, show.legend=FALSE) +
             coord_flip() +
             scale_colour_manual(values=setNames(pal2_st, c(g1s, g2s))) +
-            labs(title=sprintf("STAMP — %s: %s vs %s\n(top 25 by abundance, * = q<0.05)",
-                               rank_st, g1s, g2s),
+            labs(title=sprintf("STAMP — %s: %s vs %s", rank_st, g1s, g2s),
+                 subtitle=sprintf("Top 25 by abundance · mean ± 1.96 SE · n = %d vs %d · * = q < 0.05%s",
+                                  length(s1s), length(s2s),
+                                  if (min(length(s1s), length(s2s)) < 3)
+                                    " · too few samples per group for a reliable test" else ""),
                  x="", y="Mean Relative Abundance (%)", colour="Group") +
             theme_bw(base_size=10) +
             theme(legend.position="top")
