@@ -277,19 +277,35 @@ if (IS_EMU_MODE) {
         otu_table(asv_mat, taxa_are_rows=TRUE),
         tax_table(tax_mat)
       )
-      # Attach the tree the DADA2 pipeline already built, when present —
-      # this is what makes UniFrac available downstream.
+      # Keep the tree in a SEPARATE object.
+      #
+      # merge_phyloseq(ps, phy_tree(tr)) intersects the taxa with the tree's
+      # tips, and dada2_pipeline.R caps the tree at the top 500 ASVs by
+      # abundance because aligning more is slow. So attaching it here quietly
+      # threw away 830 of this run's 1330 ASVs, and everything this script then
+      # wrote into r_tables/ — alpha diversity, Bray-Curtis, PCoA, rarefaction,
+      # the taxonomy tables the chart editor reads — was computed on 500 of
+      # them. The Word report reads the job root instead and used all 1330, so
+      # one job reported Observed = 133 in the chart editor and 222 in the
+      # report, with nothing anywhere saying which was which.
+      #
+      # The cap on the tree is fine; pruning the DATA to it is not. ps stays
+      # full width, ps_tree carries the tree, and the three places that need a
+      # tree (Faith's PD, UniFrac, the tree figure) use ps_tree and say how
+      # much of the table it covers.
+      ps_tree <- NULL
       d2_tree <- file.path(OUTPUT_DIR, "phylo_tree.nwk")
       if (file.exists(d2_tree)) {
         tryCatch({
           tr <- ape::read.tree(d2_tree)
           if (!is.null(tr) && length(intersect(tr$tip.label, taxa_names(ps))) > 1) {
-            ps <- merge_phyloseq(ps, phy_tree(tr))
-            cat("  Attached phylogenetic tree\n")
+            ps_tree <- merge_phyloseq(ps, phy_tree(tr))
+            cat(sprintf("  Tree attached to a tree-only copy: %d of %d ASVs\n",
+                        ntaxa(ps_tree), ntaxa(ps)))
           }
         }, error=function(e) cat(sprintf("[WARN] Tree attach failed: %s\n", e$message)))
       }
-      cat(sprintf("  phyloseq object: %d ASVs × %d samples\n",
+      cat(sprintf("  phyloseq object: %d ASVs x %d samples\n",
                   ntaxa(ps), nsamples(ps)))
     }
   }, error=function(e) cat(sprintf("[WARN] DADA2 CSV load error: %s\n", e$message)))
@@ -338,11 +354,14 @@ if (IS_EMU_MODE) {
   }
 }
 
-# Load tree
+# Load tree — into the tree-only copy, for the same reason as above:
+# assigning phy_tree(ps) prunes ps to the tree's tips.
 if (file.exists(tree_file) && has_phyloseq && !is.null(ps)) {
   tryCatch({
-    phy_tree(ps) <- read_tree(tree_file)
-    cat("  Loaded phylogenetic tree\n")
+    ps_tree <- ps
+    phy_tree(ps_tree) <- read_tree(tree_file)
+    cat(sprintf("  Loaded phylogenetic tree: %d of %d taxa\n",
+                ntaxa(ps_tree), ntaxa(ps)))
   }, error=function(e) cat(sprintf("[WARN] Tree load error: %s\n", e$message)))
 }
 
@@ -373,7 +392,9 @@ if (is.null(ps) || ntaxa(ps) == 0) {
 }
 
 has_meta  <- !is.null(meta_df) && GROUP_COL %in% colnames(meta_df)
-has_tree  <- tryCatch(!is.null(phy_tree(ps)), error=function(e) FALSE)
+if (!exists("ps_tree")) ps_tree <- NULL
+has_tree  <- tryCatch(!is.null(ps_tree) && !is.null(phy_tree(ps_tree)),
+                      error=function(e) FALSE)
 is_ITS    <- MARKER %in% c("ITS1", "ITS2")
 is_COX1   <- MARKER == "COX1"
 
@@ -518,9 +539,13 @@ tryCatch({
     if (has_tree && has_vegan) {
       tryCatch({
         load_pkg("picante")
-        otu_mat <- t(as.matrix(otu_table(ps)))
-        tree_obj <- phy_tree(ps)
+        # Both from ps_tree: the matrix and the tree have to describe the
+        # same taxa, and ps is wider than the tree.
+        otu_mat <- t(as.matrix(otu_table(ps_tree)))
+        tree_obj <- phy_tree(ps_tree)
         pd_res <- pd(otu_mat, tree_obj, include.root=TRUE)
+        cat(sprintf("  Faith's PD over %d of %d ASVs (the tree's tips)\n",
+                    ntaxa(ps_tree), ntaxa(ps)))
         pd_df  <- data.frame(Sample=rownames(pd_res), PD=pd_res$PD)
         if (has_meta) pd_df[[GROUP_COL]] <- meta_df[pd_df$Sample, GROUP_COL]
         write.csv(pd_df, file.path(TABLES_DIR, "faiths_pd.csv"), row.names=FALSE)
@@ -977,8 +1002,11 @@ tryCatch({
   # ── Weighted UniFrac PCoA (if tree available) ──
   if (has_tree) {
     tryCatch({
-      dist_wuf <- phyloseq::distance(ps_rel, method="wunifrac")
-      ord_wuf  <- ordinate(ps_rel, method="PCoA", distance=dist_wuf)
+      # UniFrac needs the tree, so it runs on the tree's taxa only. Every
+      # other distance on this page uses the whole table.
+      ps_rel_uf <- transform_sample_counts(ps_tree, function(x) x / sum(x))
+      dist_wuf <- phyloseq::distance(ps_rel_uf, method="wunifrac")
+      ord_wuf  <- ordinate(ps_rel_uf, method="PCoA", distance=dist_wuf)
       eig2 <- ord_wuf$values$Eigenvalues
       var2 <- round(eig2 / sum(abs(eig2)) * 100, 1)
       wuf_df <- as.data.frame(ord_wuf$vectors[, 1:2])
@@ -2695,15 +2723,18 @@ if (has_phyloseq && requireNamespace("ggtree", quietly=TRUE)) {
   tryCatch({
     suppressPackageStartupMessages(library(ggtree))
 
-    tree_viz <- tryCatch(phy_tree(ps), error=function(e) NULL)
+    # ps_tree, not ps: the tree lives on the tree-only copy now, and reading
+    # it off ps would return NULL and skip this figure without explanation.
+    tree_viz <- tryCatch(if (is.null(ps_tree)) NULL else phy_tree(ps_tree),
+                         error=function(e) NULL)
     if (is.null(tree_viz)) {
-      cat("  Skipped — no tree in phyloseq object\n")
+      cat("  Skipped — no tree available\n")
     } else {
       # Prune to top 100 taxa by abundance for readability
-      ps_tv <- ps
-      if (ntaxa(ps) > 100) {
-        top100 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:100]
-        ps_tv  <- prune_taxa(top100, ps)
+      ps_tv <- ps_tree
+      if (ntaxa(ps_tree) > 100) {
+        top100 <- names(sort(taxa_sums(ps_tree), decreasing=TRUE))[1:100]
+        ps_tv  <- prune_taxa(top100, ps_tree)
         cat("  Pruned to top 100 taxa for readability\n")
       }
       tree_tv <- phy_tree(ps_tv)
