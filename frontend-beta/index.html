@@ -359,6 +359,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   border-top:1px solid var(--line);flex-wrap:wrap}
 .gsave .msg{flex:1;min-width:0;font-size:11.5px;color:var(--fg-2);line-height:1.45}
 .samps{display:flex;flex-direction:column;padding:6px 0;max-height:260px;overflow:auto}
+.leftcol{display:flex;flex-direction:column;gap:12px;min-width:0}
+.lowcols{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);align-items:start}
+.lowcols.one{grid-template-columns:minmax(0,1fr)}
+.lowcol{min-width:0}
+.lowcol+.lowcol{border-left:1px solid var(--line)}
+.lowcol>.sechdr:first-child{border-top:0!important}
+.lowpanel .samps{max-height:420px}
+.lowpanel .swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+  align-content:start;max-height:520px;overflow:auto}
+.lowcols.one .swatches{max-height:340px}
+.sidepanel{position:sticky;top:10px;max-height:calc(100vh - 90px);overflow:auto}
+@media (max-width:1100px){.lowcols{grid-template-columns:minmax(0,1fr)}
+  .lowcol+.lowcol{border-left:0;border-top:1px solid var(--line)}}
+@media (max-width:860px){.sidepanel{position:static;max-height:none}}
 .samp{display:flex;align-items:center;gap:8px;padding:5px 14px}
 .samp:hover{background:var(--surface-3)}
 .samp .ar{display:flex;flex-direction:column;gap:1px;flex:none}
@@ -4122,9 +4136,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + esc(T.f) + '.</b>\n' + esc(CHART.err) + '</div>'
       : CHART.view === "chart" ? chartSVG({width:900, height:470}) : chartTable();
 
+    var CTL = controlsHtml();
     body.innerHTML =
         '<div class="panel" style="margin-bottom:12px"><div class="tabbar">' + tabsHtml + '</div></div>'
       + '<div class="rescols" style="grid-template-columns:minmax(0,1fr) 330px">'
+        + '<div class="leftcol">'
         + '<div class="panel">'
           + '<div class="resbar">'
             + '<div class="segbtns" role="group" aria-label="View">'
@@ -4159,7 +4175,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + '<div id="canvasBox" style="padding:' + (CHART.view === "chart" ? "14px" : "0") + '">'
             + canvas + '</div>'
         + '</div>'
-        + '<div class="panel">' + controlsHtml() + '</div>'
+        + lowerHtml(CTL)
+        + '</div>'
+        + '<div class="panel sidepanel">' + CTL.side + '</div>'
       + '</div>'
       + '<div class="runbar sticky">'
         + '<span class="msg" id="saveMsg">Saved into the job folder as '
@@ -4317,6 +4335,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       items = names.slice(0, 24).map(function(nm, i){
         return {name:nm, c:CHART.colors[nm] || seriesColour(i), sub:""}; });
     }
+    /* Colours, Groups and Samples are the long lists. They are drawn under the
+       chart, not at the bottom of the side panel: that is where the empty space
+       is, and editing them next to the chart beats scrolling the panel down to
+       change something and back up to see what it did. */
+    var iCol = out.length;
     if(items.length){
       out.push('<div class="sechdr" style="border-top:1px solid var(--line)"><h3>Colours</h3>'
         + '<span class="hint"><button class="lnk" id="resetCol">reset to default</button></span></div>'
@@ -4329,6 +4352,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }
 
     /* samples: rename and reorder, wherever the chart has samples */
+    var iGrp = out.length;
     var sampleNames = S.samples || S.labels || S.names
       || (S.pts ? S.pts.map(function(p){ return p.name; }) : null);
     if(sampleNames && sampleNames.length && k !== "lines" && k !== "hist" && k !== "scree"){
@@ -4476,7 +4500,18 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + '</span><button class="btn' + (canSave ? " pri" : "")
           + '" id="gSave"' + (canSave ? "" : " disabled") + '>Save groups</button></div>');
     }
-    return out.join("");
+    return {side: out.slice(0, iCol).join(""),
+            colours: out.slice(iCol, iGrp).join(""),
+            groups: out.slice(iGrp).join("")};
+  }
+
+  function lowerHtml(C){
+    if(!C.colours && !C.groups) return "";
+    var both = C.colours && C.groups;
+    return '<div class="panel lowpanel"><div class="lowcols' + (both ? "" : " one") + '">'
+      + (C.groups ? '<div class="lowcol">' + C.groups + '</div>' : "")
+      + (C.colours ? '<div class="lowcol">' + C.colours + '</div>' : "")
+      + '</div></div>';
   }
 
   function toHex(c){

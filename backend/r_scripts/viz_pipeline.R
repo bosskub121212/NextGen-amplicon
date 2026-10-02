@@ -956,6 +956,18 @@ tryCatch({
       melt_df$TaxLabel <- factor(melt_df$TaxLabel, levels=lv)
       n_col <- length(lv)
 
+      # With a grouping, one panel per group side by side (Feed | Reactor),
+      # in the order the groups first appear in metadata. Samples with no
+      # value in the grouping were already taken out of ps above.
+      n_grp <- 0
+      if (has_meta && GROUP_COL %in% colnames(melt_df)) {
+        gv <- as.character(melt_df[[GROUP_COL]])
+        g_lv <- unique(as.character(meta_df[[GROUP_COL]]))
+        g_lv <- c(g_lv[g_lv %in% gv], setdiff(unique(gv[!is.na(gv)]), g_lv))
+        n_grp <- length(g_lv)
+        if (n_grp >= 2) melt_df[[GROUP_COL]] <- factor(gv, levels=g_lv)
+      }
+
       p <- ggplot(melt_df, aes(x=Sample, y=Abundance, fill=TaxLabel)) +
         geom_bar(stat="identity", width=0.85, position=position_stack(reverse=TRUE)) +
         scale_fill_manual(values=pal, name=rank, breaks=lv) +
@@ -967,12 +979,21 @@ tryCatch({
               legend.key.size=unit(0.4,"cm"),
               legend.justification="top") +
         guides(fill=guide_legend(ncol=1, title.position="top", reverse=TRUE))
+      if (n_grp >= 2) {
+        p <- p + facet_grid(cols=vars(.data[[GROUP_COL]]), scales="free_x", space="free_x") +
+          theme(strip.background=element_rect(fill="grey92", colour="grey60"),
+                strip.text=element_text(face="bold", size=10))
+      }
       fname <- sprintf("04_taxonomy_%s.pdf", tolower(rank))
       # Legend is now a single tall column (one taxon per row) instead of wrapping into
       # multiple side-by-side columns — scale page height so long Top-N lists (30/50/100)
       # still fit instead of being squeezed/cut off.
       legend_h <- max(7, n_col * 0.16 + 2)
-      save_pdf(p, fname, width=max(8, nsamples(ps)*0.45), height=legend_h)
+      # Width = bars + the legend's longest name, so a Top-50 legend never
+      # squeezes the bars away.
+      legend_w <- max(nchar(as.character(lv)), 8) * 0.075 + 1.0
+      save_pdf(p, fname, width=max(8, nsamples(ps)*0.55 + 1.5 + legend_w + 0.2*n_grp),
+               height=legend_h)
 
       # Save table
       # NOTE: values_fn must be sum, not mean — multiple distinct ASVs commonly
@@ -1142,9 +1163,19 @@ if (has_meta && has_ggplot2) {
              x="Group", y="Mean Relative Abundance (%)") +
         theme_bw() +
         theme(axis.text.x=element_text(angle=30, hjust=1),
-              legend.text=element_text(size=8))
+              legend.text=element_text(size=8),
+              legend.key.size=unit(0.4,"cm"),
+              legend.justification="top") +
+        guides(fill=guide_legend(ncol=1, title.position="top", reverse=TRUE))
+      # The page used to be a fixed 6in wide. With Top-50 the legend wrapped
+      # into three columns, took the whole page, and ggplot drew the bars at
+      # zero width — Class/Order/Family/Genus came out as a legend with an
+      # empty axis. Size the page from the legend instead.
+      n_g2  <- length(unique(group_melt2[[GROUP_COL]]))
+      lw2   <- max(nchar(as.character(lv2)), 8) * 0.075 + 1.0
       save_pdf(p2, sprintf("04b_taxonomy_group_%s.pdf", tolower(rank2)),
-               width=max(6, length(unique(group_melt2[[GROUP_COL]]))*1.5+3), height=7)
+               width=max(3, n_g2*1.1 + 1.5) + lw2,
+               height=max(7, length(lv2)*0.16 + 2))
     }, error=function(e) cat(sprintf("  [WARN] Group bar %s: %s\n", rank2, e$message)))
   }
 }
