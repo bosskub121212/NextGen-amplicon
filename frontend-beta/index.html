@@ -603,6 +603,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
        desc:"Full-length 16S from PacBio HiFi circular consensus reads — species-level resolution across V1–V9."},
       {key:"ONT-16S",  label:"ONT 16S",        marker:"ONT-16S",
        desc:"Full-length 16S from Oxford Nanopore reads, quantified with Emu against its own database."}
+    ]},
+    {grp:"Whole genome", items:[
+      {key:"ONT-WGS",  label:"ONT WGS isolate", marker:"ONT-WGS",
+       desc:"Complete genomes of bacterial isolates from Oxford Nanopore Native Barcoding / Ligation runs — chunk merging, Flye + Medaka, species by ANI, all 16S copies, MLST, AMR, virulence, plasmids and Bakta annotation."}
     ]}
   ];
 
@@ -803,7 +807,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(view.name === "history")  return renderHistory();
     if(view.name === "job")      return renderJob(view.id);
     if(view.name === "pipeline") return renderPipeline(view.key);
-    if(view.name === "results")  return renderResults(view.id);
+    if(view.name === "results"){
+      var lj = STATE.jobs.filter(function(j){ return j.job_id === view.id; })[0];
+      if(lj && lj.marker === "ONT-WGS") return renderWgsResults(view.id);
+      return renderResults(view.id);
+    }
     if(view.name === "charts")   return renderCharts(view.id);
   }
 
@@ -1190,10 +1198,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       /* The actions sit top-right, beside the job name, so they are on screen
          when the page opens instead of below the settings table. */
       var acts = document.getElementById("dActs");
+      var isWgs = M.marker === "ONT-WGS";
       if(acts) acts.innerHTML = M.st === "completed"
           ? (M.live ? "" : '<button class="btn danger" id="delBtn">Delete job</button>')
+            + (isWgs ? '<button class="btn" id="wgReJob" title="Run every step after polishing again on the existing assemblies">Re-analyse</button>'
+                     + '<button class="btn" id="wgPdfJob">PDF report</button>' : "")
             + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download (.zip)</a>'
-            + '<button class="btn pri" id="resBtn">View results</button>'
+            + '<button class="btn pri" id="resBtn">' + (isWgs ? "View genome report" : "View results") + '</button>'
           : M.live
           ? '<button class="btn" id="cancelBtn" title="The log updates as the pipeline writes it. '
               + 'Closing this page does not affect the run.">Cancel job</button>'
@@ -1259,6 +1270,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
       var rb = document.getElementById("resBtn");
       if(rb) rb.addEventListener("click", function(){ go({name:"results", id:jid}); });
+      var wre = document.getElementById("wgReJob");
+      if(wre) wre.addEventListener("click", function(){ wgsReanalyse(jid, wre); });
+      var wpd = document.getElementById("wgPdfJob");
+      if(wpd) wpd.addEventListener("click", function(){ wgsPdf(jid, wpd); });
 
       var cb = document.getElementById("cancelBtn");
       if(cb) cb.addEventListener("click", function(){
@@ -1419,6 +1434,25 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     function row(k, v){ if(v !== undefined && v !== null && v !== "") rows.push([k, v]); }
 
     row("Marker",              p.marker);
+    if(p.marker === "ONT-WGS"){
+      var onoff = function(v){ return v === true ? "on" : (v === false ? "off" : ""); };
+      row("Read filter", (p.wgs_min_read_len !== undefined)
+          ? "≥ " + p.wgs_min_read_len + " bp, mean Q ≥ " + p.wgs_min_read_q : "");
+      row("Genome size / Flye coverage", (p.wgs_genome_size || "auto") + " / " + (p.wgs_asm_coverage === 0 ? "all reads" : (p.wgs_asm_coverage + "x")));
+      row("Read type",           p.wgs_read_type);
+      row("Medaka",              p.wgs_skip_medaka ? "skipped"
+          : (p.wgs_medaka_model || "auto") + (p.wgs_medaka_bacteria ? " · bacterial model" : ""));
+      row("ANI confirmation",    onoff(p.wgs_verify_ani));
+      row("CheckM2 · AMR · VFDB · MOB-suite · Bakta",
+          [p.wgs_run_checkm2, p.wgs_run_amr, p.wgs_run_vf, p.wgs_run_mobsuite, p.wgs_run_annotation]
+            .map(onoff).join(" · "));
+      row("16S reference",       p.wgs_db_16s || "auto");
+      if(p.wgs_sample_names && Object.keys(p.wgs_sample_names).length)
+        row("Samples", Object.keys(p.wgs_sample_names).map(function(k){ return p.wgs_sample_names[k]; }).join(", "));
+      row("CPU threads",         p.nThreads);
+    } else {
+    /* amplicon settings — RunParams carries their defaults on every run, so on
+       a genome run they would only list values that were never used */
     row("Forward primer",      p.primer_f);
     row("Reverse primer",      p.primer_r);
     row("Taxonomy database",   p.taxDatabase);
@@ -1438,6 +1472,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     row("Metadata supplied",   (p.metadata || (p.metadataRows && p.metadataRows.length)) ? "yes" : "no");
     row("Manual sample map",   (p.sampleFileMap && Object.keys(p.sampleFileMap).length) ? "yes" : "no");
     row("Reads re-oriented",   D.reoriented ? "yes" : "");
+    }
 
     if(!rows.length) return "";
     return '<div class="panel" style="margin-top:14px">'
@@ -5220,6 +5255,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var it = findPipe(key);
     if(!it) return go({name:"history"});
     if(!STATE.unlocked[key]) return renderLocked(it);
+    if(key === "ONT-WGS") return renderWgsForm(it);
     return renderForm(it);
   }
 
@@ -6304,6 +6340,431 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(pick) pick.pick = true;
     all.matched = hit.length;
     return all;
+  }
+
+  /* ═══ ONT-WGS: bacterial isolate genomes ════════════════════════════════
+     A different kind of run from every other entry in the catalog: one genome
+     per sample, assembled, not a community profiled. Its input is a MinKNOW
+     delivery — dozens of chunk files per barcode — which the backend groups
+     into samples (by the lab's sample folder, else by barcode) and merges at
+     run time. So this form has no pairing table and no taxonomy database: it
+     shows the samples the backend will make, lets their names be corrected,
+     and says which of the optional databases this machine actually has. */
+  var WG = null;
+
+  function wgsSpec(){
+    return [
+      {n:1, title:"Reads", why:"Short and low-quality reads only slow the assembler and add errors.",
+       fields:[
+         ["wgs_min_read_len", "Minimum read length", "int", "1000", "bp"],
+         ["wgs_min_read_q",   "Minimum mean quality", "num", "10", "Q — 10 suits R10.4.1 SUP/HAC"]
+       ]},
+      {n:2, title:"Assembly — Flye", why:"Longest reads up to the set depth start the assembly; all reads polish it.",
+       fields:[
+         ["wgs_genome_size", "Expected genome size", "select", "auto", [
+           ["auto", "auto (5 Mb working estimate)"], ["2m", "2 Mb"], ["3m", "3 Mb"],
+           ["4m", "4 Mb"], ["5m", "5 Mb"], ["6m", "6 Mb"], ["7m", "7 Mb"], ["8m", "8 Mb"]]],
+         ["wgs_asm_coverage", "Assembly coverage", "int", "100", "x — 0 = use every read"],
+         ["wgs_read_type", "Read type", "select", "auto", [
+           ["auto", "auto — from the read headers"],
+           ["nano-hq", "--nano-hq (R10.4.1, Dorado/Guppy5+ SUP/HAC)"],
+           ["nano-raw", "--nano-raw (R9.4.1 / fast basecalling)"]]]
+       ]},
+      {n:3, title:"Polishing — Medaka", why:"The bacterial model also corrects errors at methylated sites.",
+       fields:[
+         ["wgs_medaka_bacteria", "Bacterial methylation model", "bool", "true", ""],
+         ["wgs_medaka_model",    "Medaka model", "mono", "auto", "auto = chosen from the basecaller in the read headers"],
+         ["wgs_skip_medaka",     "Skip polishing", "bool", "false", "Flye consensus only"]
+       ]},
+      {n:4, title:"Identification", why:"Species is called from whole-genome ANI; 16S is reported but cannot separate close species.",
+       fields:[
+         ["wgs_verify_ani", "Confirm ANI vs closest reference", "bool", "true", "downloads that genome from NCBI — needs internet"],
+         ["wgs_db_16s",     "16S reference", "path", "", "blank = the Emu / SILVA database the amplicon pipelines use"]
+       ]},
+      {n:5, title:"Typing, resistance and annotation", why:"Each step is skipped, with a note in the report, when its tool or database is missing.",
+       fields:[
+         ["wgs_run_checkm2",    "CheckM2 completeness / contamination", "bool", "true", ""],
+         ["wgs_run_amr",        "AMRFinderPlus — AMR, stress, virulence", "bool", "true", ""],
+         ["wgs_run_vf",         "VFDB virulence factors", "bool", "true", ""],
+         ["wgs_run_mobsuite",   "MOB-suite plasmids", "bool", "true", ""],
+         ["wgs_run_annotation", "Bakta annotation", "bool", "true", ""],
+         ["wgs_keep_intermediate", "Keep Flye / Medaka working files", "bool", "false", ""]
+       ]},
+      {n:6, title:"Resources", why:"Samples run one after another; each step uses this many cores.",
+       fields:[
+         ["nThreads", "CPU threads", "int", "10", "Flye, Medaka alignment, Bakta"]
+       ]}
+    ];
+  }
+
+  function renderWgsForm(it){
+    WG = {jobId:null, groups:[], files:[], busy:false, err:"", source:""};
+    work.innerHTML =
+        '<div class="crumb">New job · ' + esc(it.label) + '</div>'
+      + '<h2 class="ttl">New ' + esc(it.label) + ' job</h2>'
+      + '<p class="sub">For Native Barcoding / Ligation runs of pure cultures (e.g. SQK-NBD114-24). '
+      + 'Point at the delivery folder — chunk files are merged per sample automatically. '
+      + 'Not for 16S amplicon kits: use ONT 16S for those.</p>'
+
+      + '<div class="panel">'
+        + '<div class="sechdr"><h3>Input</h3><span class="hint">a MinKNOW delivery, as it came</span></div>'
+        + '<div class="grid2" style="padding-bottom:0">'
+          + '<div class="f span2"><label for="jn">Job name</label>'
+          + '<input type="text" id="jn" placeholder="e.g. TH-BIOENTIST-00003"></div>'
+        + '</div>'
+        + '<div class="up">'
+          + '<div class="drop">'
+            + '<div class="t">Folder on this computer</div>'
+            + '<div class="s">The whole delivery folder — one sub-folder per sample or barcode. '
+            + 'Files are linked, not copied, so nothing is uploaded.</div>'
+            + '<div class="pathrow"><input type="text" class="mono" id="wgPath" '
+            + 'placeholder="C:\\Users\\NEXTAPP\\Downloads\\TH-BIOENTIST-00003"></div>'
+            + '<div class="row"><button class="btn pri" id="wgUse">Use this folder</button>'
+            + '<span class="s" id="wgPathState"></span></div>'
+          + '</div>'
+          + '<div class="drop" id="wgDrop">'
+            + '<div class="t">Or upload</div>'
+            + '<div class="s">A .zip of the delivery folder keeps the sample folder names; '
+            + 'loose FASTQ files are grouped by barcode.</div>'
+            + '<div class="row">'
+              + '<input type="file" id="wgIn" multiple accept=".fastq,.fq,.gz,.zip" hidden>'
+              + '<button class="btn" id="wgPick">Choose files</button>'
+              + '<button class="btn" id="wgUp" disabled>Upload</button>'
+              + '<span class="s" id="wgUpState">Nothing chosen yet</span>'
+            + '</div>'
+          + '</div>'
+        + '</div>'
+        + '<div class="pre" id="wgPre"></div>'
+      + '</div>'
+
+      + '<div id="wgSamples"></div>'
+      + '<div id="wgDbs"></div>'
+
+      + '<div class="panel adv">'
+        + '<button class="advhdr" id="advBtn" aria-expanded="true" aria-controls="wgsBody">'
+          + '<svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg>'
+          + 'Pipeline settings'
+          + '<span class="hint">defaults suit R10.4.1 SUP isolates — every value is recorded with the run</span>'
+        + '</button>'
+        + '<div class="advbody" id="wgsBody">'
+          + wgsSpec().map(function(st){ return stepCard(st, [], it.key); }).join("")
+        + '</div>'
+      + '</div>'
+
+      + '<div id="runErr"></div>'
+      + '<div class="runbar">'
+        + '<span class="msg" id="runMsg"></span><span class="sp"></span>'
+        + '<button class="btn pri" id="runBtn" disabled>'
+          + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 4l14 8-14 8z"/></svg>'
+          + 'Start analysis</button>'
+      + '</div>';
+
+    var ab = document.getElementById("advBtn"), abody = document.getElementById("wgsBody");
+    ab.addEventListener("click", function(){
+      var open = ab.getAttribute("aria-expanded") === "true";
+      ab.setAttribute("aria-expanded", String(!open));
+      abody.hidden = open;
+    });
+
+    var inp = document.getElementById("wgIn");
+    document.getElementById("wgPick").addEventListener("click", function(){ inp.click(); });
+    inp.addEventListener("change", function(){ wgChoose(inp.files); });
+    var dz = document.getElementById("wgDrop");
+    ["dragenter","dragover"].forEach(function(e){
+      dz.addEventListener(e, function(ev){ ev.preventDefault(); dz.style.borderColor = "var(--accent)"; });
+    });
+    ["dragleave","drop"].forEach(function(e){
+      dz.addEventListener(e, function(ev){ ev.preventDefault(); dz.style.borderColor = ""; });
+    });
+    dz.addEventListener("drop", function(ev){
+      if(ev.dataTransfer && ev.dataTransfer.files.length) wgChoose(ev.dataTransfer.files);
+    });
+    document.getElementById("wgUp").addEventListener("click", wgUpload);
+    document.getElementById("wgUse").addEventListener("click", wgUseFolder);
+    document.getElementById("wgPath").addEventListener("keydown", function(ev){
+      if(ev.key === "Enter") wgUseFolder();
+    });
+    document.getElementById("runBtn").addEventListener("click", wgRun);
+
+    wgDatabases();
+    wgPreflight();
+  }
+
+  function wgChoose(fileList){
+    WG.files = Array.prototype.slice.call(fileList);
+    var bytes = WG.files.reduce(function(n, f){ return n + f.size; }, 0);
+    document.getElementById("wgUpState").textContent = WG.files.length + " file"
+      + (WG.files.length === 1 ? "" : "s") + " · " + (bytes / 1048576).toFixed(1) + " MB — not uploaded yet";
+    document.getElementById("wgUp").disabled = !WG.files.length || WG.busy;
+  }
+
+  function wgAccept(j, how){
+    WG.jobId  = j.job_id;
+    WG.groups = Array.isArray(j.wgs_groups) ? j.wgs_groups.map(function(g){
+      return {key:g.key, sample:g.sample, barcode:g.barcode || "", folder:g.folder || "",
+              n_files:g.n_files || 0};
+    }) : [];
+    WG.source = how;
+    var jn = document.getElementById("jn");
+    if(jn && !jn.value.trim() && j.source)
+      jn.value = String(j.source).split(/[\\/]/).filter(Boolean).pop() || "";
+    wgPaintSamples();
+  }
+
+  function wgUseFolder(){
+    var path = (document.getElementById("wgPath").value || "").trim();
+    var st = document.getElementById("wgPathState");
+    if(!path || WG.busy) return;
+    WG.busy = true; WG.err = "";
+    st.textContent = "Reading the folder…";
+    fetch("/upload/from_path", {method:"POST", headers:{"Content-Type":"application/json"},
+                                body: JSON.stringify({path: path})})
+      .then(function(r){ return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.message || j.error || ("HTTP " + r.status));
+        return j; }); })
+      .then(function(j){
+        wgAccept(j, "folder");
+        st.textContent = (j.files || []).length + " FASTQ files · " + (j.total_mb || 0) + " MB · linked";
+      })
+      .catch(function(e){ WG.err = "Folder not usable — " + (e.message || e); st.textContent = ""; })
+      .then(function(){ WG.busy = false; wgPreflight(); });
+  }
+
+  function wgUpload(){
+    if(!WG.files.length || WG.busy) return;
+    WG.busy = true; WG.err = "";
+    var st = document.getElementById("wgUpState");
+    st.textContent = "Uploading…";
+    document.getElementById("wgUp").disabled = true;
+    var fd = new FormData();
+    /* webkitRelativePath, when the browser has one, carries the sample folder */
+    WG.files.forEach(function(f){ fd.append("files", f, f.webkitRelativePath || f.name); });
+    fetch("/upload", {method:"POST", body:fd})
+      .then(function(r){ return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+        return j; }); })
+      .then(function(j){
+        wgAccept(j, "upload");
+        st.textContent = "Uploaded · " + (j.files || []).length + " files on the server";
+      })
+      .catch(function(e){ WG.err = "Upload failed — " + (e.message || e); st.textContent = "Upload failed"; })
+      .then(function(){ WG.busy = false; wgPreflight(); });
+  }
+
+  function wgPaintSamples(){
+    var box = document.getElementById("wgSamples");
+    if(!box) return;
+    if(!WG.jobId){ box.innerHTML = ""; return; }
+    if(!WG.groups.length){
+      box.innerHTML = '<div class="panel" style="margin-top:12px"><div class="errbox" style="border-radius:var(--r)">'
+        + '<b>No FASTQ sample could be made from these files.</b> Only .fastq / .fq (.gz) files are read; '
+        + 'files from fastq_fail folders are left out on purpose.</div></div>';
+      return;
+    }
+    var rows = WG.groups.map(function(g, i){
+      return '<tr><td><input type="text" class="wgName" data-i="' + i + '" value="' + esc(g.sample)
+        + '" style="width:100%;min-width:120px"></td>'
+        + '<td class="mono">' + esc(g.barcode || "—") + '</td>'
+        + '<td>' + esc(g.folder || "—") + '</td>'
+        + '<td style="text-align:right">' + g.n_files + '</td></tr>';
+    }).join("");
+    box.innerHTML = '<div class="panel" style="margin-top:12px">'
+      + '<div class="sechdr"><h3>Samples</h3><span class="hint">' + WG.groups.length + ' sample'
+      + (WG.groups.length === 1 ? "" : "s") + ' · chunk files are merged per row at run time · names can be edited</span></div>'
+      + '<table class="parms samples"><thead><tr><th>Sample</th><th>Barcode</th><th>Source folder</th>'
+      + '<th style="text-align:right">Files</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      + '<div id="wgDup"></div></div>';
+    Array.prototype.forEach.call(box.querySelectorAll(".wgName"), function(el){
+      el.addEventListener("input", function(){
+        WG.groups[parseInt(el.dataset.i, 10)].sample = el.value;
+        wgPreflight();
+      });
+    });
+  }
+
+  function wgDatabases(){
+    var box = document.getElementById("wgDbs");
+    api("/databases").then(function(D){
+      var have = {};
+      (D.available || []).forEach(function(k){ have[k] = true; });
+      var items = [
+        ["gtdb_sourmash", "GTDB sketch", "species by whole-genome ANI — without it, species comes from 16S only"],
+        ["bakta_db",      "Bakta database", "gene annotation"],
+        ["checkm2_db",    "CheckM2 database", "completeness / contamination"]
+      ];
+      var missing = items.filter(function(x){ return !have[x[0]]; });
+      if(!box) return;
+      box.innerHTML = '<div class="panel" style="margin-top:12px">'
+        + '<div class="sechdr"><h3>Databases on this machine</h3><span class="hint">'
+        + (missing.length ? "missing ones are skipped and named in the report" : "all installed") + '</span></div>'
+        + '<div class="pre">' + items.map(function(x){
+            return pf(!!have[x[0]], x[1] + " installed", x[1] + " not installed");
+          }).join("") + '</div>'
+        + (missing.length ? '<div class="note hold" style="margin:0 14px 14px">'
+            + missing.map(function(x){ return "<b>" + esc(x[1]) + "</b> — " + esc(x[2]); }).join("<br>")
+            + '<br>Install with <span class="mono">bash ~/r16s-app/setup_wgs.sh</span>; a finished run can then be '
+            + '<b>re-analysed</b> on its existing assemblies in a few minutes.</div>' : "")
+        + '</div>';
+    }).catch(function(){ if(box) box.innerHTML = ""; });
+  }
+
+  function wgPreflight(){
+    var pre = document.getElementById("wgPre");
+    var names = WG.groups.map(function(g){ return (g.sample || "").trim(); });
+    var dup = names.filter(function(n, i){ return n && names.indexOf(n) !== i; });
+    var blank = names.some(function(n){ return !n; });
+    if(pre) pre.innerHTML =
+        pf(WG.jobId ? WG.groups.length > 0 : null,
+           WG.groups.length + " sample" + (WG.groups.length === 1 ? "" : "s") + " ready",
+           "No sample found in the files", "No reads yet")
+      + pf(WG.groups.length ? !(dup.length || blank) : null,
+           "Sample names unique", dup.length ? "Duplicate name: " + dup[0] : "A sample has no name",
+           "Names — nothing to check yet");
+    var why = !WG.jobId ? "Choose the delivery folder, or upload the reads."
+            : !WG.groups.length ? "No sample could be made from these files."
+            : blank ? "Every sample needs a name."
+            : dup.length ? "Two samples share the name " + dup[0] + " — rename one."
+            : "";
+    var run = document.getElementById("runBtn"), msg = document.getElementById("runMsg");
+    if(run) run.disabled = !!why || WG.busy;
+    if(msg) msg.innerHTML = why ? esc(why) : 'Ready — ' + WG.groups.length + ' genome'
+      + (WG.groups.length === 1 ? "" : "s") + ' into job <span class="mono">' + esc(WG.jobId) + '</span>.';
+    var err = document.getElementById("runErr");
+    if(err) err.innerHTML = WG.err ? '<div class="note bad"><b>' + esc(WG.err) + '</b></div>' : "";
+  }
+
+  function wgPayload(){
+    var p = {job_name: (document.getElementById("jn").value || "").trim(), marker: "ONT-WGS",
+             sequencerType: "ont", wgs_sample_names: {},
+             metadata: WG.groups.map(function(g){
+               return {sampleId: g.sample.trim(), group: "", description: g.barcode || ""}; })};
+    WG.groups.forEach(function(g){ p.wgs_sample_names[g.key] = g.sample.trim(); });
+    Array.prototype.forEach.call(document.querySelectorAll("#wgsBody [data-k]"), function(el){
+      var k = el.dataset.k, v = el.value;
+      if(k.charAt(0) === "_") return;
+      if(el.dataset.bool)                  p[k] = (v === "true");
+      else if(el.dataset.kind === "int")   p[k] = parseInt(v, 10);
+      else if(el.dataset.kind === "num")   p[k] = parseFloat(v);
+      else                                 p[k] = v;
+    });
+    return p;
+  }
+
+  function wgRun(){
+    if(WG.busy || !WG.jobId) return;
+    var p = wgPayload();
+    var bad = Object.keys(p).filter(function(k){ return typeof p[k] === "number" && !isFinite(p[k]); });
+    if(bad.length){ WG.err = "These settings are not numbers: " + bad.join(", "); return wgPreflight(); }
+    WG.busy = true; WG.err = "";
+    document.getElementById("runBtn").disabled = true;
+    document.getElementById("runMsg").textContent = "Starting…";
+    var jobId = WG.jobId;
+    fetch("/run/" + encodeURIComponent(jobId), {method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify(p)})
+      .then(function(r){ return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.message || j.error || ("HTTP " + r.status));
+        return j; }); })
+      .then(function(){ WG.busy = false; return refreshJobs().then(function(){ go({name:"job", id:jobId}); }); })
+      .catch(function(e){ WG.busy = false; WG.err = "The backend refused this run — " + (e.message || e); wgPreflight(); });
+  }
+
+  /* Re-run every step after polishing on the existing assemblies — what you do
+     once a database has been installed. The work folder (merged reads, Flye,
+     Medaka) lives with the upload and survives the reset; only the results
+     folder is rebuilt. */
+  function wgsReanalyse(jid, btn){
+    if(!window.confirm("Re-analyse this run on its existing assemblies?\n\n"
+        + "Assembly and polishing are reused; species ID, 16S, MLST, AMR, plasmids and "
+        + "annotation run again with the databases installed now. The current results are replaced."))
+      return;
+    if(btn){ btn.disabled = true; btn.textContent = "Starting…"; }
+    var params;
+    api("/detail/" + encodeURIComponent(jid))
+      .then(function(D){
+        params = D.params || {};
+        return fetch("/jobs/" + encodeURIComponent(jid) + "/reset", {method:"POST"});
+      })
+      .then(function(r){ if(!r.ok) throw new Error("reset → HTTP " + r.status);
+        params.marker = "ONT-WGS";
+        return fetch("/run/" + encodeURIComponent(jid), {method:"POST",
+          headers:{"Content-Type":"application/json"}, body: JSON.stringify(params)}); })
+      .then(function(r){ return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.message || j.error || ("HTTP " + r.status)); }); })
+      .then(function(){ return refreshJobs().then(function(){ go({name:"job", id:jid}); }); })
+      .catch(function(e){
+        if(btn){ btn.disabled = false; btn.textContent = "Re-analyse"; }
+        window.alert("Re-analysis could not start — " + (e.message || e));
+      });
+  }
+
+  function wgsPdf(jid, btn){
+    var label = btn ? btn.textContent : "";
+    if(btn){ btn.disabled = true; btn.textContent = "Building PDF…"; }
+    var listed = STATE.jobs.filter(function(j){ return j.job_id === jid; })[0] || {};
+    fetch("/report", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({job_ids:[jid], company:"NextGen Network Corporation Company Limited",
+                            labels:[listed.job_name || jid]})})
+      .then(function(r){
+        if(!r.ok) return r.json().then(function(j){
+          throw new Error((j.error || ("HTTP " + r.status)) + (j.hint ? "\n\n" + j.hint : "")); });
+        return r.blob();
+      })
+      .then(function(b){ saveBlob(b, "WGS_report_" + String(listed.job_name || jid).replace(/[^\w.-]+/g, "_") + ".pdf"); })
+      .catch(function(e){ window.alert("PDF report failed — " + (e.message || e)); })
+      .then(function(){ if(btn){ btn.disabled = false; btn.textContent = label; } });
+  }
+
+  function renderWgsResults(id){
+    var listed = STATE.jobs.filter(function(j){ return j.job_id === id; })[0] || {job_id:id};
+    var enc = encodeURIComponent(id);
+    work.innerHTML = '<div class="dhdr"><button class="back" id="backBtn">'
+        + '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 6l-6 6 6 6"/></svg>'
+        + 'Back to the job</button></div>'
+      + '<div class="tophead"><div class="thl">'
+      + '<h2 class="ttl">' + esc(listed.job_name || id) + ' — genome report</h2>'
+      + '<p class="sub" id="rSub">Assemblies, species, 16S, typing, resistance, plasmids and annotation, per sample.</p>'
+      + '</div><div class="thr">'
+        + '<button class="btn" id="wgRe" title="Run every step after polishing again on the existing assemblies">Re-analyse</button>'
+        + '<a class="btn" href="/results/' + enc + '/wgs_report" target="_blank" rel="noopener">Open in new tab</a>'
+        + '<button class="btn" id="wgPdf">PDF report</button>'
+        + '<a class="btn pri" href="/download/' + enc + '">Download everything (.zip)</a>'
+      + '</div></div>'
+      + '<div class="panel" style="padding:0;overflow:hidden">'
+        + '<iframe src="/results/' + enc + '/wgs_report" title="Genome report" '
+        + 'style="width:100%;height:78vh;border:0;background:#fff;display:block"></iframe>'
+      + '</div>'
+      + '<div id="wgFiles"><div class="panel" style="margin-top:14px"><div class="skel">Listing files…</div></div></div>';
+    document.getElementById("backBtn").addEventListener("click", function(){ go({name:"job", id:id}); });
+    var re = document.getElementById("wgRe");
+    re.addEventListener("click", function(){ wgsReanalyse(id, re); });
+    var pdf = document.getElementById("wgPdf");
+    pdf.addEventListener("click", function(){ wgsPdf(id, pdf); });
+
+    api("/results/" + enc + "/wgs_files").then(function(F){
+      var link = function(rel){
+        return '<a href="/results/' + enc + '/wgs_file/' + rel.split("/").map(encodeURIComponent).join("/")
+          + '" download>' + esc(rel.split("/").pop()) + '</a>';
+      };
+      var KEY = /_assembly\.fasta$|_16S\.fasta$|\.gbff$|\.gff3$|\.faa$|amrfinder\.tsv$|mlst\.tsv$|\.png$|\.svg$/;
+      var html = '<div class="panel" style="margin-top:14px"><div class="sechdr"><h3>Tables</h3>'
+        + '<span class="hint">all samples in one file each</span></div><div class="files" style="padding:12px 14px">'
+        + (F.root || []).filter(function(n){ return /\.(csv|html)$/.test(n); }).map(function(n){
+            return '<span class="file">' + link(n) + '</span>'; }).join("")
+        + '</div></div>';
+      Object.keys(F.samples || {}).forEach(function(s){
+        var all = F.samples[s] || [];
+        var key = all.filter(function(r){ return KEY.test(r); });
+        html += '<div class="panel" style="margin-top:10px"><div class="sechdr"><h3>' + esc(s) + '</h3>'
+          + '<span class="hint">' + all.length + ' files · main deliverables below, the rest are in the .zip</span></div>'
+          + '<div class="files" style="padding:12px 14px">' + (key.length ? key : all.slice(0, 20)).map(function(r){
+              return '<span class="file">' + link(r) + '</span>'; }).join("") + '</div></div>';
+      });
+      document.getElementById("wgFiles").innerHTML = html;
+    }).catch(function(e){
+      document.getElementById("wgFiles").innerHTML = '<div class="panel" style="margin-top:14px">'
+        + '<div class="errbox" style="border-radius:var(--r)"><b>Could not list the result files.</b>\n'
+        + esc(e.message || e) + '</div></div>';
+    });
   }
 
   /* ═══ boot ═════════════════════════════════════════════════════════════ */
