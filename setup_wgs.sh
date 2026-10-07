@@ -154,8 +154,19 @@ if [[ $DO_DBS == 1 ]]; then
 
   if [[ $SKIP_MOB == 0 ]] && has mobsuite mob_init; then
     step "MOB-suite database"
-    PATH="$CONDA_BASE/envs/mobsuite/bin:$PATH" mob_init >/tmp/mob_init.log 2>&1 \
-      && ok "MOB-suite database ready" || warn "mob_init failed — see /tmp/mob_init.log"
+    # mob_suite's own conda post-link step already downloads the database
+    # (≈450 MB) while the env is created; running mob_init again re-downloads
+    # it silently, or waits forever on a lock that download left behind.
+    MOBDB=$(ls -d "$CONDA_BASE"/envs/mobsuite/lib/python3*/site-packages/mob_suite/databases 2>/dev/null | head -1)
+    if [[ -n "$MOBDB" ]] && ls "$MOBDB"/ncbi_plasmid_full_seqs.fas* >/dev/null 2>&1; then
+      rm -f "$MOBDB/.lock"
+      ok "MOB-suite database present"
+    else
+      [[ -n "$MOBDB" ]] && rm -f "$MOBDB/.lock"
+      info "downloading MOB-suite database (≈450 MB)"
+      PATH="$CONDA_BASE/envs/mobsuite/bin:$PATH" mob_init 2>&1 | tee /tmp/mob_init.log | grep -E "%|ERROR|done|complete" \
+        ; [[ ${PIPESTATUS[0]} == 0 ]] && ok "MOB-suite database ready" || warn "mob_init failed — see /tmp/mob_init.log"
+    fi
   fi
 
   if [[ $NO_GTDB == 0 ]]; then
