@@ -99,6 +99,23 @@ export interface PipelineParams {
   ontMaxLen: number;
   // VSEARCH OTU clustering identity threshold (0-1), only used when sequencerType === "qiime2_vsearch"
   otuSimilarity: number;
+  // ONT-WGS (bacterial isolate genomes) — ont_wgs_pipeline.py
+  wgs_min_read_len: number;
+  wgs_min_read_q: number;
+  wgs_genome_size: string;
+  wgs_asm_coverage: number;
+  wgs_read_type: string;
+  wgs_medaka_model: string;
+  wgs_medaka_bacteria: boolean;
+  wgs_skip_medaka: boolean;
+  wgs_verify_ani: boolean;
+  wgs_run_amr: boolean;
+  wgs_run_vf: boolean;
+  wgs_run_mobsuite: boolean;
+  wgs_run_checkm2: boolean;
+  wgs_run_annotation: boolean;
+  wgs_db_16s: string;
+  wgs_keep_intermediate: boolean;
 }
 
 export const defaultParams: PipelineParams = {
@@ -147,9 +164,15 @@ export const defaultParams: PipelineParams = {
   sequencerType: "illumina",
   ontMinLen: 300, ontMaxLen: 600,
   otuSimilarity: 0.97,
+  wgs_min_read_len: 1000, wgs_min_read_q: 10, wgs_genome_size: "auto",
+  wgs_asm_coverage: 100, wgs_read_type: "auto", wgs_medaka_model: "auto",
+  wgs_medaka_bacteria: true, wgs_skip_medaka: false, wgs_verify_ani: true,
+  wgs_run_amr: true, wgs_run_vf: true, wgs_run_mobsuite: true,
+  wgs_run_checkm2: true, wgs_run_annotation: true, wgs_db_16s: "",
+  wgs_keep_intermediate: false,
 };
 
-export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio" | "ONT-16S";
+export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio" | "ONT-16S" | "ONT-WGS";
 
 // ── Primer presets (Cutadapt step) ────────────────────────────────────────────
 interface PrimerPreset {
@@ -187,6 +210,7 @@ const MARKER_OPTIONS: { value: MarkerType; label: string; description: string; i
   { value: "18S-nema", icon: "🐛", label: "18S Nematode",   description: "Nematode 18S — NemaBase / PR2" },
   { value: "PacBio",   icon: "🧬", label: "PacBio CCS 16S", description: "Full-length 16S V1–V9 long reads" },
   { value: "ONT-16S",  icon: "🧫", label: "ONT 16S",        description: "Oxford Nanopore V7-V8 / V1-V9 — Emu pipeline" },
+  { value: "ONT-WGS",  icon: "🧬", label: "ONT WGS Isolate", description: "Oxford Nanopore whole genome of bacterial isolates — assembly, species (ANI), 16S, MLST, AMR, virulence, plasmids, annotation" },
 ];
 
 const DB_OPTIONS = [
@@ -337,9 +361,10 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
   const isCOX1    = marker === "COX1";
   const isPacBio  = marker === "PacBio";
   const isONT     = marker === "ONT-16S";
+  const isWGS     = marker === "ONT-WGS";
   const isNema    = marker === "18S-nema";
   const is16S     = marker === "16S";
-  const isStandard = !isITS && !isCOX1 && !isPacBio && !isONT;
+  const isStandard = !isITS && !isCOX1 && !isPacBio && !isONT && !isWGS;
   const hasPhylo  = is16S || marker === "12S" || isPacBio;
 
   const availableDBs = DB_OPTIONS.filter(db => (db.marker as string[]).includes(marker));
@@ -429,6 +454,84 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
             ))}
           </div>
           <p className="marker-desc">{MARKER_OPTIONS.find(m => m.value === marker)?.description}</p>
+        </div>
+      )}
+
+      {/* ── ONT-WGS (bacterial isolate genomes) ───────────────────────── */}
+      {isWGS && (
+        <div className="ext-section">
+          <h4 className="ext-section-title">🧬 ONT Whole-Genome — Bacterial Isolates</h4>
+          <div className="ps-info-box ps-info-box--ok" style={{ marginBottom: 16 }}>
+            ✅ For <strong>Native Barcoding / Ligation kits</strong> (e.g. SQK-NBD114-24, SQK-LSK114) on
+            pure cultures. MinKNOW chunk files are merged per sample automatically. Not for 16S amplicon
+            kits (SQK-16S114) — use ONT 16S for those.
+          </div>
+
+          <div className="param-grid">
+            <ParamNumber label="Min Read Length (bp)" hint="Shorter reads are dropped before assembly"
+              value={params.wgs_min_read_len} min={0} max={20000} step={100}
+              onChange={v => set("wgs_min_read_len", v)} />
+            <ParamNumber label="Min Mean Read Quality (Q)" hint="10 suits SUP/HAC R10.4.1 data"
+              value={params.wgs_min_read_q} min={0} max={30} step={1}
+              onChange={v => set("wgs_min_read_q", v)} />
+            <ParamSelect label="Expected Genome Size" hint="Only used to cap Flye's input coverage"
+              value={params.wgs_genome_size}
+              options={[{ value: "auto", label: "Auto (5 Mb working estimate)" },
+                        ...["2m", "3m", "4m", "5m", "6m", "7m", "8m"].map(g => ({ value: g, label: g.replace("m", " Mb") }))]}
+              onChange={v => set("wgs_genome_size", v)} />
+            <ParamNumber label="Flye Assembly Coverage (x)" hint="Longest reads up to this depth start the assembly (0 = all)"
+              value={params.wgs_asm_coverage} min={0} max={500} step={10}
+              onChange={v => set("wgs_asm_coverage", v)} />
+            <ParamSelect label="Read Type" hint="Auto reads chemistry / basecaller from the FASTQ headers"
+              value={params.wgs_read_type}
+              options={[{ value: "auto", label: "Auto (from read headers)" },
+                        { value: "nano-hq", label: "--nano-hq (R10.4.1, Guppy5+/Dorado SUP/HAC)" },
+                        { value: "nano-raw", label: "--nano-raw (R9.4.1 / fast basecalling)" }]}
+              onChange={v => set("wgs_read_type", v)} />
+            <div className="param-item">
+              <label className="param-label">Medaka Model</label>
+              <span className="param-hint">"auto" = chosen from the basecaller model in the read headers</span>
+              <input type="text" className="param-input" value={params.wgs_medaka_model}
+                onChange={e => set("wgs_medaka_model", e.target.value || "auto")} />
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 8, marginTop: 14 }}>
+            {([
+              ["wgs_medaka_bacteria", "Bacterial methylation-aware Medaka model", false],
+              ["wgs_skip_medaka", "Skip polishing (Flye consensus only)", false],
+              ["wgs_verify_ani", "Confirm ANI vs closest reference (needs internet)", false],
+              ["wgs_run_checkm2", "CheckM2 — completeness / contamination", false],
+              ["wgs_run_amr", "AMRFinderPlus — AMR, stress & virulence genes", false],
+              ["wgs_run_vf", "VFDB — virulence factors", false],
+              ["wgs_run_mobsuite", "MOB-suite — plasmid reconstruction", false],
+              ["wgs_run_annotation", "Bakta — full genome annotation", false],
+              ["wgs_keep_intermediate", "Keep Flye/Medaka intermediate files", false],
+            ] as [keyof PipelineParams, string, boolean][]).map(([k, label]) => (
+              <label key={k} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
+                <input type="checkbox" checked={Boolean(params[k])}
+                  onChange={e => onChange({ ...params, [k]: e.target.checked })} />
+                {label}
+              </label>
+            ))}
+          </div>
+
+          <div className="param-item" style={{ marginTop: 14 }}>
+            <label className="param-label">16S Reference (optional)</label>
+            <span className="param-hint">Blank = the Emu / SILVA database already set up for the amplicon pipelines</span>
+            <input type="text" className="param-input" placeholder="~/r16s-app/backend/databases/emu_db_mar2026"
+              value={params.wgs_db_16s} onChange={e => set("wgs_db_16s", e.target.value)} />
+          </div>
+
+          <pre className="pipeline-steps-pre" style={{ marginTop: 14, fontSize: 12, whiteSpace: "pre-wrap", color: "#94a3b8" }}>{`1. Merge MinKNOW chunk files per sample (folder / barcode) → sample_map.csv
+2. Read QC + filtering (seqkit) — length, quality, read-GC purity check
+3. De novo assembly (Flye) → 4. Polishing (Medaka)
+5. Contig table, circularity, depth · CheckM2 completeness / contamination
+6. Species: sourmash vs GTDB → skani ANI vs closest reference genome
+7. 16S rRNA: every full-length copy (barrnap) → vsearch vs 16S database
+8. MLST · 9. AMRFinderPlus · 10. VFDB · 11. MOB-suite + PlasmidFinder
+12. Bakta annotation · 13. HTML / PDF report
+Missing tools or databases are skipped with a note — run setup_wgs.sh once to install all.`}</pre>
         </div>
       )}
 
@@ -1924,8 +2027,8 @@ FastTree -gtr -nt aligned.fasta > unrooted-tree.nwk
         </>
       )}
 
-      {/* ── Metadata upload (all pipeline types) ──────────────────────── */}
-      <div className="ext-section">
+      {/* ── Metadata upload (all pipeline types except isolate WGS) ──────── */}
+      {!isWGS && <div className="ext-section">
         <h4 className="ext-section-title">
           📊 Metadata{" "}
           <span style={{ fontWeight: 400, fontSize: 13, color: "#6b7280" }}>
@@ -1945,7 +2048,7 @@ FastTree -gtr -nt aligned.fasta > unrooted-tree.nwk
             ✅ Metadata loaded · Group column: <strong>{params.groupCol}</strong>
           </p>
         )}
-      </div>
+      </div>}
 
     </div>
   );

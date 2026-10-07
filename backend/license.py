@@ -7,13 +7,18 @@ No internet connection required after key activation.
 Key format:  NGAMP-{BASE32_PAYLOAD}-{HMAC8}
 
 Payload bytes:
-  [0]      — pipeline bitmask (1 byte)
+  [0]      — pipeline bitmask, bits 0-7 (1 byte)
   [1..3]   — days since 2000-01-01 (uint24 big-endian)
   [4..15]  — machine ID bytes (12 bytes, optional)
+  [last]   — pipeline bitmask, bits 8-15 (1 byte) — only in keys that grant
+             a pipeline above bit 7, so payloads are 4/16 bytes (v1 keys) or
+             5/17 bytes (v2 keys). A v1 key decodes exactly as before, and an
+             older app reading a v2 key still gets bits 0-7 and the machine ID.
 
 Pipeline bit positions:
   bit 0 = 16S      bit 1 = 12S      bit 2 = ITS1     bit 3 = ITS2
-  bit 4 = COX1     bit 5 = 18S-nema bit 6 = PacBio
+  bit 4 = COX1     bit 5 = 18S-nema bit 6 = PacBio   bit 7 = ONT-16S
+  bit 8 = ONT-WGS
 
 DEV BYPASS:  Place ".dev_bypass" in the app root — always fully licensed.
 """
@@ -59,6 +64,7 @@ PIPELINES: list = [
     ("18S-nema",  5),
     ("PacBio",    6),
     ("ONT-16S",   7),
+    ("ONT-WGS",   8),
 ]
 ALL_MASK = (1 << len(PIPELINES)) - 1
 
@@ -106,6 +112,10 @@ def _make_payload(pipe_mask: int, expiry: date, machine_id: str = "") -> bytes:
             b += bytes.fromhex(mid_hex)
         except ValueError:
             pass
+    # Bits 8-15 ride in one trailing byte, and only when one of them is set, so
+    # a key for the original eight pipelines is byte-for-byte what it always was.
+    if pipe_mask >> 8:
+        b += bytes([(pipe_mask >> 8) & 0xFF])
     return b
 
 
@@ -136,6 +146,9 @@ def _validate_and_decode(key: str) -> dict:
             return {"ok": False, "error": "Key payload too short"}
 
         pipe_mask = raw[0]
+        # v2 keys append the high mask byte: 4+1 bytes, or 4+12+1 with a machine ID
+        if len(raw) in (5, 17):
+            pipe_mask |= raw[-1] << 8
         days      = int.from_bytes(raw[1:4], "big")
         expiry    = EPOCH + timedelta(days=days)
         mid       = raw[4:16].hex() if len(raw) >= 16 else ""

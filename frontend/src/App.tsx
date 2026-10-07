@@ -140,6 +140,7 @@ const DADA2_OR_VSEARCH_MARKERS = new Set(["16S", "12S", "18S-NEMA"]);
 function isParamRelevantForMarker(key: string, marker: string, sequencerType?: string): boolean {
   const m  = (marker || "").toUpperCase();
   const st = sequencerType || "illumina";
+  if (key.startsWith("wgs_")) return m === "ONT-WGS";
   // ont_db_path is shared: used by the ONT-16S (Emu) marker AND by the
   // "QIIME2 (VSEARCH OTU)" sequencer-type option under 16S/12S/18S-nema.
   if (key === "ont_db_path") return m === "ONT-16S" || m === "ONT16S" || m === "ONT" ||
@@ -157,6 +158,9 @@ function isParamRelevantForMarker(key: string, marker: string, sequencerType?: s
   if (ONT16S_ONLY_KEYS.has(key)) return m === "ONT-16S" || m === "ONT16S" || m === "ONT";
   return true; // shared/common keys (marker, taxDatabase, dbPath, primers, threads, etc.)
 }
+
+// ONT-WGS: how the backend grouped chunk files into samples (folder / barcode)
+type WgsGroup = { key: string; sample: string; barcode: string; folder: string; n_files: number };
 
 // ── Helpers ──────────────────────────────────────────────────────────
 const formatElapsed = (startedAt?: number): string => {
@@ -195,6 +199,18 @@ export default function App() {
   const [useManualPairing, setUseManualPairing] = useState(false);
   const [pairReadMode, setPairReadMode] = useState<"single"|"paired">("paired");
   const [fileMap, setFileMap] = useState<{sample:string; file1:string; file2:string}[]>([]);
+  // ONT-WGS: samples after chunk merging, editable names, and the folder-import path
+  const [wgsGroups, setWgsGroups] = useState<WgsGroup[]>([]);
+  const [importPath, setImportPath] = useState("");
+
+  // ONT-WGS sample list follows the merged groups, not the individual chunk files
+  useEffect(() => {
+    if (marker !== "ONT-WGS" || wgsGroups.length === 0) return;
+    const names = wgsGroups.map(g => g.sample.trim() || g.key);
+    setSampleNames(names);
+    setMetadata(names.map(s => ({ sampleId: s, group: "", description: "" })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marker, wgsGroups]);
 
   // Keep "Detected samples" / Sample Metadata in sync with manual pairing edits
   useEffect(() => {
@@ -207,7 +223,7 @@ export default function App() {
   // Revert "Detected samples" back to filename auto-detect when manual pairing is turned off
   useEffect(() => {
     if (useManualPairing || serverFileList.length === 0) return;
-    const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
+    const isONT = marker === "ONT-16S" || marker === "ONT-WGS" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
     const P = pairingFor(serverFileList);
     const r1 = isONT ? [] : serverFileList.filter(n => P.isR1(n));
     const base = r1.length > 0 ? r1 : serverFileList.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
@@ -499,7 +515,7 @@ export default function App() {
         if (!merged.some(m => m.name === f.name)) merged.push(f);
       }
       // Recompute sample names from non-ZIP files
-      const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
+      const isONT = marker === "ONT-16S" || marker === "ONT-WGS" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
       const nonZip = merged.filter(f => !f.name.toLowerCase().endsWith(".zip"));
       const P = pairingFor(nonZip.map(f => f.name));
       const r1 = isONT ? [] : nonZip.filter(f => P.isR1(f.name));
@@ -523,7 +539,8 @@ export default function App() {
       // Use server-returned file list (ZIPs were extracted server-side)
       const serverFiles: string[] = res.data.files || [];
       setServerFileList(serverFiles);
-      const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
+      setWgsGroups(res.data.wgs_groups || []);
+      const isONT = marker === "ONT-16S" || marker === "ONT-WGS" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
       const P = pairingFor(serverFiles);
       const r1 = isONT ? [] : serverFiles.filter(n => P.isR1(n));
       const base = r1.length > 0 ? r1 : serverFiles.filter(n => /\.(fastq|fq)(\.gz)?$/i.test(n));
@@ -538,6 +555,22 @@ export default function App() {
     setLoading(false);
   };
 
+  // ── ONT-WGS: use a folder already on the analysis machine (no upload) ──
+  const handleImportPath = async () => {
+    if (!importPath.trim()) return;
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API}/upload/from_path`, { path: importPath.trim() });
+      setPendingJobId(res.data.job_id);
+      setServerFileList(res.data.files || []);
+      setPairReadMode("single");
+      setWgsGroups(res.data.wgs_groups || []);
+    } catch (e: any) {
+      alert(e?.response?.data?.message || "Folder import failed — is the backend running?");
+    }
+    setLoading(false);
+  };
+
   // ── Guess sample↔file pairs from filenames (starting point for manual editing) ──
   const buildFileMapGuess = (files: string[]): {sample:string; file1:string; file2:string}[] => {
     const fastq = files.filter(f => /\.(fastq|fq)(\.gz)?$/i.test(f)).sort();
@@ -547,7 +580,7 @@ export default function App() {
     // Single-end / long-read modes (ONT-16S marker, or QIIME2-VSEARCH sequencer type inside
     // the 16S marker card): every file is its own independent sample — never try to guess a
     // R1/R2 or _1/_2 mate, since "_1"/"_2" here means replicate number, not read-pair.
-    const isSingleEnd = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
+    const isSingleEnd = marker === "ONT-16S" || marker === "ONT-WGS" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
     for (const f of fastq) {
       if (used.has(f)) continue;
       if (isSingleEnd) {
@@ -583,7 +616,8 @@ export default function App() {
   // single-end/paired-end hint banner above the drop-zone re-renders correctly.
   useEffect(() => {
     if (serverFileList.length === 0) return;
-    const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
+    if (marker === "ONT-WGS" && wgsGroups.length > 0) { setPairReadMode("single"); return; }
+    const isONT = marker === "ONT-16S" || marker === "ONT-WGS" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
     setPairReadMode(isONT ? "single" : "paired");
     if (useManualPairing) {
       setFileMap(buildFileMapGuess(serverFileList));
@@ -618,6 +652,12 @@ export default function App() {
       sampleFileMap = rows.map(r => ({ sample: r.sample.trim(), file1: r.file1, file2: pairReadMode === "paired" ? r.file2 : "" }));
     }
 
+    if (marker === "ONT-WGS") {
+      const names = wgsGroups.map(g => g.sample.trim());
+      if (names.some(n => !n)) { alert("Every sample needs a name."); return; }
+      if (new Set(names).size !== names.length) { alert("Two samples share a name — rename one first."); return; }
+    }
+
     setLoading(true);
     try {
       await axios.post(`${API}/run/${pendingJobId}`, {
@@ -625,7 +665,10 @@ export default function App() {
         marker,
         ...params,
         metadata,
-        sampleFileMap,
+        sampleFileMap: marker === "ONT-WGS" ? [] : sampleFileMap,
+        wgs_sample_names: marker === "ONT-WGS"
+          ? Object.fromEntries(wgsGroups.map(g => [g.key, g.sample.trim()]))
+          : {},
       });
       resetWizard();
       setShowSubmitPopup(false);
@@ -648,6 +691,7 @@ export default function App() {
     setSampleNames([]); setMetadata([]);
     setShowAdvanced(false); setShowSubmitPopup(false);
     setServerFileList([]); setUseManualPairing(false); setFileMap([]); setPairReadMode("paired");
+    setWgsGroups([]); setImportPath("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -911,6 +955,12 @@ export default function App() {
           )}
           {j.status === "completed" && (
             <>
+              {j.marker === "ONT-WGS" ? (
+                <a href={`${API}/results/${j.job_id}/wgs_report`} target="_blank" rel="noreferrer"
+                  className="btn-view btn-preview" title="Open the genome report in a new tab">
+                  🧬 WGS Report
+                </a>
+              ) : (<>
               <button className="btn-view btn-preview"
                 onClick={() => { setPreviewJobId(j.job_id); setScreen("preview"); }}>
                 ✏️ Edit Charts
@@ -919,6 +969,7 @@ export default function App() {
                 onClick={() => setShowColorPicker(showColorPicker === j.job_id ? null : j.job_id)}>
                 🎨 Taxonomy Colors
               </button>
+              </>)}
               <a href={`${API}/download/${j.job_id}`} download className="btn-view">
                 📥 Download Results
               </a>
@@ -1775,7 +1826,7 @@ export default function App() {
             <span className="logo-dna">🧬</span>
             <div>
               <div className="app-title">NextGen-Amplicon</div>
-              <div className="app-subtitle">16S / ITS / COX1 / PacBio Microbiome Pipeline</div>
+              <div className="app-subtitle">16S / ITS / COX1 / PacBio Microbiome · ONT Isolate Genomes</div>
             </div>
           </div>
           <div className="header-actions">
@@ -1815,11 +1866,29 @@ export default function App() {
         {/* Upload */}
         <div className="section-card">
           <div className="section-title">📂 Upload FASTQ Files</div>
-          {(marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch")) && (
+          {(marker === "ONT-16S" || marker === "ONT-WGS" || (marker === "16S" && params.sequencerType === "qiime2_vsearch")) && (
             <div className="ps-info-box ps-info-box--ok" style={{ marginBottom: 10, fontSize: 13 }}>
               🧫 <strong>Single-end mode:</strong> Upload one FASTQ file per sample (single reads, not paired R1/R2).
               Files like <code>AC_1.fastq.gz</code> / <code>AC_2.fastq.gz</code> are treated as two separate
               samples, not an R1/R2 pair.
+            </div>
+          )}
+          {marker === "ONT-WGS" && (
+            <div className="ps-info-box ps-info-box--ok" style={{ marginBottom: 10, fontSize: 13 }}>
+              🧬 <strong>Isolate genomes:</strong> give the MinKNOW delivery as it came — a ZIP of the whole
+              folder, or a folder path below. Chunk files are merged per sample and named after the sample
+              folder (<code>Sample_OP-SCN5</code> → <code>OP-SCN5</code>) or the barcode; <code>fastq_fail</code> files are skipped.
+            </div>
+          )}
+          {marker === "ONT-WGS" && !pendingJobId && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <input className="job-name-input" style={{ flex: 1, margin: 0 }}
+                placeholder="Folder on the analysis computer, e.g. C:\Users\NEXTAPP\Downloads\TH-BIOENTIST-00003"
+                value={importPath} onChange={e => setImportPath(e.target.value)} />
+              <button className="btn-upload" style={{ margin: 0, whiteSpace: "nowrap" }}
+                onClick={handleImportPath} disabled={loading || !importPath.trim()}>
+                {loading ? "⏳" : "📁 Use this folder"}
+              </button>
             </div>
           )}
           <div
@@ -1831,7 +1900,7 @@ export default function App() {
           >
             {selectedFiles.length
               ? <>➕ <strong>{selectedFiles.length} file(s)</strong> selected — click/drop to add more</>
-              : (marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch"))
+              : (marker === "ONT-16S" || marker === "ONT-WGS" || (marker === "16S" && params.sequencerType === "qiime2_vsearch"))
                 ? <>🧫 Drop single-end .fastq / .fastq.gz / .zip here, or <u>click to browse</u></>
                 : <>📂 Drop .fastq / .fastq.gz / .zip here, or <u>click to browse</u></>
             }
@@ -1859,7 +1928,7 @@ export default function App() {
                       onClick={ev => { ev.stopPropagation();
                         setSelectedFiles(prev => {
                           const next = prev.filter(x => x.name !== f.name);
-                          const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
+                          const isONT = marker === "ONT-16S" || marker === "ONT-WGS" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
                           const nonZip = next.filter(x => !x.name.toLowerCase().endsWith(".zip"));
                           const P = pairingFor(nonZip.map(x => x.name));
                           const r1 = isONT ? [] : nonZip.filter(x => P.isR1(x.name));
@@ -1876,7 +1945,41 @@ export default function App() {
             </div>
           )}
 
-          {sampleNames.length > 0 && (
+          {marker === "ONT-WGS" && wgsGroups.length > 0 && (
+            <div className="sample-list">
+              <div className="sample-list-title">
+                🧬 Samples after merging chunk files ({wgsGroups.length}) — names can be edited
+              </div>
+              <table style={{ width: "100%", fontSize: 12.5, borderCollapse: "collapse", marginTop: 6 }}>
+                <thead>
+                  <tr style={{ color: "#94a3b8", textAlign: "left" }}>
+                    <th style={{ padding: "4px 6px" }}>Sample name</th><th style={{ padding: "4px 6px" }}>Barcode</th>
+                    <th style={{ padding: "4px 6px" }}>Source folder</th><th style={{ padding: "4px 6px", textAlign: "right" }}>Files</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {wgsGroups.map((g, i) => (
+                    <tr key={g.key} style={{ borderTop: "1px solid #334155" }}>
+                      <td style={{ padding: "4px 6px" }}>
+                        <input value={g.sample}
+                          onChange={e => setWgsGroups(prev => prev.map((x, j) => j === i ? { ...x, sample: e.target.value } : x))}
+                          style={{ padding: "4px 8px", borderRadius: 5, border: "1px solid #334155",
+                                   background: "#0f172a", color: "#e2e8f0", fontSize: 12, width: "100%" }} />
+                      </td>
+                      <td style={{ padding: "4px 6px" }}><code>{g.barcode || "—"}</code></td>
+                      <td style={{ padding: "4px 6px", color: "#94a3b8" }}>{g.folder || "—"}</td>
+                      <td style={{ padding: "4px 6px", textAlign: "right" }}>{g.n_files}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {new Set(wgsGroups.map(g => g.sample.trim())).size !== wgsGroups.length && (
+                <div style={{ color: "#fca5a5", fontSize: 12, marginTop: 6 }}>⚠️ Two samples share a name — rename one before running.</div>
+              )}
+            </div>
+          )}
+
+          {sampleNames.length > 0 && marker !== "ONT-WGS" && (
             <div className="sample-list">
               <div className="sample-list-title">🧪 Detected samples ({sampleNames.length})</div>
               <div className="sample-chips">
@@ -1895,7 +1998,7 @@ export default function App() {
               finishes with an ASV table built from mismatched reads. Say so
               here, before the run starts. */}
           {sampleNames.length > 0 && (() => {
-            const isONT = marker === "ONT-16S" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
+            const isONT = marker === "ONT-16S" || marker === "ONT-WGS" || (marker === "16S" && params.sequencerType === "qiime2_vsearch");
             if (isONT || useManualPairing) return null;
             const fileNames = serverFileList.length > 0
               ? serverFileList
@@ -1929,7 +2032,7 @@ export default function App() {
           })()}
 
           {/* ── Manual sample↔file pairing (advanced) ─────────────────────── */}
-          {pendingJobId && serverFileList.length > 0 && (
+          {pendingJobId && serverFileList.length > 0 && marker !== "ONT-WGS" && (
             <div style={{ marginTop: 14, borderTop: "1px solid #334155", paddingTop: 12 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
                 <input type="checkbox" checked={useManualPairing}
@@ -2030,7 +2133,7 @@ export default function App() {
         </div>
 
         {/* Metadata */}
-        {metadata.length > 0 && (
+        {metadata.length > 0 && marker !== "ONT-WGS" && (
           <div className="section-card">
             <div className="section-title">📊 Sample Metadata (optional)</div>
             <MetadataEditor sampleNames={sampleNames} onChange={setMetadata} />
@@ -2054,7 +2157,7 @@ export default function App() {
         </div>
 
         {/* ── Data preparation (pre-run) ──────────────────────────────── */}
-        {pendingJobId && marker !== "ONT-16S" && params.sequencerType !== "ont" && (
+        {pendingJobId && marker !== "ONT-16S" && marker !== "ONT-WGS" && params.sequencerType !== "ont" && (
           <div className="section-card">
             <div className="section-title">🧰 Data Preparation</div>
             <DataPrepPanel

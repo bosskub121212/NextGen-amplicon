@@ -167,6 +167,24 @@ class RunParams(BaseModel):
     ont_region:        str   = "V1-V9"   # V1-V9 or V7-V8 etc.
     ont_min_abundance: float = 0.0001    # Emu min abundance threshold
     ont_db_path:       str   = ""        # path to Emu database directory
+    # --- ONT-WGS (bacterial isolate genomes) → ont_wgs_pipeline.py ---
+    wgs_min_read_len:     int   = 1000     # drop reads shorter than this (bp)
+    wgs_min_read_q:       float = 10.0     # drop reads with mean Q below this
+    wgs_genome_size:      str   = "auto"   # e.g. "5m"; auto = 5 Mb working estimate
+    wgs_asm_coverage:     int   = 100      # Flye --asm-coverage (0 = use all reads)
+    wgs_read_type:        str   = "auto"   # auto | nano-hq | nano-raw
+    wgs_medaka_model:     str   = "auto"   # auto = taken from the read headers
+    wgs_medaka_bacteria:  bool  = True     # bacterial methylation-aware model
+    wgs_skip_medaka:      bool  = False
+    wgs_verify_ani:       bool  = True     # skani vs the closest reference (needs internet)
+    wgs_run_amr:          bool  = True     # AMRFinderPlus
+    wgs_run_vf:           bool  = True     # abricate + VFDB
+    wgs_run_mobsuite:     bool  = True     # MOB-suite plasmid reconstruction
+    wgs_run_checkm2:      bool  = True     # completeness / contamination
+    wgs_run_annotation:   bool  = True     # Bakta
+    wgs_db_16s:           str   = ""       # 16S reference (Emu dir or SILVA trainset)
+    wgs_keep_intermediate: bool = False
+    wgs_sample_names:     dict  = {}       # {group key: sample name} from the UI
     # --- Functional prediction ---
     run_tax4fun:   bool  = False
     run_picrust2:  bool  = False
@@ -259,45 +277,163 @@ def root():
     return {"message": "16S/12S Analysis API 🧬", "max_workers": MAX_WORKERS}
 
 # ── 1. Upload ─────────────────────────────────────────────────────────────────
-@app.post("/upload")
-async def upload_files(files: list[UploadFile] = File(...)):
-    import zipfile as _zf, io as _io
-    job_id  = str(uuid.uuid4())[:8]
-    job_dir = UPLOAD_DIR / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    saved = []
-    FASTQ_EXTS = (".fastq", ".fastq.gz", ".fq", ".fq.gz")
-    for file in files:
-        content = await file.read()
-        fname = file.filename or ""
-        if fname.lower().endswith(".zip"):
-            # Extract FASTQ files from ZIP
-            try:
-                with _zf.ZipFile(_io.BytesIO(content)) as zf:
-                    for member in zf.namelist():
-                        bname = Path(member).name
-                        if not bname:
-                            continue
-                        if any(bname.lower().endswith(ext) for ext in FASTQ_EXTS):
-                            out_path = job_dir / bname
-                            with zf.open(member) as src, open(out_path, "wb") as dst:
-                                dst.write(src.read())
-                            saved.append(bname)
-            except Exception as e:
-                logging.warning(f"ZIP extract failed for {fname}: {e}")
-        else:
-            path = job_dir / fname
-            with open(path, "wb") as f:
-                f.write(content)
-            saved.append(fname)
+FASTQ_EXTS = (".fastq", ".fastq.gz", ".fq", ".fq.gz")
+
+
+def _wgs_groups_preview(job_dir: Path, saved: list) -> list:
+    """How the ONT-WGS pipeline will group these files into samples — returned
+    with the upload so the UI can show (and rename) the samples before the run."""
+    try:
+        import importlib
+        w = importlib.import_module("ont_wgs_pipeline")
+        folders = {}
+        fm = job_dir / "upload_folders.json"
+        if fm.exists():
+            folders = json.loads(fm.read_text())
+        return [{"key": g["key"], "sample": g["sample"], "barcode": g.get("barcode", ""),
+                 "folder": g.get("folder", ""), "n_files": len(g["files"])}
+                for g in w.group_fastqs(saved, folders)]
+    except Exception as e:
+        print(f"[upload] group preview failed: {e}")
+        return []
+
+
+def _unique_name(job_dir: Path, name: str, folder: str) -> str:
+    """Uploads are stored flat; two folders holding the same file name must not
+    overwrite each other, so the second one is prefixed with its folder."""
+    if not (job_dir / name).exists():
+        return name
+    pre = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(folder).name or "dup")
+    cand, i = f"{pre}__{name}", 2
+    while (job_dir / cand).exists():
+        cand, i = f"{pre}_{i}__{name}", i + 1
+    return cand
+
+
+def _register_job(job_id: str, saved: list, extra: Optional[dict] = None):
     with jobs_lock:
         jobs[job_id] = {
             "status": "uploaded", "files": saved,
             "progress": 0, "log_lines": [], "step_label": "Waiting...",
-            "marker": "—", "database": "—",
+            "marker": "—", "database": "—", **(extra or {}),
         }
         save_jobs()
-    return {"job_id": job_id, "files": saved}
+
+
+@app.post("/upload")
+async def upload_files(files: list[UploadFile] = File(...)):
+    """Store uploaded FASTQ / ZIP files.
+
+    Streams to disk instead of reading each file into memory: a whole-genome
+    ONT upload is several GB, and the old `await file.read()` held all of it in
+    RAM (twice for a ZIP). The folder each FASTQ came from — inside a ZIP, or
+    the relative path a folder upload sends as the file name — is remembered in
+    upload_folders.json, because for MinKNOW deliveries that folder name is the
+    sample name the customer knows.
+    """
+    import zipfile as _zf
+    job_id  = str(uuid.uuid4())[:8]
+    job_dir = UPLOAD_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[str] = []
+    folders: dict[str, str] = {}
+    for file in files:
+        raw_name = (file.filename or "").replace("\\", "/")
+        fname = Path(raw_name).name
+        rel_dir = str(Path(raw_name).parent) if "/" in raw_name else ""
+        if not fname:
+            continue
+        if fname.lower().endswith(".zip"):
+            tmp_zip = job_dir / f".upload_{uuid.uuid4().hex[:6]}.zip"
+            with open(tmp_zip, "wb") as dst:
+                shutil.copyfileobj(file.file, dst, 8 << 20)
+            try:
+                with _zf.ZipFile(tmp_zip) as zf:
+                    for member in zf.namelist():
+                        bname = Path(member).name
+                        if not bname or not bname.lower().endswith(FASTQ_EXTS):
+                            continue
+                        mdir = str(Path(member).parent)
+                        mdir = "" if mdir == "." else mdir
+                        out_name = _unique_name(job_dir, bname, mdir)
+                        with zf.open(member) as src, open(job_dir / out_name, "wb") as dst:
+                            shutil.copyfileobj(src, dst, 8 << 20)
+                        saved.append(out_name)
+                        if mdir:
+                            folders[out_name] = mdir
+            except Exception as e:
+                print(f"[upload] ZIP extract failed for {fname}: {e}")
+            finally:
+                tmp_zip.unlink(missing_ok=True)
+        else:
+            out_name = _unique_name(job_dir, fname, rel_dir)
+            with open(job_dir / out_name, "wb") as dst:
+                shutil.copyfileobj(file.file, dst, 8 << 20)
+            saved.append(out_name)
+            if rel_dir:
+                folders[out_name] = rel_dir
+    if folders:
+        (job_dir / "upload_folders.json").write_text(json.dumps(folders, indent=1))
+    _register_job(job_id, saved)
+    return {"job_id": job_id, "files": saved,
+            "wgs_groups": _wgs_groups_preview(job_dir, saved)}
+
+
+class PathImportBody(BaseModel):
+    path: str
+    recursive: bool = True
+
+
+def _to_wsl_path(p: str) -> Path:
+    """C:\\Users\\x\\Downloads\\run  →  /mnt/c/Users/x/Downloads/run (WSL)."""
+    p = p.strip().strip('"').strip("'")
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", p)
+    if m and not Path(p).exists():
+        p = f"/mnt/{m.group(1).lower()}/" + m.group(2).replace("\\", "/")
+    return Path(os.path.expanduser(p))
+
+
+@app.post("/upload/from_path")
+def upload_from_path(body: PathImportBody):
+    """Use FASTQ files already on this computer instead of uploading them.
+
+    A whole-genome ONT delivery is 5-10 GB; pushing it through the browser
+    only to land on the same disk is slow and doubles the space used. The files
+    are linked, not copied — deleting the job later removes the links, never
+    the lab's data.
+    """
+    src = _to_wsl_path(body.path)
+    if not src.is_dir():
+        return JSONResponse(status_code=400, content={
+            "error": "folder_not_found",
+            "message": f"Folder not found on the analysis machine: {src}"})
+    pattern = "**/*" if body.recursive else "*"
+    found = sorted([f for f in src.glob(pattern)
+                    if f.is_file() and f.name.lower().endswith(FASTQ_EXTS)],
+                   key=lambda f: str(f))
+    if not found:
+        return JSONResponse(status_code=400, content={
+            "error": "no_fastq", "message": f"No FASTQ files under {src}"})
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = UPLOAD_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    saved, folders = [], {}
+    for f in found:
+        rel_dir = str(f.parent.relative_to(src.parent))
+        out_name = _unique_name(job_dir, f.name, rel_dir)
+        try:
+            (job_dir / out_name).symlink_to(f.resolve())
+        except OSError:
+            shutil.copy2(f, job_dir / out_name)
+        saved.append(out_name)
+        folders[out_name] = rel_dir
+    (job_dir / "upload_folders.json").write_text(json.dumps(folders, indent=1))
+    _register_job(job_id, saved, {"source_path": str(src)})
+    total = sum(f.stat().st_size for f in found)
+    return {"job_id": job_id, "files": saved, "source": str(src),
+            "total_mb": round(total / 1_048_576, 1),
+            "wgs_groups": _wgs_groups_preview(job_dir, saved)}
+
 
 # ── 1b. Data preparation: read-orientation check / repair ─────────────────────
 # Standalone pre-run step. Paired-end amplicon libraries sometimes carry a large
@@ -513,7 +649,7 @@ def prep_reorient(job_id: str, body: PrepBody):
 # ═══════════════════════════════════════════════════════════════════════════
 
 DADA2_TAXONOMY_MARKERS_EXCLUDED = ("ONT-16S", "ONT16S", "ONT", "PACBIO",
-                                   "ITS1", "ITS2", "ITS", "COX1")
+                                   "ITS1", "ITS2", "ITS", "COX1", "ONT-WGS")
 
 
 def _db_reject_reason(p: str) -> str:
@@ -811,6 +947,55 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--metadata", metadata_path]
         if db_paths_json:
             cmd += ["--db_paths", db_paths_json]
+
+    elif marker == "ONT-WGS":
+        # ── ONT whole-genome, bacterial isolates ────────────────────────────
+        # Chunk merging, assembly, polishing, species ID, 16S, MLST, AMR,
+        # virulence, plasmids and annotation — see ont_wgs_pipeline.py.
+        # Heavy intermediates (merged reads, Flye/Medaka folders) go to the
+        # upload side so the results folder — and its download zip — stays
+        # the deliverable only.
+        wgs_script = R_SCRIPTS_DIR.parent / "ont_wgs_pipeline.py"
+        try:
+            _appv = json.loads((BASE_DIR.parent / "version.json").read_text())["version"]
+        except Exception:
+            _appv = ""
+        cmd = [
+            sys.executable, str(wgs_script),
+            "--input",          input_dir,
+            "--output",         output_dir,
+            "--work_dir",       str(Path(input_dir) / "_wgs_work"),
+            "--threads",        str(params.nThreads),
+            "--job_name",       params.job_name or job_id,
+            "--db_paths",       db_paths_json,
+            "--min_read_len",   str(params.wgs_min_read_len),
+            "--min_read_q",     str(params.wgs_min_read_q),
+            "--genome_size",    params.wgs_genome_size or "auto",
+            "--asm_coverage",   str(params.wgs_asm_coverage),
+            "--read_type",      params.wgs_read_type or "auto",
+            "--medaka_model",   params.wgs_medaka_model or "auto",
+            "--medaka_bacteria", str(params.wgs_medaka_bacteria).lower(),
+            "--verify_ani",     str(params.wgs_verify_ani).lower(),
+            "--app_version",    _appv,
+        ]
+        if params.wgs_skip_medaka:
+            cmd += ["--skip_medaka"]
+        if not params.wgs_run_amr:
+            cmd += ["--skip_amr"]
+        if not params.wgs_run_vf:
+            cmd += ["--skip_vf"]
+        if not params.wgs_run_mobsuite:
+            cmd += ["--skip_mobsuite"]
+        if not params.wgs_run_checkm2:
+            cmd += ["--skip_checkm2"]
+        if not params.wgs_run_annotation:
+            cmd += ["--skip_annotation"]
+        if params.wgs_keep_intermediate:
+            cmd += ["--keep_intermediate"]
+        if params.wgs_db_16s:
+            cmd += ["--db_16s", params.wgs_db_16s]
+        if params.wgs_sample_names:
+            cmd += ["--sample_names", json.dumps(params.wgs_sample_names, ensure_ascii=False)]
 
     elif marker in ("ONT-16S", "ONT16S", "ONT"):
         # ── ONT 16S pipeline via Emu ────────────────────────────────────────
@@ -1612,6 +1797,50 @@ def build_report(req: ReportRequest):
         return JSONResponse(status_code=500,
                             content={"error": f"report_builder unavailable: {e}"})
 
+    # ONT-WGS runs have their own report (genomes, not a taxonomy profile).
+    _wgs_ids = [jid for jid in req.job_ids
+                if (Path((jobs.get(jid) or {}).get("output_dir") or str(RESULTS_DIR / jid))
+                    / "wgs_results.json").exists()]
+    if _wgs_ids:
+        if len(_wgs_ids) != len(req.job_ids):
+            return JSONResponse(status_code=400, content={
+                "error": "ONT-WGS runs cannot be combined with amplicon runs in one report"})
+        if len(_wgs_ids) > 1:
+            return JSONResponse(status_code=400, content={
+                "error": "Pick one ONT-WGS run — it already reports every sample it holds"})
+        try:
+            wr = importlib.import_module("wgs_report")
+            importlib.reload(wr)
+            jid = _wgs_ids[0]
+            out = Path((jobs.get(jid) or {}).get("output_dir") or str(RESULTS_DIR / jid))
+            app_name = "NextGen-Amplicon"
+            try:
+                app_name += " v" + json.loads((BASE_DIR.parent / "version.json").read_text())["version"]
+            except Exception:
+                pass
+            doc = wr.build_html(out, title=req.title, company=req.company or "",
+                                app=app_name, subtitle=req.subtitle)
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": f"WGS report failed: {e}"})
+        stem = re.sub(r"[^A-Za-z0-9_.-]", "", "wgs_report_" + ((jobs.get(jid) or {}).get("job_name") or jid).replace(" ", "_"))[:70]
+        out_dir = Path(tempfile.gettempdir()) / "amplicon_reports"
+        out_dir.mkdir(exist_ok=True)
+        pdf_path = out_dir / f"{stem}.pdf"
+        try:
+            importlib.invalidate_caches()
+            from weasyprint import HTML as _WH
+            _WH(string=doc).write_pdf(str(pdf_path))
+        except ImportError:
+            html_path = out_dir / f"{stem}.html"
+            html_path.write_text(doc, encoding="utf-8")
+            return JSONResponse(status_code=501, content={
+                "error": "weasyprint is not installed in the environment the backend runs in",
+                "hint": f"{sys.executable} -m pip install weasyprint",
+                "python": sys.executable, "html": str(html_path)})
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": f"PDF build failed: {e}"})
+        return FileResponse(str(pdf_path), media_type="application/pdf", filename=pdf_path.name)
+
     runs, missing = [], []
     for i, jid in enumerate(req.job_ids):
         j = jobs.get(jid) or {}
@@ -1745,6 +1974,8 @@ def _job_disk_usage(job_id: str) -> dict:
         n = 0
         b = 0
         for f in folder.rglob("*"):
+            if f.is_symlink():
+                continue          # imported from a local folder — not ours to delete
             if f.is_file():
                 n += 1
                 try:
@@ -2016,6 +2247,15 @@ def preview_tables(job_id: str):
     tables = sorted([f.name for f in tables_dir.glob("*.csv")]) if tables_dir.exists() else []
     plots  = sorted([f.name for f in plots_dir.glob("*.pdf")])  if plots_dir.exists()  else []
 
+    # ONT-WGS writes its tables at the job root and has no taxonomy plots.
+    if (job_dir / "wgs_results.json").exists():
+        return {
+            "tables":  sorted(f.name for f in job_dir.glob("*.csv")),
+            "plots":   [],
+            "summary": json.loads(summary_file.read_text()) if summary_file.exists() else None,
+            "wgs":     True,
+        }
+
     # ── DADA2 fallback: root-level CSVs (taxonomy_*.csv, alpha_diversity.csv, etc.) ──
     # dada2_pipeline.R writes directly to job root; expose them as if they're in r_tables/
     if not tables and job_dir.exists():
@@ -2056,6 +2296,52 @@ def preview_tables(job_id: str):
         "plots":   plots,
         "summary": json.loads(summary_file.read_text()) if summary_file.exists() else None,
     }
+
+@app.get("/results/{job_id}/wgs_report")
+def wgs_report_html(job_id: str):
+    """The ONT-WGS report as a page (rebuilt from the run's JSON each time, so a
+    report_builder / wgs_report fix shows up without re-running anything)."""
+    from fastapi.responses import HTMLResponse
+    out = Path((jobs.get(job_id) or {}).get("output_dir") or str(RESULTS_DIR / job_id))
+    if not (out / "wgs_results.json").exists():
+        return JSONResponse(status_code=404, content={"error": "Not an ONT-WGS result"})
+    try:
+        import importlib
+        wr = importlib.import_module("wgs_report")
+        importlib.reload(wr)
+        return HTMLResponse(wr.build_html(out, company="NextGen Network Corporation Company Limited"))
+    except Exception as e:
+        f = out / "wgs_report.html"
+        if f.exists():
+            return HTMLResponse(f.read_text(encoding="utf-8"))
+        return JSONResponse(status_code=500, content={"error": f"report failed: {e}"})
+
+
+@app.get("/results/{job_id}/wgs_files")
+def wgs_files(job_id: str):
+    """Deliverable files of an ONT-WGS run, per sample."""
+    out = Path((jobs.get(job_id) or {}).get("output_dir") or str(RESULTS_DIR / job_id))
+    if not (out / "wgs_results.json").exists():
+        return JSONResponse(status_code=404, content={"error": "Not an ONT-WGS result"})
+    res = {"root": sorted(f.name for f in out.iterdir() if f.is_file()), "samples": {}}
+    sd = out / "samples"
+    if sd.exists():
+        for d in sorted(sd.iterdir()):
+            if d.is_dir():
+                res["samples"][d.name] = sorted(
+                    str(f.relative_to(out)) for f in d.rglob("*")
+                    if f.is_file() and not f.name.startswith("log_"))
+    return res
+
+
+@app.get("/results/{job_id}/wgs_file/{relpath:path}")
+def wgs_file(job_id: str, relpath: str):
+    out = Path((jobs.get(job_id) or {}).get("output_dir") or str(RESULTS_DIR / job_id)).resolve()
+    f = (out / relpath).resolve()
+    if out not in f.parents or not f.is_file():
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    return FileResponse(str(f), filename=f.name)
+
 
 @app.get("/results/{job_id}/table/{filename}")
 def preview_table(job_id: str, filename: str):
