@@ -36,7 +36,7 @@ Every tool after Flye is optional: when it is not installed, or its database is
 missing, the step is skipped with a warning that also lands in the report, and the
 rest of the run carries on. Flye is the only hard requirement.
 
-Tools are looked up in conda environments first (wgs, medaka, bakta, mobsuite,
+Tools are looked up in conda environments first (ngamp-wgs, wgs, medaka, bakta, mobsuite,
 checkm2 — see setup_wgs.sh), then on PATH. Each command runs with its own
 environment's bin directory first on PATH, which is what activation would do,
 so Perl/Python helpers inside a tool resolve to the right interpreter.
@@ -249,14 +249,14 @@ def merge_group(input_dir: Path, g: dict, dest: Path) -> None:
 #  Tool discovery
 # ══════════════════════════════════════════════════════════════════════════════
 TOOL_ENVS = {
-    "flye": ["wgs", "flye"],
+    "flye": ["ngamp-wgs", "wgs", "flye"],
     "medaka_consensus": ["medaka"],
     "medaka": ["medaka"],
     "bakta": ["bakta"],
     "mob_recon": ["mobsuite", "mob_suite"],
     "checkm2": ["checkm2"],
 }
-DEFAULT_ENVS = ["wgs"]
+DEFAULT_ENVS = ["ngamp-wgs", "wgs"]   # setup_wgs.sh builds ngamp-wgs; "wgs" = hand-made
 
 
 def conda_base() -> Path | None:

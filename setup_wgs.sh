@@ -13,8 +13,10 @@
 #  left alone, so a run that stopped half-way just carries on.
 #
 #  Conda environments (kept apart because their dependencies do not mix):
-#    wgs       flye seqkit barrnap sourmash skani mlst abricate
+#    ngamp-wgs flye seqkit barrnap sourmash skani mlst abricate
 #              ncbi-amrfinderplus vsearch filtlong minimap2 samtools
+#              (its own env, python 3.11: adding these to a hand-made env
+#               pinned to python 3.13 left the solver running all night)
 #    medaka    medaka                (polishing)
 #    bakta     bakta                 (annotation)
 #    mobsuite  mob_suite             (plasmid reconstruction)
@@ -75,7 +77,8 @@ source "$CONDA_BASE/etc/profile.d/conda.sh"
 SOLVER=(conda)
 [[ -x "$CONDA_BASE/bin/mamba" ]] && SOLVER=("$CONDA_BASE/bin/mamba")
 ok "conda base $CONDA_BASE (solver: ${SOLVER[0]##*/})"
-CH=(-c conda-forge -c bioconda --override-channels)
+CH=(-c conda-forge -c bioconda --override-channels --strict-channel-priority)
+WENV="ngamp-wgs"
 
 env_bin() { echo "$CONDA_BASE/envs/$1/bin/$2"; }
 has()     { [[ -x "$(env_bin "$1" "$2")" ]]; }
@@ -98,23 +101,24 @@ ensure_env() {   # ensure_env <env> <probe-binary> <packages...>
 
 if [[ $DO_TOOLS == 1 ]]; then
   step "Conda environments"
-  # wgs: add any tool that is missing, one probe per package so an env made by
-  # hand earlier (flye/barrnap/seqkit only) is completed rather than replaced
-  WGS_PKGS=(flye seqkit barrnap sourmash skani mlst abricate ncbi-amrfinderplus
-            vsearch filtlong minimap2 samtools)
-  declare -A PROBE=([flye]=flye [seqkit]=seqkit [barrnap]=barrnap [sourmash]=sourmash
-    [skani]=skani [mlst]=mlst [abricate]=abricate [ncbi-amrfinderplus]=amrfinder
-    [vsearch]=vsearch [filtlong]=filtlong [minimap2]=minimap2 [samtools]=samtools)
-  MISSING=()
-  for p in "${WGS_PKGS[@]}"; do has wgs "${PROBE[$p]}" || MISSING+=("$p"); done
-  if [[ ${#MISSING[@]} -eq 0 ]]; then
-    ok "wgs: all tools present"
-  elif [[ -d "$CONDA_BASE/envs/wgs" ]]; then
-    info "wgs exists — adding: ${MISSING[*]}"
-    "${SOLVER[@]}" install -y -n wgs "${CH[@]}" "${MISSING[@]}" || fail "wgs install failed"
+  # One fresh environment for the light tools. Never installed INTO an
+  # existing env: an env made by hand (e.g. "wgs" with flye/seqkit on python
+  # 3.13) pins versions the Perl tools (mlst, abricate) cannot meet, and the
+  # solver then searches for hours instead of failing.
+  WGS_PKGS=(python=3.11 flye seqkit barrnap sourmash skani mlst abricate
+            ncbi-amrfinderplus vsearch filtlong minimap2 samtools)
+  PROBES=(flye seqkit barrnap sourmash skani mlst abricate amrfinder vsearch
+          filtlong minimap2 samtools)
+  MISSING=0
+  for b in "${PROBES[@]}"; do has "$WENV" "$b" || MISSING=1; done
+  if [[ $MISSING == 0 ]]; then
+    ok "$WENV: all tools present"
   else
-    info "creating wgs"
-    "${SOLVER[@]}" create -y -n wgs "${CH[@]}" python=3.11 "${WGS_PKGS[@]}" || fail "wgs create failed"
+    [[ -d "$CONDA_BASE/envs/$WENV" ]] && { info "rebuilding incomplete $WENV"; \
+      "${SOLVER[@]}" env remove -y -n "$WENV" >/dev/null 2>&1 || true; }
+    info "creating $WENV (a few minutes)"
+    "${SOLVER[@]}" create -y -n "$WENV" "${CH[@]}" "${WGS_PKGS[@]}" || fail "$WENV create failed"
+    for b in "${PROBES[@]}"; do has "$WENV" "$b" || fail "$WENV: $b missing"; done
   fi
   ensure_env medaka medaka_consensus "medaka>=2.0"
   [[ $SKIP_BAKTA   == 0 ]] && ensure_env bakta    bakta     bakta
@@ -142,8 +146,8 @@ fetch() {      # fetch <url> <dest>  (resumable)
 
 if [[ $DO_DBS == 1 ]]; then
   step "AMRFinderPlus database"
-  if has wgs amrfinder; then
-    CONDA_PREFIX="$CONDA_BASE/envs/wgs" PATH="$CONDA_BASE/envs/wgs/bin:$PATH" \
+  if has "$WENV" amrfinder; then
+    CONDA_PREFIX="$CONDA_BASE/envs/$WENV" PATH="$CONDA_BASE/envs/$WENV/bin:$PATH" \
       amrfinder -u >/tmp/amrfinder_u.log 2>&1 && ok "AMRFinderPlus database up to date" \
       || warn "amrfinder -u failed — see /tmp/amrfinder_u.log"
   else warn "amrfinder not installed — skipped"; fi
@@ -203,8 +207,8 @@ fi
 
 # ── report ───────────────────────────────────────────────────────────────────
 step "Status"
-for t in wgs:flye wgs:seqkit wgs:sourmash wgs:skani wgs:barrnap wgs:vsearch wgs:mlst \
-         wgs:amrfinder wgs:abricate wgs:filtlong medaka:medaka_consensus \
+for t in $WENV:flye $WENV:seqkit $WENV:sourmash $WENV:skani $WENV:barrnap $WENV:vsearch \
+         $WENV:mlst $WENV:amrfinder $WENV:abricate $WENV:filtlong medaka:medaka_consensus \
          bakta:bakta mobsuite:mob_recon checkm2:checkm2; do
   e=${t%%:*}; b=${t#*:}
   has "$e" "$b" && ok "$b ($e)" || warn "$b missing ($e) — that step will be skipped"
