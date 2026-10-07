@@ -121,8 +121,20 @@ if [[ $DO_TOOLS == 1 ]]; then
     for b in "${PROBES[@]}"; do has "$WENV" "$b" || fail "$WENV: $b missing"; done
   fi
   ensure_env medaka medaka_consensus "medaka>=2.0"
-  [[ $SKIP_BAKTA   == 0 ]] && ensure_env bakta    bakta     bakta
-  [[ $SKIP_MOB     == 0 ]] && ensure_env mobsuite mob_recon mob_suite
+  if [[ $SKIP_BAKTA == 0 ]]; then
+    # Unpinned, the solver takes the newest python (3.14) and then falls back to
+    # bakta 1.5 — a 2022 release that cannot read the current database and has no
+    # light database. Anything older than 1.9 is rebuilt.
+    if has bakta bakta; then
+      BV=$("$(env_bin bakta bakta)" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+      if [[ -n "$BV" ]] && python3 -c "import sys; sys.exit(0 if tuple(map(int,'$BV'.split('.')))<(1,9) else 1)"; then
+        warn "bakta $BV is too old — rebuilding the bakta env"
+        "${SOLVER[@]}" env remove -y -n bakta >/dev/null 2>&1 || rm -rf "$CONDA_BASE/envs/bakta"
+      fi
+    fi
+    ensure_env bakta bakta "python=3.11" "bakta>=1.9"
+  fi
+  [[ $SKIP_MOB     == 0 ]] && ensure_env mobsuite mob_recon "python=3.11" mob_suite
   [[ $SKIP_CHECKM2 == 0 ]] && ensure_env checkm2  checkm2   "checkm2>=1.1"
 fi
 
