@@ -955,12 +955,28 @@ export default function App() {
           )}
           {j.status === "completed" && (
             <>
-              {j.marker === "ONT-WGS" ? (
+              {j.marker === "ONT-WGS" ? (<>
                 <a href={`${API}/results/${j.job_id}/wgs_report`} target="_blank" rel="noreferrer"
                   className="btn-view btn-preview" title="Open the genome report in a new tab">
                   🧬 WGS Report
                 </a>
-              ) : (<>
+                <button className="btn-view"
+                  title="Run species ID, 16S, MLST, AMR, plasmids and annotation again on the existing assemblies — e.g. after installing a database. Flye and Medaka are not repeated."
+                  onClick={async () => {
+                    if (!window.confirm("Re-analyse this run on its existing assemblies?\n\nAssembly and polishing are reused; every later step runs again with the databases installed now. The current results are replaced.")) return;
+                    try {
+                      const d = await axios.get(`${API}/detail/${j.job_id}`);
+                      const prev = d.data?.params || {};
+                      await axios.post(`${API}/jobs/${j.job_id}/reset`);
+                      await axios.post(`${API}/run/${j.job_id}`, { ...prev, marker: "ONT-WGS" });
+                      await refreshJobs();
+                    } catch (e: any) {
+                      alert(e?.response?.data?.message || e?.response?.data?.error || "Re-analysis could not start.");
+                    }
+                  }}>
+                  ♻️ Re-analyse
+                </button>
+              </>) : (<>
               <button className="btn-view btn-preview"
                 onClick={() => { setPreviewJobId(j.job_id); setScreen("preview"); }}>
                 ✏️ Edit Charts

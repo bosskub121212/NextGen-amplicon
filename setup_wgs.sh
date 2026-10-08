@@ -125,17 +125,39 @@ if [[ $DO_TOOLS == 1 ]]; then
     # Unpinned, the solver takes the newest python (3.14) and then falls back to
     # bakta 1.5 — a 2022 release that cannot read the current database and has no
     # light database. Anything older than 1.9 is rebuilt.
-    if has bakta bakta; then
-      BV=$("$(env_bin bakta bakta)" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
-      if [[ -n "$BV" ]] && python3 -c "import sys; sys.exit(0 if tuple(map(int,'$BV'.split('.')))<(1,9) else 1)"; then
-        warn "bakta $BV is too old — rebuilding the bakta env"
-        "${SOLVER[@]}" env remove -y -n bakta >/dev/null 2>&1 || rm -rf "$CONDA_BASE/envs/bakta"
-      fi
+    # Judged by what we need rather than by a version string (an old bakta on
+    # python 3.14 may not even print its version): the light database needs
+    # `bakta_db download --type`, added in bakta 1.8.
+    if has bakta bakta && ! "$(env_bin bakta bakta_db)" download --help 2>&1 | grep -q -- "--type"; then
+      warn "bakta in the 'bakta' env is too old (no light database) — rebuilding it"
+      "${SOLVER[@]}" env remove -y -n bakta >/dev/null 2>&1 || true
+      rm -rf "$CONDA_BASE/envs/bakta"
     fi
     ensure_env bakta bakta "python=3.11" "bakta>=1.9"
   fi
   [[ $SKIP_MOB     == 0 ]] && ensure_env mobsuite mob_recon "python=3.11" mob_suite
-  [[ $SKIP_CHECKM2 == 0 ]] && ensure_env checkm2  checkm2   "checkm2>=1.1"
+  if [[ $SKIP_CHECKM2 == 0 ]]; then
+    ensure_env checkm2 checkm2 "checkm2>=1.1"
+    # TensorFlow's shared libraries ask for an executable stack; newer glibc
+    # (Ubuntu 25.04 / glibc 2.41+) refuses to load them:
+    #   "libtensorflow_cc.so.2: cannot enable executable stack ... Invalid argument"
+    # Clearing that flag on the TensorFlow libraries is the standard fix.
+    if has checkm2 checkm2 && ! "$(env_bin checkm2 checkm2)" --version >/dev/null 2>&1; then
+      if "$(env_bin checkm2 checkm2)" --version 2>&1 | grep -q "executable stack"; then
+        info "checkm2: clearing the executable-stack flag on TensorFlow libraries"
+        has checkm2 patchelf || "${SOLVER[@]}" install -y -n checkm2 -c conda-forge \
+          --override-channels "patchelf>=0.18" >/dev/null
+        PE="$(env_bin checkm2 patchelf)"
+        find "$CONDA_BASE/envs/checkm2" -type f \( -name "libtensorflow*.so*" -o \
+             \( -path "*site-packages/tensorflow/*" -name "*.so*" \) \) 2>/dev/null |
+        while read -r so; do
+          "$PE" --print-execstack "$so" 2>/dev/null | grep -q "X" && "$PE" --clear-execstack "$so"
+        done
+      fi
+      "$(env_bin checkm2 checkm2)" --version >/dev/null 2>&1 && ok "checkm2 runs" \
+        || fail "checkm2 still does not start — run: $(env_bin checkm2 checkm2) --version"
+    fi
+  fi
 fi
 
 # ── databases ────────────────────────────────────────────────────────────────
@@ -234,7 +256,10 @@ for t in $WENV:flye $WENV:seqkit $WENV:sourmash $WENV:skani $WENV:barrnap $WENV:
          $WENV:mlst $WENV:amrfinder $WENV:abricate $WENV:filtlong medaka:medaka_consensus \
          bakta:bakta mobsuite:mob_recon checkm2:checkm2; do
   e=${t%%:*}; b=${t#*:}
-  has "$e" "$b" && ok "$b ($e)" || warn "$b missing ($e) — that step will be skipped"
+  if ! has "$e" "$b"; then warn "$b missing ($e) — that step will be skipped"
+  elif [[ "$b" == checkm2 ]] && ! "$(env_bin "$e" "$b")" --version >/dev/null 2>&1; then
+    warn "$b installed but does not start ($e) — that step will be skipped"
+  else ok "$b ($e)"; fi
 done
 python3 - "$DBP" <<'PY'
 import json, sys, pathlib
