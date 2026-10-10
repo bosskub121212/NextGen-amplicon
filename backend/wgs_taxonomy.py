@@ -805,6 +805,8 @@ def genome_tree(genomes: list[tuple[str, Path]], work: Path, threads: int,
                 tree = parse_newick(nwk.read_text())
             except Exception:
                 tree = None
+    H.last_tree_method = "FastME 2 (BioNJ + SPR)" if tree is not None else \
+        "neighbour joining" + (" (FastME needs ≥ 4 genomes)" if n < 4 else "")
     if tree is None:
         tree = nj(ids, D)
     tree = midpoint_root(tree)
@@ -1307,8 +1309,7 @@ def _trees(S, asm, s16, top, rows16, sp16, db16, out, tdir, tw, args, logf, P):
         if nwk:
             (tdir / f"{S}_genome_tree.nwk").write_text(nwk + "\n")
             out["genome_tree"] = nwk
-            out["genome_tree_method"] = ("FastME 2 (BioNJ + SPR)" if H.find_tool("fastme")
-                                         else "neighbour joining") + \
+            out["genome_tree_method"] = getattr(H, "last_tree_method", "neighbour joining") + \
                 " on skani ANI distances (1 − ANI/100), midpoint-rooted"
             with open(tdir / "ani_matrix_skani.tsv", "w") as fh:
                 fh.write("genome\t" + "\t".join(n for n, _ in gl) + "\n")
