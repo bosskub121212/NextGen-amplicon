@@ -6568,13 +6568,18 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                : key === "COX1"     ? /midori|cox1|coi/i
                : new RegExp(key.replace(/[^\w]/g, ""), "i");
 
+    /* ONT 16S runs Emu, which reads an Emu database FOLDER (species_taxid.fasta
+       or sequences.fasta + taxonomy.tsv). A DADA2 trainset is useless to it, and
+       emu_db_mar2026's file is named species_taxid.fasta — which the amplicon
+       rule below hides — so Emu gets its own matching. */
+    var isEmu = key === "ONT-16S";
     var hit = [], other = [];
     files.forEach(function(f){
       var base = f.name || "";
       /* An assignSpecies file here is what produced WRONG KIND OF REFERENCE
          FILE. The pipeline finds the matching species file by itself from the
          trainset, so offering it as the main reference can only be a mistake. */
-      if(/assignspecies|species_taxid|wspecies/i.test(base)) return;
+      if(/assignspecies|wspecies/i.test(base) || (!isEmu && /species_taxid/i.test(base))) return;
       var rel = f.rel_path || base;
       var dir = rel.indexOf("/") === -1 ? "" : rel.slice(0, rel.lastIndexOf("/"));
       var o = {
@@ -6583,20 +6588,26 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         label: base + (f.size_mb ? "   (" + f.size_mb + " MB)" : ""),
         name:  base
       };
-      (marker.test(rel) ? hit : other).push(o);
+      var ok = isEmu ? (/^emu/i.test(dir) && /^(species_taxid|sequences)\.fasta$/i.test(base))
+                     : marker.test(rel) && !/^emu/i.test(dir);   /* Emu folders are not DADA2 references */
+      (ok ? hit : other).push(o);
     });
 
     /* Matched files first, then everything else still listed but marked — the
        marker match is a filename heuristic and a heuristic must not be allowed
        to hide a file the user knows they installed. */
     function cmp(a, b){ return b.name.localeCompare(a.name, undefined, {numeric:true}); }
-    hit.sort(cmp); other.sort(cmp);
+    /* Emu: the default Emu database first, working copies (…/prep) last */
+    function rankEmu(o){ return /^emu_db/i.test(o.dir) ? 0 : /prep/i.test(o.dir) ? 2 : 1; }
+    hit.sort(isEmu ? function(a, b){ return rankEmu(a) - rankEmu(b) || a.dir.localeCompare(b.dir); } : cmp);
+    other.sort(cmp);
     other.forEach(function(o){ o.dir = o.dir + "  — not matched to " + key; });
 
     var all = hit.concat(other);
     /* Preselect the newest trainset that matches the marker, never a file that
        merely happens to sort first. */
-    var pick = hit.filter(function(o){ return /trainset|train_set/i.test(o.name); })[0] || hit[0];
+    var pick = isEmu ? hit[0]
+             : (hit.filter(function(o){ return /trainset|train_set/i.test(o.name); })[0] || hit[0]);
     if(pick) pick.pick = true;
     all.matched = hit.length;
     return all;
