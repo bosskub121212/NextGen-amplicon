@@ -184,6 +184,12 @@ class RunParams(BaseModel):
     wgs_run_annotation:   bool  = True     # Bakta
     wgs_db_16s:           str   = ""       # 16S reference (Emu dir or SILVA trainset)
     wgs_keep_intermediate: bool = False
+    wgs_run_typestrain:   bool  = True     # TYGS/JSpecies-style type-strain comparison
+    wgs_run_anib:         bool  = True     # ANIb + ANIm + TETRA (else skani only)
+    wgs_run_tree:         bool  = True     # genome tree + 16S tree
+    wgs_run_mapping:      bool  = True     # reads/assembly vs closest reference
+    wgs_ts_max:           int   = 10       # type strains compared / shown in trees
+    wgs_keep_bam:         bool  = False    # deliver the reads-vs-reference BAM
     wgs_sample_names:     dict  = {}       # {group key: sample name} from the UI
     # --- Functional prediction ---
     run_tax4fun:   bool  = False
@@ -824,6 +830,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
         jobs[job_id]["status"]      = "running"
         jobs[job_id]["step_label"]  = "Initializing pipeline..."
         jobs[job_id]["started_at"]  = time.time()
+        jobs[job_id]["finished_at"] = None     # a re-run must not inherit the last end time
         jobs[job_id]["pid"]         = None
         save_jobs()
 
@@ -990,6 +997,17 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--skip_checkm2"]
         if not params.wgs_run_annotation:
             cmd += ["--skip_annotation"]
+        if not params.wgs_run_typestrain:
+            cmd += ["--skip_typestrain"]
+        if not params.wgs_run_anib:
+            cmd += ["--skip_anib"]
+        if not params.wgs_run_tree:
+            cmd += ["--skip_tree"]
+        if not params.wgs_run_mapping:
+            cmd += ["--skip_mapping"]
+        if params.wgs_keep_bam:
+            cmd += ["--keep_bam"]
+        cmd += ["--ts_max", str(max(3, min(25, int(params.wgs_ts_max or 10))))]
         if params.wgs_keep_intermediate:
             cmd += ["--keep_intermediate"]
         if params.wgs_db_16s:
@@ -1633,7 +1651,8 @@ def get_detail(job_id: str):
     j = jobs[job_id]
     started  = j.get("started_at")
     finished = j.get("finished_at")
-    total_secs = round(finished - started, 1) if started and finished else None
+    total_secs = round(finished - started, 1) if started and finished and finished >= started \
+        else None
     return {
         "status":       j.get("status"),
         "started_at":   started,

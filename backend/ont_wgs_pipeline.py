@@ -23,8 +23,12 @@ with the same settings, so a failure at hour four does not cost four hours):
    5  assembly QC               contig table, circularity, depth, CheckM2
    6  species identification    sourmash gather vs GTDB  →  skani ANI vs the
                                 closest reference genome (NCBI, when reachable)
-   7  16S rRNA                  barrnap: every full-length copy → vsearch vs the
-                                16S database already used by the amplicon pipelines
+   7  16S rRNA                  barrnap: every full-length copy → vsearch vs NCBI
+                                RefSeq 16S (type material), else the amplicon 16S DB
+  7b  type strains              wgs_taxonomy.py: NCBI type-material genomes → skani
+                                screen → ANIb / ANIm / TETRA (JSpecies) → verdict;
+                                genome tree (FastME) + 16S tree (MAFFT + IQ-TREE)
+  7c  reference mapping         minimap2 reads + assembly vs the closest genome
    8  MLST                      mlst (PubMLST schemes)
    9  AMR / stress / virulence  AMRFinderPlus (--plus, organism-aware point mutations)
   10  virulence factors         abricate + VFDB
@@ -63,7 +67,10 @@ from collections import Counter, OrderedDict, defaultdict
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "1.0.1"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import wgs_taxonomy as WT  # noqa: E402
+
+__version__ = "1.1.0"
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Logging / progress (same wire format as the other pipelines: main.py parses
@@ -255,6 +262,12 @@ TOOL_ENVS = {
     "bakta": ["bakta"],
     "mob_recon": ["mobsuite", "mob_suite"],
     "checkm2": ["checkm2"],
+    # type-strain / phylogeny / mapping tools (setup_wgs.sh: ngamp-phylo)
+    **{t: ["ngamp-phylo", "phylo"] for t in (
+        "blastn", "makeblastdb", "nucmer", "delta-filter", "mafft", "iqtree", "iqtree2",
+        "iqtree3", "fastme")},
+    "minimap2": ["ngamp-phylo", "phylo", "ngamp-wgs", "wgs", "medaka"],
+    "samtools": ["ngamp-phylo", "phylo", "ngamp-wgs", "wgs", "medaka"],
 }
 DEFAULT_ENVS = ["ngamp-wgs", "wgs"]   # setup_wgs.sh builds ngamp-wgs; "wgs" = hand-made
 
@@ -361,7 +374,8 @@ def tool_version(name: str) -> str:
     t = find_tool(name)
     if not t:
         return ""
-    flags = {"medaka_consensus": None, "seqkit": ["version"]}
+    flags = {"medaka_consensus": None, "seqkit": ["version"], "blastn": ["-version"],
+             "nucmer": ["-version"]}
     f = flags.get(name, ["--version"])
     if f is None:
         return ""
@@ -372,13 +386,13 @@ def tool_version(name: str) -> str:
                  ((p.stderr or "") + "\n" + (p.stdout or "")).splitlines()]
         stem = name.split("_")[0].lower()
         for line in lines:                       # a bare "1.1.0" line wins outright
-            m = re.fullmatch(r"\s*v?(\d{1,3}\.\d+(?:\.\d+)?)\s*", line)
+            m = re.fullmatch(r"\s*v?(\d{1,3}\.\d+(?:\.\d+){0,2})\s*", line)
             if m:
                 return m.group(1)
         # lines naming the tool first: vsearch prints a citation with a DOI
         # ("10.7717/…") on stdout before its version on stderr
         for line in sorted(lines, key=lambda ln: stem not in ln.lower()):
-            m = re.search(r"(?<![\w./])v?(\d{1,3}\.\d+(?:\.\d+)?(?:-b\d+)?)(?![\d./])", line)
+            m = re.search(r"(?<![\w./])v?(\d{1,3}\.\d+(?:\.\d+){0,2}(?:-b\d+)?)(?![\d./])", line)
             if m:
                 return m.group(1)
         return ""
@@ -763,7 +777,8 @@ def run_sourmash(asm: Path, sdir: Path, db: str, lineages: str, threads: int,
         return []
     gather = sdir / "sourmash_gather.csv"
     if run(sm, ["gather", sig, db, "-k", "31", "--threshold-bp", "50000",
-                "-o", gather], logf, timeout=3 * 3600) != 0 or not gather.exists():
+                "-o", gather, "--save-prefetch-csv", sdir / "sourmash_prefetch.csv"],
+           logf, timeout=3 * 3600) != 0 or not gather.exists():
         warn("sourmash gather failed — genome-based species ID skipped")
         return []
     with open(gather, newline="") as fh:
@@ -850,6 +865,11 @@ def resolve_16s_db(choice: str, dbp: dict) -> tuple[Path | None, Path | None, st
     (species_taxid.fasta or sequences.fasta + taxonomy.tsv) or a SILVA DADA2
     trainset FASTA whose headers ARE the lineage."""
     cands = [choice] if choice else []
+    # NCBI RefSeq 16S = type material only: the reference set TYGS / EzBioCloud use,
+    # without the mislabelled entries of mixed 16S databases
+    auto16 = Path(__file__).resolve().parent / "databases" / "wgs" / "ncbi_16s" / \
+        "bacteria.16SrRNA.fna"
+    cands += [dbp.get("ncbi_16s_type", ""), str(auto16) if auto16.exists() else ""]
     cands += [dbp.get(k, "") for k in ("wgs_16s_db", "emu_db_mar2026", "emu_silva",
                                        "SILVA_16S_sp", "SILVA_16S")]
     for c in cands:
@@ -950,7 +970,9 @@ def classify_16s(seqs: list[tuple[str, str]], db_fa: Path, tax_dir: Path | None,
             ge = (sp.split()[0] if sp else ge) or ""
             first_genus = first_genus or ge
             if sp:
-                if sp not in tied:
+                # "[Bacillus] caldolyticus": brackets mark a genus name known to be
+                # wrong — such names neither vote nor count as a foreign genus
+                if sp not in tied and not sp.startswith("["):
                     genera[ge] += 1
                 tied[sp] = max(tied.get(sp, 0), ident)
         # Genus by majority of the tied reference names, not the single top hit:
@@ -965,7 +987,7 @@ def classify_16s(seqs: list[tuple[str, str]], db_fa: Path, tax_dir: Path | None,
             genus = first_genus
         sps = list(tied)
         main = [x for x in sps if x.split()[0] == genus] or sps
-        odd = [x for x in sps if x.split()[0] != genus]
+        odd = [x for x in sps if x.split()[0] != genus and not x.startswith("[")]
         out.append({"copy": qn.split()[0], "best_identity": round(best, 2),
                     "best_species": main[0] if main else "", "best_genus": genus,
                     "tied_species": "; ".join(main[:8]), "n_tied": len(main),
@@ -1390,6 +1412,7 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
     top = sm_hits[0] if sm_hits else {}
     ident = {"method": "", "species": "", "genus": "", "ani": None, "af": None,
              "reference": "", "accession": "", "call": "unresolved"}
+    gtdb_ref = None
     if top:
         ident.update({"method": "sourmash gather (GTDB)", "species": top["gtdb_species"]
                       or top["reference_name"], "genus": top["gtdb_genus"],
@@ -1409,6 +1432,7 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
         if args.verify_ani and top["accession"]:
             P(0.74, f"Verifying ANI against {top['accession']}")
             ref = fetch_ncbi_genome(top["accession"], Path(args.ref_cache))
+            gtdb_ref = ref
             sk = run_skani(asm, ref, logs / "skani.log", sdir / "skani.tsv") if ref else {}
             if sk.get("ani") is not None:
                 ident.update({"method": "skani ANI vs closest GTDB reference",
@@ -1422,6 +1446,7 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
     # ── 7. 16S ───────────────────────────────────────────────────────────────
     P(0.76, "Extracting 16S rRNA genes")
     rrna = {"copies": 0, "partial": 0, "operons_23S": 0, "operons_5S": 0, "hits": []}
+    s16: list = []
     br = find_tool("barrnap")
     if br:
         gff = sdir / "barrnap.gff"
@@ -1508,6 +1533,83 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
         ident.update({"method": "16S rRNA (genus-level reliability)",
                       "species": rrna["consensus_species"],
                       "genus": rrna.get("consensus_genus", ""), "call": "16S only"})
+    # ── 7b. type strains (TYGS / JSpecies style) ─────────────────────────────
+    ident["gtdb_species"] = ident.get("species", "") if ident.get("method", "").startswith(
+        ("sourmash", "skani")) else ""
+    ts_res = {}
+    if not args.skip_typestrain:
+        try:
+            neigh = []
+            pf = sdir / "sourmash_prefetch.csv"
+            if pf.exists():
+                with open(pf, newline="") as fh:
+                    prow = sorted(csv.DictReader(fh), key=lambda r: -(fnum(pick(
+                        r, "max_containment_ani", "average_containment_ani"), 0) or 0))
+                neigh = [" ".join((r.get("match_name") or r.get("name") or "").split()[1:3])
+                         for r in prow[:25]]
+            ts_res = WT.typestrain_analysis(
+                S, asm, s16,
+                {"genus": ident.get("genus", ""), "species": ident.get("gtdb_species", ""),
+                 "accession": ident.get("accession", ""), "ncbi_name": ident.get("reference", ""),
+                 "path": str(gtdb_ref) if gtdb_ref else ""},
+                neigh, args, dbp, Path(args.db_paths).resolve().parent / "wgs" if args.db_paths else
+                Path(__file__).resolve().parent / "databases" / "wgs", sdir, wdir, logs, P)
+        except Exception as e:
+            import traceback
+            (logs / "typestrain_error.log").write_text(traceback.format_exc())
+            warn(f"[{S}] type-strain comparison failed: {e} (see logs/typestrain_error.log)")
+            ts_res = {}
+    map_ref = ts_res.pop("_mapping_ref", None) if ts_res else None
+    v = ts_res.get("verdict", {}) if ts_res else {}
+    if v.get("level") in ("known", "borderline") and ts_res.get("type_strains"):
+        b = ts_res["type_strains"][0]
+        ani_b = b.get("anib") if b.get("anib") is not None else b.get("skani_ani")
+        ident.update({"species": v["species"], "genus": v["species"].split(" ")[0],
+                      "method": ("ANIb" if b.get("anib") is not None else "skani ANI") +
+                      " vs type strain (NCBI type material)",
+                      "ani": round(ani_b, 2) if ani_b is not None else None,
+                      "af": b.get("anib_cov_q") or b.get("skani_af_query"),
+                      "reference": f"{b['organism']} {b.get('strain') or ''}".strip() + " (T)",
+                      "accession": b["accession"],
+                      "call": "species" if v["level"] == "known" else
+                      "species (borderline 95–96 %)"})
+    elif v.get("level") == "novel" and ts_res.get("type_strains"):
+        b = ts_res["type_strains"][0]
+        ani_b = b.get("anib") if b.get("anib") is not None else b.get("skani_ani")
+        ident.update({"species": v["species"], "call": "potential novel species",
+                      "method": "ANIb vs type strain (NCBI type material)",
+                      "ani": round(ani_b, 2) if ani_b is not None else None,
+                      "reference": f"{b['organism']} {b.get('strain') or ''}".strip() + " (T)",
+                      "accession": b["accession"]})
+    res["typestrain"] = ts_res
+
+    # ── 7c. mapping to the closest reference genome ──────────────────────────
+    if not args.skip_mapping:
+        if not map_ref and gtdb_ref:
+            map_ref = {"accession": ident.get("accession", ""), "organism":
+                       ident.get("gtdb_species") or ident.get("reference", ""),
+                       "path": str(gtdb_ref), "type_strain": False}
+        if map_ref and map_ref.get("path"):
+            msig2 = _sig([qsig, msig, map_ref["accession"], args.keep_bam, WT.MAP_VERSION])
+            cached = wdir / "mapping_result.json"
+            mres = None
+            if is_done(wdir, "mapping", msig2) and cached.exists() and \
+                    (sdir / "mapping").exists():
+                try:
+                    mres = json.loads(cached.read_text())
+                except Exception:
+                    mres = None
+            if mres is None:
+                P(0.795, f"Mapping reads to {map_ref['accession']} ({map_ref.get('organism', '')})")
+                mres = WT.reference_mapping(filt, asm, map_ref, sdir / "mapping",
+                                            wdir / "mapping_tmp", args.threads,
+                                            logs / "mapping.log", args.keep_bam)
+                if mres:
+                    cached.write_text(json.dumps(mres, default=str))
+                    mark_done(wdir, "mapping", msig2)
+            res["mapping"] = mres or {}
+        else:
+            log(f"  [{S}] no reference genome available — mapping skipped")
     res["identification"] = ident
 
     genus = ident.get("genus") or (ident.get("species") or "").split(" ")[0]
@@ -1613,6 +1715,7 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
 # ══════════════════════════════════════════════════════════════════════════════
 def write_tables(results: list[dict], out: Path):
     summ, readqc, contig_rows, sp_rows, r16, mlst, amr, vf, pls, ann = ([] for _ in range(10))
+    tsrows, maprows = [], []
     for r in results:
         S = r["sample"]
         if r.get("status") != "ok":
@@ -1647,8 +1750,24 @@ def write_tables(results: list[dict], out: Path):
             "polish": a.get("polish", ""), "flye_mode": r.get("flye_mode", ""),
             "reads": rq.get("reads", ""), "bases": rq.get("bases", ""),
             "read_n50": rq.get("n50", ""),
+            "type_strain_verdict": r.get("typestrain", {}).get("verdict", {}).get("call", ""),
+            "gtdb_species": ident.get("gtdb_species", ""),
+            "snps_vs_reference": r.get("mapping", {}).get("snps", ""),
             "warnings": " | ".join(r.get("warnings", [])),
         })
+        for i, t in enumerate(r.get("typestrain", {}).get("type_strains", []), 1):
+            tsrows.append({"sample": S, "rank": i, **{k: t.get(k, "") for k in (
+                "organism", "strain", "accession", "level", "anib", "anib_qr", "anib_rq",
+                "anib_cov_q", "anib_cov_r", "anim", "anim_cov_q", "anim_cov_r", "tetra",
+                "skani_ani", "skani_af_query", "skani_af_ref", "rrna_identity")}})
+        m = r.get("mapping", {})
+        if m:
+            maprows.append({"sample": S, **{k: m.get(k, "") for k in (
+                "reference", "strain", "accession", "type_strain", "ref_length",
+                "reads_mapped_pct", "mean_depth", "breadth_1x", "breadth_10x",
+                "absent_regions", "absent_bp", "asm_ref_aligned_pct", "asm_query_aligned_pct",
+                "alignment_identity", "snps", "snps_per_100kb", "indels", "indel_bp",
+                "isolate_unique_regions", "isolate_unique_bp")}})
         readqc.append({"sample": S, "stage": "raw", **{k: rq.get(k, "") for k in
                        ("reads", "bases", "mean_len", "median_len", "n50", "max_len",
                         "mean_q", "pct_q10", "pct_q20", "gc")}})
@@ -1683,6 +1802,10 @@ def write_tables(results: list[dict], out: Path):
     write_csv(out / "virulence_vfdb.csv", vf)
     write_csv(out / "plasmids_mobsuite.csv", pls)
     write_csv(out / "annotation_summary.csv", ann)
+    if tsrows:
+        write_csv(out / "type_strain_comparison.csv", tsrows)
+    if maprows:
+        write_csv(out / "reference_mapping.csv", maprows)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1719,6 +1842,17 @@ def parse_args(argv=None):
     p.add_argument("--skip_checkm2", action="store_true")
     p.add_argument("--skip_annotation", action="store_true")
     p.add_argument("--keep_intermediate", action="store_true")
+    # type strains (TYGS / JSpecies style), trees, reference mapping
+    p.add_argument("--skip_typestrain", action="store_true")
+    p.add_argument("--skip_anib", action="store_true",
+                   help="skani only — no ANIb / ANIm / TETRA")
+    p.add_argument("--skip_tree", action="store_true")
+    p.add_argument("--skip_mapping", action="store_true")
+    p.add_argument("--ts_max", type=int, default=10,
+                   help="closest type strains compared in detail / shown in trees")
+    p.add_argument("--ts_download_max", type=int, default=30,
+                   help="type-strain genomes downloaded per sample for the ANI screen")
+    p.add_argument("--keep_bam", action="store_true")
     p.add_argument("--app_version", default="")
     return p.parse_args(argv)
 
@@ -1726,6 +1860,8 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     args = parse_args(argv)
     t0 = time.time()
+    WT.bind(find_tool=find_tool, run=run, log=log, warn=warn, fetch_genome=fetch_ncbi_genome,
+            read_fasta=read_fasta, write_fasta=write_fasta)
     inp, out = Path(args.input), Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     work = Path(args.work_dir) if args.work_dir else inp / "_wgs_work"
@@ -1738,7 +1874,7 @@ def main(argv=None) -> int:
             warn(f"db_paths.json unreadable: {e}")
     # Databases downloaded by hand (wget) but never registered by setup_wgs.sh:
     # pick them up from the standard folder instead of silently skipping steps.
-    wgs_db = (Path(args.db_paths).parent if args.db_paths
+    wgs_db = (Path(args.db_paths).resolve().parent if args.db_paths
               else Path(__file__).resolve().parent / "databases") / "wgs"
     found = {}
     if wgs_db.is_dir():
@@ -1760,10 +1896,18 @@ def main(argv=None) -> int:
             vj = [x for x in wgs_db.rglob("version.json") if "bakta" in str(x)]
             if vj:
                 found["bakta_db"] = str(vj[0].parent)
+        if not (dbp.get("ncbi_16s_type") and Path(dbp["ncbi_16s_type"]).exists()):
+            f16 = wgs_db / "ncbi_16s" / "bacteria.16SrRNA.fna"
+            if f16.exists():
+                found["ncbi_16s_type"] = str(f16)
     for k, v in found.items():
         dbp[k] = v
         log(f"  database {k} found unregistered at {v} — using it "
             "(run setup_wgs.sh --dbs-only to register)")
+    if not (dbp.get("ncbi_16s_type") and Path(dbp["ncbi_16s_type"]).exists()):
+        f16 = WT.ensure_16s_db(dbp, wgs_db)     # 8 MB, downloaded once
+        if f16:
+            dbp["ncbi_16s_type"] = str(f16)
     overrides = {}
     if args.sample_names:
         try:
@@ -1799,7 +1943,9 @@ def main(argv=None) -> int:
 
     versions = {}
     for t in ("seqkit", "flye", "medaka", "sourmash", "skani", "barrnap", "vsearch", "mlst",
-              "amrfinder", "abricate", "mob_recon", "checkm2", "bakta", "filtlong"):
+              "amrfinder", "abricate", "mob_recon", "checkm2", "bakta", "filtlong",
+              "blastn", "nucmer", "mafft", "iqtree3", "iqtree2", "iqtree", "fastme",
+              "minimap2", "samtools"):
         v = tool_version(t)
         if v:
             versions[t] = v
@@ -1840,9 +1986,11 @@ def main(argv=None) -> int:
             "min_read_len", "min_read_q", "genome_size", "asm_coverage", "read_type",
             "medaka_model", "medaka_bacteria", "medaka_max_cov", "skip_medaka",
             "verify_ani", "skip_amr", "skip_vf", "skip_mobsuite", "skip_checkm2",
-            "skip_annotation")},
+            "skip_annotation", "skip_typestrain", "skip_anib", "skip_tree", "skip_mapping",
+            "ts_max", "ts_download_max", "keep_bam")},
         "databases": {k: dbp.get(k, "") for k in ("gtdb_sourmash", "gtdb_lineages",
-                                                  "bakta_db", "checkm2_db", "amrfinder_db")},
+                                                  "ncbi_16s_type", "bakta_db", "checkm2_db",
+                                                  "amrfinder_db")},
         "tool_versions": versions, "warnings": list(dict.fromkeys(WARNINGS)),
         "runtime_min": round((time.time() - t0) / 60, 1),
         "timestamp": datetime.now().isoformat(timespec="seconds"),

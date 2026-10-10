@@ -315,6 +315,23 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .del .what .mono{color:var(--fg)}
 .del .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .btn.danger{border-color:var(--err);color:var(--err);background:var(--surface)}
+.rep{display:flex;flex-direction:column;gap:10px;margin:14px 0;padding:14px 16px;
+  background:var(--surface);border:1px solid var(--line-strong);border-left:3px solid var(--accent);
+  border-radius:var(--r)}
+.rep h4{margin:0;font-size:14px}
+.rep .what{font-size:12.5px;color:var(--fg-2);line-height:1.5}
+.rep .lab{font-size:11.5px;color:var(--fg-2);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.rep .segs{display:flex;gap:6px;flex-wrap:wrap}
+.rep .segs .btn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.rep .runs{max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:5px}
+.rep .runs label{display:flex;align-items:center;gap:9px;padding:7px 10px;font-size:13px;
+  border-bottom:1px solid var(--line);cursor:pointer}
+.rep .runs label:last-child{border-bottom:none}
+.rep .runs label.on{background:var(--accent-soft)}
+.rep .runs .ord{min-width:16px;font-weight:700;color:var(--accent);font-size:12px}
+.rep .runs .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rep .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.rep .err{color:var(--err);font-size:12.5px;white-space:pre-wrap}
 .btn.danger:hover{background:var(--err);color:#fff;border-color:var(--err)}
 .jdel{flex:none;display:grid;place-items:center;width:26px;height:26px;padding:0;
   border:1px solid transparent;border-radius:5px;background:none;color:var(--fg-3);opacity:0}
@@ -1022,8 +1039,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var params  = D.params || {};
       var history = Array.isArray(D.step_history) ? D.step_history : [];
       var nFiles  = Array.isArray(D.files) ? D.files.length : 0;
-      var elapsed = (D.total_secs !== null && D.total_secs !== undefined) ? D.total_secs
-                  : (D.started_at ? (live ? Date.now()/1000 - D.started_at : null) : null);
+      /* While a job runs, anything "finished" is left over from an earlier run
+         of the same job (Re-analyse / Resume) and must not be shown. */
+      var elapsed = live ? (D.started_at ? Date.now()/1000 - D.started_at : null)
+                  : (D.total_secs !== null && D.total_secs !== undefined && D.total_secs >= 0)
+                  ? D.total_secs : null;
 
       /* step timeline, built from step_history and nothing else. The pipeline
          labels its own steps "Step N/8 — ...", so the total is read off those
@@ -1074,7 +1094,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         fromDisk: !!(P && P.fromDisk), totalLines: P && P.totalLines,
         logGone: P && P.logGone,
         logErr: P && P.__err ? P.__err : "",
-        runAt:D.run_at, startedAt:D.started_at, finishedAt:D.finished_at,
+        runAt:D.run_at, startedAt:D.started_at, finishedAt:live ? null : D.finished_at,
         marker: listed.marker || params.marker || "—", D:D
       };
     }
@@ -1203,6 +1223,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           ? (M.live ? "" : '<button class="btn danger" id="delBtn">Delete job</button>')
             + (isWgs ? '<button class="btn" id="wgReJob" title="Run every step after polishing again on the existing assemblies">Re-analyse</button>'
                      + '<button class="btn" id="wgPdfJob">PDF report</button>' : "")
+            + (isWgs ? "" : '<button class="btn" id="ampPdf" title="One run = full report; tick more runs for a comparison report">PDF report</button>')
             + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download (.zip)</a>'
             + '<button class="btn pri" id="resBtn">' + (isWgs ? "View genome report" : "View results") + '</button>'
           : M.live
@@ -1218,7 +1239,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + '<button class="btn" id="resBtn">View any results</button>'
             + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>';
       body.innerHTML =
-          (M.live ? "" : '<div id="delBox"></div>')
+          (M.live ? "" : '<div id="delBox"></div><div id="repBox"></div>')
         + '<div class="kpis">' + M.kpis.map(function(x){
               return '<div class="kpi"><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></div>'; }).join("")
         + '</div>'
@@ -1275,6 +1296,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(wre) wre.addEventListener("click", function(){ wgsReanalyse(jid, wre); });
       var wpd = document.getElementById("wgPdfJob");
       if(wpd) wpd.addEventListener("click", function(){ wgsPdf(jid, wpd); });
+      var apd = document.getElementById("ampPdf");
+      if(apd) apd.addEventListener("click", function(){ openReport(jid, "repBox"); });
 
       var cb = document.getElementById("cancelBtn");
       if(cb) cb.addEventListener("click", function(){
@@ -1448,6 +1471,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           [p.wgs_run_checkm2, p.wgs_run_amr, p.wgs_run_vf, p.wgs_run_mobsuite, p.wgs_run_annotation]
             .map(onoff).join(" · "));
       row("16S reference",       p.wgs_db_16s || "auto");
+      if(p.wgs_run_typestrain !== undefined)
+        row("Type strains · ANIb/ANIm/TETRA · trees · mapping",
+            [p.wgs_run_typestrain, p.wgs_run_anib, p.wgs_run_tree, p.wgs_run_mapping].map(onoff).join(" · ")
+            + (p.wgs_ts_max ? " · " + p.wgs_ts_max + " type strains" : ""));
       if(p.wgs_sample_names && Object.keys(p.wgs_sample_names).length)
         row("Samples", Object.keys(p.wgs_sample_names).map(function(k){ return p.wgs_sample_names[k]; }).join(", "));
       row("CPU threads",         p.nThreads);
@@ -1505,11 +1532,15 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + '<p class="sub" id="rSub">Reading the result folder…</p>'
       + '</div><div class="thr">'
         + '<button class="btn" id="chartBtn">Customise charts</button>'
+        + '<button class="btn" id="rPdf" title="One run = full report; tick more runs for a comparison report">PDF report</button>'
         + '<a class="btn pri" href="/results/' + encodeURIComponent(id) + '/download">Download everything (.zip)</a>'
       + '</div></div>'
+      + '<div id="rRep"></div>'
       + '<div id="rBody"><div class="panel"><div class="skel">Loading…</div></div></div>';
     var cbt = document.getElementById("chartBtn");
     if(cbt) cbt.addEventListener("click", function(){ go({name:"charts", id:id}); });
+    var rpd = document.getElementById("rPdf");
+    if(rpd) rpd.addEventListener("click", function(){ openReport(id, "rRep"); });
 
     document.getElementById("backBtn").addEventListener("click", function(){
       go({name:"job", id:id});
@@ -6380,9 +6411,18 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       {n:4, title:"Identification", why:"Species is called from whole-genome ANI; 16S is reported but cannot separate close species.",
        fields:[
          ["wgs_verify_ani", "Confirm ANI vs closest reference", "bool", "true", "downloads that genome from NCBI — needs internet"],
-         ["wgs_db_16s",     "16S reference", "path", "", "blank = the Emu / SILVA database the amplicon pipelines use"]
+         ["wgs_db_16s",     "16S reference", "path", "", "blank = NCBI RefSeq 16S (type strains), else the Emu / SILVA database"]
        ]},
-      {n:5, title:"Typing, resistance and annotation", why:"Each step is skipped, with a note in the report, when its tool or database is missing.",
+      {n:5, title:"Type strains, trees and reference mapping", why:"What TYGS and JSpeciesWS give, computed here: ANIb / ANIm / TETRA against the closest type-strain genomes, a known-or-novel species verdict, genome and 16S trees, and reads mapped to the closest genome. Type-strain genomes are downloaded from NCBI once and cached.",
+       fields:[
+         ["wgs_run_typestrain", "Compare with type strains (NCBI type material)", "bool", "true", "needs internet the first time per genus"],
+         ["wgs_run_anib",       "ANIb + ANIm + TETRA (JSpecies)", "bool", "true", "off = skani ANI only (faster)"],
+         ["wgs_ts_max",         "Type strains compared", "int", "10", "closest N by ANI; also the genome-tree size"],
+         ["wgs_run_tree",       "Genome tree + 16S tree", "bool", "true", "FastME on ANI distances; MAFFT + IQ-TREE for 16S"],
+         ["wgs_run_mapping",    "Map reads to the closest genome", "bool", "true", "coverage, absent regions, SNPs, synteny"],
+         ["wgs_keep_bam",       "Deliver the BAM file", "bool", "false", "for IGV — about the size of the reads"]
+       ]},
+      {n:6, title:"Typing, resistance and annotation", why:"Each step is skipped, with a note in the report, when its tool or database is missing.",
        fields:[
          ["wgs_run_checkm2",    "CheckM2 completeness / contamination", "bool", "true", ""],
          ["wgs_run_amr",        "AMRFinderPlus — AMR, stress, virulence", "bool", "true", ""],
@@ -6391,7 +6431,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
          ["wgs_run_annotation", "Bakta annotation", "bool", "true", ""],
          ["wgs_keep_intermediate", "Keep Flye / Medaka working files", "bool", "false", ""]
        ]},
-      {n:6, title:"Resources", why:"Samples run one after another; each step uses this many cores.",
+      {n:7, title:"Resources", why:"Samples run one after another; each step uses this many cores.",
        fields:[
          ["nThreads", "CPU threads", "int", "10", "Flye, Medaka alignment, Bakta"]
        ]}
@@ -6702,6 +6742,90 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       });
   }
 
+  /* PDF report for amplicon runs — the production UI's "Build PDF Report".
+     One run gives the full report (QC, charts, ASV table, diversity); ticking
+     more runs turns it into a comparison with a column per run, in the order
+     they were ticked. ONT-WGS runs have their own report and are not listed. */
+  function openReport(jid, boxId){
+    var box = document.getElementById(boxId);
+    if(!box) return;
+    if(box.dataset.open === "1"){ box.innerHTML = ""; box.dataset.open = ""; return; }
+    box.dataset.open = "1";
+    var R = {pick:[jid], top:30, title:"", busy:false, err:""};
+    function runs(){
+      return STATE.jobs.filter(function(j){ return j.status === "completed" && j.marker !== "ONT-WGS"; });
+    }
+    function paint(){
+      var list = runs();
+      box.innerHTML = '<div class="rep">'
+        + '<h4>Build PDF report</h4>'
+        + '<div class="what">One run = full report (QC, charts, ASV table, diversity). '
+        + 'Tick more runs for a comparison report — one column per run, in the order ticked.</div>'
+        + '<div class="lab">Report title</div>'
+        + '<input type="text" id="repTitle" placeholder="e.g. Reference database comparison" value="' + esc(R.title) + '">'
+        + (R.pick.length <= 1
+            ? '<div class="lab">ASVs in the table</div><div class="segs">'
+              + [30, 50, 100].map(function(n){
+                  return '<button class="btn' + (R.top === n ? " on" : "") + '" data-top="' + n + '">Top ' + n + '</button>'; }).join("")
+              + '</div>'
+            : "")
+        + '<div class="lab">Runs to include (' + R.pick.length + ')</div>'
+        + '<div class="runs">' + (list.length ? list.map(function(j){
+            var i = R.pick.indexOf(j.job_id), on = i >= 0;
+            return '<label class="' + (on ? "on" : "") + '"><input type="checkbox" data-j="' + esc(j.job_id) + '"'
+              + (on ? " checked" : "") + '><span class="ord">' + (on ? i + 1 : "") + '</span>'
+              + '<span class="nm">' + esc(j.job_name || j.job_id) + '</span>'
+              + '<span class="chip mk">' + esc(j.marker || "") + '</span></label>';
+          }).join("") : '<div class="what" style="padding:10px">No completed amplicon runs.</div>') + '</div>'
+        + (R.err ? '<div class="err">' + esc(R.err) + '</div>' : "")
+        + '<div class="row"><button class="btn pri" id="repGo"' + (R.busy || !R.pick.length ? " disabled" : "") + '>'
+        + (R.busy ? "Building PDF…" : "Build PDF (" + R.pick.length + " run" + (R.pick.length === 1 ? "" : "s") + ")") + '</button>'
+        + '<button class="btn" id="repNo">Close</button>'
+        + (R.busy ? '<span class="what">A large comparison takes a minute.</span>' : "") + '</div>'
+        + '</div>';
+      var t = document.getElementById("repTitle");
+      t.addEventListener("input", function(){ R.title = t.value; });
+      Array.prototype.forEach.call(box.querySelectorAll("[data-top]"), function(b){
+        b.addEventListener("click", function(){ R.top = parseInt(b.dataset.top, 10); paint(); });
+      });
+      Array.prototype.forEach.call(box.querySelectorAll("[data-j]"), function(c){
+        c.addEventListener("change", function(){
+          var id = c.dataset.j, i = R.pick.indexOf(id);
+          if(i >= 0) R.pick.splice(i, 1); else R.pick.push(id);
+          paint();
+        });
+      });
+      document.getElementById("repNo").addEventListener("click", function(){
+        box.innerHTML = ""; box.dataset.open = ""; });
+      document.getElementById("repGo").addEventListener("click", build);
+    }
+    function build(){
+      if(R.busy || !R.pick.length) return;
+      R.busy = true; R.err = ""; paint();
+      var names = R.pick.map(function(id){
+        var j = STATE.jobs.filter(function(x){ return x.job_id === id; })[0];
+        return (j && j.job_name) || id; });
+      fetch("/report", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({job_ids: R.pick, title: R.title.trim() || null, top_asv: R.top,
+                              company: "NextGen Network Corporation Company Limited", labels: names})})
+        .then(function(r){
+          if(!r.ok) return r.text().then(function(t){
+            var m = "HTTP " + r.status;
+            try { var j = JSON.parse(t); m = (j.error || m) + (j.hint ? "\n\n" + j.hint : ""); } catch(e){}
+            throw new Error(m); });
+          return r.blob();
+        })
+        .then(function(b){
+          var stem = (R.title.trim() || (R.pick.length > 1 ? "comparison_report" : names[0] + "_report"));
+          saveBlob(b, stem.replace(/[^\w.-]+/g, "_") + ".pdf");
+          R.busy = false; paint();
+        })
+        .catch(function(e){ R.busy = false; R.err = "Report build failed — " + (e.message || e); paint(); });
+    }
+    paint();
+    box.scrollIntoView({block:"nearest"});
+  }
+
   function wgsPdf(jid, btn){
     var label = btn ? btn.textContent : "";
     if(btn){ btn.disabled = true; btn.textContent = "Building PDF…"; }
@@ -6727,7 +6851,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + 'Back to the job</button></div>'
       + '<div class="tophead"><div class="thl">'
       + '<h2 class="ttl">' + esc(listed.job_name || id) + ' — genome report</h2>'
-      + '<p class="sub" id="rSub">Assemblies, species, 16S, typing, resistance, plasmids and annotation, per sample.</p>'
+      + '<p class="sub" id="rSub">Assemblies, species vs type strains (ANIb / ANIm / TETRA, trees), reference mapping, 16S, typing, resistance, plasmids and annotation, per sample.</p>'
       + '</div><div class="thr">'
         + '<button class="btn" id="wgRe" title="Run every step after polishing again on the existing assemblies">Re-analyse</button>'
         + '<a class="btn" href="/results/' + enc + '/wgs_report" target="_blank" rel="noopener">Open in new tab</a>'
@@ -6750,7 +6874,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         return '<a href="/results/' + enc + '/wgs_file/' + rel.split("/").map(encodeURIComponent).join("/")
           + '" download>' + esc(rel.split("/").pop()) + '</a>';
       };
-      var KEY = /_assembly\.fasta$|_16S\.fasta$|\.gbff$|\.gff3$|\.faa$|amrfinder\.tsv$|mlst\.tsv$|\.png$|\.svg$/;
+      var KEY = /_assembly\.fasta$|_16S\.fasta$|\.gbff$|\.gff3$|\.faa$|amrfinder\.tsv$|mlst\.tsv$|\.png$|\.svg$|_tree\.nwk$|type_strain_ani\.csv$|_16S_alignment\.fasta$|reference_absent_regions\.csv$|reads_vs_reference\.bam$/;
       var html = '<div class="panel" style="margin-top:14px"><div class="sechdr"><h3>Tables</h3>'
         + '<span class="hint">all samples in one file each</span></div><div class="files" style="padding:12px 14px">'
         + (F.root || []).filter(function(n){ return /\.(csv|html)$/.test(n); }).map(function(n){

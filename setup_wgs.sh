@@ -21,12 +21,17 @@
 #    bakta     bakta                 (annotation)
 #    mobsuite  mob_suite             (plasmid reconstruction)
 #    checkm2   checkm2               (completeness / contamination)
+#    ngamp-phylo blast mummer mafft iqtree fastme minimap2 samtools
+#              (type strains: ANIb / ANIm, 16S + genome trees, reference mapping)
 #
 #  Databases → ~/r16s-app/backend/databases/wgs/, registered in db_paths.json:
 #    gtdb_sourmash   GTDB rs226 species representatives, sourmash k=31   3.6 GB
 #    gtdb_lineages   GTDB rs226 lineages                                   4 MB
 #    bakta_db        Bakta light database                              ≈ 1.5 GB
 #    checkm2_db      CheckM2 DIAMOND database                          ≈ 3 GB
+#    ncbi_16s_type   NCBI RefSeq 16S, type material only                   8 MB
+#    (type-strain genomes are downloaded per genus at run time and cached in
+#     ~/.ngamp_wgs_refs)
 #    (AMRFinderPlus, MOB-suite and abricate/VFDB keep their own databases
 #     inside their environments: amrfinder -u, mob_init)
 # =============================================================================
@@ -121,6 +126,20 @@ if [[ $DO_TOOLS == 1 ]]; then
     for b in "${PROBES[@]}"; do has "$WENV" "$b" || fail "$WENV: $b missing"; done
   fi
   ensure_env medaka medaka_consensus "medaka>=2.0"
+  # type strains / trees / mapping — own env, created fresh (never added to ngamp-wgs)
+  PHY_PROBES=(blastn makeblastdb nucmer delta-filter mafft iqtree fastme minimap2 samtools)
+  PMISS=0
+  for b in "${PHY_PROBES[@]}"; do has ngamp-phylo "$b" || PMISS=1; done
+  if [[ $PMISS == 0 ]]; then
+    ok "ngamp-phylo: all tools present"
+  else
+    [[ -d "$CONDA_BASE/envs/ngamp-phylo" ]] && { info "rebuilding incomplete ngamp-phylo"; \
+      "${SOLVER[@]}" env remove -y -n ngamp-phylo >/dev/null 2>&1 || true; }
+    info "creating ngamp-phylo (a few minutes)"
+    "${SOLVER[@]}" create -y -n ngamp-phylo "${CH[@]}" python=3.12 blast mummer mafft \
+      iqtree fastme minimap2 samtools || fail "ngamp-phylo create failed"
+    for b in "${PHY_PROBES[@]}"; do has ngamp-phylo "$b" || fail "ngamp-phylo: $b missing"; done
+  fi
   if [[ $SKIP_BAKTA == 0 ]]; then
     # Unpinned, the solver takes the newest python (3.14) and then falls back to
     # bakta 1.5 — a 2022 release that cannot read the current database and has no
@@ -250,11 +269,26 @@ if [[ $DO_DBS == 1 ]]; then
   fi
 fi
 
+if [[ $DO_DBS == 1 ]]; then
+  step "NCBI 16S type-strain database"
+  N16="$WGS_DB/ncbi_16s"; mkdir -p "$N16"
+  if [[ -s "$N16/bacteria.16SrRNA.fna" ]]; then
+    ok "NCBI RefSeq 16S present ($(grep -c '>' "$N16/bacteria.16SrRNA.fna") type-strain records)"
+  else
+    fetch "https://ftp.ncbi.nlm.nih.gov/refseq/TargetedLoci/Bacteria/bacteria.16SrRNA.fna.gz" \
+      "$N16/bacteria.16SrRNA.fna.gz" && gunzip -f "$N16/bacteria.16SrRNA.fna.gz" \
+      && ok "NCBI RefSeq 16S ready" || fail "NCBI 16S download failed"
+  fi
+  [[ -s "$N16/bacteria.16SrRNA.fna" ]] && register ncbi_16s_type "$N16/bacteria.16SrRNA.fna"
+fi
+
 # ── report ───────────────────────────────────────────────────────────────────
 step "Status"
 for t in $WENV:flye $WENV:seqkit $WENV:sourmash $WENV:skani $WENV:barrnap $WENV:vsearch \
          $WENV:mlst $WENV:amrfinder $WENV:abricate $WENV:filtlong medaka:medaka_consensus \
-         bakta:bakta mobsuite:mob_recon checkm2:checkm2; do
+         bakta:bakta mobsuite:mob_recon checkm2:checkm2 ngamp-phylo:blastn \
+         ngamp-phylo:nucmer ngamp-phylo:mafft ngamp-phylo:iqtree ngamp-phylo:fastme \
+         ngamp-phylo:minimap2 ngamp-phylo:samtools; do
   e=${t%%:*}; b=${t#*:}
   if ! has "$e" "$b"; then warn "$b missing ($e) — that step will be skipped"
   elif [[ "$b" == checkm2 ]] && ! "$(env_bin "$e" "$b")" --version >/dev/null 2>&1; then
@@ -264,7 +298,7 @@ done
 python3 - "$DBP" <<'PY'
 import json, sys, pathlib
 d = json.loads(pathlib.Path(sys.argv[1]).read_text()) if pathlib.Path(sys.argv[1]).exists() else {}
-for k in ("gtdb_sourmash", "gtdb_lineages", "bakta_db", "checkm2_db"):
+for k in ("gtdb_sourmash", "gtdb_lineages", "bakta_db", "checkm2_db", "ncbi_16s_type"):
     v = d.get(k, "")
     mark = "\033[0;32m  ✓\033[0m" if v and pathlib.Path(v).exists() else "\033[1;33m  !\033[0m"
     print(f"{mark}  {k:<14} {v or '(not set)'}")

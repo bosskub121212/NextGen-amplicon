@@ -116,6 +116,12 @@ export interface PipelineParams {
   wgs_run_annotation: boolean;
   wgs_db_16s: string;
   wgs_keep_intermediate: boolean;
+  wgs_run_typestrain: boolean;
+  wgs_run_anib: boolean;
+  wgs_run_tree: boolean;
+  wgs_run_mapping: boolean;
+  wgs_ts_max: number;
+  wgs_keep_bam: boolean;
 }
 
 export const defaultParams: PipelineParams = {
@@ -170,6 +176,8 @@ export const defaultParams: PipelineParams = {
   wgs_run_amr: true, wgs_run_vf: true, wgs_run_mobsuite: true,
   wgs_run_checkm2: true, wgs_run_annotation: true, wgs_db_16s: "",
   wgs_keep_intermediate: false,
+  wgs_run_typestrain: true, wgs_run_anib: true, wgs_run_tree: true,
+  wgs_run_mapping: true, wgs_ts_max: 10, wgs_keep_bam: false,
 };
 
 export type MarkerType = "16S" | "12S" | "ITS1" | "ITS2" | "COX1" | "18S-nema" | "PacBio" | "ONT-16S" | "ONT-WGS";
@@ -507,6 +515,11 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
               ["wgs_run_mobsuite", "MOB-suite — plasmid reconstruction", false],
               ["wgs_run_annotation", "Bakta — full genome annotation", false],
               ["wgs_keep_intermediate", "Keep Flye/Medaka intermediate files", false],
+              ["wgs_run_typestrain", "Compare with type strains (NCBI type material)", false],
+              ["wgs_run_anib", "ANIb + ANIm + TETRA (JSpecies-style)", false],
+              ["wgs_run_tree", "Genome tree + 16S tree (TYGS-style)", false],
+              ["wgs_run_mapping", "Map reads / assembly to the closest genome", false],
+              ["wgs_keep_bam", "Deliver the reads-vs-reference BAM", false],
             ] as [keyof PipelineParams, string, boolean][]).map(([k, label]) => (
               <label key={k} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
                 <input type="checkbox" checked={Boolean(params[k])}
@@ -518,7 +531,7 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
 
           <div className="param-item" style={{ marginTop: 14 }}>
             <label className="param-label">16S Reference (optional)</label>
-            <span className="param-hint">Blank = the Emu / SILVA database already set up for the amplicon pipelines</span>
+            <span className="param-hint">Blank = NCBI RefSeq 16S (type strains), else the Emu / SILVA database of the amplicon pipelines</span>
             <input type="text" className="param-input" placeholder="~/r16s-app/backend/databases/emu_db_mar2026"
               value={params.wgs_db_16s} onChange={e => set("wgs_db_16s", e.target.value)} />
           </div>
@@ -528,7 +541,10 @@ export default function PipelineSettings({ params, onChange, marker, onMarker, o
 3. De novo assembly (Flye) → 4. Polishing (Medaka)
 5. Contig table, circularity, depth · CheckM2 completeness / contamination
 6. Species: sourmash vs GTDB → skani ANI vs closest reference genome
-7. 16S rRNA: every full-length copy (barrnap) → vsearch vs 16S database
+7. 16S rRNA: every full-length copy (barrnap) → vsearch vs NCBI type-strain 16S
+7b. Type strains: closest NCBI type-material genomes → ANIb / ANIm / TETRA,
+    known / novel species verdict, genome tree (FastME) + 16S tree (IQ-TREE)
+7c. Reads + assembly mapped to the closest genome: coverage, SNPs, synteny
 8. MLST · 9. AMRFinderPlus · 10. VFDB · 11. MOB-suite + PlasmidFinder
 12. Bakta annotation · 13. HTML / PDF report
 Missing tools or databases are skipped with a note — run setup_wgs.sh once to install all.`}</pre>
