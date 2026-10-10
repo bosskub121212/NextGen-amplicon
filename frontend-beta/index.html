@@ -5866,7 +5866,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                 + '<button class="btn pri" id="mgUse">Use this folder</button>'
                 + '<input type="file" id="mgDirIn" webkitdirectory directory multiple hidden>'
                 + '<button class="btn" id="mgDir">Or upload a folder…</button>'
+                + '<button class="btn" id="mgClear" hidden>Clear selection</button>'
                 + '<span class="s" id="mgState"></span></div>'
+              + '<div class="s" style="margin-top:6px">Upload: pick the delivery folder itself (the one that holds '
+              + 'Sample_… / barcode… sub-folders) to take every sample at once — or pick sample folders one '
+              + 'by one; each pick is added to the list.</div>'
             + '</div>'
           + '</div>' : "")
         + '<div class="up">'
@@ -6006,7 +6010,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         if(ev.key === "Enter") useFolder(dbOpts, dbCount); });
       var dirIn = document.getElementById("mgDirIn");
       document.getElementById("mgDir").addEventListener("click", function(){ dirIn.click(); });
-      dirIn.addEventListener("change", function(){ chooseFastq(dirIn.files, dbOpts, dbCount); });
+      dirIn.addEventListener("change", function(){
+        chooseFastq(dirIn.files, dbOpts, dbCount);
+        dirIn.value = "";              /* the same folder can be picked again after Clear */
+      });
+      document.getElementById("mgClear").addEventListener("click", function(){
+        FORM.files = []; FORM.jobId = null; FORM.uploaded = []; FORM.detect = null;
+        document.getElementById("fqState").textContent = "Nothing chosen yet";
+        document.getElementById("fqList").innerHTML = "";
+        document.getElementById("fqUp").disabled = true;
+        this.hidden = true;
+        paintSamples();
+        preflight(dbOpts, dbCount);
+      });
     }
 
     document.getElementById("tplBtn").addEventListener("click", function(){
@@ -6102,7 +6118,18 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   function chooseFastq(fileList, dbOpts, dbCount){
-    FORM.files    = Array.prototype.slice.call(fileList);
+    var incoming = Array.prototype.slice.call(fileList);
+    if(FORM.merge && FORM.files.length){
+      /* merge mode collects: picking Sample_L21, then Sample_PGU…, keeps both */
+      var keyOf = function(f){ return (f.webkitRelativePath || f.name) + "|" + f.size; };
+      var seen = {};
+      FORM.files.forEach(function(f){ seen[keyOf(f)] = 1; });
+      incoming.forEach(function(f){ if(!seen[keyOf(f)]){ seen[keyOf(f)] = 1; FORM.files.push(f); } });
+    } else {
+      FORM.files = incoming;
+    }
+    var clr = document.getElementById("mgClear");
+    if(clr) clr.hidden = !(FORM.merge && FORM.files.length);
     FORM.jobId    = null;         /* a new selection invalidates the old upload */
     FORM.uploaded = [];
     FORM.detect   = null;

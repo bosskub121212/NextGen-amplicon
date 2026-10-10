@@ -1,10 +1,10 @@
 {
-  "version": "2.12.0",
+  "version": "2.12.1",
   "release_date": "2026-10-10",
-  "changelog": "new (ONT 16S, Beta): input layout choice — 'One file per sample' (as before) or 'MinKNOW folders — merge per barcode'. In the second mode give the delivery folder's path on this computer (files are linked, not copied), upload the folder, or a .zip of it; the chunk files of each barcode / sample folder are grouped (Sample_L21 → L21, fastq_fail left out), shown in an editable Samples table, and merged into one FASTQ per sample at run time (results/merged_reads/<sample>.fastq.gz + sample_map.csv, included in the download). Fix: cutadapt now removes BOTH primers of a full-length read (-n 2) — before, only one end was trimmed and the other primer, plus any untrimmed barcode flank, stayed on the read. Needs: backend restart (main.py) and Ctrl+F5 on /beta.",
+  "changelog": "ONT 16S merge mode (Beta): picking folders now ADDS to the selection instead of replacing it, so sample folders can be picked one by one (Sample_L21, then Sample_PGU-16S full…); picking the delivery folder itself still takes every sample at once. New 'Clear selection' button. No backend change.",
   "previous": {
-    "version": "2.11.4",
+    "version": "2.12.0",
     "release_date": "2026-10-10",
-    "changelog": "ONT-WGS: the genome-tree caption names the method actually used (neighbour joining when fewer than 4 genomes, where FastME cannot run) instead of always saying FastME."
+    "changelog": "new (ONT 16S, Beta): input layout choice — 'One file per sample' (as before) or 'MinKNOW folders — merge per barcode'. In the second mode give the delivery folder's path on this computer (files are linked, not copied), upload the folder, or a .zip of it; the chunk files of each barcode / sample folder are grouped (Sample_L21 → L21, fastq_fail left out), shown in an editable Samples table, and merged into one FASTQ per sample at run time (results/merged_reads/<sample>.fastq.gz + sample_map.csv, included in the download). Fix: cutadapt now removes BOTH primers of a full-length read (-n 2) — before, only one end was trimmed and the other primer, plus any untrimmed barcode flank, stayed on the read. Needs: backend restart (main.py) and Ctrl+F5 on /beta."
   }
 }
