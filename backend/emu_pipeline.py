@@ -65,6 +65,23 @@ def parse_args():
     return p.parse_args()
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
+def find_tool(name: str) -> str | None:
+    """A tool on PATH, else in one of the app's conda environments — the
+    backend's own PATH (its venv) does not include them, which left vsearch
+    'not found' while setup_wgs.sh had installed it in ngamp-wgs."""
+    hit = shutil.which(name)
+    if hit:
+        return hit
+    bases = [Path(os.environ["CONDA_PREFIX"]).parent.parent] if os.environ.get("CONDA_PREFIX") else []
+    bases += [Path.home() / d for d in ("miniconda3", "anaconda3", "miniforge3", "mambaforge")]
+    for b in bases:
+        for env in ("emu", "ngamp-wgs", "ngamp-phylo", "wgs"):
+            c = b / "envs" / env / "bin" / name
+            if c.exists() and os.access(c, os.X_OK):
+                return str(c)
+    return None
+
+
 def merge_reads(files: list[Path], dest: Path) -> Path:
     """Concatenate one sample's FASTQ chunk files into a single .fastq.gz.
 
@@ -207,7 +224,7 @@ def qc_filter_chopper(samples: dict, out_dir: Path, min_qual: int, min_len: int,
     """Quality + length filter raw ONT reads before primer trimming (matches a
     typical Chopper pre-processing step used ahead of manual QIIME2 ONT pipelines).
     Skips gracefully (keeps raw reads) if chopper isn't installed."""
-    chopper = shutil.which("chopper")
+    chopper = find_tool("chopper")
     if not chopper:
         log("  [WARN] chopper not found — skipping QC filtering "
             "(install with: conda install -c bioconda chopper)")
@@ -305,13 +322,15 @@ def remove_chimeras(samples: dict, out_dir: Path, db_path: str,
     relies on abundance ratios between near-identical sequences that don't
     meaningfully exist here. Skips gracefully if vsearch or the reference
     fasta isn't available."""
-    vsearch = shutil.which("vsearch")
+    vsearch = find_tool("vsearch")
     if not vsearch:
         log("  [WARN] vsearch not found — skipping chimera removal "
             "(install with: conda install -c bioconda vsearch)")
         return samples
 
     ref_fasta = Path(db_path) / "sequences.fasta"
+    if not ref_fasta.exists() and (Path(db_path) / "species_taxid.fasta").exists():
+        ref_fasta = Path(db_path) / "species_taxid.fasta"     # a built Emu database
     if not ref_fasta.exists():
         # `emu build-database <name>` (the step our build_emu_db*.py scripts print as the
         # "next command") creates the compiled index in a subdirectory named <name>, one
@@ -643,6 +662,26 @@ def main():
 
     # ── 1. Find samples ────────────────────────────────────────────────────────
     progress(5, "Step 1/8 — Scanning input FASTQ files")
+    # An Emu database is a FOLDER with species_taxid.fasta and a taxonomy.tsv
+    # whose header starts with tax_id. A half-built one (build_emu_db.py's
+    # intermediate files, never passed through `emu build-database`) fails
+    # deep inside Emu with "KeyError: None of ['tax_id']" — say what it is here.
+    dbd = Path(args.db_path)
+    tx = dbd / "taxonomy.tsv"
+    head = ""
+    try:
+        with open(tx) as fh:
+            head = fh.readline()
+    except Exception:
+        pass
+    if not (dbd / "species_taxid.fasta").exists() or not head.startswith("tax_id"):
+        log(f"[ERROR] {dbd} is not a built Emu database: it needs species_taxid.fasta and a "
+            f"taxonomy.tsv starting with a 'tax_id' header "
+            f"(found: {'species_taxid.fasta' if (dbd / 'species_taxid.fasta').exists() else 'no species_taxid.fasta'}, "
+            f"taxonomy.tsv header {head[:40]!r}). Build it with `emu build-database` or pick "
+            f"another database (emu_db_mar2026 is the default).")
+        sys.exit(1)
+
     samples_raw = find_fastq(input_dir, out_dir / "merged_reads")
     if not samples_raw:
         log(f"[ERROR] No FASTQ files found in: {input_dir}")

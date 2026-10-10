@@ -1,10 +1,10 @@
 {
-  "version": "2.12.2",
+  "version": "2.12.3",
   "release_date": "2026-10-10",
-  "changelog": "Beta, database list for ONT 16S: Emu databases only are matched (emu_db_mar2026 first and preselected, then emu_silva, emu_v7v8; …/prep copies last). emu_db_mar2026 was missing from the list altogether — its file is species_taxid.fasta, which the amplicon rule hides — and a DADA2 SILVA trainset was preselected instead. Illumina markers no longer list Emu folders as matches. No backend change.",
+  "changelog": "ONT 16S: (1) new fix_emu_silva.sh — turns a half-built databases/emu_silva (build_emu_db.py intermediates, taxonomy.tsv -> taxonomy_list.tsv) into a working Emu database, from emu_silva/prep/silva_db when complete or with emu build-database; leftovers are moved to ~/r16s-db-backup/emu_silva_src. (2) emu_pipeline checks the database before starting and says plainly when it is not a built Emu database, instead of Emu's KeyError 'tax_id'. (3) vsearch (chimera removal) and chopper are now found in the app's conda environments (emu, ngamp-wgs, ngamp-phylo) — chimera removal was being skipped with 'vsearch not found'; a built Emu database's species_taxid.fasta serves as the chimera reference. No backend restart needed.",
   "previous": {
-    "version": "2.12.1",
+    "version": "2.12.2",
     "release_date": "2026-10-10",
-    "changelog": "ONT 16S merge mode (Beta): picking folders now ADDS to the selection instead of replacing it, so sample folders can be picked one by one (Sample_L21, then Sample_PGU-16S full…); picking the delivery folder itself still takes every sample at once. New 'Clear selection' button. No backend change."
+    "changelog": "Beta, database list for ONT 16S: Emu databases only are matched (emu_db_mar2026 first and preselected, then emu_silva, emu_v7v8; …/prep copies last). emu_db_mar2026 was missing from the list altogether — its file is species_taxid.fasta, which the amplicon rule hides — and a DADA2 SILVA trainset was preselected instead. Illumina markers no longer list Emu folders as matches. No backend change."
   }
 }
