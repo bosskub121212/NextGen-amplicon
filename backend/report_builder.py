@@ -478,7 +478,9 @@ def svg_genera(runs, n=10) -> str:
 #  Document
 # ══════════════════════════════════════════════════════════════════════════════
 def _css(app: str, company: str, sample: str) -> str:
-    foot = f"{app}  \\00B7  {company}  \\00B7  "
+    # Reports go to customers as they are: no program or company name in the
+    # footer — only the job label (left) and the page number (right).
+    foot = ""
     return f"""
 @page {{
   size: A4; margin: 17mm 16mm 20mm 16mm;
