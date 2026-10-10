@@ -1123,8 +1123,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     function stepsHtml(M){
       if(!M.rows.length)
-        return '<div class="skel">No steps recorded yet.'
-          + (M.live ? " The pipeline announces each step as it starts it." : "") + '</div>';
+        return '<div class="skel">' + (M.live && !M.startedAt
+            ? "Queued — waiting for a free worker slot."
+            : "No steps recorded yet." + (M.live ? " The pipeline announces each step as it starts it." : ""))
+          + '</div>';
       return M.rows.map(function(r){
         var ic = r.status === "completed" ? TICK_OK
                : r.status === "running"   ? TICK_RUN
@@ -1141,6 +1143,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
        filtered or reworded. Anything this screen hides is something a future
        bug report will not contain. */
     function logHtml(M){
+      /* submitted but not picked up: every worker slot is busy */
+      if(M.live && !M.startedAt)
+        return '<span class="w">Waiting to start.</span>\n\nEvery worker slot is busy with another job; '
+          + 'this one starts by itself when a slot frees — Project history shows what is running. '
+          + 'Its log begins then.';
       if(M.logs === null)
         return M.logErr
           ? '<span class="e">Could not read the log: ' + esc(M.logErr) + '</span>'

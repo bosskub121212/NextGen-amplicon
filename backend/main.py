@@ -805,7 +805,11 @@ async def run_analysis(job_id: str, params: RunParams):
 
     running = sum(1 for j in jobs.values() if j["status"] == "running")
     with jobs_lock:
-        jobs[job_id]["status"]     = "queued" if running >= MAX_WORKERS else "running"
+        # "running" only once a worker thread has really picked it up
+        # (run_r_pipeline sets it, with started_at). Marking it running here showed
+        # a job as Running at 0 % with no log while it was in fact still queued
+        # behind busy worker threads.
+        jobs[job_id]["status"]     = "queued"
         jobs[job_id]["step_label"] = "Queued — waiting for a free slot..." if running >= MAX_WORKERS else "Starting..."
         jobs[job_id]["marker"]     = params.marker
         jobs[job_id]["database"]   = params.taxDatabase
@@ -828,6 +832,8 @@ async def run_analysis(job_id: str, params: RunParams):
 
 def run_r_pipeline(job_id: str, params: RunParams):
     with jobs_lock:
+        if jobs.get(job_id, {}).get("status") == "cancelled":
+            return                      # cancelled while it was still queued
         jobs[job_id]["status"]      = "running"
         jobs[job_id]["step_label"]  = "Initializing pipeline..."
         jobs[job_id]["started_at"]  = time.time()

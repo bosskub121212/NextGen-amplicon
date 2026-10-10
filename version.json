@@ -1,10 +1,10 @@
 {
-  "version": "2.12.4",
+  "version": "2.12.5",
   "release_date": "2026-10-10",
-  "changelog": "fix_emu_silva.sh: emu build-database copied the headerless taxonomy_list.tsv as it was — taxonomy.tsv came out with two columns (tax_id + one lineage string) and its first taxon taken as the header. The script now rewrites taxonomy.tsv with one column per rank (tax_id species genus family order class phylum superkingdom) from taxonomy_list.tsv, also on a database it built before. emu_pipeline refuses a database whose taxonomy.tsv has no genus/species column and points to the script. No backend restart needed.",
+  "changelog": "A submitted job is 'queued' until a worker thread really starts it (then 'running', with its start time). It used to be marked running straight away, so a job waiting behind busy slots showed Running · 0 % · no log (HTTP 404). A job cancelled while queued no longer starts later. Beta: a queued job says 'Waiting to start — every worker slot is busy' instead of the missing-log message. Backend part needs a restart (do it when no job is running).",
   "previous": {
-    "version": "2.12.3",
+    "version": "2.12.4",
     "release_date": "2026-10-10",
-    "changelog": "ONT 16S: (1) new fix_emu_silva.sh — turns a half-built databases/emu_silva (build_emu_db.py intermediates, taxonomy.tsv -> taxonomy_list.tsv) into a working Emu database, from emu_silva/prep/silva_db when complete or with emu build-database; leftovers are moved to ~/r16s-db-backup/emu_silva_src. (2) emu_pipeline checks the database before starting and says plainly when it is not a built Emu database, instead of Emu's KeyError 'tax_id'. (3) vsearch (chimera removal) and chopper are now found in the app's conda environments (emu, ngamp-wgs, ngamp-phylo) — chimera removal was being skipped with 'vsearch not found'; a built Emu database's species_taxid.fasta serves as the chimera reference. No backend restart needed."
+    "changelog": "fix_emu_silva.sh: emu build-database copied the headerless taxonomy_list.tsv as it was — taxonomy.tsv came out with two columns (tax_id + one lineage string) and its first taxon taken as the header. The script now rewrites taxonomy.tsv with one column per rank (tax_id species genus family order class phylum superkingdom) from taxonomy_list.tsv, also on a database it built before. emu_pipeline refuses a database whose taxonomy.tsv has no genus/species column and points to the script. No backend restart needed."
   }
 }
