@@ -530,6 +530,57 @@ def clear_done(sdir: Path, *steps):
             p.unlink()
 
 
+# ── result cache for slow steps that only depend on the assembly ─────────────
+# A Re-analyse rewrites the assembly byte for byte, so sourmash (≈ 8 min: the
+# 3.6 GB GTDB index is read single-threaded), CheckM2 and Bakta would only
+# recompute what they produced last time. Their outputs are kept in the work
+# folder under a key of (assembly checksum, database, options) and copied back.
+def file_md5(p: Path) -> str:
+    h = hashlib.md5()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def cache_restore(cache: Path | None, name: str, key: str, dest: Path) -> bool:
+    if cache is None:
+        return False
+    c = cache / name
+    if not (c / ".key").exists() or (c / ".key").read_text() != key:
+        return False
+    for item in c.iterdir():
+        if item.name == ".key":
+            continue
+        tgt = dest / item.name
+        if tgt.is_dir():
+            shutil.rmtree(tgt, ignore_errors=True)
+        if item.is_dir():
+            shutil.copytree(item, tgt)
+        else:
+            shutil.copy2(item, tgt)
+    log(f"    (reusing {name} results — same assembly and settings as the last run)")
+    return True
+
+
+def cache_store(cache: Path | None, name: str, key: str, items: list[Path]):
+    if cache is None:
+        return
+    c = cache / name
+    shutil.rmtree(c, ignore_errors=True)
+    c.mkdir(parents=True, exist_ok=True)
+    try:
+        for it in items:
+            if it.is_dir():
+                shutil.copytree(it, c / it.name)
+            elif it.exists():
+                shutil.copy2(it, c / it.name)
+        (c / ".key").write_text(key)
+    except Exception as e:                      # a cache must never fail a run
+        log(f"    (could not cache {name}: {e})")
+        shutil.rmtree(c, ignore_errors=True)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Read header → run metadata (dorado SAM-style tags or MinKNOW key=value)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -762,7 +813,7 @@ def species_call(ani: float | None) -> str:
 
 
 def run_sourmash(asm: Path, sdir: Path, db: str, lineages: str, threads: int,
-                 logf: Path) -> list[dict]:
+                 logf: Path, cache: Path | None = None) -> list[dict]:
     sm = find_tool("sourmash")
     if not sm:
         warn("sourmash not installed — genome-based species ID skipped")
@@ -772,15 +823,19 @@ def run_sourmash(asm: Path, sdir: Path, db: str, lineages: str, threads: int,
              "— genome-based species ID skipped; run setup_wgs.sh --dbs-only")
         return []
     sig = sdir / "assembly.sig.zip"
-    if run(sm, ["sketch", "dna", "-p", "k=31,scaled=1000,abund", "--name", "query",
-                "-o", sig, asm], logf) != 0:
-        return []
     gather = sdir / "sourmash_gather.csv"
-    if run(sm, ["gather", sig, db, "-k", "31", "--threshold-bp", "50000",
-                "-o", gather, "--save-prefetch-csv", sdir / "sourmash_prefetch.csv"],
-           logf, timeout=3 * 3600) != 0 or not gather.exists():
-        warn("sourmash gather failed — genome-based species ID skipped")
-        return []
+    dbs = Path(db).stat()
+    key = _sig([file_md5(asm), str(db), dbs.st_size, int(dbs.st_mtime), "k31-t50000"])
+    if not cache_restore(cache, "sourmash", key, sdir):
+        if run(sm, ["sketch", "dna", "-p", "k=31,scaled=1000,abund", "--name", "query",
+                    "-o", sig, asm], logf) != 0:
+            return []
+        if run(sm, ["gather", sig, db, "-k", "31", "--threshold-bp", "50000",
+                    "-o", gather, "--save-prefetch-csv", sdir / "sourmash_prefetch.csv"],
+               logf, timeout=3 * 3600) != 0 or not gather.exists():
+            warn("sourmash gather failed — genome-based species ID skipped")
+            return []
+        cache_store(cache, "sourmash", key, [sig, gather, sdir / "sourmash_prefetch.csv"])
     with open(gather, newline="") as fh:
         rows = list(csv.DictReader(fh))
     idents = set()
@@ -1130,7 +1185,8 @@ def run_mobsuite(asm: Path, sdir: Path, threads: int, logf: Path) -> dict:
     return {"contigs": contigs, "plasmids": types}
 
 
-def run_checkm2(asm: Path, sdir: Path, db: str, threads: int, logf: Path) -> dict:
+def run_checkm2(asm: Path, sdir: Path, db: str, threads: int, logf: Path,
+                cache: Path | None = None) -> dict:
     t = find_tool("checkm2")
     if not t:
         warn("CheckM2 not installed — genome completeness / contamination skipped")
@@ -1139,17 +1195,20 @@ def run_checkm2(asm: Path, sdir: Path, db: str, threads: int, logf: Path) -> dic
         warn("CheckM2 database not configured (db_paths.json key 'checkm2_db') — skipped")
         return {}
     od = sdir / "checkm2"
-    inp = sdir / "checkm2_in"
-    inp.mkdir(exist_ok=True)
-    tgt = inp / "assembly.fasta"
-    if not tgt.exists():
-        shutil.copy(asm, tgt)
-    if run(t, ["predict", "--input", inp, "--output-directory", od, "--threads",
-               threads, "--database_path", db, "-x", "fasta", "--force"],
-           logf, timeout=3 * 3600) != 0:
-        warn("CheckM2 failed")
-        return {}
-    shutil.rmtree(inp, ignore_errors=True)
+    key = _sig([file_md5(asm), str(db)])
+    if not cache_restore(cache, "checkm2", key, sdir):
+        inp = sdir / "checkm2_in"
+        inp.mkdir(exist_ok=True)
+        tgt = inp / "assembly.fasta"
+        if not tgt.exists():
+            shutil.copy(asm, tgt)
+        if run(t, ["predict", "--input", inp, "--output-directory", od, "--threads",
+                   threads, "--database_path", db, "-x", "fasta", "--force"],
+               logf, timeout=3 * 3600) != 0:
+            warn("CheckM2 failed")
+            return {}
+        shutil.rmtree(inp, ignore_errors=True)
+        cache_store(cache, "checkm2", key, [od])
     rows = read_tsv(od / "quality_report.tsv")
     if not rows:
         return {}
@@ -1161,7 +1220,7 @@ def run_checkm2(asm: Path, sdir: Path, db: str, threads: int, logf: Path) -> dic
 
 
 def run_bakta(asm: Path, sdir: Path, sample: str, db: str, genus: str, species: str,
-              complete: bool, threads: int, logf: Path) -> dict:
+              complete: bool, threads: int, logf: Path, cache: Path | None = None) -> dict:
     t = find_tool("bakta")
     if not t:
         warn("Bakta not installed — genome annotation skipped")
@@ -1180,9 +1239,12 @@ def run_bakta(asm: Path, sdir: Path, sample: str, db: str, genus: str, species: 
         args += ["--species", sp]
     if complete:
         args += ["--complete"]
-    if run(t, args + [asm], logf, timeout=4 * 3600) != 0:
-        warn("Bakta failed")
-        return {}
+    key = _sig([file_md5(asm), str(db), [str(a) for a in args if a not in (threads, od)]])
+    if not cache_restore(cache, "bakta", key, sdir):
+        if run(t, args + [asm], logf, timeout=4 * 3600) != 0:
+            warn("Bakta failed")
+            return {}
+        cache_store(cache, "bakta", key, [od])
     summ = {}
     txt = od / f"{sample}.txt"
     if txt.exists():
@@ -1407,7 +1469,8 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
     # ── 6. species ID ────────────────────────────────────────────────────────
     P(0.72, "Species identification (sourmash / GTDB)")
     sm_hits = run_sourmash(asm, sdir, dbp.get("gtdb_sourmash", ""),
-                           dbp.get("gtdb_lineages", ""), args.threads, logs / "sourmash.log")
+                           dbp.get("gtdb_lineages", ""), args.threads, logs / "sourmash.log",
+                           cache=wdir / ".cache")
     res["sourmash"] = sm_hits[:10]
     top = sm_hits[0] if sm_hits else {}
     ident = {"method": "", "species": "", "genus": "", "ani": None, "af": None,
@@ -1591,10 +1654,11 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
                        "path": str(gtdb_ref), "type_strain": False}
         if map_ref and map_ref.get("path"):
             msig2 = _sig([qsig, msig, map_ref["accession"], args.keep_bam, WT.MAP_VERSION])
+            msig2 = _sig([msig2, file_md5(asm)])
             cached = wdir / "mapping_result.json"
             mres = None
-            if is_done(wdir, "mapping", msig2) and cached.exists() and \
-                    (sdir / "mapping").exists():
+            # the results folder is wiped by Re-analyse; the work folder is not
+            if cached.exists() and cache_restore(wdir / ".cache", "mapping", msig2, sdir):
                 try:
                     mres = json.loads(cached.read_text())
                 except Exception:
@@ -1606,7 +1670,7 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
                                             logs / "mapping.log", args.keep_bam)
                 if mres:
                     cached.write_text(json.dumps(mres, default=str))
-                    mark_done(wdir, "mapping", msig2)
+                    cache_store(wdir / ".cache", "mapping", msig2, [sdir / "mapping"])
             res["mapping"] = mres or {}
         else:
             log(f"  [{S}] no reference genome available — mapping skipped")
@@ -1672,7 +1736,7 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
     if not args.skip_checkm2:
         P(0.88, "Completeness / contamination (CheckM2)")
         res["checkm2"] = run_checkm2(asm, sdir, dbp.get("checkm2_db", ""), args.threads,
-                                     logs / "checkm2.log")
+                                     logs / "checkm2.log", cache=wdir / ".cache")
         ck = res["checkm2"]
         if ck.get("contamination") is not None and ck["contamination"] > 5:
             warn(f"[{S}] CheckM2 contamination {ck['contamination']:.1f}% (>5 %) — "
@@ -1687,7 +1751,8 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
         P(0.90, "Genome annotation (Bakta)")
         complete = bool(contigs) and all(c["circular"] for c in contigs)
         res["bakta"] = run_bakta(asm, sdir, S, dbp.get("bakta_db", ""), genus, species,
-                                 complete, args.threads, logs / "bakta.log")
+                                 complete, args.threads, logs / "bakta.log",
+                                 cache=wdir / ".cache")
     else:
         res["bakta"] = {}
 
