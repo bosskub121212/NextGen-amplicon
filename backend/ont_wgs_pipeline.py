@@ -63,7 +63,7 @@ from collections import Counter, OrderedDict, defaultdict
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Logging / progress (same wire format as the other pipelines: main.py parses
@@ -371,10 +371,14 @@ def tool_version(name: str) -> str:
         lines = [ln.replace(str(t.path), "") for ln in
                  ((p.stderr or "") + "\n" + (p.stdout or "")).splitlines()]
         stem = name.split("_")[0].lower()
+        for line in lines:                       # a bare "1.1.0" line wins outright
+            m = re.fullmatch(r"\s*v?(\d{1,3}\.\d+(?:\.\d+)?)\s*", line)
+            if m:
+                return m.group(1)
         # lines naming the tool first: vsearch prints a citation with a DOI
         # ("10.7717/…") on stdout before its version on stderr
         for line in sorted(lines, key=lambda ln: stem not in ln.lower()):
-            m = re.search(r"(?<![\w./])v?(\d+\.\d+(?:\.\d+)?(?:-b\d+)?)(?![\d./])", line)
+            m = re.search(r"(?<![\w./])v?(\d{1,3}\.\d+(?:\.\d+)?(?:-b\d+)?)(?![\d./])", line)
             if m:
                 return m.group(1)
         return ""
@@ -751,7 +755,7 @@ def run_sourmash(asm: Path, sdir: Path, db: str, lineages: str, threads: int,
         return []
     if not db or not Path(db).exists():
         warn("GTDB sourmash database not configured (db_paths.json key 'gtdb_sourmash') "
-             "— genome-based species ID skipped; run setup_wgs.sh --gtdb")
+             "— genome-based species ID skipped; run setup_wgs.sh --dbs-only")
         return []
     sig = sdir / "assembly.sig.zip"
     if run(sm, ["sketch", "dna", "-p", "k=31,scaled=1000,abund", "--name", "query",
@@ -937,18 +941,35 @@ def classify_16s(seqs: list[tuple[str, str]], db_fa: Path, tax_dir: Path | None,
             continue
         best = hs[0][0]
         tied = OrderedDict()
-        genus = ""
+        genera = Counter()
+        first_genus = ""
         for ident, t in hs:
             if ident < best - 0.2:
                 break
             sp, ge = lineage(t)
-            genus = genus or ge
+            ge = (sp.split()[0] if sp else ge) or ""
+            first_genus = first_genus or ge
             if sp:
+                if sp not in tied:
+                    genera[ge] += 1
                 tied[sp] = max(tied.get(sp, 0), ident)
+        # Genus by majority of the tied reference names, not the single top hit:
+        # 16S databases carry mislabelled entries (e.g. an "Klebsiella pneumoniae"
+        # record that is really Acinetobacter), and one of them can sit at 100 %.
+        if genera:
+            top = genera.most_common()
+            genus = top[0][0]
+            if len(top) > 1 and top[1][1] == top[0][1]:
+                genus = first_genus
+        else:
+            genus = first_genus
         sps = list(tied)
+        main = [x for x in sps if x.split()[0] == genus] or sps
+        odd = [x for x in sps if x.split()[0] != genus]
         out.append({"copy": qn.split()[0], "best_identity": round(best, 2),
-                    "best_species": sps[0] if sps else "", "best_genus": genus,
-                    "tied_species": "; ".join(sps[:8]), "n_tied": len(sps)})
+                    "best_species": main[0] if main else "", "best_genus": genus,
+                    "tied_species": "; ".join(main[:8]), "n_tied": len(main),
+                    "tied_all": main, "off_genus": "; ".join(odd[:4])})
     return out
 
 
@@ -1459,11 +1480,20 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
         # copies tie between close species (Cronobacter sakazakii/malonaticus,
         # B. cereus group…) — the genus with the tied names, never one of them
         # picked by a 0.1 % identity difference.
-        sets = [set(filter(None, h["tied_species"].split("; "))) for h in rrna["hits"]
-                if h["tied_species"]]
-        common = set.intersection(*sets) if sets else set()
         genus16 = Counter(h["best_genus"] for h in rrna["hits"] if h["best_genus"])
         g16 = genus16.most_common(1)[0][0] if genus16 else ""
+        # full tie lists (the CSV column is truncated to 8 names), same genus only
+        sets = [set(x for x in (h.get("tied_all") or h["tied_species"].split("; "))
+                    if x and (not g16 or x.split()[0] == g16))
+                for h in rrna["hits"] if h["tied_species"]]
+        sets = [x for x in sets if x]
+        common = set.intersection(*sets) if sets else set()
+        odd = sorted({x for h in rrna["hits"] for x in h.get("off_genus", "").split("; ") if x})
+        if odd:
+            res["rrna"]["off_genus"] = odd
+            warn(f"[{S}] 16S copies also match {', '.join(odd[:3])} at the same identity — "
+                 f"a minority of reference names outside {g16}; most likely mislabelled "
+                 "database entries, ignored for the genus call")
         if len(common) == 1:
             res["rrna"]["consensus_species"] = next(iter(common))
             res["rrna"]["resolved"] = True
@@ -1522,14 +1552,19 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
                 c["mob_cluster"] = m["cluster"]
                 if m["molecule"] == "plasmid":
                     c["type"] = "plasmid"
-                elif m["molecule"] == "chromosome" and c["type"] == "plasmid?":
-                    c["type"] = "contig"
+                # MOB-suite's reference set is mostly Enterobacterales: a circular
+                # sub-Mb replicon it calls "chromosome" (typical for Bacillus /
+                # Priestia megaplasmids) stays a putative plasmid, not a contig.
     for c in contigs:
         reps = sorted({h["gene"] for h in res["plasmidfinder"] if h["contig"] == c["contig"]})
         c["replicons"] = ", ".join(reps)
         if reps and c["type"] == "plasmid?":
             c["type"] = "plasmid"
+        if c["type"] == "plasmid?":
+            c["type"] = "plasmid (putative)"
     res["assembly"]["plasmids"] = sum(1 for c in contigs if c["type"] == "plasmid")
+    res["assembly"]["putative_plasmids"] = sum(1 for c in contigs
+                                               if c["type"] == "plasmid (putative)")
 
     # ── 5b. CheckM2 ──────────────────────────────────────────────────────────
     if not args.skip_checkm2:
@@ -1600,7 +1635,8 @@ def write_tables(results: list[dict], out: Path):
             "genome_size": a.get("total_length", ""), "contigs": a.get("contigs", ""),
             "circular": a.get("circular", ""),
             "chromosome_closed": a.get("chromosome_closed", ""),
-            "plasmids": a.get("plasmids", ""), "n50": a.get("n50", ""),
+            "plasmids": a.get("plasmids", ""),
+            "putative_plasmids": a.get("putative_plasmids", ""), "n50": a.get("n50", ""),
             "gc": a.get("gc", ""), "depth": a.get("mean_depth", ""),
             "completeness": ck.get("completeness", ""),
             "contamination": ck.get("contamination", ""),
@@ -1626,7 +1662,7 @@ def write_tables(results: list[dict], out: Path):
         for h in r.get("sourmash", []):
             sp_rows.append({"sample": S, **h})
         for h in r.get("rrna", {}).get("hits", []):
-            r16.append({"sample": S, **h})
+            r16.append({"sample": S, **{k: v for k, v in h.items() if k != "tied_all"}})
         if ml:
             mlst.append({"sample": S, **ml})
         for x in r.get("amrfinder", []):
@@ -1700,6 +1736,34 @@ def main(argv=None) -> int:
             dbp = json.loads(Path(args.db_paths).read_text())
         except Exception as e:
             warn(f"db_paths.json unreadable: {e}")
+    # Databases downloaded by hand (wget) but never registered by setup_wgs.sh:
+    # pick them up from the standard folder instead of silently skipping steps.
+    wgs_db = (Path(args.db_paths).parent if args.db_paths
+              else Path(__file__).resolve().parent / "databases") / "wgs"
+    found = {}
+    if wgs_db.is_dir():
+        if not (dbp.get("gtdb_sourmash") and Path(dbp["gtdb_sourmash"]).exists()):
+            sigs = sorted(wgs_db.glob("gtdb-*reps.k31*.sig.zip"),
+                          key=lambda x: ("sc10k" in x.name, -x.stat().st_size))
+            sigs = [x for x in sigs if zipfile.is_zipfile(x)]
+            if sigs:
+                found["gtdb_sourmash"] = str(sigs[0])
+        if not (dbp.get("gtdb_lineages") and Path(dbp["gtdb_lineages"]).exists()):
+            lin = sorted(wgs_db.glob("gtdb-*reps.lineages.csv*"))
+            if lin:
+                found["gtdb_lineages"] = str(lin[0])
+        if not (dbp.get("checkm2_db") and Path(dbp["checkm2_db"]).exists()):
+            dm = sorted(wgs_db.rglob("uniref100.KO.1.dmnd"))
+            if dm:
+                found["checkm2_db"] = str(dm[0])
+        if not (dbp.get("bakta_db") and Path(dbp["bakta_db"]).exists()):
+            vj = [x for x in wgs_db.rglob("version.json") if "bakta" in str(x)]
+            if vj:
+                found["bakta_db"] = str(vj[0].parent)
+    for k, v in found.items():
+        dbp[k] = v
+        log(f"  database {k} found unregistered at {v} — using it "
+            "(run setup_wgs.sh --dbs-only to register)")
     overrides = {}
     if args.sample_names:
         try:
@@ -1779,7 +1843,7 @@ def main(argv=None) -> int:
             "skip_annotation")},
         "databases": {k: dbp.get(k, "") for k in ("gtdb_sourmash", "gtdb_lineages",
                                                   "bakta_db", "checkm2_db", "amrfinder_db")},
-        "tool_versions": versions, "warnings": WARNINGS,
+        "tool_versions": versions, "warnings": list(dict.fromkeys(WARNINGS)),
         "runtime_min": round((time.time() - t0) / 60, 1),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "has_taxonomy": False,

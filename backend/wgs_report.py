@@ -328,7 +328,11 @@ def section_sample(r: dict) -> str:
                      "—"])
     out.append(tbl(["Contig", "Type", "Length", "GC", "Depth", "Circular", "Replicons"],
                    crow, left=(1, 6), nowrap=(0,), caption=("Type: chromosome = largest replicon ≥ 1 Mb; plasmid = MOB-suite "
-                           "call or a circular contig carrying a PlasmidFinder replicon.")
+                           "call or a circular contig carrying a PlasmidFinder replicon; "
+                           "plasmid (putative) = circular replicon < 1 Mb with no MOB-suite / "
+                           "PlasmidFinder support (common for Bacillales megaplasmids, which "
+                           "these Enterobacterales-centred databases miss; may also be a "
+                           "circular prophage).")
                     + (f" {len(r['contigs']) - 40} more contigs in assembly_contigs.csv."
                        if len(r.get("contigs", [])) > 40 else "")))
     gm = svg_genome_map(r)
@@ -390,6 +394,11 @@ def section_sample(r: dict) -> str:
                            f"{esc(rr['consensus_species'])}. The ‘best match’ column differs "
                            f"by ≤ 0.2 % between these species and must not be read as an "
                            f"identification — the genome result above decides.</p>")
+        if rr.get("off_genus"):
+            out.append(f"<p class='dim'>Also matched at the same identity: "
+                       f"{esc(', '.join(rr['off_genus'][:4]))} — a minority of reference names "
+                       f"outside the majority genus, most likely mislabelled database entries; "
+                       f"ignored for the genus call.</p>")
         if hits:
             rows = [[f"<span class='mono'>{esc(h['copy'])}</span>", ital(h.get("best_species")),
                      pct(h.get("best_identity"), 2), str(h.get("n_tied", "")),
@@ -474,7 +483,15 @@ def section_sample(r: dict) -> str:
         out.append(_tbl(["Replicon", "Contig", "Identity", "Coverage"], rows,
                         "PlasmidFinder replicons (Enterobacterales and Gram-positive "
                         "schemes; other taxa may carry plasmids it does not recognise)."))
-    if not mob and not pf:
+    put = [c for c in r.get("contigs", []) if c.get("type") == "plasmid (putative)"
+           or (c.get("type") in ("contig", "plasmid?") and c.get("circular")
+               and c.get("length", 0) < 1_000_000)]
+    if put:
+        out.append(f"<p>{len(put)} putative plasmid(s) — circular replicons below 1 Mb "
+                   "without a MOB-suite or PlasmidFinder match: " + ", ".join(
+                       f"<span class='mono'>{esc(c['contig'])}</span> ({fmt(c['length'])} bp)"
+                       for c in put) + ".</p>")
+    if not mob and not pf and not put:
         out.append(f"<p>{a.get('plasmids', 0)} plasmid(s) called; no replicon matched "
                    "PlasmidFinder.</p>")
 
@@ -534,14 +551,15 @@ def build_html(out_dir: Path, title: str | None = None, company: str = "",
                      (f"{num(ck.get('completeness'))}/{num(ck.get('contamination'))}"
                       if ck else "—"),
                      f"{esc(r.get('mlst', {}).get('st') or '—')} · {nam} · "
-                     f"{a.get('plasmids', 0)}"])
+                     f"{a.get('plasmids', 0)}"
+                     + (f" (+{a['putative_plasmids']}?)" if a.get("putative_plasmids") else "")])
     body.append("<h2>Summary</h2>")
     body.append(_tbl(["Sample", "Barcode", "Species", "ANI", "Genome", "Contigs", "Depth",
                       "Compl./Cont. %", "ST · AMR · plasmids"], rows,
                      "Species from whole-genome ANI against GTDB species representatives "
                      "where available, otherwise from 16S rRNA (marked)."))
     if summ.get("warnings"):
-        gen = [w for w in summ["warnings"] if not w.startswith("[")]
+        gen = list(dict.fromkeys(w for w in summ["warnings"] if not w.startswith("[")))
         if gen:
             body.append('<div class="note"><b>Run notes:</b><ul>' + "".join(
                 f"<li>{esc(w)}</li>" for w in gen) + "</ul></div>")
@@ -575,7 +593,7 @@ def build_html(out_dir: Path, title: str | None = None, company: str = "",
         f"with --plus. Virulence factors: abricate{tv('abricate')} with VFDB; plasmid "
         f"replicons with PlasmidFinder. Plasmid reconstruction: MOB-suite"
         f"{tv('mob_recon')}. Annotation: Bakta{tv('bakta')}.</p>")
-    dbrows = [[esc(k), f"<span class='mono'>{esc(Path(p).name if p else '—')}</span>"]
+    dbrows = [[esc(k), f"<span class='mono'>{esc(Path(p).name if p else ('bundled default' if k == 'amrfinder_db' else 'not configured'))}</span>"]
               for k, p in dbs.items()]
     if dbrows:
         body.append(_tbl(["Database", "Version / file"], dbrows))

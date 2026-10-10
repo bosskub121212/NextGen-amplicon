@@ -1214,6 +1214,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
              behind the status would mean 21 minutes of finished work being
              unreachable because of a label. */
           : '<button class="btn danger" id="delBtn">Delete job</button>'
+            + (isWgs ? '<button class="btn pri" id="wgReJob" data-resume="1" title="Carry on from where it stopped: samples and steps already finished are kept">Resume run</button>' : "")
             + '<button class="btn" id="resBtn">View any results</button>'
             + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>';
       body.innerHTML =
@@ -6673,9 +6674,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      Medaka) lives with the upload and survives the reset; only the results
      folder is rebuilt. */
   function wgsReanalyse(jid, btn){
-    if(!window.confirm("Re-analyse this run on its existing assemblies?\n\n"
-        + "Assembly and polishing are reused; species ID, 16S, MLST, AMR, plasmids and "
-        + "annotation run again with the databases installed now. The current results are replaced."))
+    var resume = btn && btn.dataset.resume === "1";
+    if(!window.confirm(resume
+        ? "Resume this run?\n\nMerged reads, assemblies and polishing that already finished are kept; "
+          + "only what is missing runs again."
+        : "Re-analyse this run on its existing assemblies?\n\n"
+          + "Assembly and polishing are reused; species ID, 16S, MLST, AMR, plasmids and "
+          + "annotation run again with the databases installed now. The current results are replaced."))
       return;
     if(btn){ btn.disabled = true; btn.textContent = "Starting…"; }
     var params;
@@ -6692,7 +6697,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         if(!r.ok) throw new Error(j.message || j.error || ("HTTP " + r.status)); }); })
       .then(function(){ return refreshJobs().then(function(){ go({name:"job", id:jid}); }); })
       .catch(function(e){
-        if(btn){ btn.disabled = false; btn.textContent = "Re-analyse"; }
+        if(btn){ btn.disabled = false; btn.textContent = resume ? "Resume run" : "Re-analyse"; }
         window.alert("Re-analysis could not start — " + (e.message || e));
       });
   }
