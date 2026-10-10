@@ -1,10 +1,10 @@
 {
-  "version": "2.11.4",
+  "version": "2.12.0",
   "release_date": "2026-10-10",
-  "changelog": "ONT-WGS: the genome-tree caption names the method actually used (neighbour joining when fewer than 4 genomes, where FastME cannot run) instead of always saying FastME.",
+  "changelog": "new (ONT 16S, Beta): input layout choice — 'One file per sample' (as before) or 'MinKNOW folders — merge per barcode'. In the second mode give the delivery folder's path on this computer (files are linked, not copied), upload the folder, or a .zip of it; the chunk files of each barcode / sample folder are grouped (Sample_L21 → L21, fastq_fail left out), shown in an editable Samples table, and merged into one FASTQ per sample at run time (results/merged_reads/<sample>.fastq.gz + sample_map.csv, included in the download). Fix: cutadapt now removes BOTH primers of a full-length read (-n 2) — before, only one end was trimmed and the other primer, plus any untrimmed barcode flank, stayed on the read. Needs: backend restart (main.py) and Ctrl+F5 on /beta.",
   "previous": {
-    "version": "2.11.3",
+    "version": "2.11.4",
     "release_date": "2026-10-10",
-    "changelog": "ONT-WGS type strains: (1) fix — when only 2 type strains fall within ANI range (e.g. Priestia megaterium), FastME (needs ≥ 4 genomes) wrote an empty tree and the whole type-strain section was lost ('string index out of range'); small trees now use neighbour joining, and a tree failure no longer removes the ANI table. (2) When other type strains are also ≥ 95 % (B. cereus / B. thuringiensis, Geobacillus zalihae / thermoleovorans / kaustophilus / vulcani, P. megaterium / aryabhattai) the verdict names them and says ANI cannot separate those species. (3) Strain labels: no doubled type mark (BCT-7112TT, KCTC3922(T)T), no 'T' after an empty strain, serovar entries of the same type strain merged (B. thuringiensis serovar berliner ATCC 10792 listed once). Re-analyse to apply."
+    "changelog": "ONT-WGS: the genome-tree caption names the method actually used (neighbour joining when fewer than 4 genomes, where FastME cannot run) instead of always saying FastME."
   }
 }

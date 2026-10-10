@@ -174,6 +174,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .span2{grid-column:span 2}
 .f.wide{grid-column:span 2}
 .pathrow{display:flex;gap:8px;align-items:center}
+.lay{padding:12px 14px 0;display:flex;flex-direction:column;gap:8px}
+.lay .lab{font-size:11.5px;color:var(--fg-2);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.lay .segs{display:flex;gap:6px;flex-wrap:wrap}
+.lay .segs .btn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.lay .s{font-size:12px;color:var(--fg-2);line-height:1.45}
 .pathrow input{flex:1;min-width:0}
 .dbnote{font-size:11.5px;color:var(--fg-2);margin-top:2px}
 .dbnote b{color:var(--fg)}
@@ -5830,8 +5835,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       metaName: "",
       metaErr: "",
       busy: false,
-      lastError: ""
+      lastError: "",
+      merge: false        /* ONT: several chunk files per sample, merged at run time */
     };
+    var canMerge = it.key === "ONT-16S";
 
     work.innerHTML =
         '<div class="crumb">New job · ' + esc(it.label) + '</div>'
@@ -5845,6 +5852,23 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + '<div class="f span2"><label for="jn">Job name</label>'
           + '<input type="text" id="jn" placeholder="e.g. Soil_16S_Run1"></div>'
         + '</div>'
+        + (canMerge ? '<div class="lay">'
+            + '<div class="lab">How the reads are organised</div>'
+            + '<div class="segs">'
+              + '<button class="btn on" data-lay="files">One file per sample</button>'
+              + '<button class="btn" data-lay="merge">MinKNOW folders — merge per barcode</button>'
+            + '</div>'
+            + '<div class="s" id="layHint">Each FASTQ file is already one sample (e.g. L21.fastq.gz).</div>'
+            + '<div id="mergeIn" hidden>'
+              + '<div class="pathrow"><input type="text" class="mono" id="mgPath" '
+              + 'placeholder="C:\\Users\\NEXTAPP\\Downloads\\TH-BIOENTIST-00004"></div>'
+              + '<div class="pathrow" style="margin-top:8px">'
+                + '<button class="btn pri" id="mgUse">Use this folder</button>'
+                + '<input type="file" id="mgDirIn" webkitdirectory directory multiple hidden>'
+                + '<button class="btn" id="mgDir">Or upload a folder…</button>'
+                + '<span class="s" id="mgState"></span></div>'
+            + '</div>'
+          + '</div>' : "")
         + '<div class="up">'
           + '<div class="drop" id="dropFq">'
             + '<div class="t">Sequencing reads</div>'
@@ -5946,6 +5970,44 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     document.getElementById("fqUp").addEventListener("click", function(){
       doUpload(dbOpts, dbCount);
     });
+    FORM.pf = function(){ preflight(dbOpts, dbCount); };
+
+    /* Input layout (ONT 16S): files that are samples, or a MinKNOW delivery
+       whose chunk files are merged per barcode / sample folder. */
+    Array.prototype.forEach.call(document.querySelectorAll("[data-lay]"), function(b){
+      b.addEventListener("click", function(){
+        var m = b.dataset.lay === "merge";
+        if(m === FORM.merge) return;
+        FORM.merge = m;
+        Array.prototype.forEach.call(document.querySelectorAll("[data-lay]"), function(x){
+          x.classList.toggle("on", x === b); });
+        document.getElementById("mergeIn").hidden = !m;
+        document.getElementById("layHint").innerHTML = m
+          ? "A delivery as MinKNOW wrote it: one folder per sample or barcode, several chunk files in each "
+            + "(…_barcode10_…_0.fastq.gz, _1, _2…). The files of each barcode / folder are merged into one "
+            + "sample at run time; fastq_fail files are left out. Give the folder path on this computer, "
+            + "upload the folder, or a .zip of it."
+          : "Each FASTQ file is already one sample (e.g. L21.fastq.gz).";
+        var sel = document.getElementById("seq");
+        if(m && sel) sel.value = "ont";
+        FORM.files = []; FORM.jobId = null; FORM.uploaded = []; FORM.detect = null; FORM.lastError = "";
+        document.getElementById("fqState").textContent = "Nothing chosen yet";
+        document.getElementById("fqList").innerHTML = "";
+        document.getElementById("fqUp").disabled = true;
+        var ms = document.getElementById("mgState"); if(ms) ms.textContent = "";
+        paintSamples();
+        preflight(dbOpts, dbCount);
+      });
+    });
+    var mgUse = document.getElementById("mgUse");
+    if(mgUse){
+      mgUse.addEventListener("click", function(){ useFolder(dbOpts, dbCount); });
+      document.getElementById("mgPath").addEventListener("keydown", function(ev){
+        if(ev.key === "Enter") useFolder(dbOpts, dbCount); });
+      var dirIn = document.getElementById("mgDirIn");
+      document.getElementById("mgDir").addEventListener("click", function(){ dirIn.click(); });
+      dirIn.addEventListener("change", function(){ chooseFastq(dirIn.files, dbOpts, dbCount); });
+    }
 
     document.getElementById("tplBtn").addEventListener("click", function(){
       var names = FORM.detect ? FORM.detect.map.map(function(m){ return m.sample; }) : ["Sample1","Sample2"];
@@ -5966,7 +6028,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     document.getElementById("seq").addEventListener("change", function(){
       /* Single-end changes what counts as a sample, so re-detect immediately
          rather than at submit time. */
-      if(FORM.uploaded.length)
+      if(FORM.uploaded.length && !FORM.merge)
         FORM.detect = detectSamples(FORM.uploaded, this.value !== "illumina");
       paintSamples();
       preflight(dbOpts, dbCount);
@@ -6057,9 +6119,94 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     /* Show the pairing BEFORE the upload, from the local filenames. If the
        names are wrong, the user finds out now instead of after a transfer. */
     var single = document.getElementById("seq").value !== "illumina";
-    FORM.detect = detectSamples(names, single);
+    FORM.detect = FORM.merge ? groupLocal(FORM.files) : detectSamples(names, single);
     paintSamples(true);
     preflight(dbOpts, dbCount);
+  }
+
+  /* MinKNOW chunk files -> samples, the way the backend groups them
+     (ont_wgs_pipeline.group_fastqs): key = folder + barcode, or folder + file
+     stem without MinKNOW's chunk counter; a folder holding one sample gives it
+     its name (Sample_L21 -> L21). Shown before upload; the server's grouping
+     replaces it once the files are there. */
+  var GENERIC_DIR = /^(fastq(_pass|_fail)?|pass|fail|merged|data|reads|raw|raw_data|barcod(e|ing)\d*|unclassified|output|outputs|results?|upload|uploads|)$/i;
+  function cleanName(x){
+    var t = String(x || "").trim();
+    t = t.replace(/^(samples?)[_\- ]+/i, "") || t;
+    t = t.replace(/[\\\/:*?"<>|\s]+/g, "_").replace(/^[._]+|[._]+$/g, "");
+    return t || "sample";
+  }
+  function groupLocal(files){
+    var G = {}, order = [];
+    var FAIL = /(^|[_\-.])fail([_\-.]|$)/i;
+    files.forEach(function(f){
+      var rel = f.webkitRelativePath || f.name;
+      var base = rel.split("/").pop();
+      if(!EXT.test(base)) return;
+      var dir = rel.indexOf("/") >= 0 ? rel.slice(0, rel.lastIndexOf("/")) : "";
+      var stem = base.replace(EXT, "");
+      if(FAIL.test(stem) || dir.split("/").some(function(q){ return FAIL.test(q); })) return;
+      var m = stem.match(/(?:^|[^A-Za-z0-9])(barcode\d+|unclassified)(?![0-9])/i);
+      var minknow = /^[A-Z]{3}\d{4,6}_(pass|fail|skip)_/i.test(base);
+      var unit = m ? m[1].toLowerCase() : (minknow ? stem.replace(/[_.-]\d+$/, "") : stem);
+      var key = dir + "|" + unit;
+      if(!G[key]){ G[key] = {key:key, folder:dir, barcode:m ? m[1].toLowerCase() : "", unit:unit,
+                             files:[], minknow:minknow, stem:stem}; order.push(key); }
+      G[key].files.push(base);
+    });
+    var perDir = {};
+    order.forEach(function(k){ perDir[G[k].folder] = (perDir[G[k].folder] || 0) + 1; });
+    var used = {};
+    var map = order.map(function(k){
+      var g = G[k], dname = g.folder ? g.folder.split("/").pop() : "";
+      var name = (dname && perDir[g.folder] === 1 && !GENERIC_DIR.test(dname)) ? cleanName(dname)
+               : (!g.minknow && g.files.length === 1) ? cleanName(g.stem) : cleanName(g.unit);
+      var b = name, i = 2;
+      while(used[name]){ name = b + "_" + i; i++; }
+      used[name] = 1;
+      return {sample:name, file1:g.files[0], file2:"", files:g.files, barcode:g.barcode, folder:g.folder};
+    });
+    return {map:map, problems:map.length ? [] : [{kind:"nogroup", detail:"no FASTQ file in the selection"}],
+            strict:true, merged:true};
+  }
+
+  function fromGroups(groups){
+    var map = (groups || []).map(function(g){
+      var files = g.files || [];
+      return {sample:g.sample, file1:files[0] || "", file2:"", files:files,
+              barcode:g.barcode || "", folder:g.folder || ""};
+    });
+    return {map:map, problems:map.length ? dupCheck(map)
+              : [{kind:"nogroup", detail:"no FASTQ file could be grouped into a sample"}],
+            strict:true, merged:true};
+  }
+
+  function useFolder(dbOpts, dbCount){
+    var path = (document.getElementById("mgPath").value || "").trim();
+    var st = document.getElementById("mgState");
+    if(!path || FORM.busy) return;
+    FORM.busy = true; FORM.lastError = "";
+    st.textContent = "Reading the folder…";
+    fetch("/upload/from_path", {method:"POST", headers:{"Content-Type":"application/json"},
+                                body: JSON.stringify({path: path})})
+      .then(function(r){ return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.message || j.error || ("HTTP " + r.status));
+        return j; }); })
+      .then(function(j){
+        FORM.files = [];
+        FORM.jobId = j.job_id;
+        FORM.uploaded = Array.isArray(j.files) ? j.files : [];
+        FORM.detect = fromGroups(j.wgs_groups);
+        st.textContent = FORM.uploaded.length + " FASTQ files · " + (j.total_mb || 0) + " MB · linked, not copied";
+        document.getElementById("fqState").textContent = "Using the folder on this computer";
+        document.getElementById("fqList").innerHTML = "";
+        document.getElementById("fqUp").disabled = true;
+        var jn = document.getElementById("jn");
+        if(jn && !jn.value.trim() && j.source)
+          jn.value = String(j.source).split(/[\\\/]/).filter(Boolean).pop() || "";
+      })
+      .catch(function(e){ FORM.lastError = "Folder not usable — " + (e.message || e); st.textContent = ""; })
+      .then(function(){ FORM.busy = false; paintSamples(); preflight(dbOpts, dbCount); });
   }
 
   function chooseMeta(file, dbOpts, dbCount){
@@ -6088,7 +6235,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     document.getElementById("fqState").textContent = "Uploading…";
 
     var fd = new FormData();
-    FORM.files.forEach(function(f){ fd.append("files", f, f.name); });
+    FORM.files.forEach(function(f){
+      /* in merge mode the sample folder is part of the name the server keeps */
+      fd.append("files", f, FORM.merge ? (f.webkitRelativePath || f.name) : f.name); });
 
     fetch("/upload", {method:"POST", body:fd})
       .then(function(r){
@@ -6103,7 +6252,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
            one file and comes back as the FASTQs it contained. */
         FORM.uploaded = Array.isArray(j.files) ? j.files : [];
         var single    = document.getElementById("seq").value !== "illumina";
-        FORM.detect   = detectSamples(FORM.uploaded, single);
+        FORM.detect   = FORM.merge ? fromGroups(j.wgs_groups) : detectSamples(FORM.uploaded, single);
         document.getElementById("fqState").textContent =
           "Uploaded · " + FORM.uploaded.length + " file"
           + (FORM.uploaded.length === 1 ? "" : "s") + " on the server";
@@ -6136,6 +6285,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(!D || !D.map.length && !D.problems.length){ box.innerHTML = ""; return; }
 
     var metaIds = FORM.meta.map(function(m){ return m.sampleId; });
+    if(D.merged) return paintMerged(box, D, metaIds, provisional);
     var rows = D.map.map(function(m){
       var matched = metaIds.indexOf(m.sample) !== -1;
       return '<tr><td><b>' + esc(m.sample) + '</b></td>'
@@ -6182,6 +6332,53 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + '</div>';
   }
 
+  function paintMerged(box, D, metaIds, provisional){
+    var rows = D.map.map(function(m, i){
+      var matched = metaIds.indexOf(m.sample) !== -1;
+      return '<tr><td><input type="text" class="mgName" data-i="' + i + '" value="' + esc(m.sample)
+        + '" style="width:100%;min-width:120px"></td>'
+        + '<td class="mono">' + esc(m.barcode || "—") + '</td>'
+        + '<td>' + esc(m.folder || "—") + '</td>'
+        + '<td style="text-align:right" title="' + esc(m.files.join("\n")) + '">' + m.files.length + '</td>'
+        + '<td class="mgMeta" data-i="' + i + '">' + metaCell(m.sample) + '</td></tr>';
+    }).join("");
+    function metaCell(name){
+      return !FORM.meta.length ? '<span style="color:var(--fg-3)">—</span>'
+        : metaIds.indexOf(name) !== -1 ? '<span style="color:var(--ok)">matched</span>'
+        : '<span style="color:var(--warn)">no metadata row</span>';
+    }
+    function probsHtml(){ return D.problems.map(function(q){
+      return '<div class="errbox" style="border-radius:0"><b>'
+        + esc(q.kind === "duplicate" ? "Two rows have the SAME sample name — rename one" : "No sample")
+        + ':</b> ' + esc(q.detail) + '</div>';
+    }).join(""); }
+    box.innerHTML = '<div class="panel" style="margin-top:12px">'
+      + '<div class="sechdr"><h3>Samples</h3><span class="hint">' + D.map.length + ' sample'
+      + (D.map.length === 1 ? "" : "s") + ' · the files of each row are merged into one sample at run time'
+      + (provisional && !FORM.jobId ? " · grouped from the local names, before upload" : "")
+      + ' · names can be edited</span></div>'
+      + (rows ? '<table class="parms samples"><thead><tr><th>Sample</th><th>Barcode</th><th>Source folder</th>'
+          + '<th style="text-align:right">Files</th><th>Metadata</th></tr></thead><tbody>' + rows + '</tbody></table>' : "")
+      + '<div id="mgProbs">' + probsHtml() + '</div>'
+      + (FORM.metaErr ? '<div class="errbox" style="border-radius:0 0 var(--r) var(--r)"><b>Metadata:</b> '
+          + esc(FORM.metaErr) + '</div>' : "")
+      + '</div>';
+    Array.prototype.forEach.call(box.querySelectorAll(".mgName"), function(el){
+      /* updated in place: re-rendering the table would take the focus away
+         from the name being typed */
+      el.addEventListener("input", function(){
+        var i = parseInt(el.dataset.i, 10);
+        D.map[i].sample = cleanName(el.value);
+        D.problems = dupCheck(D.map);
+        var mc = box.querySelector('.mgMeta[data-i="' + i + '"]');
+        if(mc) mc.innerHTML = metaCell(D.map[i].sample);
+        var pb = document.getElementById("mgProbs");
+        if(pb) pb.innerHTML = probsHtml();
+        if(FORM.pf) FORM.pf();
+      });
+    });
+  }
+
   function preflight(dbOpts, dbCount){
     var el = document.getElementById("pre");
     if(!el) return;
@@ -6198,12 +6395,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                      : dbSel.value));
 
     el.innerHTML =
-        pf(FORM.files.length ? (!!FORM.jobId && n > 0) : null,
-           n + " sample" + (n === 1 ? "" : "s") + " uploaded",
+        pf((FORM.files.length || FORM.jobId) ? (!!FORM.jobId && n > 0) : null,
+           n + " sample" + (n === 1 ? "" : "s") + (FORM.files.length ? " uploaded" : " ready"),
            FORM.jobId ? "No sample detected" : "Chosen, not uploaded yet",
            "No FASTQ files yet")
       + pf(D ? !hardProblems.length : null,
-           "Pairing clean",
+           D && D.merged ? "Grouping clean" : "Pairing clean",
            hardProblems.length + " pairing problem" + (hardProblems.length === 1 ? "" : "s"),
            "Pairing — nothing to check yet")
       + pf(FORM.meta.length ? metaOk : null,
@@ -6244,7 +6441,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       marker:   FORM.marker,
       sequencerType: document.getElementById("seq").value,
       metadata: FORM.meta,
-      sampleFileMap: FORM.detect ? FORM.detect.map : []
+      sampleFileMap: !FORM.detect ? []
+        : FORM.detect.merged
+        ? [].concat.apply([], FORM.detect.map.map(function(m){
+            return m.files.map(function(f){ return {sample:m.sample, file1:f, file2:""}; }); }))
+        : FORM.detect.map
     };
     Array.prototype.forEach.call(
       document.querySelectorAll("#advBody [data-k]"), function(el){

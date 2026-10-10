@@ -297,7 +297,8 @@ def _wgs_groups_preview(job_dir: Path, saved: list) -> list:
         if fm.exists():
             folders = json.loads(fm.read_text())
         return [{"key": g["key"], "sample": g["sample"], "barcode": g.get("barcode", ""),
-                 "folder": g.get("folder", ""), "n_files": len(g["files"])}
+                 "folder": g.get("folder", ""), "n_files": len(g["files"]),
+                 "files": list(g["files"])}
                 for g in w.group_fastqs(saved, folders)]
     except Exception as e:
         print(f"[upload] group preview failed: {e}")

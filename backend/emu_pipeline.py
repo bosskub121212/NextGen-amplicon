@@ -65,18 +65,45 @@ def parse_args():
     return p.parse_args()
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
-def find_fastq(input_dir: Path) -> dict[str, Path]:
+def merge_reads(files: list[Path], dest: Path) -> Path:
+    """Concatenate one sample's FASTQ chunk files into a single .fastq.gz.
+
+    gzip members can simply be appended (a multi-member gzip is valid and every
+    tool here reads it); plain FASTQ chunks are compressed on the way in.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    with open(tmp, "wb") as out:
+        for f in files:
+            if str(f).lower().endswith(".gz"):
+                with open(f, "rb") as fh:
+                    shutil.copyfileobj(fh, out, 8 << 20)
+            else:
+                with open(f, "rb") as fh, gzip.GzipFile(fileobj=out, mode="wb",
+                                                        compresslevel=1) as gz:
+                    shutil.copyfileobj(fh, gz, 8 << 20)
+    tmp.replace(dest)
+    return dest
+
+
+def find_fastq(input_dir: Path, merge_dir: Path | None = None) -> dict[str, Path]:
     """Find FASTQ files and map sample_name → path.
 
     If sample_manifest.json exists in input_dir (written by the frontend's
     manual sample/file pairing UI), use it as the source of truth for sample
     names instead of raw filenames. Each entry: {"sample": "...", "file1": "..."}.
     (file2 is ignored here — Emu/ONT reads are inherently single, long reads.)
+
+    Several rows with the SAME sample name are the chunk files of one sample
+    (a MinKNOW delivery: four to fifty files per barcode folder). They are merged
+    into merge_dir/<sample>.fastq.gz, so the rest of the pipeline — and the
+    customer's download — sees one file per sample.
     """
     manifest_path = input_dir / "sample_manifest.json"
     if manifest_path.exists():
         try:
             manifest = json.loads(manifest_path.read_text())
+            groups: dict[str, list[Path]] = {}
             samples = {}
             for row in manifest:
                 sample = row.get("sample", "").strip()
@@ -95,7 +122,25 @@ def find_fastq(input_dir: Path) -> dict[str, Path]:
                 if not fpath.exists():
                     log(f"  [WARN] manifest file not found, skipping: {file1}")
                     continue
-                samples[safe_sample] = fpath
+                groups.setdefault(safe_sample, [])
+                if fpath not in groups[safe_sample]:
+                    groups[safe_sample].append(fpath)
+            map_rows = []
+            for sample, files in groups.items():
+                if len(files) == 1:
+                    samples[sample] = files[0]
+                else:
+                    md = merge_dir or (input_dir / "_merged")
+                    dest = md / f"{sample}.fastq.gz"
+                    log(f"  Merging {len(files)} files → {sample}.fastq.gz")
+                    samples[sample] = merge_reads(files, dest)
+                for f in files:
+                    map_rows.append((sample, f.name))
+            if merge_dir is not None and any(len(v) > 1 for v in groups.values()):
+                with open(merge_dir.parent / "sample_map.csv", "w", newline="") as fh:
+                    w = csv.writer(fh)
+                    w.writerow(["sample", "file"])
+                    w.writerows(map_rows)
             if samples:
                 log(f"  Using sample_manifest.json ({len(samples)} sample(s))")
                 return samples
@@ -237,6 +282,11 @@ def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
             cmd += ["-a", _rev_comp(primer_r)]  # 3' reverse primer (as RC)
         if primer_f or primer_r:
             cmd += ["--revcomp"]             # also check the RC strand, keep whichever matches
+        if primer_f and primer_r:
+            # one adapter per read is cutadapt's default — a full-length read
+            # carries both primers (and, when MinKNOW did not trim them, the
+            # barcode flanks beyond them), so allow two rounds
+            cmd += ["-n", "2"]
         cmd += ["--discard-untrimmed", "-m", str(min_len)]
         if max_len:
             cmd += ["-M", str(max_len)]
@@ -593,7 +643,7 @@ def main():
 
     # ── 1. Find samples ────────────────────────────────────────────────────────
     progress(5, "Step 1/8 — Scanning input FASTQ files")
-    samples_raw = find_fastq(input_dir)
+    samples_raw = find_fastq(input_dir, out_dir / "merged_reads")
     if not samples_raw:
         log(f"[ERROR] No FASTQ files found in: {input_dir}")
         sys.exit(1)
