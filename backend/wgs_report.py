@@ -265,6 +265,11 @@ def _split_label(name: str):
     return sp, rest, is_t, acc
 
 
+def _cs(strain) -> str:
+    import wgs_taxonomy as WT
+    return WT.clean_strain(strain or "")
+
+
 def svg_tree(newick: str, isolate: str, w: int = 640, title: str = "") -> str:
     """Rectangular phylogram; the isolate in accent colour, type strains with ᵀ."""
     if not newick:
@@ -461,9 +466,9 @@ def section_typestrain(r: dict) -> str:
     if ts:
         rows = []
         for i, p in enumerate(ts, 1):
-            sp, strain = p.get("organism", ""), (p.get("strain") or "")
+            sp, strain = p.get("organism", ""), _cs(p.get("strain"))
             rows.append([
-                str(i), f"<i>{esc(sp)}</i> {esc(strain)}<sup>T</sup>",
+                str(i), f"<i>{esc(sp)}</i>" + (f" {esc(strain)}" if strain else "") + "<sup>T</sup>",
                 f"<span class='mono'>{esc(p.get('accession', ''))}</span>",
                 _cell(p.get("anib"), lambda x: x >= 95, lambda x: x >= 90),
                 _cell(p.get("anib_cov_q"), lambda x: False, d=1),
@@ -493,7 +498,8 @@ def section_typestrain(r: dict) -> str:
                    f'</figure>')
     r16 = t.get("rrna_type") or []
     if r16:
-        rows = [[f"<i>{esc(x['species'])}</i> {esc(x.get('strain', ''))}<sup>T</sup>",
+        rows = [[f"<i>{esc(x['species'])}</i>" + (f" {esc(_cs(x.get('strain')))}"
+                 if _cs(x.get("strain")) else "") + "<sup>T</sup>",
                  f"<span class='mono'>{esc(x['accession'])}</span>",
                  _cell(x.get("identity"), lambda y: y >= 98.65, d=2),
                  str(x.get("aln_len", ""))] for x in r16[:10]]
@@ -515,8 +521,8 @@ def section_mapping(r: dict) -> str:
         return ""
     out = ["<h3>Mapping to the closest reference genome</h3>"]
     ref = (f"<i>{esc(m.get('reference', ''))}</i>"
-           + (f" {esc(m.get('strain', ''))}" if m.get("strain") and m.get("strain") not in
-              m.get("reference", "") else "")
+           + (f" {esc(_cs(m.get('strain')))}" if _cs(m.get("strain")) and _cs(m.get("strain"))
+              not in m.get("reference", "") else "")
            + ("<sup>T</sup>" if m.get("type_strain") else "")
            + f" (<span class='mono'>{esc(m.get('accession', ''))}</span>, "
              f"{bp(m.get('ref_length'))}, {m.get('ref_contigs', '?')} sequence(s))")

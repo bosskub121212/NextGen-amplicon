@@ -123,9 +123,25 @@ LEVEL_RANK = {"Complete Genome": 0, "Chromosome": 1, "Scaffold": 2, "Contig": 3}
 def species_key(name: str) -> str:
     """'Cronobacter sakazakii NBRC 102416' → 'Cronobacter sakazakii' (subsp. kept)."""
     w = (name or "").split()
-    if len(w) >= 4 and w[2] in ("subsp.", "pv.", "bv.", "serovar"):
+    # subspecies are taxa of their own; serovars / pathovars / biovars are not,
+    # and the same type strain is often deposited under both names
+    if len(w) >= 4 and w[2] == "subsp.":
         return " ".join(w[:4])
     return " ".join(w[:2])
+
+
+def clean_strain(strain: str) -> str:
+    """'KCTC3922(T)' / 'BCT-7112T' / 'DSM 1T' → strain without its type mark."""
+    st = re.sub(r"\s*\((T|t)\)\s*$", "", (strain or "").strip())
+    st = re.sub(r"(?<=[0-9])T$", "", st)
+    st = re.sub(r"^(type strain|strain)\s*:?\s*", "", st, flags=re.I)
+    return st.strip()
+
+
+def ts_label(organism: str, strain: str, acc: str = "") -> str:
+    st = clean_strain(strain)
+    return " ".join(x for x in (organism, (st + "T") if st else "T", acc) if x) \
+        if st else " ".join(x for x in (organism + " T", acc) if x)
 
 
 def type_strains(genus: str, cache: Path, max_age_days: int = 90) -> list[dict]:
@@ -136,7 +152,7 @@ def type_strains(genus: str, cache: Path, max_age_days: int = 90) -> list[dict]:
     tid, gname = genus_taxid(genus, cache)
     if not tid:
         return []
-    cf = cache / "type_strains" / f"{tid}.v2.json"
+    cf = cache / "type_strains" / f"{tid}.v3.json"
     if cf.exists() and time.time() - cf.stat().st_mtime < max_age_days * 86400:
         try:
             return json.loads(cf.read_text())
@@ -170,8 +186,8 @@ def type_strains(genus: str, cache: Path, max_age_days: int = 90) -> list[dict]:
         st = r.get("assembly_stats", {})
         info = r.get("assembly_info", {})
         key_name = species_key(name)
-        strain = (org.get("infraspecific_names") or {}).get("strain", "") or \
-            name[len(key_name):].strip()
+        strain = clean_strain((org.get("infraspecific_names") or {}).get("strain", "") or
+                              name[len(key_name):].strip())
         rec = {"accession": acc, "paired": r.get("paired_accession", ""),
                "organism": key_name, "organism_ncbi": name, "strain": strain,
                "level": info.get("assembly_level", ""),
@@ -233,7 +249,7 @@ def parse_16s_header(h: str) -> dict:
         sp, strain = " ".join(w[:4]), " ".join(w[4:])
     else:
         sp, strain = " ".join(w[:2]), " ".join(w[2:])
-    strain = re.sub(r"^strain\s+", "", strain)
+    strain = clean_strain(re.sub(r"^strain\s+", "", strain))
     return {"accession": acc, "species": sp, "strain": strain}
 
 
@@ -529,6 +545,8 @@ class Node:
 
 def parse_newick(s: str) -> Node:
     s = s.strip().rstrip(";")
+    if not s:
+        raise ValueError("empty Newick string")
     pos = 0
 
     def label():
@@ -780,9 +798,13 @@ def genome_tree(genomes: list[tuple[str, Path]], work: Path, threads: int,
             for i in range(n):
                 fh.write(ids[i].ljust(10) + " " + " ".join(f"{d:.6f}" for d in D[i]) + "\n")
         nwk = work / "fastme.nwk"
-        if H.run(fm, ["-i", phy, "-o", nwk, "-m", "B", "-s", "-T", 1], logf,
-                 quiet_ok=True) == 0 and nwk.exists():
-            tree = parse_newick(nwk.read_text())
+        # FastME refuses fewer than 4 taxa and then writes an empty file
+        if n >= 4 and H.run(fm, ["-i", phy, "-o", nwk, "-m", "B", "-s", "-T", 1], logf,
+                            quiet_ok=True) == 0 and nwk.exists() and nwk.read_text().strip():
+            try:
+                tree = parse_newick(nwk.read_text())
+            except Exception:
+                tree = None
     if tree is None:
         tree = nj(ids, D)
     tree = midpoint_root(tree)
@@ -857,8 +879,30 @@ def rrna_tree(seqs: list[tuple[str, str]], work: Path, threads: int,
 # ══════════════════════════════════════════════════════════════════════════════
 #  Species verdict
 # ══════════════════════════════════════════════════════════════════════════════
-def verdict(best: dict | None, best16: dict | None) -> dict:
-    """Known / borderline / potential novel species from the closest type strain."""
+def verdict(best: dict | None, best16: dict | None, others: list | None = None) -> dict:
+    """Known / borderline / potential novel species from the closest type strain.
+
+    others: the next type strains. When some of them are also ≥ 95 %, ANI alone
+    does not separate those species (B. cereus / B. thuringiensis, the
+    Geobacillus thermoleovorans group…) and the verdict says so.
+    """
+    v = _verdict(best, best16)
+    def a(p):
+        return p.get("anib") if p.get("anib") is not None else p.get("skani_ani")
+    close = [p for p in (others or []) if a(p) is not None and a(p) >= SPECIES_ANI]
+    if close and v.get("level") in ("known", "borderline"):
+        names = ", ".join(f"{p['organism']} {a(p):.2f} %" for p in close[:4])
+        v["close_relatives"] = [p["organism"] for p in close]
+        v["text"] += (f" Also ≥ 95 % to {names}: these type strains are themselves inside "
+                      f"one species boundary, so ANI ranks them but cannot separate them — "
+                      f"the closest one is reported; dDDH (TYGS) or the published taxonomy "
+                      f"of these names decides.")
+        if v["level"] == "known":
+            v["call"] = "known species (close relatives ≥ 95 %)"
+    return v
+
+
+def _verdict(best: dict | None, best16: dict | None) -> dict:
     if not best:
         v = {"call": "no type strain within ANI range",
              "text": "No sequenced type strain is within ~80 % ANI of this genome."}
@@ -875,7 +919,8 @@ def verdict(best: dict | None, best16: dict | None) -> dict:
     s = f"{lab} {ani:.2f} %" if ani is not None else "ANI n/a"
     if tet is not None:
         s += f", TETRA {tet:.4f}"
-    ts = f"type strain {best.get('strain') or ''} ({best['accession']})".replace("  ", " ")
+    st = clean_strain(best.get("strain") or "")
+    ts = f"type strain {st} ({best['accession']})" if st else f"type strain ({best['accession']})"
     if ani is None:
         return {"call": "undetermined", "level": "unknown", "species": "",
                 "text": f"ANI to {name} could not be computed."}
@@ -1234,15 +1279,29 @@ def typestrain_analysis(S: str, asm: Path, s16: list[tuple[str, str]], gtdb: dic
     out["type_strains"] = [{k: v for k, v in p.items() if k != "path"} for p in top]
     best = top[0] if top else None
     best16 = sp16[0] if sp16 else None
-    out["verdict"] = verdict(best, best16)
+    out["verdict"] = verdict(best, best16, top[1:])
     out["verdict"]["rrna_best"] = best16
 
-    # 5. trees
+    # 5. trees — a failure here must not cost the ANI table above
     if not args.skip_tree:
+        try:
+            _trees(S, asm, s16, top, rows16, sp16, db16, out, tdir, tw, args, logf, P)
+        except Exception as e:
+            import traceback
+            fr = traceback.extract_tb(e.__traceback__)[-1]
+            H.warn(f"[{S}] tree step failed: {e} (wgs_taxonomy.py:{fr.lineno} {fr.name}) — "
+                   "the type-strain table is unaffected")
+    _write_ts_tables(tdir, out, sp16)
+    if not args.keep_intermediate:
+        shutil.rmtree(tw, ignore_errors=True)
+    return out
+
+
+def _trees(S, asm, s16, top, rows16, sp16, db16, out, tdir, tw, args, logf, P):
+    if True:
         P(0.78, "Genome tree (skani + FastME)")
         gl = [(f"{S} (this isolate)", asm)] + [
-            (f"{p['organism']} {(p.get('strain') or '').strip()}T {p['accession']}"
-             .replace(" T ", " ").replace("  ", " "),
+            (ts_label(p["organism"], p.get("strain", ""), p["accession"]),
              Path(p["path"])) for p in top]
         nwk, mat = genome_tree(gl, tw / "gtree", args.threads, logf)
         if nwk:
@@ -1278,7 +1337,7 @@ def typestrain_analysis(S: str, asm: Path, s16: list[tuple[str, str]], gtdb: dic
             if r["accession"] not in {x["accession"] for x in sp_for_tree}:
                 sp_for_tree.append(r)
         recs = fetch_16s_records(db16, {r["accession"] for r in sp_for_tree}) if db16 else {}
-        seqs = iso + [(f"{r['species']} {r['strain']}T {r['accession']}".replace("  ", " "),
+        seqs = iso + [(ts_label(r["species"], r.get("strain", ""), r["accession"]),
                        recs[r["accession"]]) for r in sp_for_tree if r["accession"] in recs]
         if len(seqs) >= 4:
             nwk16, meth = rrna_tree(seqs, tw / "rtree", args.threads, logf)
@@ -1293,7 +1352,9 @@ def typestrain_analysis(S: str, asm: Path, s16: list[tuple[str, str]], gtdb: dic
                 out["rrna_tree"] = nwk16
                 out["rrna_tree_method"] = "MAFFT (--auto) alignment, " + meth + \
                     ", midpoint-rooted"
-    # tables for the sample folder
+
+
+def _write_ts_tables(tdir, out, sp16):
     with open(tdir / "type_strain_ani.csv", "w") as fh:
         cols = ["organism", "strain", "accession", "level", "anib", "anib_qr", "anib_rq",
                 "anib_cov_q", "anib_cov_r", "anim", "anim_cov_q", "anim_cov_r", "tetra",
@@ -1306,9 +1367,6 @@ def typestrain_analysis(S: str, asm: Path, s16: list[tuple[str, str]], gtdb: dic
         for r in sp16:
             fh.write(",".join(_csv(r.get(c)) for c in
                               ("species", "strain", "accession", "identity", "aln_len")) + "\n")
-    if not args.keep_intermediate:
-        shutil.rmtree(tw, ignore_errors=True)
-    return out
 
 
 def _csv(v) -> str:
