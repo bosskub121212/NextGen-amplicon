@@ -34,8 +34,52 @@ is_built() {   # is_built <dir>
   [[ -s "$1/species_taxid.fasta" ]] && head -1 "$1/taxonomy.tsv" 2>/dev/null | grep -q "^tax_id"
 }
 
+# taxonomy.tsv must have one column per rank (tax_id species genus … superkingdom):
+# the pipeline reads genus/family/… by name. `emu build-database` copies the
+# taxonomy list as given — a headerless "taxid<TAB>lineage" list comes out as
+# two columns, with its first taxon swallowed as the header line.
+fix_taxonomy() {   # fix_taxonomy <emu db dir>
+  local tx="$1/taxonomy.tsv"
+  head -1 "$tx" 2>/dev/null | tr '\t' '\n' | grep -qx "genus" && return 0
+  local LIST=""
+  for c in "$SRC/taxonomy_list.tsv" "$S/taxonomy_list.tsv" "$SRC/prep/taxonomy_list.tsv" \
+           "$S/prep/taxonomy_list.tsv"; do
+    [[ -s "$c" ]] && LIST="$c" && break
+  done
+  [[ -n "$LIST" ]] || fail "taxonomy.tsv has no rank columns and no taxonomy_list.tsv to rebuild it from"
+  info "rewriting taxonomy.tsv with one column per rank (from $(basename "$(dirname "$LIST")")/taxonomy_list.tsv)"
+  [[ -L "$tx" ]] && rm -f "$tx"
+  [[ -f "$tx" ]] && mv "$tx" "$SRC/taxonomy.tsv.emu_build_$(date +%s)"
+  python3 - "$LIST" "$tx" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+ranks = ["superkingdom", "phylum", "class", "order", "family", "genus", "species"]
+n = 0
+with open(src) as fi, open(dst, "w") as fo:
+    fo.write("tax_id\tspecies\tgenus\tfamily\torder\tclass\tphylum\tsuperkingdom\n")
+    for line in fi:
+        line = line.rstrip("\n\r")
+        if not line or line.lower().startswith("tax_id"):
+            continue
+        tid, _, lin = line.partition("\t")
+        parts = [x.strip() for x in lin.strip().rstrip(";").split(";")]
+        parts += [""] * (len(ranks) - len(parts))
+        d = dict(zip(ranks, parts[:len(ranks)]))
+        sp = d["species"]
+        if sp and d["genus"] and not sp.startswith(d["genus"]):
+            sp = f'{d["genus"]} {sp}'          # SILVA epithet only → binomial
+        fo.write("\t".join([tid, sp, d["genus"], d["family"], d["order"], d["class"],
+                            d["phylum"], d["superkingdom"]]) + "\n")
+        n += 1
+print(f"      {n} taxa written")
+PY
+  ok "taxonomy.tsv: $(head -1 "$tx")"
+}
+
+mkdir -p "$SRC"
 if is_built "$S" && [[ ! -L "$S/taxonomy.tsv" ]]; then
-  ok "emu_silva is already a built Emu database — nothing to do"
+  fix_taxonomy "$S"
+  ok "emu_silva is a built Emu database"
   exit 0
 fi
 
@@ -85,6 +129,7 @@ if [[ -d "$S/prep" ]]; then
   mv "$S/prep" "$SRC/prep" && info "moved prep/ → ~/r16s-db-backup/emu_silva_src/prep/"
 fi
 
+fix_taxonomy "$S"
 if is_built "$S"; then
   ok "emu_silva is a working Emu database:"
   ls -la "$S"

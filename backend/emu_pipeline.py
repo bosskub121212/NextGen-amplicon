@@ -674,12 +674,15 @@ def main():
             head = fh.readline()
     except Exception:
         pass
-    if not (dbd / "species_taxid.fasta").exists() or not head.startswith("tax_id"):
+    cols = head.rstrip("\n").split("\t")
+    if not (dbd / "species_taxid.fasta").exists() or not head.startswith("tax_id") \
+            or not ({"genus", "species"} & set(cols)):
         log(f"[ERROR] {dbd} is not a built Emu database: it needs species_taxid.fasta and a "
             f"taxonomy.tsv starting with a 'tax_id' header "
             f"(found: {'species_taxid.fasta' if (dbd / 'species_taxid.fasta').exists() else 'no species_taxid.fasta'}, "
-            f"taxonomy.tsv header {head[:40]!r}). Build it with `emu build-database` or pick "
-            f"another database (emu_db_mar2026 is the default).")
+            f"taxonomy.tsv header {head[:60]!r} — it also needs genus/species columns). "
+            f"Repair emu_silva with `bash ~/r16s-app/fix_emu_silva.sh`, or pick another "
+            f"database (emu_db_mar2026 is the default).")
         sys.exit(1)
 
     samples_raw = find_fastq(input_dir, out_dir / "merged_reads")
