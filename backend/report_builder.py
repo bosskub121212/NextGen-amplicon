@@ -52,7 +52,7 @@ import sys
 from collections import Counter, OrderedDict
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 # ── palette ────────────────────────────────────────────────────────────────────
 INK, ACC, WARN, STOP = "#16242B", "#1E6E8C", "#96660A", "#A83232"
@@ -190,17 +190,20 @@ class Run:
         # Per-sample counts, and the total each ASV carries across all samples.
         self.per_sample = {s: 0.0 for s in self.samples}
         self.abund: dict[str, float] = {}
+        self.mat: dict[str, dict[str, float]] = {}      # feature -> sample -> reads
         for r in asv_rows:
             seq = r[seq_col]
             tot = 0.0
+            row = self.mat.setdefault(seq, {s: 0.0 for s in self.samples})
             for s in self.samples:
                 try:
                     v = float(r[s] or 0) * scale[s]
                 except (TypeError, ValueError):
                     v = 0.0
                 self.per_sample[s] += v
+                row[s] += v
                 tot += v
-            self.abund[seq] = tot
+            self.abund[seq] = self.abund.get(seq, 0.0) + tot
         self.total = sum(self.abund.values())
 
         self.alpha = self._rows("alpha_diversity.csv")
@@ -613,252 +616,6 @@ def _tbl(head, rows, caption=None) -> str:
     return f"<table><thead><tr>{h}</tr></thead><tbody>{b}</tbody>{cap}</table>"
 
 
-def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
-                       subtitle=None, top_asv=30) -> str:
-    """Result report for a single run: what was sequenced, whether it worked, and what
-    was in it. This is the routine deliverable; the comparison layout below is for the
-    less common case of holding two analyses against each other."""
-    sample_label = ", ".join(run.samples[:3]) + ("\u2026" if len(run.samples) > 3 else "")
-    marker = run.summary.get("marker") or run.params.get("marker") or "16S"
-    title = title or f"{sample_label} \u2014 {marker} Amplicon Analysis"
-    subtitle = subtitle or (("Taxa, community composition and quality control for this "
-                             "full-length 16S run (Oxford Nanopore, Emu).") if run.emu else
-                            "Sequence variants, community composition and quality control "
-                            "for this sequencing run.")
-    L = run.lengths()
-    inp = 0.0
-    for t in run.tracking:
-        try:
-            inp += float(t.get("input") or 0)
-        except (TypeError, ValueError):
-            pass
-    out = [f'<div class="eyebrow">{esc(run.label)} &middot; {esc(marker)} &middot; '
-           f'{len(run.samples)} sample{"s" if len(run.samples)!=1 else ""}</div>',
-           f"<h1>{esc(title)}</h1>", f'<p class="sub">{esc(subtitle)}</p>']
-    kpis = [(fmt(inp) if inp else "\u2014", "reads sequenced" if run.emu else "read pairs sequenced"),
-            (fmt(run.total), "reads classified" if run.emu else "reads analysed"),
-            (str(run.n_asvs), "taxa detected" if run.emu else "sequence variants"),
-            (f"{run.rank_pct('Genus') or 0}%", "reads with a genus")]
-    out.append('<div class="kpis">' + "".join(
-        f'<div class="kpi"><div class="v">{v}</div><div class="l">{esc(l)}</div></div>'
-        for v, l in kpis) + "</div>")
-
-    # ── 1. configuration ──────────────────────────────────────────────────────
-    out.append("<h2>1. Run configuration</h2>")
-    cfg = [("Sample(s)", sample_label), ("Marker", marker)] + run.emu_config() if run.emu else [
-           ("Sample(s)", sample_label), ("Marker", marker),
-           ("Reference database", run.db_name),
-           ("Forward primer", run.params.get("primer_f") or "\u2014"),
-           ("Reverse primer", run.params.get("primer_r") or "\u2014"),
-           ("truncLen F / R", run.trunc),
-           ("maxEE F / R", f'{run.params.get("maxEE_F")} / {run.params.get("maxEE_R")}'),
-           ("Minimum bootstrap", run.params.get("minBoot")),
-           ("Chimera method", run.params.get("chimeraMethod"))]
-    out.append(_tbl(["Parameter", "Value"],
-                    [[k, esc(v if v is not None else "\u2014")] for k, v in cfg]))
-
-    # ── 2. quality control ────────────────────────────────────────────────────
-    out.append('<h2 class="pbreak">2. Quality control</h2>')
-    out.append("<h3>Read tracking</h3>")
-    if run.tracking:
-        if run.emu:
-            cols = [k for _l, k in run.stages if k in run.tracking[0]]
-            heads = [l for l, k in run.stages if k in run.tracking[0]]
-        else:
-            cols = [c for c in ("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
-                    if c in run.tracking[0]]
-            heads = [c.capitalize() for c in cols]
-        rows = []
-        for t in run.tracking:
-            base = float(t.get("input") or 0) or 1
-            rows.append([esc(next(iter(t.values())))] + [fmt(t.get(c) or 0) for c in cols]
-                        + [f'{100*float(t.get(run.retained_key) or 0)/base:.1f}%'])
-        out.append(_tbl(["Sample"] + heads + ["Retained"], rows,
-                        "Reads kept after each stage; Emu classifies the non-chimeric reads."
-                        if run.emu else None))
-    ff = svg_readflow(run)
-    if ff:
-        out.append("<figure>" + ff + "<figcaption>Reads surviving each stage, as a share of "
-                   "input. The right-hand figure is what that stage cost. "
-                   + ("Primer trimming drops reads that are not full-length amplicons."
-                      if run.emu else "Merging and chimera removal are the two stages that "
-                      "normally dominate the loss.")
-                   + "</figcaption></figure>")
-
-    o = (run.orientation or {}).get("checked") or {}
-    if o:
-        out.append("<h3>Read orientation</h3>")
-        out.append(_tbl(["Check", "Pairs", "Share"], [
-            ["Already in the expected orientation", fmt(o.get("already_correct", 0)),
-             f'{o.get("pct_already_correct", 0)}%'],
-            ["Reversed (R1 and R2 swapped)", fmt(o.get("flipped", 0)),
-             f'{o.get("pct_flipped", 0)}%'],
-            ["Ambiguous", fmt(o.get("ambiguous", 0)), f'{o.get("pct_ambiguous", 0)}%'],
-        ]))
-        if run.orientation.get("applied"):
-            out.append('<div class="note acc"><p style="margin:0"><b>Orientation was repaired '
-                       "before analysis.</b> Read pairs in the reverse orientation cannot be "
-                       "merged as they stand, so without this step they would have been lost "
-                       "silently at the merge stage.</p></div>")
-
-    if L:
-        out.append("<h3>Amplicon length</h3>")
-        out.append("<figure>" + svg_lengths(run) + "<figcaption>"
-                   + (f"Distribution of ASV lengths. The dashed line is the merge ceiling "
-                      f"(truncLen_F + truncLen_R &minus; 12 = {run.ceiling} bp), the longest "
-                      f"fragment that can be assembled from a read pair. "
-                      + ceiling_verdict(run)[1]
-                      if run.ceiling else "Distribution of ASV lengths.")
-                   + "</figcaption></figure>")
-
-        if ceiling_verdict(run)[0]:
-            out.append('<div class="note"><p style="margin:0"><b>The truncation settings are '
-                       "cutting the amplicon short.</b> Every figure in this report is computed "
-                       "over the fragments that survived merging, so a clipped window biases the "
-                       "whole profile toward whatever happens to be short \u2014 host organelle "
-                       "amplicons in particular. Treat the composition below as provisional until "
-                       "the run is repeated with a wider window.</p></div>")
-
-    qc = (run.qc or {}).get("offtarget") or {}
-    if qc:
-        out.append("<h3>Off-target reads</h3>")
-        out.append(_tbl(["Category", "Reads", "Share"], [
-            ["Host organelle (mitochondria / chloroplast)",
-             fmt(qc.get("organelle_reads", 0)), f'{qc.get("organelle_pct", 0)}%'],
-            ["Unassigned at domain level",
-             fmt(qc.get("unassigned_reads", 0)), f'{qc.get("unassigned_pct", 0)}%'],
-            ["Total off-target", fmt(qc.get("reads", 0)), f'{qc.get("pct", 0)}%'],
-        ], "&ldquo;Universal&rdquo; 16S primers co-amplify host mitochondrial DNA, which is "
-           "normal for host-associated and ectoparasite samples."))
-
-    # ── 3. composition ────────────────────────────────────────────────────────
-    out.append('<h2 class="pbreak">3. Community composition</h2>')
-    out.append(f"<p>Shares below are of the {fmt(run.bacteria)} bacterial reads, with host "
-               "organelle reads set aside.</p>")
-    ph = [(n, v) for n, v in run.phyla.most_common(8) if n != "(unassigned)"]
-    if ph:
-        out.append("<h3>Phylum</h3>")
-        out.append("<figure>" + svg_bars(ph, run.bacteria) + "</figure>")
-    tg = run.top_genera(15)
-    if tg:
-        out.append("<h3>Genus</h3>")
-        out.append("<figure>" + svg_bars([(g["name"], g["reads"]) for g in tg], run.bacteria,
-                                         kit={g["name"] for g in tg if g["kit"]})
-                   + "<figcaption>* reagent-associated genus. Unresolved sub-genus labels are "
-                     "counted under the parent genus.</figcaption></figure>")
-        out.append(_tbl(["Genus", "Reads", "% bacteria", "Note"],
-                        [[f'<i>{esc(g["name"])}</i>', fmt(g["reads"]), f'{g["pct"]}%',
-                          f'<span class="dim">'
-                          + "; ".join(([f'reagent-associated'] if g["kit"] else [])
-                                      + ([f'{fmt(g["unresolved"])} unresolved below genus']
-                                         if g["unresolved"] else []))
-                          + "</span>"] for g in tg]))
-    out.append('<div class="note"><p style="margin:0"><b>Reagent-associated genera are flagged, '
-               "not removed.</b> They are assigned from the published list of genera commonly "
-               "recovered from DNA extraction kits and PCR reagents. Unless a blank extraction "
-               "control was sequenced alongside this sample, the split is an estimate rather "
-               "than a measurement.</p></div>")
-
-    # ── 4. top ASVs ───────────────────────────────────────────────────────────
-    if run.emu:
-        out.append('<h2 class="pbreak">4. Most abundant taxa</h2>')
-        out.append(f"<p>The {top_asv} most abundant of {run.n_asvs} taxa. Reads are Emu's "
-                   "estimated counts (relative abundance &times; classified reads); the full "
-                   "table is in <span class=\"mono\">asv_table.csv</span> (one row per Emu "
-                   "tax_id) with lineages in <span class=\"mono\">taxonomy.csv</span>.</p>")
-    else:
-        out.append(f'<h2 class="pbreak">4. Most abundant sequence variants</h2>')
-        out.append(f"<p>The {top_asv} most abundant of {run.n_asvs} ASVs. Identifiers are positional "
-                   "in abundance order; the sequences themselves are in "
-                   "<span class=\"mono\">asvs.fasta</span>, and the full table is in "
-                   "<span class=\"mono\">asv_table.csv</span>.</p>")
-    rows = []
-    for a in run.top_asvs(top_asv):
-        rows.append([f'<span class="mono">{a["id"]}</span>']
-                    + ([] if run.emu else [f'{a["len"]}']) + [
-                     fmt(a["reads"]), f'{a["pct"]:.2f}%',
-                     (f'<span class="dim">host organelle</span>' if a["host"]
-                      else f'<i>{esc(a["genus"])}</i>' if a["genus"] != "\u2014"
-                      else f'<span class="dim">{esc(a["deepest"])}</span>'),
-                     f'<span style="font-size:7.4pt" class="dim">{esc(a["lineage"][:78])}</span>'])
-    out.append(_tbl((["Taxon"] if run.emu else ["ASV", "bp"]) + ["Reads", "Share", "Genus", "Lineage"],
-                    rows))
-
-    # ── 5. diversity ──────────────────────────────────────────────────────────
-    if run.alpha or run.rarefaction:
-        out.append('<h2 class="pbreak">5. Diversity</h2>')
-    if run.alpha:
-        cols = list(run.alpha[0].keys())
-        out.append(_tbl(cols, [[esc(r.get(c, "")) for c in cols] for r in run.alpha],
-                        "Observed = ASVs seen. Chao1 estimates how many there would be at "
-                        "unlimited depth. Shannon and Simpson weight richness by evenness; "
-                        "Simpson approaches 1 when no single organism dominates."))
-    rr = svg_rarefaction(run)
-    if rr:
-        out.append("<figure>" + rr + "<figcaption>Rarefaction. A curve that has flattened means "
-                   "the sequencing depth was enough to see what is present; one still rising at "
-                   "the right-hand edge means deeper sequencing would recover more."
-                   "</figcaption></figure>")
-
-    # ── 6. species ────────────────────────────────────────────────────────────
-    out.append("<h2>6. Species-level assignment</h2>")
-    if run.species:
-        out.append(_tbl(["Species", "Reads", "Share"] + ([] if run.emu else ["ASV length"]),
-                        [[f"<i>{esc(k)}</i>", fmt(v[0]),
-                          f"{100*v[0]/run.total:.2f}%"] + ([] if run.emu else [f"{v[1]} bp"])
-                         for k, v in run.species.items()],
-                        f'{fmt(sum(v[0] for v in run.species.values()))} of {fmt(run.total)} '
-                        f'reads \u2014 {run.rank_pct("Species")}% of the analysed data.'))
-    else:
-        out.append("<p>No read reached a species-level assignment.</p>")
-    if run.emu:
-        out.append("<p>Emu assigns each full-length read to the reference taxa it aligns to and "
-                   "resolves ambiguous reads by expectation&ndash;maximisation, so species calls "
-                   "come from the ~1,500 bp gene rather than a short region. Species whose 16S "
-                   "genes are near-identical (e.g. within <i>Stenotrophomonas</i> or the "
-                   "<i>Bacillus cereus</i> group) cannot be told apart by any 16S method, and a "
-                   "reference built to genus level (such as SILVA) gives no species at all; "
-                   "genus is the robust level to report.</p>")
-    else:
-      out.append("<p>Species are assigned by exact 100% match of the whole fragment against a "
-               "species-annotated reference, not by a confidence score. A low rate is the "
-               "expected outcome for a short amplicon: the V3&ndash;V4 region covers roughly "
-               "440 bp of a 1,540 bp gene, and uncultured environmental bacteria frequently "
-               "have no species-annotated entry to match against. Full-length 16S "
-               "(27F/1492R on PacBio or ONT) is the appropriate marker where species-level "
-               "identification is required.</p>")
-
-    # ── 7. notes ──────────────────────────────────────────────────────────────
-    out.append("<h2>7. Notes on reading this report</h2>")
-    notes = []
-    if run.total:
-        notes.append(f"{100*(run.host+run.euk)/run.total:.0f}% of analysed reads are host or "
-                     "other non-bacterial material co-amplified by the primers, and are "
-                     "excluded from the composition figures.")
-    if run.bacteria:
-        notes.append(f"About {100*run.kit/run.bacteria:.0f}% of the bacterial fraction matches "
-                     "the reagent contaminant profile. Relative abundances are more honestly "
-                     "computed over the remaining sample-derived reads.")
-    if run.unresolved:
-        notes.append(f"{fmt(sum(run.unresolved.values()))} reads carry a genus the reference "
-                     "could not resolve further; they are counted under the parent genus here "
-                     "and appear as separate rows in the raw taxonomy table.")
-    if run.genera.get(HAEMOPLASMA_LABEL):
-        notes.append("Haemotropic mycoplasmas are reported as one group: reference databases "
-                     "split them between the genus names Eperythrozoon and Haemobartonella, "
-                     "which are the names LPSN currently treats as correct \u2014 the transfer of "
-                     "these organisms into Mycoplasma proposed in 2001 was never validly "
-                     "published, and Judicial Opinion 92 (2014) denied it.")
-    notes.append("A blank extraction control sequenced alongside the sample would turn the "
-                 "reagent estimate into a measurement.")
-    out.append("<ul>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>")
-
-    css = _css(app, company, f"{sample_label} \u00b7 {marker}")
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            f"<title>{esc(title)}</title><style>{css}</style></head><body>"
-            + "".join(out) + "</body></html>")
-
-
 def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=None) -> str:
     multi = len(runs) > 1
     ref = runs[0]
@@ -1112,6 +869,1475 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f"<title>{esc(title)}</title><style>{css}</style></head><body>"
             + "".join(out) + "</body></html>")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Full single-run report (2.13): per-sample analysis, computed in pure Python
+#  from asv_table + taxonomy so that DADA2 and Emu runs get the same figures
+#  whether or not viz_pipeline.R left r_tables/ behind.
+# ══════════════════════════════════════════════════════════════════════════════
+import math
+
+PAL30 = ["#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD", "#8C564B", "#E377C2",
+         "#BCBD22", "#17BECF", "#AEC7E8", "#FFBB78", "#98DF8A", "#FF9896", "#C5B0D5",
+         "#C49C94", "#F7B6D2", "#DBDB8D", "#9EDAE5", "#393B79", "#637939", "#8C6D31",
+         "#843C39", "#7B4173", "#5254A3", "#8CA252", "#BD9E39", "#AD494A", "#A55194",
+         "#6B6ECF", "#E7BA52"]
+OTHER_C, UNCL_C = "#98A4AA", "#CBD3D7"
+MONO = 'font-family="DejaVu Sans Mono"'
+PLURAL = {"Phylum": "phyla", "Class": "classes", "Order": "orders", "Family": "families",
+          "Genus": "genera", "Species": "species"}
+
+
+def _rc(seq: str) -> str:
+    comp = str.maketrans("ACGTRYKMBVDHNSWacgtrykmbvdhnsw", "TGCAYRMKVBHDNSWtgcayrmkvbhdnsw")
+    return (seq or "").translate(comp)[::-1]
+
+
+def _pal(i: int) -> str:
+    return PAL30[i % len(PAL30)]
+
+
+def _short(s, n):
+    s = str(s)
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+# ── numerical helpers ─────────────────────────────────────────────────────────
+def _alpha_of(counts) -> dict:
+    """Observed, Chao1 (bias-corrected), ACE, Shannon (ln) and Simpson (1 - D),
+    the same estimators phyloseq::estimate_richness / vegan::estimateR use."""
+    c = [int(round(x)) for x in counts if round(x) > 0]
+    S, N = len(c), sum(c)
+    if not N:
+        return {"Observed": 0, "Chao1": 0, "ACE": 0, "Shannon": 0, "Simpson": 0}
+    f1, f2 = c.count(1), c.count(2)
+    chao1 = S + f1 * (f1 - 1) / (2 * (f2 + 1))
+    rare = [x for x in c if x <= 10]
+    s_rare, n_rare = len(rare), sum(rare)
+    ace = float(S)
+    if n_rare and n_rare != f1:
+        cace = 1 - f1 / n_rare
+        g2 = max(s_rare / cace * sum(i * (i - 1) * rare.count(i) for i in range(1, 11))
+                 / (n_rare * (n_rare - 1)) - 1, 0) if n_rare > 1 else 0
+        ace = (S - s_rare) + s_rare / cace + f1 / cace * g2
+    ps = [x / N for x in c]
+    return {"Observed": S, "Chao1": chao1, "ACE": ace,
+            "Shannon": -sum(p * math.log(p) for p in ps),
+            "Simpson": 1 - sum(p * p for p in ps)}
+
+
+def _hurlbert(counts, n) -> float:
+    """Expected number of features in a random subsample of n reads (vegan::rarefy)."""
+    N = sum(counts)
+    if n >= N:
+        return float(sum(1 for x in counts if x > 0))
+    lg = math.lgamma
+    lc = lg(N + 1) - lg(n + 1) - lg(N - n + 1)
+    s = 0.0
+    for x in counts:
+        if x <= 0:
+            continue
+        if N - x < n:
+            s += 1.0
+            continue
+        s += 1.0 - math.exp(lg(N - x + 1) - lg(n + 1) - lg(N - x - n + 1) - lc)
+    return s
+
+
+def _bray(a, b) -> float:
+    """Bray-Curtis between two composition vectors (proportions)."""
+    num = sum(abs(x - y) for x, y in zip(a, b))
+    den = sum(a) + sum(b)
+    return num / den if den else 0.0
+
+
+def _jacobi(A, sweeps=80):
+    """Eigen-decomposition of a small symmetric matrix. Returns (values, vectors as columns)."""
+    n = len(A)
+    A = [row[:] for row in A]
+    V = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    for _ in range(sweeps):
+        off = sum(A[i][j] ** 2 for i in range(n) for j in range(i + 1, n))
+        if off < 1e-20:
+            break
+        for p in range(n):
+            for q in range(p + 1, n):
+                if abs(A[p][q]) < 1e-14:
+                    continue
+                th = (A[q][q] - A[p][p]) / (2 * A[p][q])
+                t = (1 if th >= 0 else -1) / (abs(th) + math.sqrt(th * th + 1))
+                c = 1 / math.sqrt(t * t + 1)
+                s = t * c
+                for k in range(n):
+                    akp, akq = A[k][p], A[k][q]
+                    A[k][p], A[k][q] = c * akp - s * akq, s * akp + c * akq
+                for k in range(n):
+                    apk, aqk = A[p][k], A[q][k]
+                    A[p][k], A[q][k] = c * apk - s * aqk, s * apk + c * aqk
+                for k in range(n):
+                    vkp, vkq = V[k][p], V[k][q]
+                    V[k][p], V[k][q] = c * vkp - s * vkq, s * vkp + c * vkq
+    return [A[i][i] for i in range(n)], V
+
+
+def _pcoa(D):
+    """Classical multidimensional scaling. Returns (coords [[ax1, ax2], ...], [pct1, pct2])."""
+    n = len(D)
+    D2 = [[D[i][j] ** 2 for j in range(n)] for i in range(n)]
+    rm = [sum(r) / n for r in D2]
+    gm = sum(rm) / n
+    B = [[-0.5 * (D2[i][j] - rm[i] - rm[j] + gm) for j in range(n)] for i in range(n)]
+    vals, vecs = _jacobi(B)
+    order = sorted(range(n), key=lambda k: -vals[k])
+    pos = sum(v for v in vals if v > 1e-12) or 1.0
+    coords = [[0.0, 0.0] for _ in range(n)]
+    pct = [0.0, 0.0]
+    for ax in range(2):
+        if ax >= len(order):
+            break
+        k = order[ax]
+        lam = vals[k]
+        if lam <= 1e-12:
+            continue
+        pct[ax] = 100 * lam / pos
+        # sign convention: largest absolute loading positive, so reruns look the same
+        col = [vecs[i][k] for i in range(n)]
+        if col[max(range(n), key=lambda i: abs(col[i]))] < 0:
+            col = [-x for x in col]
+        for i in range(n):
+            coords[i][ax] = col[i] * math.sqrt(lam)
+    return coords, pct
+
+
+def _upgma(D):
+    """Average-linkage clustering. Nodes: ("L", i) or ("N", left, right, height)."""
+    n = len(D)
+    if n == 0:
+        return None
+    nodes = {i: ("L", i) for i in range(n)}
+    size = {i: 1 for i in range(n)}
+    dist = {(i, j): D[i][j] for i in range(n) for j in range(i + 1, n)}
+    nxt = n
+    while len(nodes) > 1:
+        (a, b), d = min(dist.items(), key=lambda kv: (kv[1], kv[0]))
+        nodes[nxt] = ("N", nodes.pop(a), nodes.pop(b), d)
+        sa, sb = size.pop(a), size.pop(b)
+        size[nxt] = sa + sb
+        for k in list(nodes):
+            if k == nxt:
+                continue
+            dak = dist.pop((min(a, k), max(a, k)))
+            dbk = dist.pop((min(b, k), max(b, k)))
+            dist[(k, nxt)] = (sa * dak + sb * dbk) / (sa + sb)
+        dist.pop((min(a, b), max(a, b)), None)
+        nxt += 1
+    return next(iter(nodes.values()))
+
+
+def _leaves(node):
+    if node is None:
+        return []
+    if node[0] == "L":
+        return [node[1]]
+    return _leaves(node[1]) + _leaves(node[2])
+
+
+def _height(node):
+    return 0.0 if node is None or node[0] == "L" else node[3]
+
+
+def _dendro(node, leafpos):
+    """Segments of a dendrogram in (position, height) space."""
+    if node[0] == "L":
+        return leafpos[node[1]], 0.0, []
+    pl, hl, sl = _dendro(node[1], leafpos)
+    pr, hr, sr = _dendro(node[2], leafpos)
+    h = node[3]
+    return (pl + pr) / 2, h, sl + sr + [((pl, hl), (pl, h)), ((pr, hr), (pr, h)),
+                                        ((pl, h), (pr, h))]
+
+
+def _euclid(a, b):
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+# ── per-sample analysis of one run ────────────────────────────────────────────
+class Analysis:
+    """Everything the full report draws, computed once per run."""
+
+    def __init__(self, run):
+        self.run = run
+        self.samples = list(run.samples)
+        self.comm = [q for q in run.bact_seqs if q in run.mat]   # host organelle / eukaryote reads set aside
+        self.mat = run.mat
+        self.comm_tot = {s: sum(self.mat[q][s] for q in self.comm) for s in self.samples}
+        self._rank = {}
+        self.groups = self._groups()
+
+    # sample → group, from the run's metadata
+    def _groups(self):
+        g, desc = {}, {}
+        for m in (self.run.params.get("metadata") or []):
+            sid = str(m.get("sampleId") or m.get("sample") or "").strip()
+            if sid:
+                if m.get("group"):
+                    g[sid] = str(m["group"]).strip()
+                if m.get("description"):
+                    desc[sid] = str(m["description"]).strip()
+        if not g:
+            for r in self.run._rows("metadata.csv"):
+                vals = list(r.values())
+                sid = str(r.get("sampleId") or r.get("sample") or (vals[0] if vals else "")).strip()
+                grp = r.get("group") or r.get("Group")
+                if sid and grp:
+                    g[sid] = str(grp).strip()
+                if sid and r.get("description"):
+                    desc[sid] = str(r["description"]).strip()
+        self.desc = desc
+        return {s: g[s] for s in self.samples if s in g}
+
+    # ── taxonomy ──────────────────────────────────────────────────────────────
+    def label(self, seq, rank) -> str:
+        run, r = self.run, self.run.tax.get(seq, {})
+        if rank == "Species":
+            sp = str(r.get("Species") or "").strip()
+            if not sp or BLANK_RE.match(sp) or sp.endswith(" sp.") or sp == "sp.":
+                return "Unclassified"
+            g = run._clean_genus(r.get("Genus"))
+            if run.emu or " " in sp or not g:
+                return sp
+            return f"{g} {sp}"
+        v = str(r.get(rank) or "").strip()
+        if not v or BLANK_RE.match(v):
+            return "Unclassified"
+        if rank == "Genus":
+            return run._clean_genus(v) or "Unclassified"
+        return UNRESOLVED_RE.sub("", v) or "Unclassified"
+
+    def rank_counts(self, rank):
+        """{taxon: {sample: reads}} over the community reads."""
+        if rank not in self._rank:
+            m = {}
+            for q in self.comm:
+                t = self.label(q, rank)
+                row = m.setdefault(t, {s: 0.0 for s in self.samples})
+                for s in self.samples:
+                    row[s] += self.mat[q][s]
+            self._rank[rank] = m
+        return self._rank[rank]
+
+    def rank_pct(self, rank):
+        m = self.rank_counts(rank)
+        return {t: {s: (100 * v[s] / self.comm_tot[s] if self.comm_tot[s] else 0.0)
+                    for s in self.samples} for t, v in m.items()}
+
+    def top(self, rank, n=30):
+        """(top taxa by mean relative abundance, pct table incl. Other / Unclassified)."""
+        pct = self.rank_pct(rank)
+        ns = len(self.samples) or 1
+        named = sorted((t for t in pct if t != "Unclassified"),
+                       key=lambda t: -sum(pct[t].values()) / ns)
+        keep = named[:n]
+        out = {t: pct[t] for t in keep}
+        rest = named[n:]
+        if rest:
+            out["Other"] = {s: sum(pct[t][s] for t in rest) for s in self.samples}
+        if "Unclassified" in pct:
+            out["Unclassified"] = pct["Unclassified"]
+        return keep, out
+
+    def dominant(self, rank, s, k=3):
+        pct = self.rank_pct(rank)
+        items = sorted(((t, v[s]) for t, v in pct.items() if t != "Unclassified"),
+                       key=lambda kv: -kv[1])
+        return [(t, v) for t, v in items[:k] if v > 0]
+
+    # ── features per sample ───────────────────────────────────────────────────
+    def n_features(self, s):
+        return sum(1 for q in self.run.abund if self.mat[q][s] >= 0.5)
+
+    def alpha(self):
+        if not hasattr(self, "_alpha"):
+            self._alpha = {s: _alpha_of([self.mat[q][s] for q in self.run.abund])
+                           for s in self.samples}
+        return self._alpha
+
+    def rarefaction(self, points=30):
+        """{sample: [(depth, expected features), ...]} — Hurlbert expectation."""
+        if hasattr(self, "_rare"):
+            return self._rare
+        cnt = {s: [int(round(self.mat[q][s])) for q in self.run.abund] for s in self.samples}
+        mx = max((sum(c) for c in cnt.values()), default=0)
+        out = {}
+        for s, c in cnt.items():
+            N = sum(c)
+            if N < 2:
+                continue
+            depths = sorted({max(1, int(N * (i / points) ** 1.6)) for i in range(1, points + 1)} | {N})
+            out[s] = [(d, _hurlbert(c, d)) for d in depths]
+        self._rare, self.rare_max = out, mx
+        return out
+
+    def plateau(self, s):
+        """Share of richness gained over the last 10% of the sample's depth."""
+        c = [int(round(self.mat[q][s])) for q in self.run.abund]
+        N = sum(c)
+        if N < 20:
+            return None
+        full = _hurlbert(c, N)
+        at90 = _hurlbert(c, int(N * 0.9))
+        return 100 * (full - at90) / full if full else None
+
+    # ── between samples ───────────────────────────────────────────────────────
+    def bray(self):
+        if hasattr(self, "_bray"):
+            return self._bray
+        feats = list(self.run.abund)
+        tot = {s: sum(self.mat[q][s] for q in feats) for s in self.samples}
+        vec = {s: [self.mat[q][s] / tot[s] if tot[s] else 0.0 for q in feats] for s in self.samples}
+        n = len(self.samples)
+        D = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(i + 1, n):
+                D[i][j] = D[j][i] = _bray(vec[self.samples[i]], vec[self.samples[j]])
+        self._bray = D
+        return D
+
+    def archaea(self):
+        """[(sample, archaeal reads, % of community, dominant archaeal taxon)]"""
+        run = self.run
+        arch = [q for q in self.comm
+                if any(str(run.tax[q].get(k) or "").strip() == "Archaea"
+                       for k in ("Domain", "Kingdom", "Superkingdom", "superkingdom"))]
+        rows = []
+        for s in self.samples:
+            reads = sum(self.mat[q][s] for q in arch)
+            best = Counter()
+            for q in arch:
+                if self.mat[q][s] > 0:
+                    g = self.label(q, "Genus")
+                    best[g if g != "Unclassified" else self.label(q, "Phylum")] += self.mat[q][s]
+            top = best.most_common(1)
+            rows.append((s, reads, 100 * reads / self.comm_tot[s] if self.comm_tot[s] else 0.0,
+                         top[0][0] if top else "—"))
+        return rows
+
+    def permanova(self):
+        """(R2, p) from beta_stats.txt when the test had residual degrees of freedom."""
+        p = self.run.path / "beta_stats.txt"
+        if not p.exists():
+            return None
+        txt = p.read_text(encoding="utf-8", errors="replace")
+        if "No residual component" in txt:
+            return None
+        m = re.search(r"\n\s*(?:Model|grp_factor|group\w*)\s+(\d+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)"
+                      r"\s+([\d.eE+-]+)\s+([\d.eE+-]+)", txt)
+        if not m:
+            return None
+        try:
+            return float(m.group(3)), float(m.group(5)), float(m.group(4))
+        except ValueError:
+            return None
+
+# ── figures for the full report ───────────────────────────────────────────────
+def _svg_open(W, H):
+    return [f'<svg viewBox="0 0 {W} {H}" width="100%" style="max-width:{W}px" '
+            f'xmlns="http://www.w3.org/2000/svg">']
+
+
+def _xlabels(p, labels, xs, y, maxlen=22, size=7.5):
+    rot = len(labels) > 3 or max((len(str(l)) for l in labels), default=0) > 10
+    for l, x in zip(labels, xs):
+        t = esc(_short(l, maxlen))
+        if rot:
+            p.append(f'<text x="{x:.1f}" y="{y:.1f}" font-size="{size}" fill="{INK}" '
+                     f'text-anchor="end" transform="rotate(-40 {x:.1f} {y:.1f})">{t}</text>')
+        else:
+            p.append(f'<text x="{x:.1f}" y="{y+4:.1f}" font-size="{size}" fill="{INK}" '
+                     f'text-anchor="middle">{t}</text>')
+
+
+def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None) -> str:
+    """Top-n taxa per sample as 100% stacked bars, with a legend down the right."""
+    samples = samples or an.samples
+    if table is None:
+        keep, table = an.top(rank, n)
+    else:
+        keep = [t for t in table if t not in ("Other", "Unclassified")]
+    order = keep + [t for t in ("Other", "Unclassified") if t in table]
+    col = {t: _pal(i) for i, t in enumerate(keep)}
+    col["Other"], col["Unclassified"] = OTHER_C, UNCL_C
+    italic = rank in ("Genus", "Species") if italic is None else italic
+    longest = max((len(str(s)) for s in samples), default=4)
+    W, x0, y0, ph = 520, 38, 22, 320
+    leg_x = 336
+    pw = leg_x - x0 - 16
+    bot = 18 + min(longest, 22) * 3.6
+    H = int(y0 + ph + bot + 10)
+    p = _svg_open(W, H)
+    p.append(f'<text x="{x0}" y="11" font-size="8.5" fill="{MUT}">Relative abundance — '
+             f'{esc(rank)} level</text>')
+    for gy in range(0, 101, 25):
+        y = y0 + ph - ph * gy / 100
+        p.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0+pw}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
+        p.append(f'<text x="{x0-4}" y="{y+2.5:.1f}" font-size="7" fill="{FAINT}" text-anchor="end" {MONO}>{gy}</text>')
+    p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="7.5" fill="{MUT}" text-anchor="middle" '
+             f'transform="rotate(-90 9 {y0+ph/2:.1f})">Relative abundance (%)</text>')
+    ns = max(len(samples), 1)
+    slot = pw / ns
+    bw = min(slot * 0.72, 46)
+    xs = []
+    for i, s in enumerate(samples):
+        xc = x0 + slot * (i + 0.5)
+        xs.append(xc)
+        tot = sum(table[t].get(s, 0) for t in order) or 100
+        acc = 0.0
+        for t in order:
+            v = table[t].get(s, 0) * 100 / tot
+            if v <= 0:
+                continue
+            h = ph * v / 100
+            y = y0 + ph - ph * (acc + v) / 100
+            p.append(f'<rect x="{xc-bw/2:.1f}" y="{y:.2f}" width="{bw:.1f}" height="{h:.2f}" '
+                     f'fill="{col[t]}" stroke="#fff" stroke-width=".25"><title>{esc(t)} {v:.2f}%</title></rect>')
+            acc += v
+    _xlabels(p, samples, xs, y0 + ph + 10)
+    # legend
+    rows = len(order)
+    lh = min(11.0, (H - 30) / max(rows, 1))
+    fs = min(7.4, lh * 0.72)
+    p.append(f'<text x="{leg_x}" y="11" font-size="8" fill="{INK}" font-weight="700">{esc(rank)}</text>')
+    for i, t in enumerate(order):
+        y = 18 + i * lh
+        p.append(f'<rect x="{leg_x}" y="{y:.1f}" width="{lh*0.75:.1f}" height="{lh*0.75:.1f}" fill="{col[t]}"/>')
+        sty = ' font-style="italic"' if italic and t not in ("Other", "Unclassified") else ""
+        p.append(f'<text x="{leg_x+lh:.1f}" y="{y+lh*0.68:.1f}" font-size="{fs:.1f}" fill="{INK}"{sty}>'
+                 f'{esc(_short(t, 36))}</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def _heat_col(v, vmax):
+    """White → deep blue on a log scale of percent."""
+    if v <= 0:
+        return "#F4F7F8"
+    f = math.log10(v + 0.01) - math.log10(0.01)
+    f = max(0.0, min(1.0, f / (math.log10(vmax + 0.01) - math.log10(0.01))))
+    a = (0xF4, 0xF7, 0xF8)
+    b = (0x0B, 0x2E, 0x59)
+    mid = (0x5B, 0x9B, 0xC8)
+    if f < 0.5:
+        c = [a[i] + (mid[i] - a[i]) * f * 2 for i in range(3)]
+    else:
+        c = [mid[i] + (b[i] - mid[i]) * (f - 0.5) * 2 for i in range(3)]
+    return "#%02X%02X%02X" % tuple(int(x) for x in c)
+
+
+def svg_heatmap(an, rank="Genus", n=30) -> str:
+    """Top-n taxa × samples, clustered: rows by profile (UPGMA, Euclidean on log %),
+    columns by Bray-Curtis when there are three or more samples."""
+    keep, table = an.top(rank, n)
+    if not keep:
+        return ""
+    samples = list(an.samples)
+    # columns
+    col_tree = None
+    if len(samples) >= 3:
+        vec = [[table[t][s] for t in keep] for s in samples]
+        D = [[_bray(a, b) for b in vec] for a in vec]
+        col_tree = _upgma(D)
+        samples = [samples[i] for i in _leaves(col_tree)]
+    # rows
+    lv = [[math.log10(table[t][s] + 0.01) for s in an.samples] for t in keep]
+    row_tree = _upgma([[_euclid(a, b) for b in lv] for a in lv]) if len(keep) > 1 else None
+    rows = [keep[i] for i in _leaves(row_tree)] if row_tree else keep
+    vmax = max((table[t][s] for t in keep for s in samples), default=1) or 1
+    W = 520
+    dend_w = 70
+    lab_w = 150
+    top_h = 52 if col_tree else 8
+    cw = min(48, (W - dend_w - lab_w - 10) / max(len(samples), 1))
+    ch = 11.5
+    x0 = dend_w + 4
+    y0 = 20 + top_h
+    longest = max((len(str(s)) for s in samples), default=4)
+    H = int(y0 + ch * len(rows) + 18 + min(longest, 22) * 3.6 + 34)
+    p = _svg_open(W, H)
+    p.append(f'<text x="0" y="11" font-size="8.5" fill="{MUT}">Top {len(keep)} {esc(rank.lower())} '
+             f'— relative abundance (%)</text>')
+    for j, s in enumerate(samples):
+        for i, t in enumerate(rows):
+            v = table[t][s]
+            x, y = x0 + j * cw, y0 + i * ch
+            c = _heat_col(v, vmax)
+            p.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{cw:.1f}" height="{ch:.1f}" fill="{c}" '
+                     f'stroke="#fff" stroke-width=".5"/>')
+            if cw >= 24:
+                dark = c != "#F4F7F8" and int(c[1:3], 16) < 0x80
+                txt = f"{v:.1f}" if v >= 0.05 else ("0" if v == 0 else "<.1")
+                p.append(f'<text x="{x+cw/2:.1f}" y="{y+ch*0.72:.1f}" font-size="6.3" '
+                         f'fill="{"#fff" if dark else MUT}" text-anchor="middle" {MONO}>{txt}</text>')
+    # row labels
+    lx = x0 + cw * len(samples) + 4
+    for i, t in enumerate(rows):
+        sty = ' font-style="italic"' if rank in ("Genus", "Species") else ""
+        p.append(f'<text x="{lx:.1f}" y="{y0+i*ch+ch*0.75:.1f}" font-size="7.2" fill="{INK}"{sty}>'
+                 f'{esc(_short(t, 34))}</text>')
+    # row dendrogram (root at the left)
+    if row_tree:
+        hmax = _height(row_tree) or 1
+        pos = {k: y0 + (rows.index(keep[k]) + 0.5) * ch for k in range(len(keep))}
+        _pp, _hh, segs = _dendro(row_tree, pos)
+        for (p1, h1), (p2, h2) in segs:
+            xa = x0 - 3 - (dend_w - 6) * h1 / hmax
+            xb = x0 - 3 - (dend_w - 6) * h2 / hmax
+            p.append(f'<line x1="{xa:.1f}" y1="{p1:.1f}" x2="{xb:.1f}" y2="{p2:.1f}" stroke="{MUT}" stroke-width=".7"/>')
+    # column dendrogram (root at the top)
+    if col_tree:
+        hmax = _height(col_tree) or 1
+        pos = {k: x0 + (samples.index(an.samples[k]) + 0.5) * cw for k in range(len(an.samples))}
+        _pp, _hh, segs = _dendro(col_tree, pos)
+        for (p1, h1), (p2, h2) in segs:
+            ya = y0 - 3 - (top_h - 6) * h1 / hmax
+            yb = y0 - 3 - (top_h - 6) * h2 / hmax
+            p.append(f'<line x1="{p1:.1f}" y1="{ya:.1f}" x2="{p2:.1f}" y2="{yb:.1f}" stroke="{MUT}" stroke-width=".7"/>')
+    yb = y0 + ch * len(rows)
+    _xlabels(p, samples, [x0 + (j + 0.5) * cw for j in range(len(samples))], yb + 9)
+    # colour key
+    ky = H - 14
+    kx = 0
+    p.append(f'<text x="{kx}" y="{ky-4}" font-size="6.8" fill="{MUT}">% (log scale)</text>')
+    stops = [0, 0.01, 0.1, 1, 10, vmax]
+    stops = sorted({round(s, 2) for s in stops if s <= vmax})
+    for k, sv in enumerate(stops):
+        p.append(f'<rect x="{kx + k*34}" y="{ky}" width="34" height="7" fill="{_heat_col(sv, vmax)}" stroke="{RULE}" stroke-width=".4"/>')
+        p.append(f'<text x="{kx + k*34 + 17}" y="{ky+14}" font-size="6.2" fill="{FAINT}" text-anchor="middle" {MONO}>{sv:g}</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def svg_steps(run, an) -> str:
+    """Reads per pipeline step, one line per sample (box per step from 4 samples up)."""
+    if not run.tracking:
+        return ""
+    if run.emu:
+        steps = [(l, k) for l, k in run.stages if k in run.tracking[0]]
+    else:
+        steps = [(c.capitalize() if c != "nonchim" else "Non-chimeric", c)
+                 for c in ("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+                 if c in run.tracking[0]]
+    if len(steps) < 2:
+        return ""
+    data = []
+    for t in run.tracking:
+        name = str(next(iter(t.values())))
+        vals = []
+        for _l, k in steps:
+            try:
+                vals.append(float(t.get(k) or 0))
+            except (TypeError, ValueError):
+                vals.append(0.0)
+        data.append((name, vals))
+    mx = max((v for _n, vs in data for v in vs), default=1) or 1
+    nice = 10 ** int(math.log10(mx))
+    mx = math.ceil(mx / nice) * nice
+    W, H, x0, y0, pw, ph = 520, 230, 48, 14, 340, 170
+    p = _svg_open(W, H)
+    for k in range(5):
+        v = mx * k / 4
+        y = y0 + ph - ph * k / 4
+        p.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0+pw}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
+        p.append(f'<text x="{x0-4}" y="{y+2.5:.1f}" font-size="7" fill="{FAINT}" text-anchor="end" {MONO}>{fmt(v)}</text>')
+    xs = [x0 + pw * (i + 0.5) / len(steps) for i in range(len(steps))]
+    if len(data) >= 4:
+        for i, x in enumerate(xs):
+            col = sorted(vs[i] for _n, vs in data)
+            q = lambda f: col[min(len(col) - 1, int(round(f * (len(col) - 1))))]
+            yq1, yq3 = y0 + ph - ph * q(.25) / mx, y0 + ph - ph * q(.75) / mx
+            ymed = y0 + ph - ph * q(.5) / mx
+            ylo, yhi = y0 + ph - ph * col[0] / mx, y0 + ph - ph * col[-1] / mx
+            p.append(f'<line x1="{x:.1f}" y1="{ylo:.1f}" x2="{x:.1f}" y2="{yhi:.1f}" stroke="{FAINT}" stroke-width=".8"/>')
+            p.append(f'<rect x="{x-11:.1f}" y="{yq3:.1f}" width="22" height="{max(yq1-yq3,0.8):.1f}" fill="#EAF1F4" stroke="{MUT}" stroke-width=".7"/>')
+            p.append(f'<line x1="{x-11:.1f}" y1="{ymed:.1f}" x2="{x+11:.1f}" y2="{ymed:.1f}" stroke="{INK}" stroke-width="1.1"/>')
+    for si, (name, vs) in enumerate(data):
+        c = SERIES[si] if len(data) <= len(SERIES) else _pal(si)
+        pts = " ".join(f"{x:.1f},{y0+ph-ph*v/mx:.1f}" for x, v in zip(xs, vs))
+        p.append(f'<polyline points="{pts}" fill="none" stroke="{c}" stroke-width="1" opacity=".75"/>')
+        for x, v in zip(xs, vs):
+            p.append(f'<circle cx="{x:.1f}" cy="{y0+ph-ph*v/mx:.1f}" r="2.1" fill="{c}"/>')
+    for (l, _k), x in zip(steps, xs):
+        p.append(f'<text x="{x:.1f}" y="{y0+ph+12}" font-size="7.4" fill="{INK}" text-anchor="middle">{esc(l)}</text>')
+    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-24}" font-size="7.6" fill="{MUT}" text-anchor="middle">Pipeline step</text>')
+    p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="7.5" fill="{MUT}" text-anchor="middle" '
+             f'transform="rotate(-90 9 {y0+ph/2:.1f})">Read count</text>')
+    lx = x0 + pw + 14
+    for si, (name, _vs) in enumerate(data[:18]):
+        c = SERIES[si] if len(data) <= len(SERIES) else _pal(si)
+        y = y0 + 4 + si * 11
+        p.append(f'<circle cx="{lx+3}" cy="{y:.1f}" r="2.6" fill="{c}"/>')
+        p.append(f'<text x="{lx+10}" y="{y+2.6:.1f}" font-size="7" fill="{INK}">{esc(_short(name, 24))}</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def svg_alpha(an, alpha) -> str:
+    """Four panels — Observed, Chao1, Shannon, Simpson — one bar per sample."""
+    idx = ["Observed", "Chao1", "Shannon", "Simpson"]
+    samples = an.samples
+    longest = max((len(str(s)) for s in samples), default=4)
+    pw_, ph_ = 205, 100
+    bot = 14 + min(longest, 20) * 3.4
+    cellh = ph_ + bot + 26
+    W, H = 520, int(cellh * 2 + 14)
+    p = _svg_open(W, H)
+    for k, name in enumerate(idx):
+        ox = 40 + (k % 2) * 262
+        oy = 26 + (k // 2) * cellh
+        vals = [alpha[s][name] for s in samples]
+        mx = max(vals, default=1) or 1
+        if name == "Simpson":
+            mx = 1.0
+        p.append(f'<text x="{ox-36}" y="{oy-13}" font-size="8.5" fill="{INK}" font-weight="700">{name}</text>')
+        for g in (0, .5, 1):
+            y = oy + ph_ - ph_ * g
+            v = mx * g
+            p.append(f'<line x1="{ox}" y1="{y:.1f}" x2="{ox+pw_}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
+            lab = f"{v:.2f}" if name in ("Shannon", "Simpson") else fmt(v)
+            p.append(f'<text x="{ox-4}" y="{y+2.5:.1f}" font-size="6.6" fill="{FAINT}" text-anchor="end" {MONO}>{lab}</text>')
+        slot = pw_ / max(len(samples), 1)
+        bw = min(slot * 0.62, 30)
+        xs = []
+        for i, (s, v) in enumerate(zip(samples, vals)):
+            xc = ox + slot * (i + 0.5)
+            xs.append(xc)
+            h = ph_ * v / mx
+            c = SERIES[i] if len(samples) <= len(SERIES) else _pal(i)
+            p.append(f'<rect x="{xc-bw/2:.1f}" y="{oy+ph_-h:.1f}" width="{bw:.1f}" height="{h:.1f}" fill="{c}"/>')
+            if len(samples) <= 12:
+                lab = f"{v:.2f}" if name in ("Shannon", "Simpson") else fmt(v)
+                p.append(f'<text x="{xc:.1f}" y="{oy+ph_-h-2:.1f}" font-size="6.2" fill="{MUT}" text-anchor="middle" {MONO}>{lab}</text>')
+        _xlabels(p, samples, xs, oy + ph_ + 8, maxlen=20, size=6.8)
+    p.append("</svg>")
+    return "".join(p)
+
+
+def svg_rare(an) -> str:
+    """Rarefaction: expected features against subsampled depth, one curve per sample."""
+    curves = an.rarefaction()
+    if not curves:
+        return ""
+    samples = [s for s in an.samples if s in curves]
+    mx_x = max(c[-1][0] for c in curves.values()) or 1
+    mx_y = max(max(v for _d, v in c) for c in curves.values()) or 1
+    W, H, x0, y0, pw, ph = 520, 250, 46, 12, 330, 196
+    p = _svg_open(W, H)
+    for k in range(5):
+        y = y0 + ph - ph * k / 4
+        p.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0+pw}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
+        p.append(f'<text x="{x0-4}" y="{y+2.5:.1f}" font-size="7" fill="{FAINT}" text-anchor="end" {MONO}>{fmt(mx_y*k/4)}</text>')
+        x = x0 + pw * k / 4
+        p.append(f'<text x="{x:.1f}" y="{y0+ph+12}" font-size="7" fill="{FAINT}" text-anchor="middle" {MONO}>{fmt(mx_x*k/4)}</text>')
+    for i, s in enumerate(samples):
+        c = SERIES[i] if len(samples) <= len(SERIES) else _pal(i)
+        pts = " ".join(f"{x0+pw*d/mx_x:.1f},{y0+ph-ph*v/mx_y:.1f}" for d, v in curves[s])
+        p.append(f'<polyline points="{pts}" fill="none" stroke="{c}" stroke-width="1.5"/>')
+        d, v = curves[s][-1]
+        p.append(f'<circle cx="{x0+pw*d/mx_x:.1f}" cy="{y0+ph-ph*v/mx_y:.1f}" r="2" fill="{c}"/>')
+    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-14}" font-size="7.6" fill="{MUT}" text-anchor="middle">Sequencing depth (reads)</text>')
+    p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="7.5" fill="{MUT}" text-anchor="middle" '
+             f'transform="rotate(-90 9 {y0+ph/2:.1f})">Observed {"taxa" if an.run.emu else "ASVs"}</text>')
+    lx = x0 + pw + 14
+    for i, s in enumerate(samples[:20]):
+        c = SERIES[i] if len(samples) <= len(SERIES) else _pal(i)
+        y = y0 + 6 + i * 11
+        p.append(f'<line x1="{lx}" y1="{y:.1f}" x2="{lx+10}" y2="{y:.1f}" stroke="{c}" stroke-width="2"/>')
+        p.append(f'<text x="{lx+14}" y="{y+2.6:.1f}" font-size="7" fill="{INK}">{esc(_short(s, 24))}</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def _group_colors(an):
+    groups = [an.groups.get(s) for s in an.samples]
+    uniq = []
+    for g in groups:
+        if g and g not in uniq:
+            uniq.append(g)
+    use_groups = bool(uniq) and len(uniq) < len(an.samples)
+    if use_groups:
+        cmap = {g: _pal(i) for i, g in enumerate(uniq)}
+        return [cmap.get(g, FAINT) for g in groups], cmap
+    return [SERIES[i] if len(an.samples) <= len(SERIES) else _pal(i)
+            for i in range(len(an.samples))], None
+
+
+def svg_pcoa(an) -> str:
+    D = an.bray()
+    if len(D) < 3:
+        return ""
+    coords, pct = _pcoa(D)
+    cols, cmap = _group_colors(an)
+    xs = [c[0] for c in coords]
+    ys = [c[1] for c in coords]
+    def rng(v):
+        lo, hi = min(v), max(v)
+        pad = (hi - lo) * 0.18 or 0.1
+        return lo - pad, hi + pad
+    (xl, xh), (yl, yh) = rng(xs), rng(ys)
+    W, H, x0, y0, pw, ph = 520, 300, 46, 14, 330, 240
+    p = _svg_open(W, H)
+    p.append(f'<rect x="{x0}" y="{y0}" width="{pw}" height="{ph}" fill="none" stroke="{RULE}"/>')
+    X = lambda v: x0 + pw * (v - xl) / (xh - xl)
+    Y = lambda v: y0 + ph - ph * (v - yl) / (yh - yl)
+    if xl < 0 < xh:
+        p.append(f'<line x1="{X(0):.1f}" y1="{y0}" x2="{X(0):.1f}" y2="{y0+ph}" stroke="{RULE}" stroke-dasharray="3 2"/>')
+    if yl < 0 < yh:
+        p.append(f'<line x1="{x0}" y1="{Y(0):.1f}" x2="{x0+pw}" y2="{Y(0):.1f}" stroke="{RULE}" stroke-dasharray="3 2"/>')
+    for k in range(5):
+        vx = xl + (xh - xl) * k / 4
+        vy = yl + (yh - yl) * k / 4
+        p.append(f'<text x="{X(vx):.1f}" y="{y0+ph+11}" font-size="6.6" fill="{FAINT}" text-anchor="middle" {MONO}>{vx:.2f}</text>')
+        p.append(f'<text x="{x0-4}" y="{Y(vy)+2.5:.1f}" font-size="6.6" fill="{FAINT}" text-anchor="end" {MONO}>{vy:.2f}</text>')
+    placed = [(X(cx) - 5, Y(cy) + 4, 10) for cx, cy in coords]     # points are obstacles too
+    for s, (cx, cy), c in zip(an.samples, coords, cols):
+        p.append(f'<circle cx="{X(cx):.1f}" cy="{Y(cy):.1f}" r="4.2" fill="{c}" stroke="#fff" stroke-width=".8"/>')
+        anchor = "end" if X(cx) > x0 + pw * 0.7 else "start"
+        dx = -6 if anchor == "end" else 6
+        lx_, ly_ = X(cx) + dx, Y(cy) - 5
+        w_ = len(_short(s, 24)) * 3.7
+        x1_ = lx_ - w_ if anchor == "end" else lx_
+        for _ in range(12):      # step a label down until it clears the ones already placed
+            if not any(abs(ly_ - py) < 9 and x1_ < px + pw_ and px < x1_ + w_ for px, py, pw_ in placed):
+                break
+            ly_ += 10
+        placed.append((x1_, ly_, w_))
+        p.append(f'<text x="{lx_:.1f}" y="{ly_:.1f}" font-size="7" fill="{INK}" text-anchor="{anchor}">{esc(_short(s, 24))}</text>')
+    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-14}" font-size="7.8" fill="{MUT}" text-anchor="middle">PCoA 1 ({pct[0]:.1f}%)</text>')
+    p.append(f'<text x="10" y="{y0+ph/2:.1f}" font-size="7.8" fill="{MUT}" text-anchor="middle" '
+             f'transform="rotate(-90 10 {y0+ph/2:.1f})">PCoA 2 ({pct[1]:.1f}%)</text>')
+    lx = x0 + pw + 14
+    items = list(cmap.items()) if cmap else list(zip(an.samples, cols))
+    p.append(f'<text x="{lx}" y="{y0+4}" font-size="7.4" fill="{INK}" font-weight="700">{"Group" if cmap else "Sample"}</text>')
+    for i, (nm, c) in enumerate(items[:20]):
+        y = y0 + 16 + i * 11
+        p.append(f'<circle cx="{lx+3}" cy="{y:.1f}" r="3" fill="{c}"/>')
+        p.append(f'<text x="{lx+10}" y="{y+2.6:.1f}" font-size="7" fill="{INK}">{esc(_short(nm, 24))}</text>')
+    p.append("</svg>")
+    an.pcoa_pct = pct
+    return "".join(p)
+
+
+def svg_upgma(an) -> str:
+    D = an.bray()
+    if len(D) < 2:
+        return ""
+    tree = _upgma(D)
+    order = _leaves(tree)
+    rowh = 18
+    W = 520
+    x0, pw = 20, 330
+    y0 = 10
+    H = int(y0 + rowh * len(order) + 34)
+    hmax = _height(tree) or 1
+    p = _svg_open(W, H)
+    pos = {k: y0 + (order.index(k) + 0.5) * rowh for k in order}
+    _pp, _hh, segs = _dendro(tree, pos)
+    X = lambda h: x0 + pw - pw * h / hmax
+    for (p1, h1), (p2, h2) in segs:
+        p.append(f'<line x1="{X(h1):.1f}" y1="{p1:.1f}" x2="{X(h2):.1f}" y2="{p2:.1f}" stroke="{INK}" stroke-width="1"/>')
+    cols, _cm = _group_colors(an)
+    for k in order:
+        p.append(f'<circle cx="{x0+pw:.1f}" cy="{pos[k]:.1f}" r="2.6" fill="{cols[k]}"/>')
+        p.append(f'<text x="{x0+pw+7:.1f}" y="{pos[k]+2.8:.1f}" font-size="7.8" fill="{INK}">{esc(an.samples[k])}</text>')
+    ya = y0 + rowh * len(order) + 6
+    p.append(f'<line x1="{x0}" y1="{ya}" x2="{x0+pw}" y2="{ya}" stroke="{FAINT}" stroke-width=".7"/>')
+    for k in range(5):
+        h = hmax * k / 4
+        p.append(f'<line x1="{X(h):.1f}" y1="{ya}" x2="{X(h):.1f}" y2="{ya+3}" stroke="{FAINT}"/>')
+        p.append(f'<text x="{X(h):.1f}" y="{ya+11}" font-size="6.6" fill="{FAINT}" text-anchor="middle" {MONO}>{h:.2f}</text>')
+    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-3}" font-size="7.4" fill="{MUT}" text-anchor="middle">Bray–Curtis dissimilarity (average linkage)</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def svg_bc_heat(an) -> str:
+    D = an.bray()
+    n = len(D)
+    if n < 2:
+        return ""
+    order = _leaves(_upgma(D)) if n > 2 else list(range(n))
+    longest = max((len(str(s)) for s in an.samples), default=4)
+    lab = min(longest, 22) * 4.3 + 8
+    cs = min(46, (520 - lab - 70) / n)
+    x0, y0 = lab, 10
+    W = 520
+    H = int(y0 + cs * n + 14 + min(longest, 22) * 3.6 + 10)
+    p = _svg_open(W, H)
+    for i, a in enumerate(order):
+        p.append(f'<text x="{x0-5:.1f}" y="{y0+(i+0.5)*cs+2.6:.1f}" font-size="7.2" fill="{INK}" text-anchor="end">{esc(_short(an.samples[a], 22))}</text>')
+        for j, b in enumerate(order):
+            v = D[a][b]
+            c = _lin_col(v) if a != b else "#FFFFFF"
+            p.append(f'<rect x="{x0+j*cs:.1f}" y="{y0+i*cs:.1f}" width="{cs:.1f}" height="{cs:.1f}" fill="{c}" stroke="#fff" stroke-width=".8"/>')
+            if cs >= 18:
+                dark = a != b and int(c[1:3], 16) < 0x80
+                p.append(f'<text x="{x0+(j+0.5)*cs:.1f}" y="{y0+(i+0.5)*cs+2.6:.1f}" font-size="{min(7.5, cs/3.6):.1f}" '
+                         f'fill="{"#fff" if dark else INK}" text-anchor="middle" {MONO}>{v:.2f}</text>')
+    _xlabels(p, [an.samples[k] for k in order], [x0 + (j + 0.5) * cs for j in range(n)], y0 + cs * n + 9, size=7.2)
+    # key
+    kx = x0 + cs * n + 16
+    for k in range(6):
+        v = k / 5
+        p.append(f'<rect x="{kx}" y="{y0+k*14}" width="10" height="14" fill="{_lin_col(v)}" stroke="{RULE}" stroke-width=".4"/>')
+        p.append(f'<text x="{kx+14}" y="{y0+k*14+9}" font-size="6.6" fill="{FAINT}" {MONO}>{v:.1f}</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def _lin_col(f):
+    f = max(0.0, min(1.0, f))
+    a, mid, b = (0xF4, 0xF7, 0xF8), (0x5B, 0x9B, 0xC8), (0x0B, 0x2E, 0x59)
+    c = ([a[i] + (mid[i] - a[i]) * f * 2 for i in range(3)] if f < 0.5
+         else [mid[i] + (b[i] - mid[i]) * (f - 0.5) * 2 for i in range(3)])
+    return "#%02X%02X%02X" % tuple(int(x) for x in c)
+
+
+REFERENCES = [
+    ("Martin, M. (2011).", "Cutadapt removes adapter sequences from high-throughput sequencing reads.",
+     "EMBnet.journal, 17(1), 10–12."),
+    ("Callahan, B. J., et al. (2016).", "DADA2: High-resolution sample inference from Illumina amplicon data.",
+     "Nature Methods, 13, 581–583."),
+    ("Wang, Q., Garrity, G. M., Tiedje, J. M., & Cole, J. R. (2007).",
+     "Naive Bayesian classifier for rapid assignment of rRNA sequences into the new bacterial taxonomy.",
+     "Applied and Environmental Microbiology, 73(16), 5261–5267."),
+    ("Quast, C., et al. (2013).", "The SILVA ribosomal RNA gene database project.",
+     "Nucleic Acids Research, 41, D590–D596."),
+    ("Curry, K. D., et al. (2022).", "Emu: species-level microbial community profiling of full-length 16S rRNA Oxford Nanopore sequencing data.",
+     "Nature Methods, 19, 845–853."),
+    ("De Coster, W., & Rademakers, R. (2023).", "NanoPack2: population-scale evaluation of long-read sequencing data.",
+     "Bioinformatics, 39(5), btad311."),
+    ("Rognes, T., et al. (2016).", "VSEARCH: a versatile open source tool for metagenomics.", "PeerJ, 4, e2584."),
+    ("Li, H. (2018).", "Minimap2: pairwise alignment for nucleotide sequences.", "Bioinformatics, 34(18), 3094–3100."),
+    ("McMurdie, P. J., & Holmes, S. (2013).", "phyloseq: An R package for reproducible interactive analysis and graphics of microbiome census data.",
+     "PLoS ONE, 8(4), e61217."),
+    ("Oksanen, J., et al. (2022).", "vegan: Community Ecology Package.", "R package version 2.6."),
+    ("Shannon, C. E. (1948).", "A mathematical theory of communication.", "Bell System Technical Journal, 27, 379–423."),
+    ("Simpson, E. H. (1949).", "Measurement of diversity.", "Nature, 163, 688."),
+    ("Chao, A. (1984).", "Nonparametric estimation of the number of classes in a population.",
+     "Scandinavian Journal of Statistics, 11, 265–270."),
+    ("Hurlbert, S. H. (1971).", "The nonconcept of species diversity: a critique and alternative parameters.",
+     "Ecology, 52(4), 577–586."),
+    ("Bray, J. R., & Curtis, J. T. (1957).", "An ordination of the upland forest communities of southern Wisconsin.",
+     "Ecological Monographs, 27(4), 325–349."),
+    ("Lozupone, C., & Knight, R. (2008).", "Species divergence and the measurement of microbial diversity.",
+     "FEMS Microbiology Reviews, 32(4), 557–578."),
+    ("Salter, S. J., et al. (2014).", "Reagent and laboratory contamination can critically impact sequence-based microbiome analyses.",
+     "BMC Biology, 12, 87."),
+]
+REF_DADA2 = [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+REF_EMU = [5, 0, 6, 7, 4, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+
+
+def _fig(svg, caption, folder=None, n=None):
+    if not svg:
+        return ""
+    lab = f"<b>Figure {n}.</b> " if n else ""
+    fol = f'<div class="folder">Folder: {folder}</div>' if folder else ""
+    return f"<figure>{svg}<figcaption>{lab}{caption}</figcaption>{fol}</figure>"
+
+
+def _pct(v, d=1):
+    return f"{v:.{d}f}%"
+
+
+def _range_txt(pairs, f=fmt):
+    """'from X (A) to Y (B)' over [(sample, value)]."""
+    lo = min(pairs, key=lambda kv: kv[1])
+    hi = max(pairs, key=lambda kv: kv[1])
+    return f"from {f(lo[1])} ({esc(lo[0])}) to {f(hi[1])} ({esc(hi[0])})"
+
+
+def _methods(run, an):
+    p, out = run.params, []
+    pf, pr = p.get("primer_f") or "", p.get("primer_r") or ""
+    if run.emu:
+        reg = run.summary.get("region") or p.get("ont_region") or "V1-V9"
+        lo, hi = {"V1-V9": (1000, 1700), "V7-V8": (250, 450)}.get(reg, (50, 2000))
+        out.append("<h3>Read quality filtering</h3>")
+        out.append("<p>Raw Oxford Nanopore reads were demultiplexed by MinKNOW; reads from the same "
+                   "sample spread over several barcode files were combined before analysis. Reads were "
+                   "filtered with chopper (NanoPack2) to a mean quality of Q10 or better and a length "
+                   "of 100&ndash;2,000 bases.</p>")
+        out.append('<p class="cmd">chopper -q 10 -l 100 --maxlength 2000</p>')
+        out.append("<h3>Primer trimming</h3>")
+        if pf or pr:
+            out.append(f"<p>Primer sequences were located and removed with cutadapt, searching both "
+                       f"strands. The forward primer was trimmed from the 5&prime; end and the reverse "
+                       f"complement of the reverse primer from the 3&prime; end; reads in which no primer "
+                       f"was found, or that fell outside {lo:,}&ndash;{hi:,} bp after trimming (the "
+                       f"expected length of the {esc(reg)} amplicon), were discarded.</p>")
+            out.append("<ul>" + (f"<li>Forward primer: <b class=\"mono\">{esc(pf)}</b></li>" if pf else "")
+                       + (f"<li>Reverse primer: <b class=\"mono\">{esc(pr)}</b></li>" if pr else "") + "</ul>")
+            out.append(f'<p class="cmd">cutadapt -e 0.2 -O 10 -g {esc(pf)} -a {esc(_rc(pr))} --revcomp '
+                       f'-n 2 --discard-untrimmed -m {lo} -M {hi}</p>')
+        else:
+            out.append("<p>No primer sequences were given, so reads were analysed as delivered.</p>")
+        out.append("<h3>Chimera removal</h3>")
+        out.append("<p>Chimeric reads were removed with VSEARCH in reference mode "
+                   "(<span class=\"mono\">--uchime_ref</span>) against the sequences of the "
+                   "classification database.</p>")
+        out.append("<h3>Taxonomic classification</h3>")
+        out.append(f"<p>Each full-length read was classified with Emu, which aligns reads to the "
+                   f"reference with minimap2 and estimates the relative abundance of every reference "
+                   f"taxon by expectation&ndash;maximisation, so a read matching several close relatives "
+                   f"is shared between them in proportion to the evidence. The reference was "
+                   f"<b>{esc(run.db_name)}</b>; taxa below a relative abundance of "
+                   f"{esc(run.summary.get('emu_min_abundance') or p.get('ont_min_abundance') or 0.0001)} "
+                   f"were dropped. Read counts in this report are Emu's estimated counts (relative "
+                   f"abundance &times; classified reads).</p>")
+        out.append('<p class="cmd">emu abundance --type map-ont --db ' + esc(run.db_name)
+                   + f' --min-abundance {esc(run.summary.get("emu_min_abundance") or 0.0001)} --keep-counts</p>')
+    else:
+        paired = any("denoisedR" in t for t in run.tracking[:1])
+        e = p.get("cutadaptErrorRate", 0.1)
+        o = p.get("cutadaptOverlap", 3)
+        disc = " --discard-untrimmed" if p.get("discardUntrimmed") else ""
+        out.append("<h3>Primer trimming</h3>")
+        if pf or pr:
+            out.append(f"<p>Paired-end reads were primer-trimmed with cutadapt before denoising. The "
+                       f"forward primer was removed from the 5&prime; end of R1 and the reverse primer "
+                       f"from the 5&prime; end of R2, with the reverse complements removed from the "
+                       f"3&prime; ends where the read ran through the amplicon; an error rate of {e} and a "
+                       f"minimum overlap of {o} bases were allowed, and reads shorter than 50 bp after "
+                       f"trimming were discarded" + ("; reads with no primer were discarded." if disc else ".")
+                       + "</p>" if paired else
+                       f"<p>Reads were primer-trimmed with cutadapt (error rate {e}, minimum overlap {o}), "
+                       f"and reads shorter than 50 bp after trimming were discarded.</p>")
+            out.append("<ul>" + (f"<li>Forward primer: <b class=\"mono\">{esc(pf)}</b></li>" if pf else "")
+                       + (f"<li>Reverse primer: <b class=\"mono\">{esc(pr)}</b></li>" if pr else "") + "</ul>")
+            cmd = (f"cutadapt -g {pf} -a {_rc(pr)} -G {pr} -A {_rc(pf)} -e {e} -O {o} -m 50{disc} "
+                   f"-o R1_cut.fastq.gz -p R2_cut.fastq.gz R1.fastq.gz R2.fastq.gz" if paired else
+                   f"cutadapt -g {pf} -a {_rc(pr)} -e {e} -O {o} -m 50{disc} -o cut.fastq.gz in.fastq.gz")
+            out.append(f'<p class="cmd">{esc(cmd)}</p>')
+        else:
+            out.append("<p>No primer sequences were given, so primer trimming was skipped.</p>")
+        out.append("<h3>Denoising and ASV inference</h3>")
+        out.append(f"<p>Trimmed reads were processed with DADA2. Quality filtering used "
+                   f"<span class=\"mono\">filterAndTrim()</span> with truncation at {run.trunc} bases "
+                   f"(forward / reverse), maxEE = {p.get('maxEE_F')} / {p.get('maxEE_R')}, truncQ = 2, "
+                   f"maxN = 0 and PhiX removal. Error models were learned separately for forward and "
+                   f"reverse reads ({fmt(p.get('nbases') or 1e8)} bases), and exact amplicon sequence "
+                   f"variants (ASVs) were inferred with <span class=\"mono\">dada()</span> "
+                   f"(pool = {esc(p.get('pool') or 'FALSE')}). Denoised pairs were merged with "
+                   f"<span class=\"mono\">mergePairs()</span> (minimum overlap 12 bp, no mismatches), and "
+                   f"chimeras were removed with <span class=\"mono\">removeBimeraDenovo()</span> "
+                   f"(method = {esc(p.get('chimeraMethod') or 'consensus')}). The non-chimeric ASV table "
+                   f"was used for everything that follows.</p>")
+        out.append("<h3>Taxonomic assignment</h3>")
+        out.append(f"<p>ASVs were classified with the DADA2 implementation of the naive Bayesian "
+                   f"classifier (<span class=\"mono\">assignTaxonomy()</span>) against "
+                   f"<b>{esc(run.db_name)}</b>, with a minimum bootstrap confidence of "
+                   f"{esc(p.get('minBoot', 50))}. Species were added where the reference carries them, by "
+                   f"exact matching (<span class=\"mono\">addSpecies()</span>). Organelle sequences "
+                   f"(mitochondria, chloroplasts) and eukaryotic ASVs were identified from the assigned "
+                   f"lineage and set aside from the community figures.</p>")
+    out.append("<h3>Diversity analysis</h3>")
+    unit = "taxa" if run.emu else "ASVs"
+    out.append(f"<p>Alpha diversity (Observed {unit}, Chao1, ACE, Shannon and Simpson) was computed "
+               f"from the per-sample counts. Rarefaction curves give the expected number of {unit} in a "
+               f"random subsample of each depth (Hurlbert&rsquo;s formula, as in vegan&rsquo;s "
+               f"<span class=\"mono\">rarefy()</span>). Beta diversity was measured as Bray&ndash;Curtis "
+               f"dissimilarity on relative abundances and visualised by principal coordinates analysis "
+               f"(PCoA), average-linkage (UPGMA) clustering and a dissimilarity heatmap. Taxonomic "
+               f"composition is shown as the top 30 taxa at each rank per sample; the remaining taxa are "
+               f"pooled as &ldquo;Other&rdquo; and reads without an assignment at that rank as "
+               f"&ldquo;Unclassified&rdquo;."
+               + (" Because there is one sample per condition, comparisons are descriptive; no "
+                  "statistical test between groups is possible without replicates."
+                  if len(an.samples) > 1 and an.groups and len(set(an.groups.values())) >= len(an.samples)
+                  else " PERMANOVA (vegan adonis2) is reported where groups have replicates."
+                  if an.groups and len(set(an.groups.values())) < len(an.samples) else "")
+               + "</p>")
+    return out
+
+
+def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
+                       subtitle=None, top_asv=30) -> str:
+    """Full result report for one run, laid out as Method / Result / References with a
+    figure for every analysis: read tracking, composition at every rank, a clustered
+    genus heatmap, archaea, alpha diversity and rarefaction, and beta diversity."""
+    an = Analysis(run)
+    S = an.samples
+    unit = "taxa" if run.emu else "ASVs"
+    marker = run.summary.get("marker") or run.params.get("marker") or "16S"
+    region = run.summary.get("region") or ("V1–V9" if run.emu else "V3–V4"
+                                          if (run.params.get("primer_f") or "").startswith("CCTACGG")
+                                          else "")
+    rep_title = (f"16S {region} Amplicon Sequencing Report".replace("  ", " ")
+                 if "16S" in marker.upper() else f"{marker} Amplicon Sequencing Report")
+    sample_label = ", ".join(S[:3]) + ("…" if len(S) > 3 else "")
+    title = title or rep_title
+    subtitle = subtitle or (f"{run.label} · {len(S)} sample{'s' if len(S) != 1 else ''} · "
+                            + ("Oxford Nanopore full-length 16S, classified with Emu" if run.emu
+                               else "Illumina paired-end, DADA2 amplicon sequence variants"))
+    fig = [0]
+    tab = [0]
+
+    def F(svg, cap, folder=None):
+        if not svg:
+            return ""
+        fig[0] += 1
+        return _fig(svg, cap, folder, fig[0])
+
+    def T(head, rows, cap):
+        tab[0] += 1
+        return (f'<p class="tcap"><b>Table {tab[0]}.</b> {cap}</p>' + _tbl(head, rows))
+
+    rt = run.path / "r_tables"
+    def folder(*names):
+        have = [n for n in names if (run.path / n).exists()]
+        return " &middot; ".join(esc(n) for n in have) if have else None
+
+    # totals
+    inp = sum(float(t.get("input") or 0) for t in run.tracking) if run.tracking else 0
+    fin = sum(float(t.get(run.retained_key) or 0) for t in run.tracking) if run.tracking else run.total
+    kreads = (run.qc or {}).get("kingdom_reads") or {}
+    arch_rows = an.archaea()
+    n_arch = sum(r[1] for r in arch_rows)
+
+    out = [f'<div class="eyebrow">{esc(run.label)} &middot; {esc(marker)} &middot; '
+           f'{len(S)} sample{"s" if len(S) != 1 else ""}</div>',
+           f"<h1>{esc(title)}</h1>", f'<p class="sub">{esc(subtitle)}</p>']
+    kpis = [(fmt(inp) if inp else "—", "reads sequenced" if run.emu else "read pairs sequenced"),
+            (fmt(fin), "reads classified" if run.emu else "non-chimeric reads"),
+            (str(run.n_asvs), f"{unit} detected"),
+            (f"{run.rank_pct('Genus') or 0}%", "reads with a genus")]
+    out.append('<div class="kpis">' + "".join(
+        f'<div class="kpi"><div class="v">{v}</div><div class="l">{esc(l)}</div></div>'
+        for v, l in kpis) + "</div>")
+    srows = [[esc(s), esc(an.groups.get(s, "—")), f'<span class="dim">{esc(an.desc.get(s, ""))}</span>']
+             for s in S]
+    out.append(_tbl(["Sample", "Group", "Description"], srows) if (an.groups or an.desc)
+               else _tbl(["Sample", "Reads analysed"], [[esc(s), fmt(an.comm_tot[s])] for s in S]))
+
+    # ═══ METHOD ═══
+    out.append("<h2>Method</h2>")
+    out += _methods(run, an)
+    cfg = ([("Marker", marker)] + run.emu_config()) if run.emu else [
+        ("Marker", marker), ("Reference database", run.db_name),
+        ("Forward primer", run.params.get("primer_f") or "—"),
+        ("Reverse primer", run.params.get("primer_r") or "—"),
+        ("truncLen F / R", run.trunc),
+        ("maxEE F / R", f'{run.params.get("maxEE_F")} / {run.params.get("maxEE_R")}'),
+        ("Pooling", run.params.get("pool") or "—"),
+        ("Minimum bootstrap", run.params.get("minBoot")),
+        ("Chimera method", run.params.get("chimeraMethod"))]
+    out.append(T(["Parameter", "Value"], [[k, esc(v if v is not None else "—")] for k, v in cfg],
+                 "Run configuration."))
+
+    # ═══ RESULT ═══
+    out.append('<h2 class="pbreak">Result</h2>')
+    out.append("<h3>Data quality control</h3>")
+    if run.tracking:
+        per = []
+        for t in run.tracking:
+            nm = str(next(iter(t.values())))
+            i0 = float(t.get("input") or 0)
+            f0 = float(t.get(run.retained_key) or 0)
+            per.append((nm, i0, f0, 100 * f0 / i0 if i0 else 0))
+        steps = run.stages if run.emu else [("filtering", "filtered"), ("denoising", "denoisedF"),
+                                            ("merging", "merged"), ("chimera removal", "nonchim")]
+        losses = []
+        prev = "input"
+        for lbl, k in steps:
+            if k not in run.tracking[0]:
+                continue
+            a = sum(float(t.get(prev) or 0) for t in run.tracking)
+            b = sum(float(t.get(k) or 0) for t in run.tracking)
+            if a:
+                losses.append((lbl, 100 * (a - b) / a))
+            prev = k
+        worst = max(losses, key=lambda kv: kv[1]) if losses else None
+        out.append("<p><b>Overall pipeline outcome.</b> "
+                   + (f"All {len(S)} samples were processed through quality filtering, primer trimming "
+                      f"and chimera removal, and the remaining reads were classified with Emu. "
+                      if run.emu else
+                      f"All {len(S)} paired-end samples were processed through primer trimming, quality "
+                      f"filtering, denoising, read-pair merging and chimera removal in DADA2. ")
+                   + f"From {fmt(inp)} input {'reads' if run.emu else 'read pairs'}, {fmt(fin)} "
+                   f"({100*fin/inp if inp else 0:.1f}%) were retained "
+                   + (f"and assigned to {run.n_asvs} taxa. " if run.emu else
+                      f"and resolved into {run.n_asvs} ASVs. ")
+                   + (f"{fmt(kreads.get('Bacteria', 0))} reads were classified as Bacteria and "
+                      f"{fmt(kreads.get('Archaea', 0))} as Archaea. " if kreads else "")
+                   + (f"{fmt(run.host + run.euk)} reads ({100*(run.host+run.euk)/run.total:.1f}%) were host "
+                      f"organelle or eukaryotic and are excluded from the community figures. "
+                      if run.total and (run.host + run.euk) > 0 else
+                      "No mitochondrial, chloroplast or eukaryotic reads were detected. ")
+                   + "</p>")
+        qi = (f"<p><b>QC interpretation.</b> Input depth ranged "
+              f"{_range_txt([(n, i) for n, i, _f, _p in per])} per sample. The final retained reads "
+              f"ranged {_range_txt([(n, f) for n, _i, f, _p in per])}, a retention of "
+              f"{min(x[3] for x in per):.1f}&ndash;{max(x[3] for x in per):.1f}%. ")
+        if worst:
+            qi += (f"The largest loss across the run was at {esc(worst[0])} "
+                   f"({worst[1]:.1f}% of the reads entering that step). ")
+        low = [x for x in per if x[3] < 50]
+        if low:
+            qi += (f"{', '.join(esc(x[0]) for x in low)} retained less than half of "
+                   f"{'its' if len(low) == 1 else 'their'} input, which deserves a look at the raw read "
+                   f"quality before the results are interpreted. ")
+        if run.emu:
+            def _same(a, b):
+                return all(float(t.get(a) or 0) == float(t.get(b) or 0) for t in run.tracking)
+            if "qc_filtered" in run.tracking[0] and _same("input", "qc_filtered"):
+                qi += ("The quality filter removed no reads: either every read already met Q10 and "
+                       "100&ndash;2,000 bp (MinKNOW&rsquo;s own pass filter is Q10), or chopper was not "
+                       "found and the step was skipped &mdash; the run log states which. ")
+            if "primer_trimmed" in run.tracking[0] and _same("primer_trimmed", "final"):
+                qi += ("Chimera removal removed no reads: either VSEARCH found no chimeras or it was "
+                       "not found and the step was skipped &mdash; the run log states which. ")
+        fins = [x[2] for x in per if x[2] > 0]
+        if fins and max(fins) / min(fins) > 3:
+            qi += ("Depth differs more than three-fold between samples, so richness values are best "
+                   "compared through the rarefaction curves rather than as raw counts. ")
+        elif fins:
+            qi += "Depth is reasonably even across samples. "
+        out.append(qi + "</p>")
+
+        if run.emu:
+            cols = [k for _l, k in run.stages if k in run.tracking[0]]
+            heads = [l for l, k in run.stages if k in run.tracking[0]]
+        else:
+            cols = [c for c in ("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+                    if c in run.tracking[0]]
+            heads = cols
+        rows = [[esc(next(iter(t.values())))] + [fmt(t.get(c) or 0) for c in cols]
+                + [f'{100*float(t.get(run.retained_key) or 0)/(float(t.get("input") or 0) or 1):.1f}%']
+                for t in run.tracking]
+        out.append(T(["Sample"] + heads + ["Retained"], rows,
+                     "Read counts per sample at each processing step"
+                     + (" (raw, QC-filtered, primer-trimmed, non-chimeric)." if run.emu else
+                        " (raw, filtered, denoisedF, denoisedR, merged, non-chimeric).")))
+        out.append(F(svg_steps(run, an), "Read count distribution per pipeline step. Each line is one "
+                     "sample" + ("; boxes show the spread across samples." if len(S) >= 4 else "."),
+                     folder("read_tracking.csv")))
+        out.append(F(svg_readflow(run), "Reads surviving each stage across the whole run, as a share "
+                     "of input; the right-hand figure is what that stage cost.", None))
+
+    o = (run.orientation or {}).get("checked") or {}
+    if o:
+        out.append("<h3>Read orientation</h3>")
+        out.append(T(["Check", "Pairs", "Share"], [
+            ["Already in the expected orientation", fmt(o.get("already_correct", 0)), f'{o.get("pct_already_correct", 0)}%'],
+            ["Reversed (R1 and R2 swapped)", fmt(o.get("flipped", 0)), f'{o.get("pct_flipped", 0)}%'],
+            ["Ambiguous", fmt(o.get("ambiguous", 0)), f'{o.get("pct_ambiguous", 0)}%']],
+            "Read-pair orientation check." + (" Reversed pairs were re-oriented before analysis."
+                                              if run.orientation.get("applied") else "")))
+
+    if run.lengths():
+        out.append("<h3>ASVs and amplicon length</h3>")
+        L = run.lengths()
+        lens = sorted(L)
+        mode = max(L, key=lambda k: L[k])
+        cv = ceiling_verdict(run)
+        out.append(f"<p>The final ASV table contained {run.n_asvs} ASVs carrying {fmt(run.total)} reads. "
+                   f"ASV lengths ranged from {lens[0]} to {lens[-1]} bp, with most reads at {mode} bp. "
+                   + (cv[1] if cv[1] else "") + "</p>")
+        out.append(F(svg_lengths(run), "Distribution of ASV lengths, weighted by reads."
+                     + (f" The dashed line is the merge ceiling (truncLen_F + truncLen_R &minus; 12 = "
+                        f"{run.ceiling} bp)." if run.ceiling else ""), folder("asv_lengths.csv", "asv_table.csv")))
+        if cv[0]:
+            out.append('<div class="note"><p style="margin:0"><b>The truncation settings are cutting the '
+                       "amplicon short.</b> Longer fragments could not be merged, which biases the profile "
+                       "toward short amplicons. Treat the composition as provisional until the run is "
+                       "repeated with a wider window.</p></div>")
+
+    out.append(T(["Sample", "Reads", f"n_{'taxa' if run.emu else 'ASV'}"],
+                 [[esc(s), fmt(sum(an.mat[q][s] for q in run.abund)), fmt(an.n_features(s))] for s in S],
+                 f"Reads and number of {unit} per sample after processing."))
+    out.append(F(svg_rare(an), f"Rarefaction curves: expected number of {unit} against sequencing depth "
+                 "for each sample.", folder("r_tables/rarefaction.csv")))
+
+    qc = (run.qc or {}).get("offtarget") or {}
+    if qc and qc.get("reads"):
+        out.append("<h3>Off-target reads</h3>")
+        out.append(T(["Category", "Reads", "Share"], [
+            ["Host organelle (mitochondria / chloroplast)", fmt(qc.get("organelle_reads", 0)), f'{qc.get("organelle_pct", 0)}%'],
+            ["Unassigned at domain level", fmt(qc.get("unassigned_reads", 0)), f'{qc.get("unassigned_pct", 0)}%'],
+            ["Total off-target", fmt(qc.get("reads", 0)), f'{qc.get("pct", 0)}%']],
+            "Off-target reads. &ldquo;Universal&rdquo; 16S primers co-amplify host mitochondrial DNA."))
+
+    # ── composition ──────────────────────────────────────────────────────────
+    out.append('<h3 class="pbreak">Taxonomic composition of samples</h3>')
+    ph_all = an.rank_pct("Phylum")
+    mean_ph = sorted(((t, sum(v.values()) / len(S)) for t, v in ph_all.items() if t != "Unclassified"),
+                     key=lambda kv: -kv[1])[:4]
+    txt = ("<p>At the phylum level the community was dominated by "
+           + ", ".join(f"{esc(t)} ({v:.1f}% on average)" for t, v in mean_ph) + ". ")
+    for s in (S if len(S) <= 8 else []):          # beyond 8 samples the table below says it
+        dg = an.dominant("Genus", s, 3)
+        dp = an.dominant("Phylum", s, 1)
+        if dg:
+            txt += (f"{esc(s)} was {'dominated by' if dg[0][1] >= 30 else 'led by'} <i>{esc(dg[0][0])}</i> "
+                    f"({dg[0][1]:.1f}%)"
+                    + (", followed by " + " and ".join(f"<i>{esc(t)}</i> ({v:.1f}%)" for t, v in dg[1:])
+                       if len(dg) > 1 else "")
+                    + (f", within {esc(dp[0][0])}" if dp else "") + ". ")
+    if len(S) > 1:
+        tops = {an.dominant("Genus", s, 1)[0][0] for s in S if an.dominant("Genus", s, 1)}
+        txt += ("The same genus was the most abundant in every sample. " if len(tops) == 1 else
+                f"The most abundant genus differed between samples ({len(tops)} different leading "
+                f"genera), indicating distinct community structures. ")
+    out.append(txt + "</p>")
+    gu = an.rank_pct("Genus").get("Unclassified", {})
+    if gu:
+        out.append(f"<p>Reads without a genus assignment made up "
+                   f"{min(gu.values()):.1f}&ndash;{max(gu.values()):.1f}% of each sample; they are shown "
+                   f"as &ldquo;Unclassified&rdquo; and are part of every percentage below.</p>")
+    dom_rows = []
+    for s in S:
+        dom_rows.append([esc(s),
+                         "; ".join(f"{esc(t)} {v:.1f}%" for t, v in an.dominant("Phylum", s, 3)),
+                         "; ".join(f"<i>{esc(t)}</i> {v:.1f}%" for t, v in an.dominant("Genus", s, 3))])
+    out.append(T(["Sample", "Top phyla", "Top genera"], dom_rows, "Dominant taxa per sample."))
+
+    for rank in RANKS:
+        if rank not in run.rank_cols:
+            continue
+        keep, _t = an.top(rank, 30)
+        if not keep:
+            continue
+        out.append(f'<h3 class="pbreak">Top 30 {rank} (Relative Abundance)</h3>')
+        out.append(F(svg_stacked(an, rank, 30),
+                     f"Relative abundance of the {len(keep)} most abundant "
+                     f"{PLURAL.get(rank, rank.lower())} per sample"
+                     + ". Percentages are of each sample&rsquo;s community reads"
+                     + (" with host organelle reads set aside" if run.host + run.euk > 0 else "") + ".",
+                     folder(f"r_tables/taxonomy_{rank.lower()}.csv")))
+
+    out.append('<h3 class="pbreak">Heatmap visualization of dominant genera</h3>')
+    out.append("<p>The genus-level heatmap summarises the 30 dominant genera across samples. Genera "
+               "(rows) are clustered by the similarity of their abundance profiles"
+               + (" and samples (columns) by Bray&ndash;Curtis dissimilarity" if len(S) >= 3 else "")
+               + "; colour is relative abundance on a log scale, and each cell gives the percentage. "
+               "Blocks of dark cells confined to one sample mark genera characteristic of it.</p>")
+    out.append(F(svg_heatmap(an, "Genus", 30), "Top 30 genera &mdash; relative abundance heatmap with "
+                 "clustering dendrogram.", folder("r_tables/taxonomy_heatmap_genus.csv")))
+
+    out.append("<h3>Archaeal community</h3>")
+    if n_arch > 0:
+        out.append(f"<p>Archaeal reads were {'rare' if n_arch / max(fin, 1) < 0.01 else 'present'} in this "
+                   f"dataset: {fmt(n_arch)} reads in total, "
+                   f"{100*n_arch/max(sum(an.comm_tot.values()),1):.3f}% of the community reads. "
+                   + ("The primers are designed for Bacteria and amplify most Archaea poorly, so this is a "
+                      "minimum rather than an estimate of archaeal load." if not run.emu else "") + "</p>")
+    else:
+        out.append("<p>No archaeal reads were detected in any sample.</p>")
+    out.append(T(["Sample", "Archaeal reads", "% of sample", "Dominant taxon"],
+                 [[esc(s), fmt(r), f"{p_:.3f}%", f"<i>{esc(t)}</i>" if t != "—" else t]
+                  for s, r, p_, t in arch_rows], "Archaeal reads per sample."))
+
+    # reagent-associated genera, top features, species
+    tg = run.top_genera(15)
+    if tg:
+        out.append('<h3 class="pbreak">Reagent-associated genera</h3>')
+        out.append(T(["Genus", "Reads", "% bacteria", "Note"],
+                     [[f'<i>{esc(g["name"])}</i>', fmt(g["reads"]), f'{g["pct"]}%',
+                       '<span class="dim">' + "; ".join((["reagent-associated"] if g["kit"] else [])
+                       + ([f'{fmt(g["unresolved"])} unresolved below genus'] if g["unresolved"] else []))
+                       + "</span>"] for g in tg],
+                     "The 15 most abundant genera over the whole run, with genera commonly recovered "
+                     "from extraction kits and PCR reagents flagged."))
+        out.append('<div class="note"><p style="margin:0"><b>Reagent-associated genera are flagged, not '
+                   "removed.</b> They match the published list of genera recovered from DNA extraction "
+                   "kits and PCR reagents (Salter et al. 2014). Many are also genuine environmental "
+                   "organisms; without a sequenced blank extraction control the two cannot be told "
+                   "apart.</p></div>")
+
+    out.append(f"<h3>Most abundant {'taxa' if run.emu else 'sequence variants'}</h3>")
+    rows = []
+    for a in run.top_asvs(top_asv):
+        rows.append([f'<span class="mono">{a["id"]}</span>'] + ([] if run.emu else [f'{a["len"]}'])
+                    + [fmt(a["reads"]), f'{a["pct"]:.2f}%',
+                       ('<span class="dim">host organelle</span>' if a["host"]
+                        else f'<i>{esc(a["genus"])}</i>' if a["genus"] != "—"
+                        else f'<span class="dim">{esc(a["deepest"])}</span>'),
+                       f'<span style="font-size:7.2pt" class="dim">{esc(a["lineage"][:80])}</span>'])
+    out.append(T((["Taxon"] if run.emu else ["ASV", "bp"]) + ["Reads", "Share", "Genus", "Lineage"], rows,
+                 f"The {top_asv} most abundant of {run.n_asvs} {unit} over the whole run"
+                 + (". Identifiers are positional in abundance order; sequences are in asvs.fasta."
+                    if not run.emu else ".")))
+
+    out.append("<h3>Species-level assignment</h3>")
+    if run.species:
+        sp_items = list(run.species.items())[:40]
+        out.append(T(["Species", "Reads", "Share"] + ([] if run.emu else ["ASV length"]),
+                     [[f"<i>{esc(k)}</i>", fmt(v[0]), f"{100*v[0]/run.total:.2f}%"]
+                      + ([] if run.emu else [f"{v[1]} bp"]) for k, v in sp_items],
+                     f"Species-level assignments ({run.rank_pct('Species')}% of reads"
+                     + (f"; top 40 of {len(run.species)}" if len(run.species) > 40 else "") + ")."))
+    else:
+        out.append("<p>No read reached a species-level assignment with this reference.</p>")
+    out.append("<p>" + ("Emu resolves species from the whole ~1,500 bp gene, but species whose 16S genes "
+                        "are near-identical (for example within <i>Stenotrophomonas</i> or the "
+                        "<i>Bacillus cereus</i> group) cannot be separated by any 16S method; genus is "
+                        "the robust level to report." if run.emu else
+                        "Species are assigned only by exact match of the whole fragment. A low rate is "
+                        "expected for a ~440 bp V3&ndash;V4 amplicon; full-length 16S is the appropriate "
+                        "marker where species identification is required.") + "</p>")
+
+    # ── alpha ────────────────────────────────────────────────────────────────
+    alpha = an.alpha()
+    out.append('<h3 class="pbreak">Alpha Diversity</h3>')
+    obs = [(s, alpha[s]["Observed"]) for s in S]
+    sha = [(s, alpha[s]["Shannon"]) for s in S]
+    sim = [(s, alpha[s]["Simpson"]) for s in S]
+    f2 = lambda v: f"{v:.2f}"
+    f3 = lambda v: f"{v:.3f}"
+    at = (f"<p>Observed {unit} ranged {_range_txt(obs)} across samples. Shannon diversity ranged "
+          f"{_range_txt(sha, f2)} and Simpson diversity {_range_txt(sim, f3)}. ")
+    if len(S) > 1:
+        hi_s = max(sha, key=lambda kv: kv[1])[0]
+        lo_s = min(sha, key=lambda kv: kv[1])[0]
+        at += (f"{esc(hi_s)} therefore combined the richest and most even community, while {esc(lo_s)} "
+               f"was the most dominated by a few {unit}. " if hi_s == max(obs, key=lambda kv: kv[1])[0]
+               else f"{esc(hi_s)} had the most even community and {esc(lo_s)} the least even. ")
+    plats = [(s, an.plateau(s)) for s in S]
+    plats = [(s, v) for s, v in plats if v is not None]
+    if plats:
+        flat = [s for s, v in plats if v < 1]
+        rising = [s for s, v in plats if v >= 5]
+        at += ("Rarefaction curves " + ("reached a plateau in every sample (less than 1% of richness "
+               "gained over the last 10% of reads), so sequencing depth was sufficient to capture the "
+               "community. " if len(flat) == len(plats) else
+               f"were still rising for {', '.join(esc(s) for s in rising)}, so deeper sequencing would "
+               f"recover further rare {unit} there. " if rising else
+               "were close to a plateau in every sample, so depth captured nearly all of the community. "))
+    if run.emu:
+        at += ("Emu reports abundances rather than counts of distinct reads and drops taxa below its "
+               "minimum abundance, so singletons are absent and Chao1 and ACE stay close to the "
+               "observed count. ")
+    out.append(at + "</p>")
+    out.append(T(["Sample", "Reads", f"Observed {unit}", "Chao1", "ACE", "Shannon", "Simpson"],
+                 [[esc(s), fmt(sum(an.mat[q][s] for q in run.abund)), fmt(alpha[s]["Observed"]),
+                   f'{alpha[s]["Chao1"]:.1f}', f'{alpha[s]["ACE"]:.1f}', f'{alpha[s]["Shannon"]:.3f}',
+                   f'{alpha[s]["Simpson"]:.3f}'] for s in S],
+                 "Alpha diversity indices per sample. Shannon uses the natural logarithm; Simpson is "
+                 "1 &minus; &Sigma;p&sup2;, approaching 1 when no single organism dominates."))
+    out.append(F(svg_alpha(an, alpha), "Alpha diversity indices per sample.",
+                 folder("r_tables/alpha_diversity.csv", "alpha_diversity.csv")))
+
+    # ── beta ─────────────────────────────────────────────────────────────────
+    if len(S) >= 2:
+        D = an.bray()
+        pairs = [(S[i], S[j], D[i][j]) for i in range(len(S)) for j in range(i + 1, len(S))]
+        lo = min(pairs, key=lambda x: x[2])
+        hi = max(pairs, key=lambda x: x[2])
+        out.append('<h3 class="pbreak">Beta diversity</h3>')
+        bt = (f"<p>Beta diversity compares community composition between samples. Bray&ndash;Curtis "
+              f"dissimilarity (0 = identical, 1 = no shared {unit}) "
+              + (f"ranged from {lo[2]:.2f} to {hi[2]:.2f}. " if len(pairs) > 1 else
+                 f"between {esc(lo[0])} and {esc(lo[1])} was {lo[2]:.2f}. "))
+        if len(pairs) > 1:
+            bt += (f"The most similar pair was {esc(lo[0])} and {esc(lo[1])} ({lo[2]:.2f}); the most "
+                   f"different was {esc(hi[0])} and {esc(hi[1])} ({hi[2]:.2f}). ")
+        mean_d = sum(x[2] for x in pairs) / len(pairs)
+        bt += ("Overall the samples have highly distinct compositions. " if mean_d > 0.7 else
+               "The samples share a substantial part of their composition. " if mean_d < 0.4 else
+               "The samples differ moderately in composition. ")
+        pm = an.permanova()
+        if pm:
+            bt += (f"PERMANOVA on group gave R&sup2; = {pm[0]:.3f}, p = {pm[1]:.3g}"
+                   + (" &mdash; a significant group effect. " if pm[1] < 0.05 else
+                      " &mdash; no significant group effect. "))
+        elif an.groups and len(set(an.groups.values())) >= len(S):
+            bt += ("With one sample per group no permutation test is possible, so the ordination and "
+                   "clustering below are exploratory. ")
+        else:
+            bt += ("No replicated groups were defined for this run, so the comparison is descriptive. ")
+        out.append(bt + "</p>")
+        pc = svg_pcoa(an)
+        if pc:
+            out.append(F(pc, f"Principal coordinates analysis (PCoA) of Bray&ndash;Curtis dissimilarity. "
+                         f"Axis 1 explains {an.pcoa_pct[0]:.1f}% and axis 2 {an.pcoa_pct[1]:.1f}% of the "
+                         f"variation.", folder("r_tables/pca_scores.csv", "beta_stats.txt")))
+        if len(S) >= 3:
+          out.append(F(svg_upgma(an), "UPGMA clustering tree based on Bray&ndash;Curtis dissimilarity.",
+                     folder("beta_stats.txt")))
+        out.append(F(svg_bc_heat(an), "Bray&ndash;Curtis dissimilarity between samples; darker cells and "
+                     "higher values are more dissimilar.", folder("r_tables/beta_heatmap.csv", "beta_stats.txt")))
+
+    # ── group view ───────────────────────────────────────────────────────────
+    grp = {}
+    for s in S:
+        if s in an.groups:
+            grp.setdefault(an.groups[s], []).append(s)
+    if len(grp) >= 2 and any(len(v) >= 2 for v in grp.values()):
+        out.append('<h3 class="pbreak">Composition by group</h3>')
+        out.append("<p>Mean relative abundance of the samples in each group "
+                   + "; ".join(f"{esc(g)}: {', '.join(esc(x) for x in v)}" for g, v in grp.items())
+                   + ".</p>")
+        for rank in ("Phylum", "Genus"):
+            pct = an.rank_pct(rank)
+            gt = {t: {g: sum(pct[t][s] for s in v) / len(v) for g, v in grp.items()} for t in pct}
+            named = sorted((t for t in gt if t != "Unclassified"), key=lambda t: -sum(gt[t].values()))
+            tbl_ = {t: gt[t] for t in named[:30]}
+            if named[30:]:
+                tbl_["Other"] = {g: sum(gt[t][g] for t in named[30:]) for g in grp}
+            if "Unclassified" in gt:
+                tbl_["Unclassified"] = gt["Unclassified"]
+            out.append(F(svg_stacked(an, rank, 30, samples=list(grp), table=tbl_),
+                         f"Top 30 {rank.lower()} &mdash; mean relative abundance per group."))
+
+    # ── notes / references ───────────────────────────────────────────────────
+    out.append('<h2 class="pbreak">Notes on reading this report</h2>')
+    notes = []
+    if run.total and run.host + run.euk > 0:
+        notes.append(f"{100*(run.host+run.euk)/run.total:.1f}% of analysed reads are host organelle or "
+                     "other non-bacterial material and are excluded from the composition figures.")
+    if run.bacteria:
+        notes.append(f"About {100*run.kit/run.bacteria:.0f}% of the bacterial reads belong to genera on "
+                     "the reagent-contaminant list. A blank extraction control sequenced alongside the "
+                     "samples would turn that estimate into a measurement.")
+    if run.unresolved:
+        notes.append(f"{fmt(sum(run.unresolved.values()))} reads carry a genus label the reference marks "
+                     "as unresolved (&ldquo;--other&rdquo;); they are counted under the parent genus here.")
+    if run.genera.get(HAEMOPLASMA_LABEL):
+        notes.append("Haemotropic mycoplasmas are reported as one group (Eperythrozoon and "
+                     "Haemobartonella combined).")
+    notes.append("Relative abundance from 16S amplicons reflects gene copies, not cells: taxa with many "
+                 "rRNA operons are over-represented.")
+    notes.append(f"Full tables are in the result folder: {'taxonomy.csv' if run.emu else 'taxonomy_table.csv'} "
+                 f"and asv_table.csv (per-{'taxon' if run.emu else 'ASV'} counts), r_tables/ (per-rank "
+                 f"tables, diversity) and read_tracking.csv.")
+    out.append("<ul>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>")
+    out.append("<h2>References</h2>")
+    out.append('<ul class="refs">' + "".join(
+        f"<li>{esc(a)} <i>{esc(t)}</i> {esc(j)}</li>"
+        for a, t, j in (REFERENCES[i] for i in (REF_EMU if run.emu else REF_DADA2))) + "</ul>")
+
+    css = _css(app, company, f"{run.label} · {marker}") + _CSS_FULL.replace("@@TITLE@@", esc(title))
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f"<title>{esc(title)}</title><style>{css}</style></head><body>"
+            + "".join(out) + "</body></html>")
+
+
+_CSS_FULL = """
+@page { @top-right { content: "@@TITLE@@"; font-family: Carlito, "DejaVu Sans", sans-serif;
+        font-size: 7.4pt; font-weight: 700; color: #4E6672; border-bottom: 2.5px solid #9CC57A;
+        padding-bottom: 1mm; } }
+@page :first { @top-right { content: none; border: none; } }
+h2 { font-size: 15pt; margin-top: 7mm; }
+h3 { font-size: 11pt; margin-top: 5mm; }
+figure { margin: 3mm 0 4mm; }
+figcaption { font-size: 8pt; color: #16242B; }
+.folder { font-weight: 700; font-size: 8.4pt; margin-top: 1.5mm; color: #16242B; }
+.tcap { font-size: 8.4pt; margin: 4mm 0 1mm; break-after: avoid; }
+.cmd { font-family: "DejaVu Sans Mono", monospace; font-size: 7.6pt; background: #F1F5F6;
+       border-left: 2.5px solid #1E6E8C; padding: 2mm 3mm; word-break: break-all; }
+.refs li { font-size: 8.4pt; margin-bottom: 1.6mm; }
+"""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
