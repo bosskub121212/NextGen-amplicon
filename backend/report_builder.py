@@ -330,7 +330,7 @@ class Run:
                 "phylum": (r.get("Phylum") or "\u2014"),
                 "genus": (self._clean_genus(r.get("Genus")) or "\u2014"),
                 "deepest": deepest, "lineage": " > ".join(lineage) or "unassigned",
-                "host": host,
+                "host": host, "seq": seq,
             })
         return out
 
@@ -1241,12 +1241,17 @@ class Analysis:
             return None
 
 # ── figures for the full report ───────────────────────────────────────────────
+def _bcf(v):
+    """Two decimals, three where rounding would print a misleading 1.00 or 0.00."""
+    return f"{v:.3f}" if (0.99 <= v < 1 or 0 < v <= 0.01) else f"{v:.2f}"
+
+
 def _svg_open(W, H):
     return [f'<svg viewBox="0 0 {W} {H}" width="100%" style="max-width:{W}px" '
             f'xmlns="http://www.w3.org/2000/svg">']
 
 
-def _xlabels(p, labels, xs, y, maxlen=22, size=7.5):
+def _xlabels(p, labels, xs, y, maxlen=22, size=8.4):
     rot = len(labels) > 3 or max((len(str(l)) for l in labels), default=0) > 10
     for l, x in zip(labels, xs):
         t = esc(_short(l, maxlen))
@@ -1270,23 +1275,23 @@ def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None) -> str:
     col["Other"], col["Unclassified"] = OTHER_C, UNCL_C
     italic = rank in ("Genus", "Species") if italic is None else italic
     longest = max((len(str(s)) for s in samples), default=4)
-    W, x0, y0, ph = 520, 38, 22, 320
-    leg_x = 336
+    W, x0, y0, ph = 520, 40, 22, 430
+    leg_x = 322
     pw = leg_x - x0 - 16
-    bot = 18 + min(longest, 22) * 3.6
+    bot = 20 + min(longest, 22) * 4.0
     H = int(y0 + ph + bot + 10)
     p = _svg_open(W, H)
-    p.append(f'<text x="{x0}" y="11" font-size="8.5" fill="{MUT}">Relative abundance — '
+    p.append(f'<text x="{x0}" y="11" font-size="9.4" fill="{MUT}">Relative abundance — '
              f'{esc(rank)} level</text>')
     for gy in range(0, 101, 25):
         y = y0 + ph - ph * gy / 100
         p.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0+pw}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
-        p.append(f'<text x="{x0-4}" y="{y+2.5:.1f}" font-size="7" fill="{FAINT}" text-anchor="end" {MONO}>{gy}</text>')
-    p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="7.5" fill="{MUT}" text-anchor="middle" '
+        p.append(f'<text x="{x0-4}" y="{y+2.5:.1f}" font-size="8" fill="{FAINT}" text-anchor="end" {MONO}>{gy}</text>')
+    p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="8.4" fill="{MUT}" text-anchor="middle" '
              f'transform="rotate(-90 9 {y0+ph/2:.1f})">Relative abundance (%)</text>')
     ns = max(len(samples), 1)
     slot = pw / ns
-    bw = min(slot * 0.72, 46)
+    bw = min(slot * 0.66, 84)
     xs = []
     for i, s in enumerate(samples):
         xc = x0 + slot * (i + 0.5)
@@ -1305,15 +1310,15 @@ def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None) -> str:
     _xlabels(p, samples, xs, y0 + ph + 10)
     # legend
     rows = len(order)
-    lh = min(11.0, (H - 30) / max(rows, 1))
-    fs = min(7.4, lh * 0.72)
-    p.append(f'<text x="{leg_x}" y="11" font-size="8" fill="{INK}" font-weight="700">{esc(rank)}</text>')
+    lh = min(14.0, (H - 30) / max(rows, 1))
+    fs = min(8.6, lh * 0.70)
+    p.append(f'<text x="{leg_x}" y="11" font-size="8.8" fill="{INK}" font-weight="700">{esc(rank)}</text>')
     for i, t in enumerate(order):
         y = 18 + i * lh
         p.append(f'<rect x="{leg_x}" y="{y:.1f}" width="{lh*0.75:.1f}" height="{lh*0.75:.1f}" fill="{col[t]}"/>')
         sty = ' font-style="italic"' if italic and t not in ("Other", "Unclassified") else ""
         p.append(f'<text x="{leg_x+lh:.1f}" y="{y+lh*0.68:.1f}" font-size="{fs:.1f}" fill="{INK}"{sty}>'
-                 f'{esc(_short(t, 36))}</text>')
+                 f'{esc(_short(t, 34))}</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -1355,16 +1360,16 @@ def svg_heatmap(an, rank="Genus", n=30) -> str:
     vmax = max((table[t][s] for t in keep for s in samples), default=1) or 1
     W = 520
     dend_w = 70
-    lab_w = 150
+    lab_w = 160
     top_h = 52 if col_tree else 8
-    cw = min(48, (W - dend_w - lab_w - 10) / max(len(samples), 1))
-    ch = 11.5
+    cw = min(92, (W - dend_w - lab_w - 10) / max(len(samples), 1))
+    ch = 15.0
     x0 = dend_w + 4
     y0 = 20 + top_h
     longest = max((len(str(s)) for s in samples), default=4)
-    H = int(y0 + ch * len(rows) + 18 + min(longest, 22) * 3.6 + 34)
+    H = int(y0 + ch * len(rows) + 22 + min(longest, 22) * 4.0 + 38)
     p = _svg_open(W, H)
-    p.append(f'<text x="0" y="11" font-size="8.5" fill="{MUT}">Top {len(keep)} {esc(rank.lower())} '
+    p.append(f'<text x="0" y="11" font-size="9.4" fill="{MUT}">Top {len(keep)} {esc(rank.lower())} '
              f'— relative abundance (%)</text>')
     for j, s in enumerate(samples):
         for i, t in enumerate(rows):
@@ -1376,13 +1381,13 @@ def svg_heatmap(an, rank="Genus", n=30) -> str:
             if cw >= 24:
                 dark = c != "#F4F7F8" and int(c[1:3], 16) < 0x80
                 txt = f"{v:.1f}" if v >= 0.05 else ("0" if v == 0 else "<.1")
-                p.append(f'<text x="{x+cw/2:.1f}" y="{y+ch*0.72:.1f}" font-size="6.3" '
+                p.append(f'<text x="{x+cw/2:.1f}" y="{y+ch*0.72:.1f}" font-size="7.2" '
                          f'fill="{"#fff" if dark else MUT}" text-anchor="middle" {MONO}>{txt}</text>')
     # row labels
     lx = x0 + cw * len(samples) + 4
     for i, t in enumerate(rows):
         sty = ' font-style="italic"' if rank in ("Genus", "Species") else ""
-        p.append(f'<text x="{lx:.1f}" y="{y0+i*ch+ch*0.75:.1f}" font-size="7.2" fill="{INK}"{sty}>'
+        p.append(f'<text x="{lx:.1f}" y="{y0+i*ch+ch*0.75:.1f}" font-size="8" fill="{INK}"{sty}>'
                  f'{esc(_short(t, 34))}</text>')
     # row dendrogram (root at the left)
     if row_tree:
@@ -1407,12 +1412,12 @@ def svg_heatmap(an, rank="Genus", n=30) -> str:
     # colour key
     ky = H - 14
     kx = 0
-    p.append(f'<text x="{kx}" y="{ky-4}" font-size="6.8" fill="{MUT}">% (log scale)</text>')
+    p.append(f'<text x="{kx}" y="{ky-4}" font-size="7.6" fill="{MUT}">% (log scale)</text>')
     stops = [0, 0.01, 0.1, 1, 10, vmax]
     stops = sorted({round(s, 2) for s in stops if s <= vmax})
     for k, sv in enumerate(stops):
         p.append(f'<rect x="{kx + k*34}" y="{ky}" width="34" height="7" fill="{_heat_col(sv, vmax)}" stroke="{RULE}" stroke-width=".4"/>')
-        p.append(f'<text x="{kx + k*34 + 17}" y="{ky+14}" font-size="6.2" fill="{FAINT}" text-anchor="middle" {MONO}>{sv:g}</text>')
+        p.append(f'<text x="{kx + k*34 + 17}" y="{ky+14}" font-size="7.2" fill="{FAINT}" text-anchor="middle" {MONO}>{sv:g}</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -1442,13 +1447,13 @@ def svg_steps(run, an) -> str:
     mx = max((v for _n, vs in data for v in vs), default=1) or 1
     nice = 10 ** int(math.log10(mx))
     mx = math.ceil(mx / nice) * nice
-    W, H, x0, y0, pw, ph = 520, 230, 48, 14, 340, 170
+    W, H, x0, y0, pw, ph = 520, 290, 52, 14, 330, 224
     p = _svg_open(W, H)
     for k in range(5):
         v = mx * k / 4
         y = y0 + ph - ph * k / 4
         p.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0+pw}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
-        p.append(f'<text x="{x0-4}" y="{y+2.5:.1f}" font-size="7" fill="{FAINT}" text-anchor="end" {MONO}>{fmt(v)}</text>')
+        p.append(f'<text x="{x0-4}" y="{y+2.5:.1f}" font-size="8" fill="{FAINT}" text-anchor="end" {MONO}>{fmt(v)}</text>')
     xs = [x0 + pw * (i + 0.5) / len(steps) for i in range(len(steps))]
     if len(data) >= 4:
         for i, x in enumerate(xs):
@@ -1467,16 +1472,16 @@ def svg_steps(run, an) -> str:
         for x, v in zip(xs, vs):
             p.append(f'<circle cx="{x:.1f}" cy="{y0+ph-ph*v/mx:.1f}" r="2.1" fill="{c}"/>')
     for (l, _k), x in zip(steps, xs):
-        p.append(f'<text x="{x:.1f}" y="{y0+ph+12}" font-size="7.4" fill="{INK}" text-anchor="middle">{esc(l)}</text>')
-    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-24}" font-size="7.6" fill="{MUT}" text-anchor="middle">Pipeline step</text>')
-    p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="7.5" fill="{MUT}" text-anchor="middle" '
+        p.append(f'<text x="{x:.1f}" y="{y0+ph+12}" font-size="8.2" fill="{INK}" text-anchor="middle">{esc(l)}</text>')
+    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-24}" font-size="8.4" fill="{MUT}" text-anchor="middle">Pipeline step</text>')
+    p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="8.4" fill="{MUT}" text-anchor="middle" '
              f'transform="rotate(-90 9 {y0+ph/2:.1f})">Read count</text>')
     lx = x0 + pw + 14
     for si, (name, _vs) in enumerate(data[:18]):
         c = SERIES[si] if len(data) <= len(SERIES) else _pal(si)
-        y = y0 + 4 + si * 11
+        y = y0 + 4 + si * 12.5
         p.append(f'<circle cx="{lx+3}" cy="{y:.1f}" r="2.6" fill="{c}"/>')
-        p.append(f'<text x="{lx+10}" y="{y+2.6:.1f}" font-size="7" fill="{INK}">{esc(_short(name, 24))}</text>')
+        p.append(f'<text x="{lx+10}" y="{y+2.6:.1f}" font-size="8" fill="{INK}">{esc(_short(name, 24))}</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -1486,8 +1491,8 @@ def svg_alpha(an, alpha) -> str:
     idx = ["Observed", "Chao1", "Shannon", "Simpson"]
     samples = an.samples
     longest = max((len(str(s)) for s in samples), default=4)
-    pw_, ph_ = 205, 100
-    bot = 14 + min(longest, 20) * 3.4
+    pw_, ph_ = 205, 130
+    bot = 16 + min(longest, 20) * 3.8
     cellh = ph_ + bot + 26
     W, H = 520, int(cellh * 2 + 14)
     p = _svg_open(W, H)
@@ -1498,15 +1503,15 @@ def svg_alpha(an, alpha) -> str:
         mx = max(vals, default=1) or 1
         if name == "Simpson":
             mx = 1.0
-        p.append(f'<text x="{ox-36}" y="{oy-13}" font-size="8.5" fill="{INK}" font-weight="700">{name}</text>')
+        p.append(f'<text x="{ox-36}" y="{oy-13}" font-size="9.4" fill="{INK}" font-weight="700">{name}</text>')
         for g in (0, .5, 1):
             y = oy + ph_ - ph_ * g
             v = mx * g
             p.append(f'<line x1="{ox}" y1="{y:.1f}" x2="{ox+pw_}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
             lab = f"{v:.2f}" if name in ("Shannon", "Simpson") else fmt(v)
-            p.append(f'<text x="{ox-4}" y="{y+2.5:.1f}" font-size="6.6" fill="{FAINT}" text-anchor="end" {MONO}>{lab}</text>')
+            p.append(f'<text x="{ox-4}" y="{y+2.5:.1f}" font-size="7.6" fill="{FAINT}" text-anchor="end" {MONO}>{lab}</text>')
         slot = pw_ / max(len(samples), 1)
-        bw = min(slot * 0.62, 30)
+        bw = min(slot * 0.55, 52)
         xs = []
         for i, (s, v) in enumerate(zip(samples, vals)):
             xc = ox + slot * (i + 0.5)
@@ -1516,7 +1521,7 @@ def svg_alpha(an, alpha) -> str:
             p.append(f'<rect x="{xc-bw/2:.1f}" y="{oy+ph_-h:.1f}" width="{bw:.1f}" height="{h:.1f}" fill="{c}"/>')
             if len(samples) <= 12:
                 lab = f"{v:.2f}" if name in ("Shannon", "Simpson") else fmt(v)
-                p.append(f'<text x="{xc:.1f}" y="{oy+ph_-h-2:.1f}" font-size="6.2" fill="{MUT}" text-anchor="middle" {MONO}>{lab}</text>')
+                p.append(f'<text x="{xc:.1f}" y="{oy+ph_-h-2:.1f}" font-size="7.2" fill="{MUT}" text-anchor="middle" {MONO}>{lab}</text>')
         _xlabels(p, samples, xs, oy + ph_ + 8, maxlen=20, size=6.8)
     p.append("</svg>")
     return "".join(p)
@@ -1530,29 +1535,29 @@ def svg_rare(an) -> str:
     samples = [s for s in an.samples if s in curves]
     mx_x = max(c[-1][0] for c in curves.values()) or 1
     mx_y = max(max(v for _d, v in c) for c in curves.values()) or 1
-    W, H, x0, y0, pw, ph = 520, 250, 46, 12, 330, 196
+    W, H, x0, y0, pw, ph = 520, 300, 50, 12, 320, 244
     p = _svg_open(W, H)
     for k in range(5):
         y = y0 + ph - ph * k / 4
         p.append(f'<line x1="{x0}" y1="{y:.1f}" x2="{x0+pw}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
-        p.append(f'<text x="{x0-4}" y="{y+2.5:.1f}" font-size="7" fill="{FAINT}" text-anchor="end" {MONO}>{fmt(mx_y*k/4)}</text>')
+        p.append(f'<text x="{x0-4}" y="{y+2.5:.1f}" font-size="8" fill="{FAINT}" text-anchor="end" {MONO}>{fmt(mx_y*k/4)}</text>')
         x = x0 + pw * k / 4
-        p.append(f'<text x="{x:.1f}" y="{y0+ph+12}" font-size="7" fill="{FAINT}" text-anchor="middle" {MONO}>{fmt(mx_x*k/4)}</text>')
+        p.append(f'<text x="{x:.1f}" y="{y0+ph+12}" font-size="8" fill="{FAINT}" text-anchor="middle" {MONO}>{fmt(mx_x*k/4)}</text>')
     for i, s in enumerate(samples):
         c = SERIES[i] if len(samples) <= len(SERIES) else _pal(i)
         pts = " ".join(f"{x0+pw*d/mx_x:.1f},{y0+ph-ph*v/mx_y:.1f}" for d, v in curves[s])
         p.append(f'<polyline points="{pts}" fill="none" stroke="{c}" stroke-width="1.5"/>')
         d, v = curves[s][-1]
         p.append(f'<circle cx="{x0+pw*d/mx_x:.1f}" cy="{y0+ph-ph*v/mx_y:.1f}" r="2" fill="{c}"/>')
-    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-14}" font-size="7.6" fill="{MUT}" text-anchor="middle">Sequencing depth (reads)</text>')
-    p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="7.5" fill="{MUT}" text-anchor="middle" '
+    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-14}" font-size="8.4" fill="{MUT}" text-anchor="middle">Sequencing depth (reads)</text>')
+    p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="8.4" fill="{MUT}" text-anchor="middle" '
              f'transform="rotate(-90 9 {y0+ph/2:.1f})">Observed {"taxa" if an.run.emu else "ASVs"}</text>')
     lx = x0 + pw + 14
     for i, s in enumerate(samples[:20]):
         c = SERIES[i] if len(samples) <= len(SERIES) else _pal(i)
-        y = y0 + 6 + i * 11
+        y = y0 + 6 + i * 12.5
         p.append(f'<line x1="{lx}" y1="{y:.1f}" x2="{lx+10}" y2="{y:.1f}" stroke="{c}" stroke-width="2"/>')
-        p.append(f'<text x="{lx+14}" y="{y+2.6:.1f}" font-size="7" fill="{INK}">{esc(_short(s, 24))}</text>')
+        p.append(f'<text x="{lx+14}" y="{y+2.6:.1f}" font-size="8" fill="{INK}">{esc(_short(s, 24))}</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -1596,8 +1601,8 @@ def svg_pcoa(an) -> str:
     for k in range(5):
         vx = xl + (xh - xl) * k / 4
         vy = yl + (yh - yl) * k / 4
-        p.append(f'<text x="{X(vx):.1f}" y="{y0+ph+11}" font-size="6.6" fill="{FAINT}" text-anchor="middle" {MONO}>{vx:.2f}</text>')
-        p.append(f'<text x="{x0-4}" y="{Y(vy)+2.5:.1f}" font-size="6.6" fill="{FAINT}" text-anchor="end" {MONO}>{vy:.2f}</text>')
+        p.append(f'<text x="{X(vx):.1f}" y="{y0+ph+11}" font-size="7.6" fill="{FAINT}" text-anchor="middle" {MONO}>{vx:.2f}</text>')
+        p.append(f'<text x="{x0-4}" y="{Y(vy)+2.5:.1f}" font-size="7.6" fill="{FAINT}" text-anchor="end" {MONO}>{vy:.2f}</text>')
     placed = [(X(cx) - 5, Y(cy) + 4, 10) for cx, cy in coords]     # points are obstacles too
     for s, (cx, cy), c in zip(an.samples, coords, cols):
         p.append(f'<circle cx="{X(cx):.1f}" cy="{Y(cy):.1f}" r="4.2" fill="{c}" stroke="#fff" stroke-width=".8"/>')
@@ -1611,17 +1616,17 @@ def svg_pcoa(an) -> str:
                 break
             ly_ += 10
         placed.append((x1_, ly_, w_))
-        p.append(f'<text x="{lx_:.1f}" y="{ly_:.1f}" font-size="7" fill="{INK}" text-anchor="{anchor}">{esc(_short(s, 24))}</text>')
-    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-14}" font-size="7.8" fill="{MUT}" text-anchor="middle">PCoA 1 ({pct[0]:.1f}%)</text>')
-    p.append(f'<text x="10" y="{y0+ph/2:.1f}" font-size="7.8" fill="{MUT}" text-anchor="middle" '
+        p.append(f'<text x="{lx_:.1f}" y="{ly_:.1f}" font-size="8" fill="{INK}" text-anchor="{anchor}">{esc(_short(s, 24))}</text>')
+    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-14}" font-size="8.6" fill="{MUT}" text-anchor="middle">PCoA 1 ({pct[0]:.1f}%)</text>')
+    p.append(f'<text x="10" y="{y0+ph/2:.1f}" font-size="8.6" fill="{MUT}" text-anchor="middle" '
              f'transform="rotate(-90 10 {y0+ph/2:.1f})">PCoA 2 ({pct[1]:.1f}%)</text>')
     lx = x0 + pw + 14
     items = list(cmap.items()) if cmap else list(zip(an.samples, cols))
-    p.append(f'<text x="{lx}" y="{y0+4}" font-size="7.4" fill="{INK}" font-weight="700">{"Group" if cmap else "Sample"}</text>')
+    p.append(f'<text x="{lx}" y="{y0+4}" font-size="8.2" fill="{INK}" font-weight="700">{"Group" if cmap else "Sample"}</text>')
     for i, (nm, c) in enumerate(items[:20]):
-        y = y0 + 16 + i * 11
+        y = y0 + 16 + i * 12.5
         p.append(f'<circle cx="{lx+3}" cy="{y:.1f}" r="3" fill="{c}"/>')
-        p.append(f'<text x="{lx+10}" y="{y+2.6:.1f}" font-size="7" fill="{INK}">{esc(_short(nm, 24))}</text>')
+        p.append(f'<text x="{lx+10}" y="{y+2.6:.1f}" font-size="8" fill="{INK}">{esc(_short(nm, 24))}</text>')
     p.append("</svg>")
     an.pcoa_pct = pct
     return "".join(p)
@@ -1633,9 +1638,9 @@ def svg_upgma(an) -> str:
         return ""
     tree = _upgma(D)
     order = _leaves(tree)
-    rowh = 18
+    rowh = 22
     W = 520
-    x0, pw = 20, 330
+    x0, pw = 20, 320
     y0 = 10
     H = int(y0 + rowh * len(order) + 34)
     hmax = _height(tree) or 1
@@ -1648,14 +1653,14 @@ def svg_upgma(an) -> str:
     cols, _cm = _group_colors(an)
     for k in order:
         p.append(f'<circle cx="{x0+pw:.1f}" cy="{pos[k]:.1f}" r="2.6" fill="{cols[k]}"/>')
-        p.append(f'<text x="{x0+pw+7:.1f}" y="{pos[k]+2.8:.1f}" font-size="7.8" fill="{INK}">{esc(an.samples[k])}</text>')
+        p.append(f'<text x="{x0+pw+7:.1f}" y="{pos[k]+2.8:.1f}" font-size="8.6" fill="{INK}">{esc(an.samples[k])}</text>')
     ya = y0 + rowh * len(order) + 6
     p.append(f'<line x1="{x0}" y1="{ya}" x2="{x0+pw}" y2="{ya}" stroke="{FAINT}" stroke-width=".7"/>')
     for k in range(5):
         h = hmax * k / 4
         p.append(f'<line x1="{X(h):.1f}" y1="{ya}" x2="{X(h):.1f}" y2="{ya+3}" stroke="{FAINT}"/>')
-        p.append(f'<text x="{X(h):.1f}" y="{ya+11}" font-size="6.6" fill="{FAINT}" text-anchor="middle" {MONO}>{h:.2f}</text>')
-    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-3}" font-size="7.4" fill="{MUT}" text-anchor="middle">Bray–Curtis dissimilarity (average linkage)</text>')
+        p.append(f'<text x="{X(h):.1f}" y="{ya+11}" font-size="7.6" fill="{FAINT}" text-anchor="middle" {MONO}>{h:.2f}</text>')
+    p.append(f'<text x="{x0+pw/2:.1f}" y="{H-3}" font-size="8.2" fill="{MUT}" text-anchor="middle">Bray–Curtis dissimilarity (average linkage)</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -1667,29 +1672,29 @@ def svg_bc_heat(an) -> str:
         return ""
     order = _leaves(_upgma(D)) if n > 2 else list(range(n))
     longest = max((len(str(s)) for s in an.samples), default=4)
-    lab = min(longest, 22) * 4.3 + 8
-    cs = min(46, (520 - lab - 70) / n)
+    lab = min(longest, 22) * 4.8 + 8
+    cs = min(84, (520 - lab - 70) / n)
     x0, y0 = lab, 10
     W = 520
-    H = int(y0 + cs * n + 14 + min(longest, 22) * 3.6 + 10)
+    H = int(y0 + cs * n + 16 + min(longest, 22) * 4.0 + 12)
     p = _svg_open(W, H)
     for i, a in enumerate(order):
-        p.append(f'<text x="{x0-5:.1f}" y="{y0+(i+0.5)*cs+2.6:.1f}" font-size="7.2" fill="{INK}" text-anchor="end">{esc(_short(an.samples[a], 22))}</text>')
+        p.append(f'<text x="{x0-5:.1f}" y="{y0+(i+0.5)*cs+2.6:.1f}" font-size="8" fill="{INK}" text-anchor="end">{esc(_short(an.samples[a], 22))}</text>')
         for j, b in enumerate(order):
             v = D[a][b]
             c = _lin_col(v) if a != b else "#FFFFFF"
             p.append(f'<rect x="{x0+j*cs:.1f}" y="{y0+i*cs:.1f}" width="{cs:.1f}" height="{cs:.1f}" fill="{c}" stroke="#fff" stroke-width=".8"/>')
             if cs >= 18:
                 dark = a != b and int(c[1:3], 16) < 0x80
-                p.append(f'<text x="{x0+(j+0.5)*cs:.1f}" y="{y0+(i+0.5)*cs+2.6:.1f}" font-size="{min(7.5, cs/3.6):.1f}" '
-                         f'fill="{"#fff" if dark else INK}" text-anchor="middle" {MONO}>{v:.2f}</text>')
+                p.append(f'<text x="{x0+(j+0.5)*cs:.1f}" y="{y0+(i+0.5)*cs+2.6:.1f}" font-size="{min(9.5, cs/3.6):.1f}" '
+                         f'fill="{"#fff" if dark else INK}" text-anchor="middle" {MONO}>{_bcf(v)}</text>')
     _xlabels(p, [an.samples[k] for k in order], [x0 + (j + 0.5) * cs for j in range(n)], y0 + cs * n + 9, size=7.2)
     # key
     kx = x0 + cs * n + 16
     for k in range(6):
         v = k / 5
         p.append(f'<rect x="{kx}" y="{y0+k*14}" width="10" height="14" fill="{_lin_col(v)}" stroke="{RULE}" stroke-width=".4"/>')
-        p.append(f'<text x="{kx+14}" y="{y0+k*14+9}" font-size="6.6" fill="{FAINT}" {MONO}>{v:.1f}</text>')
+        p.append(f'<text x="{kx+14}" y="{y0+k*14+9}" font-size="7.6" fill="{FAINT}" {MONO}>{v:.1f}</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -1876,7 +1881,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     rep_title = (f"16S {region} Amplicon Sequencing Report".replace("  ", " ")
                  if "16S" in marker.upper() else f"{marker} Amplicon Sequencing Report")
     sample_label = ", ".join(S[:3]) + ("…" if len(S) > 3 else "")
-    title = title or rep_title
+    project = title if title and title.strip() and title.strip() != rep_title else None
+    title = rep_title          # the report type heads the page; a user title becomes the project line
     subtitle = subtitle or (f"{run.label} · {len(S)} sample{'s' if len(S) != 1 else ''} · "
                             + ("Oxford Nanopore full-length 16S, classified with Emu" if run.emu
                                else "Illumina paired-end, DADA2 amplicon sequence variants"))
@@ -1907,7 +1913,10 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
 
     out = [f'<div class="eyebrow">{esc(run.label)} &middot; {esc(marker)} &middot; '
            f'{len(S)} sample{"s" if len(S) != 1 else ""}</div>',
-           f"<h1>{esc(title)}</h1>", f'<p class="sub">{esc(subtitle)}</p>']
+           f"<h1>{esc(title)}</h1>"]
+    if project:
+        out.append(f'<p class="project">{esc(project)}</p>')
+    out.append(f'<p class="sub">{esc(subtitle)}</p>')
     kpis = [(fmt(inp) if inp else "—", "reads sequenced" if run.emu else "read pairs sequenced"),
             (fmt(fin), "reads classified" if run.emu else "non-chimeric reads"),
             (str(run.n_asvs), f"{unit} detected"),
@@ -1980,7 +1989,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
               f"ranged {_range_txt([(n, f) for n, _i, f, _p in per])}, a retention of "
               f"{min(x[3] for x in per):.1f}&ndash;{max(x[3] for x in per):.1f}%. ")
         if worst:
-            qi += (f"The largest loss across the run was at {esc(worst[0])} "
+            qi += (f"The largest loss across the run was at the {esc(worst[0].lower())} step "
                    f"({worst[1]:.1f}% of the reads entering that step). ")
         low = [x for x in per if x[3] < 50]
         if low:
@@ -2156,27 +2165,56 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                    "apart.</p></div>")
 
     out.append(f"<h3>Most abundant {'taxa' if run.emu else 'sequence variants'}</h3>")
+    per = len(S) <= 6                      # a share column per sample while it still fits
+    def _lin(q):
+        r = run.tax.get(q, {})
+        parts = []
+        for rk in ("Phylum", "Class", "Order", "Family"):
+            v = str(r.get(rk) or "").strip()
+            if v and not BLANK_RE.match(v):
+                parts.append(UNRESOLVED_RE.sub("", v))
+        return " &rsaquo; ".join(esc(x) for x in parts) or "unassigned"
     rows = []
     for a in run.top_asvs(top_asv):
+        q = a["seq"]
+        name = an.label(q, "Species") if run.emu else "Unclassified"
+        if name == "Unclassified":
+            name = a["genus"] if a["genus"] != "\u2014" else ""
+        nm = ('<span class="dim">host organelle</span>' if a["host"]
+              else f'<i>{esc(name)}</i>' if name else f'<span class="dim">{esc(a["deepest"])}</span>')
         rows.append([f'<span class="mono">{a["id"]}</span>'] + ([] if run.emu else [f'{a["len"]}'])
-                    + [fmt(a["reads"]), f'{a["pct"]:.2f}%',
-                       ('<span class="dim">host organelle</span>' if a["host"]
-                        else f'<i>{esc(a["genus"])}</i>' if a["genus"] != "—"
-                        else f'<span class="dim">{esc(a["deepest"])}</span>'),
-                       f'<span style="font-size:7.2pt" class="dim">{esc(a["lineage"][:80])}</span>'])
-    out.append(T((["Taxon"] if run.emu else ["ASV", "bp"]) + ["Reads", "Share", "Genus", "Lineage"], rows,
-                 f"The {top_asv} most abundant of {run.n_asvs} {unit} over the whole run"
+                    + [fmt(a["reads"]), f'{a["pct"]:.2f}%']
+                    + ([f'{100*an.mat[q][s_]/an.comm_tot[s_]:.2f}' if an.comm_tot[s_] else "0"
+                        for s_ in S] if per else [])
+                    + [f'<div style="text-align:left">{nm}</div>',
+                       f'<div style="text-align:left;font-size:7pt" class="dim">{_lin(q)}</div>'])
+    out.append(T((["Taxon"] if run.emu else ["ASV", "bp"]) + ["Reads", "All"]
+                 + ([f"{esc(_short(s_, 12))} %" for s_ in S] if per else [])
+                 + (["Species / genus"] if run.emu else ["Genus"]) + ["Phylum &rsaquo; Class &rsaquo; Order &rsaquo; Family"],
+                 rows,
+                 f"The {top_asv} most abundant of {run.n_asvs} {unit}: reads and share over the whole run"
+                 + (", and the share of each sample" if per else "")
                  + (". Identifiers are positional in abundance order; sequences are in asvs.fasta."
                     if not run.emu else ".")))
 
     out.append("<h3>Species-level assignment</h3>")
-    if run.species:
-        sp_items = list(run.species.items())[:40]
-        out.append(T(["Species", "Reads", "Share"] + ([] if run.emu else ["ASV length"]),
-                     [[f"<i>{esc(k)}</i>", fmt(v[0]), f"{100*v[0]/run.total:.2f}%"]
-                      + ([] if run.emu else [f"{v[1]} bp"]) for k, v in sp_items],
-                     f"Species-level assignments ({run.rank_pct('Species')}% of reads"
-                     + (f"; top 40 of {len(run.species)}" if len(run.species) > 40 else "") + ")."))
+    spc = an.rank_counts("Species")
+    named = sorted((t for t in spc if t != "Unclassified"), key=lambda t: -sum(spc[t].values()))
+    if named:
+        lim = 50
+        tot_all = sum(an.comm_tot.values()) or 1
+        rows = []
+        for t in named[:lim]:
+            v = sum(spc[t].values())
+            rows.append([f"<i>{esc(t)}</i>", fmt(v), f"{100*v/tot_all:.2f}%"]
+                        + ([f'{100*spc[t][s_]/an.comm_tot[s_]:.2f}' if an.comm_tot[s_] else "0"
+                            for s_ in S] if per else []))
+        cov = 100 * sum(sum(spc[t].values()) for t in named) / tot_all
+        out.append(T(["Species", "Reads", "All"] + ([f"{esc(_short(s_, 12))} %" for s_ in S] if per else []),
+                     rows,
+                     f"Species-level assignments: {len(named)} species carrying {cov:.1f}% of the community "
+                     f"reads" + (f"; the {lim} most abundant are listed" if len(named) > lim else "")
+                     + (", with the share of each sample." if per else ".")))
     else:
         out.append("<p>No read reached a species-level assignment with this reference.</p>")
     out.append("<p>" + ("Emu resolves species from the whole ~1,500 bp gene, but species whose 16S genes "
@@ -2257,6 +2295,25 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         else:
             bt += ("No replicated groups were defined for this run, so the comparison is descriptive. ")
         out.append(bt + "</p>")
+        if len(S) <= 8:
+            feats = list(run.abund)
+            rows = []
+            for i in range(len(S)):
+                for j in range(i + 1, len(S)):
+                    a_, b_ = S[i], S[j]
+                    A = {q for q in feats if an.mat[q][a_] >= 0.5}
+                    B = {q for q in feats if an.mat[q][b_] >= 0.5}
+                    sh = A & B
+                    ra = sum(an.mat[q][a_] for q in sh) / (sum(an.mat[q][a_] for q in A) or 1)
+                    rb_ = sum(an.mat[q][b_] for q in sh) / (sum(an.mat[q][b_] for q in B) or 1)
+                    jac = 1 - len(sh) / (len(A | B) or 1)
+                    rows.append([f"{esc(a_)} &ndash; {esc(b_)}", fmt(len(sh)), fmt(len(A - B)), fmt(len(B - A)),
+                                 f"{100*ra:.1f}% / {100*rb_:.1f}%", f"{jac:.3f}", _bcf(D[i][j])])
+            out.append(T(["Pair", f"Shared {unit}", "Only first", "Only second",
+                          "Reads in shared", "Jaccard", "Bray&ndash;Curtis"], rows,
+                         f"{unit.capitalize()} shared between each pair of samples. &ldquo;Reads in shared&rdquo; is "
+                         f"the share of each sample&rsquo;s reads that fall in the shared {unit}; Jaccard counts "
+                         f"presence/absence only, Bray&ndash;Curtis weights by abundance."))
         pc = svg_pcoa(an)
         if pc:
             out.append(F(pc, f"Principal coordinates analysis (PCoA) of Bray&ndash;Curtis dissimilarity. "
@@ -2337,6 +2394,8 @@ figcaption { font-size: 8pt; color: #16242B; }
 .cmd { font-family: "DejaVu Sans Mono", monospace; font-size: 7.6pt; background: #F1F5F6;
        border-left: 2.5px solid #1E6E8C; padding: 2mm 3mm; word-break: break-all; }
 .refs li { font-size: 8.4pt; margin-bottom: 1.6mm; }
+.project { font-family: "Bitstream Charter", "DejaVu Serif", serif; font-size: 13pt; font-weight: 700;
+           color: #1E6E8C; margin: 0 0 1mm; }
 """
 
 
