@@ -1235,7 +1235,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           ? (M.live ? "" : '<button class="btn danger" id="delBtn">Delete job</button>')
             + (isWgs ? '<button class="btn" id="wgReJob" title="Run every step after polishing again on the existing assemblies">Re-analyse</button>'
                      + '<button class="btn" id="wgPdfJob">PDF report</button>' : "")
-            + (isWgs ? "" : '<button class="btn" id="ampPdf" title="One run = full report; tick more runs for a comparison report">PDF report</button>')
+            + (isWgs ? "" : '<button class="btn" id="ampRe" title="Run the pipeline again on the same input files with the same settings">Run again</button>'
+                          + '<button class="btn" id="ampPdf" title="One run = full report; tick more runs for a comparison report">PDF report</button>')
             + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download (.zip)</a>'
             + '<button class="btn pri" id="resBtn">' + (isWgs ? "View genome report" : "View results") + '</button>'
           : M.live
@@ -1310,6 +1311,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(wpd) wpd.addEventListener("click", function(){ wgsPdf(jid, wpd); });
       var apd = document.getElementById("ampPdf");
       if(apd) apd.addEventListener("click", function(){ openReport(jid, "repBox"); });
+      var are = document.getElementById("ampRe");
+      if(are) are.addEventListener("click", function(){ ampRerun(jid, are); });
 
       var cb = document.getElementById("cancelBtn");
       if(cb) cb.addEventListener("click", function(){
@@ -5611,7 +5614,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["ont_min_abundance", "Minimum abundance", "num",    "0.0001", "Emu abundance filter"],
         ["ont_db_path",       "Emu database",      "path",   "", "directory containing the Emu database"],
         ["ontMinLen",         "Minimum read length","int",   "300", "bp"],
-        ["ontMaxLen",         "Maximum read length","int",   "600", "bp"]
+        ["ontMaxLen",         "Maximum read length","int",   "600", "bp"],
+        ["nThreads",          "CPU threads",       "int",    "8", "minimap2 / Emu, chopper, VSEARCH (Emu ran on 4 before)"]
       ]});
 
     if(isCOX1) steps.push({n:2, title:"COX1 filtering",
@@ -6959,6 +6963,38 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      once a database has been installed. The work folder (merged reads, Flye,
      Medaka) lives with the upload and survives the reset; only the results
      folder is rebuilt. */
+  /* Run an amplicon job again on the files it already has (e.g. after installing
+     a tool the first run skipped). Same settings as recorded; only the thread
+     count can be changed. The current results of this job are replaced. */
+  function ampRerun(jid, btn){
+    var params;
+    api("/detail/" + encodeURIComponent(jid))
+      .then(function(D){
+        params = D.params || {};
+        if(!params.marker) throw new Error("this job has no recorded settings to re-run with");
+        var cur = params.nThreads || 4;
+        var t = window.prompt("Run this job again with the same input files and settings?\n\n"
+          + "The current results of this job are replaced (download the PDF / zip first if you "
+          + "want to keep them).\n\nCPU threads:", String(Math.max(cur, 8)));
+        if(t === null) throw {cancel:true};
+        var n = parseInt(t, 10);
+        if(isFinite(n) && n > 0) params.nThreads = n;
+        if(btn){ btn.disabled = true; btn.textContent = "Starting…"; }
+        return fetch("/jobs/" + encodeURIComponent(jid) + "/reset", {method:"POST"});
+      })
+      .then(function(r){ if(!r.ok) throw new Error("reset → HTTP " + r.status);
+        return fetch("/run/" + encodeURIComponent(jid), {method:"POST",
+          headers:{"Content-Type":"application/json"}, body: JSON.stringify(params)}); })
+      .then(function(r){ return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.message || j.error || ("HTTP " + r.status)); }); })
+      .then(function(){ return refreshJobs().then(function(){ go({name:"job", id:jid}); }); })
+      .catch(function(e){
+        if(btn){ btn.disabled = false; btn.textContent = "Run again"; }
+        if(e && e.cancel) return;
+        window.alert("Could not start the run — " + (e.message || e));
+      });
+  }
+
   function wgsReanalyse(jid, btn){
     var resume = btn && btn.dataset.resume === "1";
     if(!window.confirm(resume

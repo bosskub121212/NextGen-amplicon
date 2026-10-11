@@ -1,10 +1,10 @@
 {
-  "version": "2.13.2",
+  "version": "2.13.3",
   "release_date": "2026-10-11",
-  "changelog": "Amplicon PDF report (Emu runs): the Method and QC text now follow the run log. When chopper or VSEARCH was not found and the step was skipped, the report says so instead of describing a quality filter or chimera removal that did not happen. No restart needed.",
+  "changelog": "Beta: 'Run again' button on finished amplicon jobs — runs the pipeline again on the same input files with the recorded settings (thread count can be changed), e.g. after installing chopper / VSEARCH. The job's current results are replaced. ONT 16S new-job form gets a CPU threads field (default 8; Emu used to run on 4). Frontend only, no restart needed.",
   "previous": {
-    "version": "2.13.1",
+    "version": "2.13.2",
     "release_date": "2026-10-11",
-    "changelog": "Amplicon PDF report, round 2: figures larger and easier to read (bigger text, taller stacked bars and wider bars when there are few samples, larger heatmap cells, larger alpha and dissimilarity panels). The report type is the page title ('16S V1-V9 Amplicon Sequencing Report'), with a title typed in the dialog shown as the project line. Most-abundant-taxa table shows the species name for Emu taxa, a % column per sample (up to 6 samples) and the lineage to family in full. Species table lists 50 species with a % column per sample. Beta section adds a shared / unique taxa table per pair of samples (Jaccard and Bray-Curtis), and values that would round to 1.00 print three decimals. No restart needed."
+    "changelog": "Amplicon PDF report (Emu runs): the Method and QC text now follow the run log. When chopper or VSEARCH was not found and the step was skipped, the report says so instead of describing a quality filter or chimera removal that did not happen. No restart needed."
   }
 }
