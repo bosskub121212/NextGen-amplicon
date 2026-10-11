@@ -1762,18 +1762,38 @@ def _range_txt(pairs, f=fmt):
     return f"from {f(lo[1])} ({esc(lo[0])}) to {f(hi[1])} ({esc(hi[0])})"
 
 
+def _skipped(run):
+    """Which optional Emu steps the run log says were skipped: {"qc": bool, "chimera": bool}.
+    None for a step when there is no log to tell (the report then does not guess)."""
+    lp = run.path / "pipeline.log"
+    if not lp.exists():
+        return {"qc": None, "chimera": None}
+    t = lp.read_text(encoding="utf-8", errors="replace")
+    return {"qc": bool(re.search(r"chopper not found|QC filtering skipped", t)),
+            "chimera": bool(re.search(r"vsearch not found|Chimera removal skipped|"
+                                      r"not found \u2014 skipping chimera removal", t))}
+
+
 def _methods(run, an):
     p, out = run.params, []
     pf, pr = p.get("primer_f") or "", p.get("primer_r") or ""
     if run.emu:
+        sk = _skipped(run)
         reg = run.summary.get("region") or p.get("ont_region") or "V1-V9"
         lo, hi = {"V1-V9": (1000, 1700), "V7-V8": (250, 450)}.get(reg, (50, 2000))
         out.append("<h3>Read quality filtering</h3>")
-        out.append("<p>Raw Oxford Nanopore reads were demultiplexed by MinKNOW; reads from the same "
-                   "sample spread over several barcode files were combined before analysis. Reads were "
-                   "filtered with chopper (NanoPack2) to a mean quality of Q10 or better and a length "
-                   "of 100&ndash;2,000 bases.</p>")
-        out.append('<p class="cmd">chopper -q 10 -l 100 --maxlength 2000</p>')
+        if sk["qc"]:
+            out.append("<p>Raw Oxford Nanopore reads were demultiplexed by MinKNOW; reads from the same "
+                       "sample spread over several barcode files were combined before analysis. No "
+                       "additional read-quality filter was applied in this run (chopper was not "
+                       "available); reads were used as passed by MinKNOW, and length was controlled at "
+                       "the primer-trimming step below.</p>")
+        else:
+            out.append("<p>Raw Oxford Nanopore reads were demultiplexed by MinKNOW; reads from the same "
+                       "sample spread over several barcode files were combined before analysis. Reads were "
+                       "filtered with chopper (NanoPack2) to a mean quality of Q10 or better and a length "
+                       "of 100&ndash;2,000 bases.</p>")
+            out.append('<p class="cmd">chopper -q 10 -l 100 --maxlength 2000</p>')
         out.append("<h3>Primer trimming</h3>")
         if pf or pr:
             out.append(f"<p>Primer sequences were located and removed with cutadapt, searching both "
@@ -1788,7 +1808,11 @@ def _methods(run, an):
         else:
             out.append("<p>No primer sequences were given, so reads were analysed as delivered.</p>")
         out.append("<h3>Chimera removal</h3>")
-        out.append("<p>Chimeric reads were removed with VSEARCH in reference mode "
+        out.append("<p>Chimera removal with VSEARCH was not performed in this run (VSEARCH was not "
+                   "available). Emu&rsquo;s alignment-based abundance estimation is relatively tolerant "
+                   "of chimeras, but low-abundance taxa should be read with that in mind.</p>"
+                   if sk["chimera"] else
+                   "<p>Chimeric reads were removed with VSEARCH in reference mode "
                    "(<span class=\"mono\">--uchime_ref</span>) against the sequences of the "
                    "classification database.</p>")
         out.append("<h3>Taxonomic classification</h3>")
@@ -1968,8 +1992,11 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
             prev = k
         worst = max(losses, key=lambda kv: kv[1]) if losses else None
         out.append("<p><b>Overall pipeline outcome.</b> "
-                   + (f"All {len(S)} samples were processed through quality filtering, primer trimming "
-                      f"and chimera removal, and the remaining reads were classified with Emu. "
+                   + (f"All {len(S)} samples were processed through "
+                      + ", ".join(x for x, k in (("quality filtering", "qc"), ("primer trimming", None),
+                                                 ("chimera removal", "chimera"))
+                                  if not (k and _skipped(run)[k]))
+                      + ", and the remaining reads were classified with Emu. "
                       if run.emu else
                       f"All {len(S)} paired-end samples were processed through primer trimming, quality "
                       f"filtering, denoising, read-pair merging and chimera removal in DADA2. ")
@@ -1999,11 +2026,17 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         if run.emu:
             def _same(a, b):
                 return all(float(t.get(a) or 0) == float(t.get(b) or 0) for t in run.tracking)
-            if "qc_filtered" in run.tracking[0] and _same("input", "qc_filtered"):
+            sk = _skipped(run)
+            if sk["qc"]:
+                qi += ("No read-quality filter was applied (chopper was not available), so the QC "
+                       "column equals the input. ")
+            elif "qc_filtered" in run.tracking[0] and _same("input", "qc_filtered"):
                 qi += ("The quality filter removed no reads: either every read already met Q10 and "
                        "100&ndash;2,000 bp (MinKNOW&rsquo;s own pass filter is Q10), or chopper was not "
                        "found and the step was skipped &mdash; the run log states which. ")
-            if "primer_trimmed" in run.tracking[0] and _same("primer_trimmed", "final"):
+            if sk["chimera"]:
+                qi += "Chimera removal was not performed (VSEARCH was not available). "
+            elif "primer_trimmed" in run.tracking[0] and _same("primer_trimmed", "final"):
                 qi += ("Chimera removal removed no reads: either VSEARCH found no chimeras or it was "
                        "not found and the step was skipped &mdash; the run log states which. ")
         fins = [x[2] for x in per if x[2] > 0]

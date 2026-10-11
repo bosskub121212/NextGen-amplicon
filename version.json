@@ -1,10 +1,10 @@
 {
-  "version": "2.13.1",
+  "version": "2.13.2",
   "release_date": "2026-10-11",
-  "changelog": "Amplicon PDF report, round 2: figures larger and easier to read (bigger text, taller stacked bars and wider bars when there are few samples, larger heatmap cells, larger alpha and dissimilarity panels). The report type is the page title ('16S V1-V9 Amplicon Sequencing Report'), with a title typed in the dialog shown as the project line. Most-abundant-taxa table shows the species name for Emu taxa, a % column per sample (up to 6 samples) and the lineage to family in full. Species table lists 50 species with a % column per sample. Beta section adds a shared / unique taxa table per pair of samples (Jaccard and Bray-Curtis), and values that would round to 1.00 print three decimals. No restart needed.",
+  "changelog": "Amplicon PDF report (Emu runs): the Method and QC text now follow the run log. When chopper or VSEARCH was not found and the step was skipped, the report says so instead of describing a quality filter or chimera removal that did not happen. No restart needed.",
   "previous": {
-    "version": "2.13.0",
+    "version": "2.13.1",
     "release_date": "2026-10-11",
-    "changelog": "Amplicon PDF report rebuilt (single run, DADA2 and Emu): Method / Result / References layout like the U2BI reports, with every figure drawn in the PDF — read counts per pipeline step, read funnel, ASV length histogram, reads and n_ASV per sample, rarefaction curves, top-30 stacked bars at Phylum, Class, Order, Family, Genus and Species, a clustered top-30 genus heatmap, archaeal community table, alpha-diversity table and panels (Observed, Chao1, ACE, Shannon, Simpson), Bray–Curtis PCoA, UPGMA dendrogram and dissimilarity heatmap, group-mean composition when groups have replicates. Auto-written narratives (pipeline outcome, QC interpretation, composition per sample, alpha, beta), cutadapt/chopper/Emu commands in the methods, a 'Folder:' line under each figure and a reference list. Everything is computed from asv_table + taxonomy, so it works whether or not r_tables/ exists. No restart needed."
+    "changelog": "Amplicon PDF report, round 2: figures larger and easier to read (bigger text, taller stacked bars and wider bars when there are few samples, larger heatmap cells, larger alpha and dissimilarity panels). The report type is the page title ('16S V1-V9 Amplicon Sequencing Report'), with a title typed in the dialog shown as the project line. Most-abundant-taxa table shows the species name for Emu taxa, a % column per sample (up to 6 samples) and the lineage to family in full. Species table lists 50 species with a % column per sample. Beta section adds a shared / unique taxa table per pair of samples (Jaccard and Bray-Curtis), and values that would round to 1.00 print three decimals. No restart needed."
   }
 }
