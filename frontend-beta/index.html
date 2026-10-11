@@ -6999,7 +6999,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     box.dataset.open = "1";
     var R = {pick:[jid], top:30, title:"", busy:false, err:""};
     function runs(){
-      return STATE.jobs.filter(function(j){ return j.status === "completed" && j.marker !== "ONT-WGS"; });
+      /* the job this was opened from is always listed, even if the job list
+         was fetched before it finished */
+      return STATE.jobs.filter(function(j){
+        return (j.status === "completed" || j.job_id === jid) && j.marker !== "ONT-WGS"; });
     }
     function paint(){
       var list = runs();
@@ -7070,6 +7073,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }
     paint();
     box.scrollIntoView({block:"nearest"});
+    refreshJobs().then(function(){ if(box.dataset.open === "1" && !R.busy) paint(); });
   }
 
   function wgsPdf(jid, btn){

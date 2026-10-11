@@ -118,6 +118,10 @@ class Run:
         self.params = self._json("run_params.json")
         self.summary = self._json("summary.json")
         self.qc = self._json("qc_report.json")
+        # ONT 16S (Emu): one row per TAXON, not per sequence variant; abundances
+        # are Emu's relative abundances; read stages are input/QC/primers/chimera.
+        self.emu = (self.summary.get("pipeline") == "emu"
+                    or (self.path / "emu_output").is_dir())
 
         self._load_tables()
         self._classify()
@@ -142,6 +146,8 @@ class Run:
     # ── tables ────────────────────────────────────────────────────────────────
     def _load_tables(self):
         tax_rows = self._rows("taxonomy_table.csv")
+        if not tax_rows and self.emu:
+            tax_rows = self._rows("taxonomy.csv")          # emu_pipeline's name for it
         if not tax_rows:
             raise ValueError(f"{self.path.name}: taxonomy_table.csv missing or empty")
         key = list(tax_rows[0].keys())[0]  # unnamed first column = the ASV sequence
@@ -154,8 +160,33 @@ class Run:
         if not asv_rows:
             raise ValueError(f"{self.path.name}: asv_table.csv missing or empty")
         cols = list(asv_rows[0].keys())
-        seq_col = "sequence" if "sequence" in cols else cols[-1]
+        if self.emu:
+            seq_col = cols[0]                              # tax_id, first column
+        else:
+            seq_col = "sequence" if "sequence" in cols else cols[-1]
         self.samples = [c for c in cols if c != seq_col and c != ""]
+        self.tracking = self._rows("read_tracking.csv")
+        # Emu reports relative abundance (the pipeline stores it as parts per
+        # million). Scaled to each sample's classified reads it becomes Emu's
+        # estimated read count, so every "reads" figure below means reads.
+        scale = {s: 1.0 for s in self.samples}
+        if self.emu:
+            final = {}
+            for t in self.tracking:
+                try:
+                    final[str(t.get("sample", ""))] = float(t.get("final") or 0)
+                except (TypeError, ValueError):
+                    pass
+            tot = {s: 0.0 for s in self.samples}
+            for r in asv_rows:
+                for s_ in self.samples:
+                    try:
+                        tot[s_] += float(r[s_] or 0)
+                    except (TypeError, ValueError):
+                        pass
+            for s_ in self.samples:
+                if final.get(s_) and tot[s_]:
+                    scale[s_] = final[s_] / tot[s_]
         # Per-sample counts, and the total each ASV carries across all samples.
         self.per_sample = {s: 0.0 for s in self.samples}
         self.abund: dict[str, float] = {}
@@ -164,7 +195,7 @@ class Run:
             tot = 0.0
             for s in self.samples:
                 try:
-                    v = float(r[s] or 0)
+                    v = float(r[s] or 0) * scale[s]
                 except (TypeError, ValueError):
                     v = 0.0
                 self.per_sample[s] += v
@@ -172,7 +203,6 @@ class Run:
             self.abund[seq] = tot
         self.total = sum(self.abund.values())
 
-        self.tracking = self._rows("read_tracking.csv")
         self.alpha = self._rows("alpha_diversity.csv")
         self.rarefaction = self._rows("rarefaction.csv")
         self.orientation = self._json("orientation_report.json")
@@ -232,6 +262,16 @@ class Run:
             v = r.get("Species")
             if v and not BLANK_RE.match(str(v).strip()):
                 g = self._clean_genus(r.get("Genus")) or "?"
+                v = str(v).strip()
+                if self.emu:
+                    # Emu writes the binomial ("Brevundimonas aurantiaca"), and
+                    # "<Genus> sp." for genus-only taxa — not a species call
+                    if v.endswith(" sp.") or v == "sp.":
+                        continue
+                    name = v if v.split(" ")[0] == g or " " in v else f"{g} {v}"
+                    self.species[name] = (self.species.get(name, (0, None))[0]
+                                          + self.abund.get(s, 0), None)
+                    continue
                 self.species[f"{g} {v}"] = (self.abund.get(s, 0), len(s))
         self.species = OrderedDict(
             sorted(self.species.items(), key=lambda kv: -kv[1][0])
@@ -242,7 +282,9 @@ class Run:
         if rank not in self.rank_cols or not self.total:
             return None
         hit = [s for s, r in self.tax.items()
-               if r.get(rank) and not BLANK_RE.match(str(r[rank]).strip())]
+               if r.get(rank) and not BLANK_RE.match(str(r[rank]).strip())
+               # Emu writes "<Genus> sp." where it has no species
+               and not (self.emu and rank == "Species" and str(r[rank]).strip().endswith("sp."))]
         return round(100 * sum(self.abund.get(s, 0) for s in hit) / self.total, 1)
 
     def top_genera(self, n=10):
@@ -279,7 +321,8 @@ class Run:
                     deepest = f"{rank[0]}: {v}"
             host = seq in self.host_seqs
             out.append({
-                "id": f"ASV{i}", "len": len(seq), "reads": reads,
+                "id": f"T{i}" if self.emu else f"ASV{i}",
+                "len": None if self.emu else len(seq), "reads": reads,
                 "pct": 100 * reads / self.total if self.total else 0,
                 "phylum": (r.get("Phylum") or "\u2014"),
                 "genus": (self._clean_genus(r.get("Genus")) or "\u2014"),
@@ -290,6 +333,8 @@ class Run:
 
     def lengths(self) -> Counter:
         c = Counter()
+        if self.emu:            # rows are taxa: there is no sequence length
+            return c
         for s, v in self.abund.items():
             c[len(s)] += v
         return c
@@ -298,7 +343,9 @@ class Run:
     def db_name(self) -> str:
         p = self.params.get("dbPath") or ""
         if p:
-            return Path(p).name
+            pp = Path(p)
+            # an Emu database is a folder; its file is always species_taxid.fasta
+            return pp.parent.name if self.emu and pp.suffix else pp.name
         return self.params.get("taxDatabase") or "(pipeline default)"
 
     @property
@@ -313,7 +360,35 @@ class Run:
 
     @property
     def n_asvs(self) -> int:
-        return self.summary.get("n_asvs") or len(self.tax)
+        return self.summary.get("n_asvs") or self.summary.get("n_taxa") or len(self.tax)
+
+    # wording and read stages that differ between DADA2 and Emu runs
+    @property
+    def unit(self) -> str:
+        return "taxa" if self.emu else "sequence variants"
+
+    @property
+    def stages(self):
+        if self.emu:
+            return [("Input", "input"), ("QC (Q / length)", "qc_filtered"),
+                    ("Primers trimmed", "primer_trimmed"), ("Non-chimeric", "final")]
+        return [("Input", "input"), ("Filtered", "filtered"),
+                ("Merged", "merged"), ("Non-chimeric", "nonchim")]
+
+    @property
+    def retained_key(self) -> str:
+        return "final" if self.emu else "nonchim"
+
+    def emu_config(self):
+        p, sm = self.params, self.summary
+        return [("Classifier", "Emu — minimap2 alignment + expectation–maximisation "
+                 "over full-length reads"),
+                ("Reference database", self.db_name),
+                ("Region", sm.get("region") or p.get("ont_region") or "—"),
+                ("Forward primer", p.get("primer_f") or "—"),
+                ("Reverse primer", p.get("primer_r") or "—"),
+                ("Minimum abundance", sm.get("emu_min_abundance") or p.get("ont_min_abundance")
+                 or "—")]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -546,7 +621,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     sample_label = ", ".join(run.samples[:3]) + ("\u2026" if len(run.samples) > 3 else "")
     marker = run.summary.get("marker") or run.params.get("marker") or "16S"
     title = title or f"{sample_label} \u2014 {marker} Amplicon Analysis"
-    subtitle = subtitle or ("Sequence variants, community composition and quality control "
+    subtitle = subtitle or (("Taxa, community composition and quality control for this "
+                             "full-length 16S run (Oxford Nanopore, Emu).") if run.emu else
+                            "Sequence variants, community composition and quality control "
                             "for this sequencing run.")
     L = run.lengths()
     inp = 0.0
@@ -558,9 +635,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     out = [f'<div class="eyebrow">{esc(run.label)} &middot; {esc(marker)} &middot; '
            f'{len(run.samples)} sample{"s" if len(run.samples)!=1 else ""}</div>',
            f"<h1>{esc(title)}</h1>", f'<p class="sub">{esc(subtitle)}</p>']
-    kpis = [(fmt(inp) if inp else "\u2014", "read pairs sequenced"),
-            (fmt(run.total), "reads analysed"),
-            (str(run.n_asvs), "sequence variants"),
+    kpis = [(fmt(inp) if inp else "\u2014", "reads sequenced" if run.emu else "read pairs sequenced"),
+            (fmt(run.total), "reads classified" if run.emu else "reads analysed"),
+            (str(run.n_asvs), "taxa detected" if run.emu else "sequence variants"),
             (f"{run.rank_pct('Genus') or 0}%", "reads with a genus")]
     out.append('<div class="kpis">' + "".join(
         f'<div class="kpi"><div class="v">{v}</div><div class="l">{esc(l)}</div></div>'
@@ -568,7 +645,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
 
     # ── 1. configuration ──────────────────────────────────────────────────────
     out.append("<h2>1. Run configuration</h2>")
-    cfg = [("Sample(s)", sample_label), ("Marker", marker),
+    cfg = [("Sample(s)", sample_label), ("Marker", marker)] + run.emu_config() if run.emu else [
+           ("Sample(s)", sample_label), ("Marker", marker),
            ("Reference database", run.db_name),
            ("Forward primer", run.params.get("primer_f") or "\u2014"),
            ("Reverse primer", run.params.get("primer_r") or "\u2014"),
@@ -583,20 +661,29 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     out.append('<h2 class="pbreak">2. Quality control</h2>')
     out.append("<h3>Read tracking</h3>")
     if run.tracking:
-        cols = [c for c in ("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
-                if c in run.tracking[0]]
+        if run.emu:
+            cols = [k for _l, k in run.stages if k in run.tracking[0]]
+            heads = [l for l, k in run.stages if k in run.tracking[0]]
+        else:
+            cols = [c for c in ("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+                    if c in run.tracking[0]]
+            heads = [c.capitalize() for c in cols]
         rows = []
         for t in run.tracking:
             base = float(t.get("input") or 0) or 1
             rows.append([esc(next(iter(t.values())))] + [fmt(t.get(c) or 0) for c in cols]
-                        + [f'{100*float(t.get("nonchim") or 0)/base:.1f}%'])
-        out.append(_tbl(["Sample"] + [c.capitalize() for c in cols] + ["Retained"], rows))
+                        + [f'{100*float(t.get(run.retained_key) or 0)/base:.1f}%'])
+        out.append(_tbl(["Sample"] + heads + ["Retained"], rows,
+                        "Reads kept after each stage; Emu classifies the non-chimeric reads."
+                        if run.emu else None))
     ff = svg_readflow(run)
     if ff:
         out.append("<figure>" + ff + "<figcaption>Reads surviving each stage, as a share of "
-                   "input. The right-hand figure is what that stage cost. Merging and chimera "
-                   "removal are the two stages that normally dominate the loss."
-                   "</figcaption></figure>")
+                   "input. The right-hand figure is what that stage cost. "
+                   + ("Primer trimming drops reads that are not full-length amplicons."
+                      if run.emu else "Merging and chimera removal are the two stages that "
+                      "normally dominate the loss.")
+                   + "</figcaption></figure>")
 
     o = (run.orientation or {}).get("checked") or {}
     if o:
@@ -673,21 +760,29 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                "than a measurement.</p></div>")
 
     # ── 4. top ASVs ───────────────────────────────────────────────────────────
-    out.append(f'<h2 class="pbreak">4. Most abundant sequence variants</h2>')
-    out.append(f"<p>The {top_asv} most abundant of {run.n_asvs} ASVs. Identifiers are positional "
-               "in abundance order; the sequences themselves are in "
-               "<span class=\"mono\">asvs.fasta</span>, and the full table is in "
-               "<span class=\"mono\">asv_table.csv</span>.</p>")
+    if run.emu:
+        out.append('<h2 class="pbreak">4. Most abundant taxa</h2>')
+        out.append(f"<p>The {top_asv} most abundant of {run.n_asvs} taxa. Reads are Emu's "
+                   "estimated counts (relative abundance &times; classified reads); the full "
+                   "table is in <span class=\"mono\">asv_table.csv</span> (one row per Emu "
+                   "tax_id) with lineages in <span class=\"mono\">taxonomy.csv</span>.</p>")
+    else:
+        out.append(f'<h2 class="pbreak">4. Most abundant sequence variants</h2>')
+        out.append(f"<p>The {top_asv} most abundant of {run.n_asvs} ASVs. Identifiers are positional "
+                   "in abundance order; the sequences themselves are in "
+                   "<span class=\"mono\">asvs.fasta</span>, and the full table is in "
+                   "<span class=\"mono\">asv_table.csv</span>.</p>")
     rows = []
     for a in run.top_asvs(top_asv):
-        rows.append([f'<span class="mono">{a["id"]}</span>',
-                     f'{a["len"]}',
+        rows.append([f'<span class="mono">{a["id"]}</span>']
+                    + ([] if run.emu else [f'{a["len"]}']) + [
                      fmt(a["reads"]), f'{a["pct"]:.2f}%',
                      (f'<span class="dim">host organelle</span>' if a["host"]
                       else f'<i>{esc(a["genus"])}</i>' if a["genus"] != "\u2014"
                       else f'<span class="dim">{esc(a["deepest"])}</span>'),
                      f'<span style="font-size:7.4pt" class="dim">{esc(a["lineage"][:78])}</span>'])
-    out.append(_tbl(["ASV", "bp", "Reads", "Share", "Genus", "Lineage"], rows))
+    out.append(_tbl((["Taxon"] if run.emu else ["ASV", "bp"]) + ["Reads", "Share", "Genus", "Lineage"],
+                    rows))
 
     # ── 5. diversity ──────────────────────────────────────────────────────────
     if run.alpha or run.rarefaction:
@@ -708,15 +803,24 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     # ── 6. species ────────────────────────────────────────────────────────────
     out.append("<h2>6. Species-level assignment</h2>")
     if run.species:
-        out.append(_tbl(["Species", "Reads", "Share", "ASV length"],
+        out.append(_tbl(["Species", "Reads", "Share"] + ([] if run.emu else ["ASV length"]),
                         [[f"<i>{esc(k)}</i>", fmt(v[0]),
-                          f"{100*v[0]/run.total:.2f}%", f"{v[1]} bp"]
+                          f"{100*v[0]/run.total:.2f}%"] + ([] if run.emu else [f"{v[1]} bp"])
                          for k, v in run.species.items()],
                         f'{fmt(sum(v[0] for v in run.species.values()))} of {fmt(run.total)} '
                         f'reads \u2014 {run.rank_pct("Species")}% of the analysed data.'))
     else:
         out.append("<p>No read reached a species-level assignment.</p>")
-    out.append("<p>Species are assigned by exact 100% match of the whole fragment against a "
+    if run.emu:
+        out.append("<p>Emu assigns each full-length read to the reference taxa it aligns to and "
+                   "resolves ambiguous reads by expectation&ndash;maximisation, so species calls "
+                   "come from the ~1,500 bp gene rather than a short region. Species whose 16S "
+                   "genes are near-identical (e.g. within <i>Stenotrophomonas</i> or the "
+                   "<i>Bacillus cereus</i> group) cannot be told apart by any 16S method, and a "
+                   "reference built to genus level (such as SILVA) gives no species at all; "
+                   "genus is the robust level to report.</p>")
+    else:
+      out.append("<p>Species are assigned by exact 100% match of the whole fragment against a "
                "species-annotated reference, not by a confidence score. A low rate is the "
                "expected outcome for a short amplicon: the V3&ndash;V4 region covers roughly "
                "440 bp of a 1,540 bp gene, and uncultured environmental bacteria frequently "
@@ -779,11 +883,17 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
         except (TypeError, ValueError):
             pass
     L = ref.lengths()
-    kpis = [(fmt(inp) if inp else "—", "read pairs sequenced"),
-            (fmt(ref.total), "reads analysed"),
-            (str(ref.n_asvs), "sequence variants"),
-            (f"{max(L)} bp" if L else "—",
-             f"longest ASV (ceiling {ref.ceiling})" if ref.ceiling else "longest ASV")]
+    if ref.emu:
+        kpis = [(fmt(inp) if inp else "—", "reads sequenced"),
+                (fmt(ref.total), "reads classified"),
+                (" / ".join(str(r.n_asvs) for r in runs), "taxa detected"),
+                (" / ".join(f"{r.rank_pct('Genus') or 0}%" for r in runs), "reads with a genus")]
+    else:
+        kpis = [(fmt(inp) if inp else "—", "read pairs sequenced"),
+                (fmt(ref.total), "reads analysed"),
+                (str(ref.n_asvs), "sequence variants"),
+                (f"{max(L)} bp" if L else "—",
+                 f"longest ASV (ceiling {ref.ceiling})" if ref.ceiling else "longest ASV")]
     out = [f'<div class="eyebrow">{esc(sample_label)} &middot; {esc(marker)} &middot; '
            f'{len(ref.samples)} sample{"s" if len(ref.samples)!=1 else ""}</div>',
            f"<h1>{esc(title)}</h1>", f'<p class="sub">{esc(subtitle)}</p>',
@@ -798,6 +908,10 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
            ("Minimum bootstrap", lambda r: r.params.get("minBoot")),
            ("Chimera method", lambda r: r.params.get("chimeraMethod")),
            ("Sequencer", lambda r: r.params.get("sequencerType"))]
+    if ref.emu:                      # Emu runs: no truncLen / maxEE / bootstrap
+        keys = [("Reference database", "db_name")]
+        prm = [(k, (lambda r, k=k: dict(r.emu_config()).get(k)))
+               for k, _v in ref.emu_config() if k != "Reference database"]
     rows = [[k] + [esc(getattr(r, a)) for r in runs] for k, a in keys]
     for k, fn in prm:
         vals = [fn(r) for r in runs]
@@ -808,15 +922,16 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
                     if multi else None))
 
     if ref.tracking:
-        cols = [c for c in ("input", "filtered", "merged", "nonchim") if c in ref.tracking[0]]
+        cols = [k for _l, k in ref.stages if k in ref.tracking[0]]
+        heads = [l for l, k in ref.stages if k in ref.tracking[0]]
         trows = []
         for t in ref.tracking:
             name = next(iter(t.values()))
             base = float(t.get("input") or 0) or 1
             trows.append([esc(name)] + [fmt(t.get(c) or 0) for c in cols]
-                         + [f'{100*float(t.get("nonchim") or 0)/base:.1f}%'])
+                         + [f'{100*float(t.get(ref.retained_key) or 0)/base:.1f}%'])
         out.append("<h3>Read tracking</h3>")
-        out.append(_tbl(["Sample"] + [c.capitalize() for c in cols] + ["Retained"], trows,
+        out.append(_tbl(["Sample"] + heads + ["Retained"], trows,
                         "Identical across runs that share a pipeline configuration — "
                         "the reference database is applied after this point." if multi else None))
 
@@ -925,8 +1040,13 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
 
     # ── 6. species ────────────────────────────────────────────────────────────
     out.append('<h2 class="pbreak">6. Species-level assignment</h2>')
-    out.append("<p>Species are assigned by exact 100% match of the full fragment against a "
-               "species-annotated reference, not by a confidence score.</p>")
+    if ref.emu:
+        out.append("<p>Species from Emu over full-length reads. A database built to genus "
+                   "level (SILVA) has no species to give — an empty column there is the "
+                   "reference, not the data.</p>")
+    else:
+        out.append("<p>Species are assigned by exact 100% match of the full fragment against a "
+                   "species-annotated reference, not by a confidence score.</p>")
     allsp = OrderedDict()
     for r in runs:
         for k, v in r.species.items():
@@ -938,15 +1058,18 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
             row = [f"<i>{esc(k)}</i>"]
             for r in runs:
                 row.append(fmt(per[r.label][0]) if r.label in per else '<span class="dim">—</span>')
-            row.append(f"{first[1]} bp")
+            if not ref.emu:
+                row.append(f"{first[1]} bp")
             rows.append(row)
-        out.append(_tbl(["Species"] + [esc(n) for n in names] + ["ASV length"], rows,
+        out.append(_tbl(["Species"] + [esc(n) for n in names] + ([] if ref.emu else ["ASV length"]),
+                        rows,
                         f"{fmt(sum(v[0] for v in runs[-1].species.values()))} of "
                         f"{fmt(runs[-1].total)} reads — "
                         f"{runs[-1].rank_pct('Species')}% of the analysed data."))
     else:
         out.append("<p>No read reached a species-level assignment in any run.</p>")
-    out.append("<p>A low species rate is the expected outcome for a short amplicon. The "
+    if not ref.emu:
+      out.append("<p>A low species rate is the expected outcome for a short amplicon. The "
                "V3&ndash;V4 region covers roughly 440 bp of a 1,540 bp gene, and uncultured "
                "environmental bacteria frequently have no species-annotated entry in any 16S "
                "reference to match against. The figure reflects the marker and the sample rather "
@@ -956,8 +1079,8 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
 
     # ── 7. summary ────────────────────────────────────────────────────────────
     out.append('<h2 class="pbreak">7. Summary</h2>')
-    srows = [["Reads analysed"] + [fmt(r.total) for r in runs],
-             ["Sequence variants"] + [str(r.n_asvs) for r in runs]]
+    srows = [["Reads classified" if ref.emu else "Reads analysed"] + [fmt(r.total) for r in runs],
+             ["Taxa" if ref.emu else "Sequence variants"] + [str(r.n_asvs) for r in runs]]
     for rank in ("Family", "Genus", "Species"):
         vals = [r.rank_pct(rank) for r in runs]
         if any(v is not None for v in vals):
@@ -1112,8 +1235,7 @@ def svg_readflow(run) -> str:
     more than its neighbours is visible instantly and does not have to be worked out
     from four numbers.
     """
-    stages = [("Input", "input"), ("Filtered", "filtered"),
-              ("Merged", "merged"), ("Non-chimeric", "nonchim")]
+    stages = run.stages
     tot = Counter()
     for t in run.tracking:
         for _lbl, k in stages:
