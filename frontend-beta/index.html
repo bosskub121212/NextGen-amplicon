@@ -1493,6 +1493,24 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(p.wgs_sample_names && Object.keys(p.wgs_sample_names).length)
         row("Samples", Object.keys(p.wgs_sample_names).map(function(k){ return p.wgs_sample_names[k]; }).join(", "));
       row("CPU threads",         p.nThreads);
+    } else if(p.marker === "ONT-16S" || p.marker === "ONT16S" || p.marker === "ONT"){
+    /* Emu runs: only what emu_pipeline.py actually takes — the DADA2 fields
+       (truncLen, maxEE, pooling, bootstrap…) carry defaults but are never used */
+    row("Forward primer",      p.primer_f);
+    row("Reverse primer",      p.primer_r);
+    row("16S region",          p.ont_region);
+    row("Emu database",        p.dbPath);
+    if(p.dbPath_requested && p.dbPath && p.dbPath_requested !== p.dbPath)
+      row("⚠ Database requested", p.dbPath_requested + "  (the run used the file above)");
+    row("Minimum abundance",   p.ont_min_abundance);
+    row("Read QC (chopper)",   "mean Q ≥ 10, 100–2,000 bp");
+    /* recorded from v2.13.4 on; older runs leave it out (the run log says what happened) */
+    row("Chimera removal",     p.ont_chimera === true ? "on (VSEARCH, reference-based)"
+                               : (p.ont_chimera === false ? "off (Emu default)" : ""));
+    row("CPU threads",         p.nThreads);
+    row("Top taxa in plots",   p.topN);
+    row("Metadata supplied",   (p.metadata || (p.metadataRows && p.metadataRows.length)) ? "yes" : "no");
+    row("Manual sample map",   (p.sampleFileMap && Object.keys(p.sampleFileMap).length) ? "yes" : "no");
     } else {
     /* amplicon settings — RunParams carries their defaults on every run, so on
        a genome run they would only list values that were never used */
