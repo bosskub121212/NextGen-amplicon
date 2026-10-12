@@ -1,10 +1,10 @@
 {
-  "version": "2.13.3",
-  "release_date": "2026-10-11",
-  "changelog": "Beta: 'Run again' button on finished amplicon jobs — runs the pipeline again on the same input files with the recorded settings (thread count can be changed), e.g. after installing chopper / VSEARCH. The job's current results are replaced. ONT 16S new-job form gets a CPU threads field (default 8; Emu used to run on 4). Frontend only, no restart needed.",
+  "version": "2.13.4",
+  "release_date": "2026-10-12",
+  "changelog": "ONT 16S (Emu): reference-based chimera removal (VSEARCH --uchime_ref) is now OFF by default. On TH-BIOENTIST-00004 it removed 30% of PGU-16S_full, almost all of it one genus (Paenimyroides 37.6k → 10.7k reads, -72%) while every other genus moved 2-10% — genuine reads of a taxon the reference covers poorly were scored as chimeras. Emu's own method applies no chimera filter. It can still be switched on per run (beta: 'Chimera removal (VSEARCH)'; CLI: --chimera). The PDF report states which applied. emu_pipeline.py and report_builder.py need no restart; the new checkbox reaches the pipeline after a backend restart.",
   "previous": {
-    "version": "2.13.2",
+    "version": "2.13.3",
     "release_date": "2026-10-11",
-    "changelog": "Amplicon PDF report (Emu runs): the Method and QC text now follow the run log. When chopper or VSEARCH was not found and the step was skipped, the report says so instead of describing a quality filter or chimera removal that did not happen. No restart needed."
+    "changelog": "Beta: 'Run again' button on finished amplicon jobs — runs the pipeline again on the same input files with the recorded settings (thread count can be changed), e.g. after installing chopper / VSEARCH. The job's current results are replaced. ONT 16S new-job form gets a CPU threads field (default 8; Emu used to run on 4). Frontend only, no restart needed."
   }
 }

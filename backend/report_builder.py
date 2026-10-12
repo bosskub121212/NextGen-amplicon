@@ -373,8 +373,9 @@ class Run:
     @property
     def stages(self):
         if self.emu:
+            last = "Classified" if _skipped(self).get("chimera") else "Non-chimeric"
             return [("Input", "input"), ("QC (Q / length)", "qc_filtered"),
-                    ("Primers trimmed", "primer_trimmed"), ("Non-chimeric", "final")]
+                    ("Primers trimmed", "primer_trimmed"), (last, "final")]
         return [("Input", "input"), ("Filtered", "filtered"),
                 ("Merged", "merged"), ("Non-chimeric", "nonchim")]
 
@@ -1767,11 +1768,13 @@ def _skipped(run):
     None for a step when there is no log to tell (the report then does not guess)."""
     lp = run.path / "pipeline.log"
     if not lp.exists():
-        return {"qc": None, "chimera": None}
+        return {"qc": None, "chimera": None, "chimera_off": False}
     t = lp.read_text(encoding="utf-8", errors="replace")
+    off = bool(re.search(r"Chimera removal off", t))
     return {"qc": bool(re.search(r"chopper not found|QC filtering skipped", t)),
-            "chimera": bool(re.search(r"vsearch not found|Chimera removal skipped|"
-                                      r"not found \u2014 skipping chimera removal", t))}
+            "chimera": bool(off or re.search(r"vsearch not found|Chimera removal skipped|"
+                                             r"not found \u2014 skipping chimera removal", t)),
+            "chimera_off": off}
 
 
 def _methods(run, an):
@@ -1808,7 +1811,14 @@ def _methods(run, an):
         else:
             out.append("<p>No primer sequences were given, so reads were analysed as delivered.</p>")
         out.append("<h3>Chimera removal</h3>")
-        out.append("<p>Chimera removal with VSEARCH was not performed in this run (VSEARCH was not "
+        out.append("<p>No separate chimera filter was applied, following the Emu method (Curry et "
+                   "al. 2022). Reference-based chimera detection (UCHIME) was evaluated and not used: "
+                   "on full-length nanopore reads it flags genuine reads of taxa that are sparsely "
+                   "represented in the reference as chimeras, removing them selectively and distorting "
+                   "relative abundance. Emu&rsquo;s expectation&ndash;maximisation and its minimum "
+                   "abundance threshold limit the influence of the few true chimeras.</p>"
+                   if sk.get("chimera_off") else
+                   "<p>Chimera removal with VSEARCH was not performed in this run (VSEARCH was not "
                    "available). Emu&rsquo;s alignment-based abundance estimation is relatively tolerant "
                    "of chimeras, but low-abundance taxa should be read with that in mind.</p>"
                    if sk["chimera"] else
@@ -2034,7 +2044,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                 qi += ("The quality filter removed no reads: either every read already met Q10 and "
                        "100&ndash;2,000 bp (MinKNOW&rsquo;s own pass filter is Q10), or chopper was not "
                        "found and the step was skipped &mdash; the run log states which. ")
-            if sk["chimera"]:
+            if sk.get("chimera_off"):
+                qi += "No chimera filter was applied (see Method), so the last two columns are equal. "
+            elif sk["chimera"]:
                 qi += "Chimera removal was not performed (VSEARCH was not available). "
             elif "primer_trimmed" in run.tracking[0] and _same("primer_trimmed", "final"):
                 qi += ("Chimera removal removed no reads: either VSEARCH found no chimeras or it was "

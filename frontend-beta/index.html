@@ -5615,7 +5615,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["ont_db_path",       "Emu database",      "path",   "", "directory containing the Emu database"],
         ["ontMinLen",         "Minimum read length","int",   "300", "bp"],
         ["ontMaxLen",         "Maximum read length","int",   "600", "bp"],
-        ["nThreads",          "CPU threads",       "int",    "8", "minimap2 / Emu, chopper, VSEARCH (Emu ran on 4 before)"]
+        ["nThreads",          "CPU threads",       "int",    "8", "minimap2 / Emu, chopper, VSEARCH (Emu ran on 4 before)"],
+        ["ont_chimera",       "Chimera removal (VSEARCH)", "bool", "false",
+         "reference-based; off by default — on ONT reads it removes real reads of taxa the reference covers poorly"]
       ]});
 
     if(isCOX1) steps.push({n:2, title:"COX1 filtering",

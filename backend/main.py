@@ -224,6 +224,7 @@ class RunParams(BaseModel):
     trainAmpliconMaxLen:  int   = 600         # max len for extract-reads (train mode)
     # --- CPU threads (applies to all pipelines) ---
     nThreads:      int   = 4
+    ont_chimera:   bool  = False   # ONT-16S: reference-based chimera removal (off by default)
     # --- Shared db paths override ---
     db_paths_json: str   = ""
     # --- Read orientation repair (paired-end DADA2 only) ---
@@ -1085,6 +1086,8 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--primer_f", params.primer_f]
         if params.primer_r:
             cmd += ["--primer_r", params.primer_r]
+        if params.ont_chimera:
+            cmd += ["--chimera"]
         if params.metadata:
             cmd += ["--metadata", metadata_path]
 

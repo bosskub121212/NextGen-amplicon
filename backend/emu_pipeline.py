@@ -60,6 +60,13 @@ def parse_args():
     p.add_argument("--qc_max_len",    type=int, default=2000, help="Chopper max read length (raw, pre-primer-trim)")
     p.add_argument("--skip_qc",       action="store_true",    help="Skip Chopper QC filtering step")
     p.add_argument("--skip_chimera",  action="store_true",    help="Skip vsearch chimera-removal step")
+    # Reference-based UCHIME is OFF unless asked for. On TH-BIOENTIST-00004 it
+    # removed 30% of one sample's reads, almost all from a single genus
+    # (Paenimyroides 37.6k -> 10.7k reads, every other genus within 2-10%):
+    # an ONT read of a taxon with few close references scores as a mosaic of two
+    # references. Emu itself (Curry et al. 2022) applies no chimera filter.
+    p.add_argument("--chimera",       action="store_true",
+                   help="Enable reference-based chimera removal (vsearch --uchime_ref); off by default")
     p.add_argument("--cutadapt_error_rate", type=float, default=0.20, help="cutadapt -e (max error rate)")
     p.add_argument("--cutadapt_overlap",    type=int,   default=10,   help="cutadapt -O (min primer overlap)")
     return p.parse_args()
@@ -710,8 +717,10 @@ def main():
         min_len=trim_min_len, max_len=trim_max_len)
 
     # ── 4. Remove chimeras (vsearch, reference-based) ──────────────────────────
-    if args.skip_chimera:
-        log("  Step 4/8 — Chimera removal skipped (--skip_chimera)")
+    if args.skip_chimera or not args.chimera:
+        progress(32, "Step 4/8 — Chimera removal off (Emu default)")
+        log("  Step 4/8 — Chimera removal off: reference-based UCHIME flags full-length ONT "
+            "reads of taxa poorly covered by the reference as chimeras (enable with --chimera)")
         samples_clean = samples_trimmed
     else:
         progress(32, "Step 4/8 — Chimera removal (vsearch)")
