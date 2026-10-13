@@ -1,10 +1,10 @@
 {
-  "version": "2.13.4",
-  "release_date": "2026-10-12",
-  "changelog": "ONT 16S (Emu): reference-based chimera removal (VSEARCH --uchime_ref) is now OFF by default. On TH-BIOENTIST-00004 it removed 30% of PGU-16S_full, almost all of it one genus (Paenimyroides 37.6k → 10.7k reads, -72%) while every other genus moved 2-10% — genuine reads of a taxon the reference covers poorly were scored as chimeras. Emu's own method applies no chimera filter. It can still be switched on per run (beta: 'Chimera removal (VSEARCH)'; CLI: --chimera). The PDF report states which applied. emu_pipeline.py and report_builder.py need no restart; the new checkbox reaches the pipeline after a backend restart.",
+  "version": "2.13.5",
+  "release_date": "2026-10-13",
+  "changelog": "Amplicon PDF report: Bray-Curtis values that round to 1.00 print three decimals in the text too; read-tracking caption says 'classified' when no chimera filter ran; the Emu species table separates named species from unnamed reference strains ('sp. ...'); the beta section notes taxa that dominate one sample but appear at trace level (≤0.5%) in another, which may be barcode / index cross-talk. Beta: ONT 16S settings table lists only the parameters Emu uses. No restart needed.",
   "previous": {
-    "version": "2.13.3",
-    "release_date": "2026-10-11",
-    "changelog": "Beta: 'Run again' button on finished amplicon jobs — runs the pipeline again on the same input files with the recorded settings (thread count can be changed), e.g. after installing chopper / VSEARCH. The job's current results are replaced. ONT 16S new-job form gets a CPU threads field (default 8; Emu used to run on 4). Frontend only, no restart needed."
+    "version": "2.13.4",
+    "release_date": "2026-10-12",
+    "changelog": "ONT 16S (Emu): reference-based chimera removal (VSEARCH --uchime_ref) is now OFF by default. On TH-BIOENTIST-00004 it removed 30% of PGU-16S_full, almost all of it one genus (Paenimyroides 37.6k → 10.7k reads, -72%) while every other genus moved 2-10% — genuine reads of a taxon the reference covers poorly were scored as chimeras. Emu's own method applies no chimera filter. It can still be switched on per run (beta: 'Chimera removal (VSEARCH)'; CLI: --chimera). The PDF report states which applied. emu_pipeline.py and report_builder.py need no restart; the new checkbox reaches the pipeline after a backend restart."
   }
 }

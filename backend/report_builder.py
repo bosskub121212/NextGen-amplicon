@@ -2071,7 +2071,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                 for t in run.tracking]
         out.append(T(["Sample"] + heads + ["Retained"], rows,
                      "Read counts per sample at each processing step"
-                     + (" (raw, QC-filtered, primer-trimmed, non-chimeric)." if run.emu else
+                     + ((" (raw, QC-filtered, primer-trimmed, classified)." if _skipped(run).get("chimera")
+                         else " (raw, QC-filtered, primer-trimmed, non-chimeric).") if run.emu else
                         " (raw, filtered, denoisedF, denoisedR, merged, non-chimeric).")))
         out.append(F(svg_steps(run, an), "Read count distribution per pipeline step. Each line is one "
                      "sample" + ("; boxes show the spread across samples." if len(S) >= 4 else "."),
@@ -2257,8 +2258,12 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         cov = 100 * sum(sum(spc[t].values()) for t in named) / tot_all
         out.append(T(["Species", "Reads", "All"] + ([f"{esc(_short(s_, 12))} %" for s_ in S] if per else []),
                      rows,
-                     f"Species-level assignments: {len(named)} species carrying {cov:.1f}% of the community "
-                     f"reads" + (f"; the {lim} most abundant are listed" if len(named) > lim else "")
+                     f"Species-level assignments: {len(named)} reference taxa below genus carrying "
+                     f"{cov:.1f}% of the community reads"
+                     + (f" ({sum(1 for t in named if ' sp.' not in t)} named species; the others are "
+                        f"unnamed reference strains such as &ldquo;sp. &hellip;&rdquo;)"
+                        if any(' sp.' in t for t in named) else "")
+                     + (f"; the {lim} most abundant are listed" if len(named) > lim else "")
                      + (", with the share of each sample." if per else ".")))
     else:
         out.append("<p>No read reached a species-level assignment with this reference.</p>")
@@ -2321,10 +2326,10 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         bt = (f"<p>Beta diversity compares community composition between samples. Bray&ndash;Curtis "
               f"dissimilarity (0 = identical, 1 = no shared {unit}) "
               + (f"ranged from {lo[2]:.2f} to {hi[2]:.2f}. " if len(pairs) > 1 else
-                 f"between {esc(lo[0])} and {esc(lo[1])} was {lo[2]:.2f}. "))
+                 f"between {esc(lo[0])} and {esc(lo[1])} was {_bcf(lo[2])}. "))
         if len(pairs) > 1:
-            bt += (f"The most similar pair was {esc(lo[0])} and {esc(lo[1])} ({lo[2]:.2f}); the most "
-                   f"different was {esc(hi[0])} and {esc(hi[1])} ({hi[2]:.2f}). ")
+            bt += (f"The most similar pair was {esc(lo[0])} and {esc(lo[1])} ({_bcf(lo[2])}); the most "
+                   f"different was {esc(hi[0])} and {esc(hi[1])} ({_bcf(hi[2])}). ")
         mean_d = sum(x[2] for x in pairs) / len(pairs)
         bt += ("Overall the samples have highly distinct compositions. " if mean_d > 0.7 else
                "The samples share a substantial part of their composition. " if mean_d < 0.4 else
@@ -2359,6 +2364,27 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                          f"{unit.capitalize()} shared between each pair of samples. &ldquo;Reads in shared&rdquo; is "
                          f"the share of each sample&rsquo;s reads that fall in the shared {unit}; Jaccard counts "
                          f"presence/absence only, Bray&ndash;Curtis weights by abundance."))
+        # A taxon that dominates one sample and turns up at a trace level in another is
+        # the signature of barcode / index cross-talk, not of a shared organism.
+        gp = an.rank_pct("Genus")
+        xt = []
+        for g, v in gp.items():
+            if g == "Unclassified":
+                continue
+            for a_ in S:
+                for b_ in S:
+                    if a_ != b_ and v[a_] >= 10 and 0 < v[b_] <= 0.5:
+                        xt.append((g, a_, v[a_], b_, v[b_]))
+        if xt:
+            xt.sort(key=lambda x: -x[2])
+            out.append("<p><b>Trace levels of another sample&rsquo;s dominant taxa.</b> "
+                       + "; ".join(f"<i>{esc(g)}</i> is {va:.1f}% of {esc(a_)} but "
+                                   f"{(f'{vb:.2f}' if vb >= 0.01 else '&lt;0.01')}% of {esc(b_)}"
+                                   for g, a_, va, b_, vb in xt[:5])
+                       + ". Traces like these can be genuine, but they are also what barcode / index "
+                       "cross-talk between samples multiplexed in one run looks like, so they should not "
+                       "be taken as members of the second sample&rsquo;s community without independent "
+                       "evidence.</p>")
         pc = svg_pcoa(an)
         if pc:
             out.append(F(pc, f"Principal coordinates analysis (PCoA) of Bray&ndash;Curtis dissimilarity. "
