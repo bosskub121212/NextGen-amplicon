@@ -9,3 +9,8 @@ cryptography>=42.0.0
 # PDF report generation (report_builder.py). Without it the report endpoint still
 # returns the HTML, which prints to PDF from a browser.
 weasyprint>=60
+
+# Word (.docx) report export (docx_export.py): python-docx writes the file,
+# cairosvg turns the report charts (SVG) into PNG. cairosvg needs libcairo2.
+python-docx>=1.1
+cairosvg>=2.7

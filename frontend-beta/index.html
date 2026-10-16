@@ -1234,9 +1234,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(acts) acts.innerHTML = M.st === "completed"
           ? (M.live ? "" : '<button class="btn danger" id="delBtn">Delete job</button>')
             + (isWgs ? '<button class="btn" id="wgReJob" title="Run every step after polishing again on the existing assemblies">Re-analyse</button>'
-                     + '<button class="btn" id="wgPdfJob">PDF report</button>' : "")
+                     + '<button class="btn" id="wgPdfJob">PDF report</button>'
+                     + '<button class="btn" id="wgDocJob" title="Editable Word file with the same content">Word report</button>' : "")
             + (isWgs ? "" : '<button class="btn" id="ampRe" title="Run the pipeline again on the same input files with the same settings">Run again</button>'
-                          + '<button class="btn" id="ampPdf" title="One run = full report; tick more runs for a comparison report">PDF report</button>')
+                          + '<button class="btn" id="ampPdf" title="PDF or editable Word file; one run = full report, tick more runs for a comparison">Report (PDF / Word)</button>')
             + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download (.zip)</a>'
             + '<button class="btn pri" id="resBtn">' + (isWgs ? "View genome report" : "View results") + '</button>'
           : M.live
@@ -1309,6 +1310,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(wre) wre.addEventListener("click", function(){ wgsReanalyse(jid, wre); });
       var wpd = document.getElementById("wgPdfJob");
       if(wpd) wpd.addEventListener("click", function(){ wgsPdf(jid, wpd); });
+      var wdc = document.getElementById("wgDocJob");
+      if(wdc) wdc.addEventListener("click", function(){ wgsPdf(jid, wdc, "docx"); });
       var apd = document.getElementById("ampPdf");
       if(apd) apd.addEventListener("click", function(){ openReport(jid, "repBox"); });
       var are = document.getElementById("ampRe");
@@ -7053,7 +7056,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(!box) return;
     if(box.dataset.open === "1"){ box.innerHTML = ""; box.dataset.open = ""; return; }
     box.dataset.open = "1";
-    var R = {pick:[jid], top:30, title:"", busy:false, err:""};
+    var R = {pick:[jid], top:30, title:"", busy:false, err:"", fmt:"pdf"};
     function runs(){
       /* the job this was opened from is always listed, even if the job list
          was fetched before it finished */
@@ -7063,11 +7066,15 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     function paint(){
       var list = runs();
       box.innerHTML = '<div class="rep">'
-        + '<h4>Build PDF report</h4>'
+        + '<h4>Build report</h4>'
         + '<div class="what">One run = full report (QC, charts, ASV table, diversity). '
         + 'Tick more runs for a comparison report — one column per run, in the order ticked.</div>'
         + '<div class="lab">Report title</div>'
         + '<input type="text" id="repTitle" placeholder="e.g. Reference database comparison" value="' + esc(R.title) + '">'
+        + '<div class="lab">File type</div><div class="segs">'
+          + [["pdf", "PDF"], ["docx", "Word (.docx) — editable"]].map(function(f){
+              return '<button class="btn' + (R.fmt === f[0] ? " on" : "") + '" data-fmt="' + f[0] + '">' + f[1] + '</button>'; }).join("")
+          + '</div>'
         + (R.pick.length <= 1
             ? '<div class="lab">ASVs in the table</div><div class="segs">'
               + [30, 50, 100].map(function(n){
@@ -7084,12 +7091,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           }).join("") : '<div class="what" style="padding:10px">No completed amplicon runs.</div>') + '</div>'
         + (R.err ? '<div class="err">' + esc(R.err) + '</div>' : "")
         + '<div class="row"><button class="btn pri" id="repGo"' + (R.busy || !R.pick.length ? " disabled" : "") + '>'
-        + (R.busy ? "Building PDF…" : "Build PDF (" + R.pick.length + " run" + (R.pick.length === 1 ? "" : "s") + ")") + '</button>'
+        + (R.busy ? (R.fmt === "docx" ? "Building Word file…" : "Building PDF…")
+                  : (R.fmt === "docx" ? "Build Word" : "Build PDF") + " (" + R.pick.length + " run" + (R.pick.length === 1 ? "" : "s") + ")") + '</button>'
         + '<button class="btn" id="repNo">Close</button>'
         + (R.busy ? '<span class="what">A large comparison takes a minute.</span>' : "") + '</div>'
         + '</div>';
       var t = document.getElementById("repTitle");
       t.addEventListener("input", function(){ R.title = t.value; });
+      Array.prototype.forEach.call(box.querySelectorAll("[data-fmt]"), function(b){
+        b.addEventListener("click", function(){ R.fmt = b.dataset.fmt; paint(); });
+      });
       Array.prototype.forEach.call(box.querySelectorAll("[data-top]"), function(b){
         b.addEventListener("click", function(){ R.top = parseInt(b.dataset.top, 10); paint(); });
       });
@@ -7111,7 +7122,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         var j = STATE.jobs.filter(function(x){ return x.job_id === id; })[0];
         return (j && j.job_name) || id; });
       fetch("/report", {method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({job_ids: R.pick, title: R.title.trim() || null, top_asv: R.top,
+        body: JSON.stringify({job_ids: R.pick, title: R.title.trim() || null, top_asv: R.top, format: R.fmt,
                               company: "NextGen Network Corporation Company Limited", labels: names})})
         .then(function(r){
           if(!r.ok) return r.text().then(function(t){
@@ -7122,7 +7133,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         })
         .then(function(b){
           var stem = (R.title.trim() || (R.pick.length > 1 ? "comparison_report" : names[0] + "_report"));
-          saveBlob(b, stem.replace(/[^\w.-]+/g, "_") + ".pdf");
+          saveBlob(b, stem.replace(/[^\w.-]+/g, "_") + (R.fmt === "docx" ? ".docx" : ".pdf"));
           R.busy = false; paint();
         })
         .catch(function(e){ R.busy = false; R.err = "Report build failed — " + (e.message || e); paint(); });
@@ -7132,20 +7143,22 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     refreshJobs().then(function(){ if(box.dataset.open === "1" && !R.busy) paint(); });
   }
 
-  function wgsPdf(jid, btn){
+  function wgsPdf(jid, btn, fmt){
+    fmt = fmt || "pdf";
     var label = btn ? btn.textContent : "";
-    if(btn){ btn.disabled = true; btn.textContent = "Building PDF…"; }
+    if(btn){ btn.disabled = true; btn.textContent = fmt === "docx" ? "Building Word…" : "Building PDF…"; }
     var listed = STATE.jobs.filter(function(j){ return j.job_id === jid; })[0] || {};
     fetch("/report", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({job_ids:[jid], company:"NextGen Network Corporation Company Limited",
-                            labels:[listed.job_name || jid]})})
+                            labels:[listed.job_name || jid], format: fmt})})
       .then(function(r){
         if(!r.ok) return r.json().then(function(j){
           throw new Error((j.error || ("HTTP " + r.status)) + (j.hint ? "\n\n" + j.hint : "")); });
         return r.blob();
       })
-      .then(function(b){ saveBlob(b, "WGS_report_" + String(listed.job_name || jid).replace(/[^\w.-]+/g, "_") + ".pdf"); })
-      .catch(function(e){ window.alert("PDF report failed — " + (e.message || e)); })
+      .then(function(b){ saveBlob(b, "WGS_report_" + String(listed.job_name || jid).replace(/[^\w.-]+/g, "_")
+                                     + (fmt === "docx" ? ".docx" : ".pdf")); })
+      .catch(function(e){ window.alert((fmt === "docx" ? "Word" : "PDF") + " report failed — " + (e.message || e)); })
       .then(function(){ if(btn){ btn.disabled = false; btn.textContent = label; } });
   }
 
@@ -7162,6 +7175,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<button class="btn" id="wgRe" title="Run every step after polishing again on the existing assemblies">Re-analyse</button>'
         + '<a class="btn" href="/results/' + enc + '/wgs_report" target="_blank" rel="noopener">Open in new tab</a>'
         + '<button class="btn" id="wgPdf">PDF report</button>'
+        + '<button class="btn" id="wgDoc" title="Editable Word file with the same content">Word report</button>'
         + '<a class="btn pri" href="/download/' + enc + '">Download everything (.zip)</a>'
       + '</div></div>'
       + '<div class="panel" style="padding:0;overflow:hidden">'
@@ -7174,6 +7188,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     re.addEventListener("click", function(){ wgsReanalyse(id, re); });
     var pdf = document.getElementById("wgPdf");
     pdf.addEventListener("click", function(){ wgsPdf(id, pdf); });
+    var wdoc = document.getElementById("wgDoc");
+    if(wdoc) wdoc.addEventListener("click", function(){ wgsPdf(id, wdoc, "docx"); });
 
     api("/results/" + enc + "/wgs_files").then(function(F){
       var link = function(rel){

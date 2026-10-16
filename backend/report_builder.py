@@ -1381,7 +1381,7 @@ def svg_heatmap(an, rank="Genus", n=30) -> str:
                      f'stroke="#fff" stroke-width=".5"/>')
             if cw >= 24:
                 dark = c != "#F4F7F8" and int(c[1:3], 16) < 0x80
-                txt = f"{v:.1f}" if v >= 0.05 else ("0" if v == 0 else "<.1")
+                txt = f"{v:.1f}" if v >= 0.05 else ("0" if v == 0 else "&lt;.1")
                 p.append(f'<text x="{x+cw/2:.1f}" y="{y+ch*0.72:.1f}" font-size="7.2" '
                          f'fill="{"#fff" if dark else MUT}" text-anchor="middle" {MONO}>{txt}</text>')
     # row labels

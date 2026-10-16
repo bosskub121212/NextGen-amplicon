@@ -1814,6 +1814,33 @@ class ReportRequest(BaseModel):
     labels:   Optional[List[str]] = None
     top_asv:  int = 30          # 30 / 50 / 100 — only used by the single-run layout
     compare:  bool = False      # force the comparison layout on one folder
+    format:   str = "pdf"       # "pdf" or "docx" (an editable Word file from the same HTML)
+
+
+def _report_docx(doc: str, stem: str):
+    """The report as a Word file. docx_export is reloaded on every call, like
+    report_builder, so a fix there needs no backend restart."""
+    import importlib, tempfile
+    try:
+        dx = importlib.import_module("docx_export")
+        importlib.reload(dx)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"docx_export unavailable: {e}"})
+    out_dir = Path(tempfile.gettempdir()) / "amplicon_reports"
+    out_dir.mkdir(exist_ok=True)
+    path = out_dir / f"{stem}.docx"
+    try:
+        importlib.invalidate_caches()
+        dx.html_to_docx(doc, path)
+    except dx.MissingDependency as e:
+        return JSONResponse(status_code=501, content={
+            "error": f"{e} is not installed in the environment the backend runs in",
+            "hint": f"{sys.executable} -m pip install python-docx cairosvg",
+            "python": sys.executable})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"Word build failed: {e}"})
+    return FileResponse(str(path), filename=path.name, media_type=(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
 
 
 @app.post("/report")
@@ -1852,6 +1879,8 @@ def build_report(req: ReportRequest):
         except Exception as e:
             return JSONResponse(status_code=500, content={"error": f"WGS report failed: {e}"})
         stem = re.sub(r"[^A-Za-z0-9_.-]", "", "wgs_report_" + ((jobs.get(jid) or {}).get("job_name") or jid).replace(" ", "_"))[:70]
+        if (req.format or "pdf").lower() in ("docx", "word"):
+            return _report_docx(doc, stem)
         out_dir = Path(tempfile.gettempdir()) / "amplicon_reports"
         out_dir.mkdir(exist_ok=True)
         pdf_path = out_dir / f"{stem}.pdf"
@@ -1904,6 +1933,8 @@ def build_report(req: ReportRequest):
 
     stem = "report_" + "_".join(r.label for r in runs)[:60].replace(" ", "_")
     stem = re.sub(r"[^A-Za-z0-9_.-]", "", stem) or "report"
+    if (req.format or "pdf").lower() in ("docx", "word"):
+        return _report_docx(doc, stem)
     out_dir = Path(tempfile.gettempdir()) / "amplicon_reports"
     out_dir.mkdir(exist_ok=True)
     pdf_path = out_dir / f"{stem}.pdf"
