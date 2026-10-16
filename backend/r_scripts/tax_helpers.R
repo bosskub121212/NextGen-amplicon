@@ -95,15 +95,25 @@ tax_inspect_reference <- function(p, n_headers = 2000) {
     }
 
     full <- parts[d == depth]
-    has_sp <- FALSE
+    has_sp <- NA
     if (length(full) >= 20) {
+      # a species rank is written as "Genus species", "Genus_species" or the bare
+      # epithet ("coli") depending on who built the file — any of the three counts
       hit <- vapply(full, function(x) {
         g <- x[length(x) - 1]; sp <- x[length(x)]
-        isTRUE(nzchar(g) && startsWith(sp, paste0(g, " ")))
+        isTRUE(nzchar(g) && (startsWith(sp, paste0(g, " ")) || startsWith(sp, paste0(g, "_")) ||
+                             grepl("^[a-z][a-z-]+$", sp)))
       }, logical(1))
       has_sp <- mean(hit) > 0.5
     }
-    list(depth = depth, has_species = has_sp, kind = "trainset", n = length(hdrs))
+    # SILVA 144 (LPSN) puts a kingdom between domain and phylum, and LPSN
+    # kingdom names end in "-ati" (Bacillati, Pseudomonadati, Methanobacteriati).
+    # A phylum never does, so the second level settles Domain..Genus vs
+    # Kingdom..Species for a 7-level file even when the species test cannot.
+    second <- vapply(parts[d >= 3], function(x) x[2], character(1))
+    has_kingdom <- if (length(second) >= 20) mean(grepl("ati$", second)) > 0.5 else NA
+    list(depth = depth, has_species = has_sp, has_kingdom = has_kingdom,
+         kind = "trainset", n = length(hdrs))
   }, error = function(e) default)
 }
 
@@ -119,8 +129,10 @@ tax_pick_levels <- function(db_path, verbose = TRUE) {
   }
   # Measured from the headers; the filename is only a last resort when the
   # binomial test had too few full-depth records to decide.
-  is_to_species <- if (!is.na(info$has_species)) isTRUE(info$has_species)
-                   else grepl("tospecies", basename(db_path), ignore.case = TRUE)
+  hk <- if (is.null(info$has_kingdom)) NA else info$has_kingdom
+  is_to_species <- if (depth == 7 && !is.na(hk)) !isTRUE(hk)
+                   else if (!is.na(info$has_species)) isTRUE(info$has_species)
+                   else grepl("tospecies|wspecies", basename(db_path), ignore.case = TRUE)
   # Four shapes in circulation:
   #   6  Kingdom..Genus              SILVA 138.x toGenus
   #   7  Kingdom..Species            SILVA 138.x toSpecies
@@ -128,7 +140,13 @@ tax_pick_levels <- function(db_path, verbose = TRUE) {
   #   8  Domain..Species             SILVA 144  toSpecies
   # Depth alone cannot separate the two 7s; the binomial test above breaks the tie.
   has_domain <- depth >= 8 || (depth == 7 && !is_to_species)
-  lv <- if (depth >= 8) {
+  # PR2 v5 (18S): domain > supergroup > division > subdivision > class > order >
+  # family > genus > species. Division is the phylum-level rank, so it is named
+  # Phylum here — everything downstream (plots, report) reads Phylum..Species.
+  is_pr2 <- depth >= 9 || grepl("pr2", basename(db_path), ignore.case = TRUE)
+  lv <- if (is_pr2 && depth >= 8) {
+    c("Kingdom","Supergroup","Phylum","Subdivision","Class","Order","Family","Genus","Species")[1:min(depth, 9)]
+  } else if (depth >= 8) {
     c("Domain","Kingdom","Phylum","Class","Order","Family","Genus","Species")[1:min(depth, 8)]
   } else if (depth == 7 && !is_to_species) {
     c("Domain","Kingdom","Phylum","Class","Order","Family","Genus")
@@ -139,7 +157,9 @@ tax_pick_levels <- function(db_path, verbose = TRUE) {
   }
   if (verbose) {
     cat(sprintf("  Reference has %d rank level(s) -> %s\n", depth, paste(lv, collapse = ", ")))
-    if (has_domain)
+    if (is_pr2 && depth >= 8)
+      cat("  (PR2 ranks: Division reported as Phylum)\n")
+    else if (has_domain)
       cat("  (extra Kingdom rank detected — SILVA 144 / LPSN naming)\n")
   }
   lv

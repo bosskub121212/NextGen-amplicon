@@ -55,47 +55,81 @@ def _picrust2_bin(env_path: str, cmd: str) -> str:
 
 # ── Convert DADA2 ASV table CSV → BIOM-compatible TSV ──────────────────────
 
-def _asv_csv_to_tsv(asv_csv: str, out_tsv: str):
+_DNA = set("ACGTURYKMSWBDHVN")
+
+
+def _is_seq(x: str) -> bool:
+    x = (x or "").strip().upper()
+    return len(x) >= 50 and set(x) <= _DNA
+
+
+def _asv_csv_to_tsv(asv_csv: str, out_tsv: str, out_fasta: str | None = None) -> str | None:
     """
-    Convert DADA2-style ASV table CSV (samples x ASVs, ASV_ID column or seq column)
-    to a tab-separated OTU table with ASVs as rows and samples as columns.
+    Write a PICRUSt2 feature table (ASVs as rows, samples as columns, header
+    "# OTU ID") and, when the sequences are available, a FASTA whose IDs are
+    the SAME IDs. Returns the FASTA path written, or None.
+
+    Two layouts arrive here:
+      * DADA2 asv_table.csv: one row per ASV, one column per sample, plus a
+        "sequence" column (and sometimes an unnamed index column).
+      * samples x ASVs (COX1, older outputs): one row per sample, one column
+        per ASV (IDs or sequences), plus an optional sample-ID column.
+
+    The earlier version assumed the second layout for everything, so on DADA2
+    output it wrote sample names as feature IDs; none matched the ASV1..ASV500
+    IDs in asvs.fasta (which also covered only the top 500 ASVs) and PICRUSt2
+    had nothing to predict from.
     """
-    with open(asv_csv, newline="") as f:
+    with open(asv_csv, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
-
+        fieldnames = [c for c in (reader.fieldnames or [])]
     if not rows:
         raise ValueError("ASV table CSV is empty")
 
-    fieldnames = reader.fieldnames or []
+    seq_col = next((c for c in fieldnames if c.lower() == "sequence"), None)
+    if seq_col is None and all(_is_seq(r.get(fieldnames[-1], "")) for r in rows[:20]):
+        seq_col = fieldnames[-1]
+    id_col = next((c for c in fieldnames
+                   if c in ("sample_id", "SampleID", "#SampleID", "sample", "")), None)
 
-    # Find sample ID column
-    id_col = None
-    for name in ["sample_id", "SampleID", "#SampleID", "sample"]:
-        if name in fieldnames:
-            id_col = name
-            break
+    feats: list[tuple[str, str | None, dict]] = []   # (id, sequence, {sample: count})
+    if seq_col is not None:
+        # ASVs as rows
+        samples = [c for c in fieldnames if c not in (seq_col, id_col) and c != ""]
+        for i, r in enumerate(rows, start=1):
+            counts = {s_: (r.get(s_) or "0") for s_ in samples}
+            feats.append((f"ASV{i}", (r.get(seq_col) or "").strip(), counts))
+    else:
+        # samples as rows
+        asv_cols = [c for c in fieldnames if c != id_col and c != ""]
+        samples = [(r.get(id_col) if id_col else None) or f"sample_{i}" for i, r in enumerate(rows)]
+        for j, a in enumerate(asv_cols, start=1):
+            counts = {samples[i]: (r.get(a) or "0") for i, r in enumerate(rows)}
+            seq = a.strip() if _is_seq(a) else None
+            feats.append((f"ASV{j}" if seq else a, seq, counts))
 
-    # ASV columns = everything except the id column
-    asv_cols = [c for c in fieldnames if c != id_col and c != "sequence"]
-
-    if not asv_cols:
-        raise ValueError("No ASV columns found in ASV table")
-
-    # Build a {asv_id: {sample: count}} dict
-    samples = [r[id_col] if id_col else f"sample_{i}" for i, r in enumerate(rows)]
-    asv_data: dict[str, dict] = {asv: {} for asv in asv_cols}
-
-    for row in rows:
-        samp = row[id_col] if id_col else f"sample_{rows.index(row)}"
-        for asv in asv_cols:
-            asv_data[asv][samp] = row.get(asv, "0") or "0"
+    # drop features with no reads anywhere
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+    feats = [f for f in feats if sum(_num(v) for v in f[2].values()) > 0]
+    if not feats:
+        raise ValueError("ASV table has no non-zero features")
 
     with open(out_tsv, "w") as f:
         f.write("# OTU ID\t" + "\t".join(samples) + "\n")
-        for asv in asv_cols:
-            counts = "\t".join(str(asv_data[asv].get(s, "0")) for s in samples)
-            f.write(f"{asv}\t{counts}\n")
+        for fid, _seq, counts in feats:
+            f.write(fid + "\t" + "\t".join(str(counts.get(s_, "0")) for s_ in samples) + "\n")
+
+    if out_fasta and all(seq for _id, seq, _c in feats):
+        with open(out_fasta, "w") as f:
+            for fid, seq, _c in feats:
+                f.write(f">{fid}\n{seq}\n")
+        return out_fasta
+    return None
 
 
 # ── Main entry point ────────────────────────────────────────────────────────
@@ -143,8 +177,6 @@ def run_picrust2(
     _cp("init", 2, "PICRUSt2 starting")
 
     # Verify input files
-    if not os.path.exists(asv_fasta):
-        return {"success": False, "message": f"ASV FASTA not found: {asv_fasta}"}
     if not os.path.exists(asv_table_csv):
         return {"success": False, "message": f"ASV table CSV not found: {asv_table_csv}"}
 
@@ -167,9 +199,17 @@ def run_picrust2(
     _cp("convert_table", 8, "Converting ASV table")
     asv_tsv = os.path.join(output_dir, "asv_table.tsv")
     try:
-        _asv_csv_to_tsv(asv_table_csv, asv_tsv)
+        own_fasta = _asv_csv_to_tsv(asv_table_csv, asv_tsv,
+                                    os.path.join(output_dir, "study_seqs.fna"))
     except Exception as e:
         return {"success": False, "message": f"ASV table conversion failed: {e}"}
+    # The table's own sequences, under the table's own IDs, whenever the table
+    # carries them — asvs.fasta holds only the top 500 ASVs under IDs that the
+    # table does not use.
+    if own_fasta:
+        asv_fasta = own_fasta
+    if not os.path.exists(asv_fasta):
+        return {"success": False, "message": f"ASV FASTA not found: {asv_fasta}"}
 
     # ── 1. place_seqs ───────────────────────────────────────────────
     _cp("place_seqs", 15, "Placing ASV sequences onto reference tree")
@@ -385,7 +425,6 @@ def run_picrust2(
                 )
                 with open(log_path, "a") as lf:
                     lf.write("COG predictions + descriptions written.\n")
-                cat("  ✓ COG functional categories predicted\n") if False else None
         except Exception as e:
             with open(log_path, "a") as lf:
                 lf.write(f"COG metagenome skipped: {e}\n")

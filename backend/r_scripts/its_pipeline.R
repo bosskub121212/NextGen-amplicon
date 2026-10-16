@@ -388,7 +388,11 @@ if (nchar(unite_db)>0 && file.exists(unite_db)) {
   }, error=function(e) cat("  Taxonomy error:", e$message, "\n"))
 } else {
   cat("  WARNING: UNITE database not found. Run download_databases.sh first.\n")
-  cat("  Skipping taxonomy...\n")
+}
+# A run with no taxonomy used to finish as "Complete"; stop and say why instead.
+if (is.null(tax)) {
+  stop(paste0("ITS taxonomy produced no result (UNITE database: ",
+              if (nchar(unite_db) > 0) unite_db else "not found", ")."))
 }
 
 # ── Save taxonomy table ───────────────────────────────────────

@@ -32,6 +32,8 @@ option_list <- list(
               help="Directory for all output files"),
   make_option("--db_paths",     type="character", default=NULL,
               help="Path to db_paths.json (optional; auto-detected if absent)"),
+  make_option("--dbPath",       type="character", default="",
+              help="MIDORI2 (or other COI) DADA2 trainset chosen in the UI; wins over db_paths.json"),
   make_option("--primer_f",          type="character", default="GGWACWGGWTGAACWGTWTAYCCYCC",
               help="Forward primer sequence (default: mlCOIintF)"),
   make_option("--primer_r",          type="character", default="TANACYTCNGGRTGNCCRAARAAYCA",
@@ -50,7 +52,7 @@ option_list <- list(
               help="Maximum expected errors (forward)"),
   make_option("--maxEE_r",      type="numeric",   default=5,
               help="Maximum expected errors (reverse); COX1 reverse often lower quality"),
-  make_option("--min_overlap",  type="integer",   default=20,
+  make_option("--merge_overlap", type="integer",  default=20,
               help="Minimum overlap for paired-end merging"),
   make_option("--threads",      type="integer",   default=4,
               help="Number of CPU threads"),
@@ -110,10 +112,17 @@ write_checkpoint("init", 2, "COX1 pipeline starting")
 # ------------------------------------------------------------------
 # Helper: locate MIDORI2 database
 # ------------------------------------------------------------------
-find_midori2_db <- function(db_paths_file=NULL) {
+find_midori2_db <- function(db_paths_file=NULL, chosen="") {
   db_genus <- NULL; db_sp <- NULL
+  # The database picked in the UI wins. It used to be ignored: the run took
+  # whatever db_paths.json or the hard-coded search below found first.
+  if (!is.null(chosen) && nchar(chosen) > 0 && file.exists(chosen)) {
+    db_genus <- chosen
+    sp_guess <- sub("(\\.fa(sta)?(\\.gz)?)$", "_sp\\1", chosen)
+    if (file.exists(sp_guess)) db_sp <- sp_guess
+  }
 
-  if (!is.null(db_paths_file) && file.exists(db_paths_file)) {
+  if (is.null(db_genus) && !is.null(db_paths_file) && file.exists(db_paths_file)) {
     paths <- fromJSON(db_paths_file)
     if (!is.null(paths$MIDORI2_COX1) && file.exists(paths$MIDORI2_COX1))
       db_genus <- paths$MIDORI2_COX1
@@ -144,7 +153,7 @@ find_midori2_db <- function(db_paths_file=NULL) {
   list(genus=db_genus, species=db_sp)
 }
 
-dbs <- find_midori2_db(opt$db_paths)
+dbs <- find_midori2_db(opt$db_paths, opt$dbPath)
 cat("MIDORI2 genus DB :", ifelse(is.null(dbs$genus), "NOT FOUND", dbs$genus), "\n")
 cat("MIDORI2 species DB:", ifelse(is.null(dbs$sp),   "NOT FOUND (addSpecies step will be skipped)", dbs$sp), "\n\n")
 
@@ -315,7 +324,7 @@ dadaR <- dada(derepR, err=errR, multithread=opt$threads)
 write_checkpoint("merge_pairs", 55, "Merging paired-end reads")
 
 mergers <- mergePairs(dadaF, derepF, dadaR, derepR,
-                      minOverlap=opt$min_overlap,
+                      minOverlap=opt$merge_overlap,
                       maxMismatch=0,
                       verbose=FALSE)
 
@@ -495,20 +504,16 @@ if (!is.null(dbs$genus) && file.exists(dbs$genus)) {
                    verbose     = FALSE)
   }, error = function(e) {
     cat("WARNING: assignTaxonomy error:", e$message, "\n")
-    cat("Retrying without minBoot...\n")
+    cat("Retrying once with a single thread (the usual cause is memory)...\n")
     tryCatch({
       assignTaxonomy(seqtab_final, dbs$genus,
-                     multithread = opt$threads,
+                     multithread = FALSE,
+                     minBoot     = 50,
                      verbose     = FALSE)
     }, error = function(e2) {
-      cat("ERROR: assignTaxonomy failed completely:", e2$message, "\n")
-      cat("Creating empty taxonomy table and continuing.\n")
-      matrix(NA_character_,
-             nrow = ncol(seqtab_final), ncol = 7,
-             dimnames = list(
-               paste0("ASV", seq_len(ncol(seqtab_final))),
-               c("Kingdom","Phylum","Class","Order","Family","Genus","Species")
-             ))
+      # An empty taxonomy table used to be written here and the run marked
+      # complete — a result that looks finished and identifies nothing.
+      stop(paste("assignTaxonomy failed against", dbs$genus, ":", e2$message))
     })
   })
 
@@ -523,15 +528,12 @@ if (!is.null(dbs$genus) && file.exists(dbs$genus)) {
 
   rownames(tax) <- paste0("ASV", seq_len(nrow(tax)))
 } else {
-  cat("WARNING: MIDORI2 database not found. Creating empty taxonomy.\n")
-  cat("Run download_databases.sh to get the database.\n")
-  tax <- matrix(NA, nrow=ncol(seqtab_final),
-                ncol=7,
-                dimnames=list(paste0("ASV", seq_len(ncol(seqtab_final))),
-                              c("Kingdom","Phylum","Class","Order","Family","Genus","Species")))
+  stop("MIDORI2 database not found (pick one in the run settings, or run download_databases.sh). ",
+       "No taxonomy table was produced, so the run stops here instead of finishing without names.")
 }
 
 # Rename ASVs in seqtab
+final_seqs <- colnames(seqtab_final)   # the sequences, in the order the ASV IDs are given
 colnames(seqtab_final) <- paste0("ASV", seq_len(ncol(seqtab_final)))
 
 # ------------------------------------------------------------------
@@ -590,27 +592,13 @@ tax_df <- as.data.frame(tax, stringsAsFactors=FALSE)
 tax_df <- cbind(ASV_ID=rownames(tax_df), tax_df)
 write.csv(tax_df, file.path(opt$output_dir, "taxonomy_table.csv"), row.names=FALSE)
 
-# ASV FASTA (for external tools)
-asv_seqs_final <- colnames(seqtab_translated)[valid_codon | !opt$lulu]
-if (length(asv_seqs_final) != nrow(tax_df)) {
-  asv_seqs_final <- colnames(seqtab_translated)
-}
+# ASV FASTA (for external tools) — IDs and sequences from the same table, so
+# ASV7 in asvs.fasta is ASV7 in the ASV and taxonomy tables. The earlier
+# rebuild indexed by a vector of the wrong length after LULU and wrote either
+# nothing or mismatched pairs.
 fa_out <- file.path(opt$output_dir, "asvs.fasta")
-asv_ids_out <- rownames(tax_df)
-fa_lines <- unlist(mapply(function(id, seq) c(paste0(">", id), seq),
-                          asv_ids_out, colnames(seqtab_final)))
-# Note: colnames of seqtab_final are now ASV1, ASV2... but we need actual sequences
-# Get sequences from rownames of tax (original seqtab columns)
-asv_sequences <- colnames(seqtab_translated)
-if (length(asv_sequences) > length(asv_ids_out)) {
-  asv_sequences <- asv_sequences[valid_codon]
-}
-if (length(asv_sequences) == length(asv_ids_out)) {
-  fa_out_lines <- unlist(mapply(function(id, seq) c(paste0(">", id), seq),
-                                asv_ids_out, asv_sequences))
-  writeLines(fa_out_lines, fa_out)
-  cat("ASV FASTA saved:", fa_out, "\n")
-}
+writeLines(as.vector(rbind(paste0(">", colnames(seqtab_final)), final_seqs)), fa_out)
+cat("ASV FASTA saved:", fa_out, "(", length(final_seqs), "sequences )\n")
 
 # ------------------------------------------------------------------
 # Step 15: Taxonomy plots

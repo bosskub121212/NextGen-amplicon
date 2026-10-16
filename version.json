@@ -1,10 +1,10 @@
 {
-  "version": "2.14.1",
+  "version": "2.15.0",
   "release_date": "2026-10-16",
-  "changelog": "Word report: a small gap between two tables that follow each other (KPI boxes and the sample table). docx_export.py is reloaded on every report, no restart needed.",
+  "changelog": "Bug fixes that changed results. (1) Taxonomy rank names are read from the reference's headers: SILVA 7-level 'wSpecies' files were labelled Domain..Genus (every rank shifted by one); PR2's 9 levels now map Division to Phylum. (2) PICRUSt2 read the DADA2 ASV table sideways and never matched asvs.fasta; it now writes its own table + FASTA with matching IDs (all ASVs, not the top 500) and uses the run's threads. (3) ONT 16S: Emu runs with --keep-counts and the ASV table holds real estimated reads (was relative abundance x 1e6 for every sample); summary.json records emu_counts; reports describe whichever applies. (4) PacBio: one cutadapt pass with --revcomp orients every read (reverse reads were appended unflipped, giving two ASVs per organism); no trimmed reads now stops the run. (5) ITS and COX1 use the database picked in the UI. COX1: separate merge overlap (default 20) from the cutadapt overlap; asvs.fasta IDs match the tables. (6) OTU/VSEARCH: the chosen database wins over the Emu auto-pick. (7) DADA2, ITS and COX1 stop with the reason when taxonomy fails instead of finishing with an empty taxonomy. Reports keep eukaryotic reads for 18S/12S/ITS/COI markers. main.py changed: uvicorn --reload restarts the backend — deploy when no job is running.",
   "previous": {
-    "version": "2.14.0",
+    "version": "2.14.1",
     "release_date": "2026-10-16",
-    "changelog": "Reports as Word files: the report dialog (amplicon) has a File type choice — PDF or Word (.docx, editable) — and ONT-WGS runs get a 'Word report' button next to 'PDF report'. The Word file is built from the same HTML as the PDF (new backend/docx_export.py): real headings (navigation pane), editable tables with repeated header rows, captions, notes, header/footer with page numbers, and the charts as high-resolution images. Needs python-docx and cairosvg in the backend venv. /report takes format: 'pdf' | 'docx'. Also: heatmap '<.1' cells written as valid XML. main.py changed — uvicorn --reload restarts the backend, so deploy when no job is running."
+    "changelog": "Word report: a small gap between two tables that follow each other (KPI boxes and the sample table). docx_export.py is reloaded on every report, no restart needed."
   }
 }

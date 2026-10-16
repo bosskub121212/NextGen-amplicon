@@ -931,6 +931,9 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--metadata", metadata_path]
         if db_paths_json:
             cmd += ["--db_paths", db_paths_json]
+        # the UNITE file picked in the UI (it used to be ignored)
+        if params.dbPath and Path(params.dbPath).is_file():
+            cmd += ["--dbPath", params.dbPath]
 
     elif marker == "COX1":
         # ── COX1 metabarcoding pipeline ────────────────────────────────────
@@ -962,6 +965,9 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--metadata", metadata_path]
         if db_paths_json:
             cmd += ["--db_paths", db_paths_json]
+        # the MIDORI2 file picked in the UI (it used to be ignored)
+        if params.dbPath and Path(params.dbPath).is_file():
+            cmd += ["--dbPath", params.dbPath]
 
     elif marker == "ONT-WGS":
         # ── ONT whole-genome, bacterial isolates ────────────────────────────
@@ -1145,7 +1151,14 @@ def run_r_pipeline(job_id: str, params: RunParams):
         # (a standalone SILVA trainset .fa.gz — see qiime2_vsearch_pipeline.py's
         # _assign_taxonomy_trainset_format) — so it's passed through as-is, not
         # collapsed to its parent directory.
-        vsearch_db = params.ont_db_path or _vs_db_auto or db_path
+        # The database the user chose wins; the Emu auto-pick is only a
+        # fallback when nothing was chosen. It used to come BEFORE the user's
+        # choice, so whenever an emu_* database existed it was used regardless,
+        # while run_params.json recorded the selection (the same bug v2.12 fixed
+        # in the Emu branch).
+        vsearch_db = params.ont_db_path or db_path or _vs_db_auto
+        if not (params.ont_db_path or db_path) and _vs_db_auto:
+            print(f"[vsearch] no database chosen — using {_vs_db_auto}")
 
         cmd = [
             sys.executable, str(vsearch_script),
@@ -1473,7 +1486,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
                           asv_fasta       = asv_fasta,
                           asv_table_csv   = asv_table,
                           output_dir      = pic_out,
-                          threads         = 4,
+                          threads         = max(1, int(params.nThreads or 4)),
                       )
                       with jobs_lock:
                           jobs[job_id]["picrust2"] = pic_result

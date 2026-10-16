@@ -469,6 +469,12 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             "--db", db_path,
             "--threads", str(threads),
             "--min-abundance", str(min_abundance),
+            # Real per-taxon read estimates in the output ("estimated counts").
+            # Without it Emu writes only relative abundance, which this script
+            # used to turn into parts-per-million "counts": every sample then
+            # had the same 1,000,000-read depth, and Chao1, rarefaction,
+            # DESeq2 and ANCOM-BC2 all ran on numbers that were not reads.
+            "--keep-counts",
             "--keep-files",
             "--output-dir", str(sample_out),
             str(fq),
@@ -489,6 +495,10 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             log(f"  [WARN] Emu failed for sample: {name}")
 
     return results
+
+# What the numbers in asv_table.csv are: "estimated_reads" (Emu --keep-counts)
+# or "ppm" (relative abundance x 1e6, for an Emu output without counts).
+COUNT_KIND = {"kind": "estimated_reads"}
 
 # ── Step 3: Combine Emu TSV outputs → abundance matrix ──────────────────────────
 def combine_emu_outputs(emu_results: dict[str, Path],
@@ -521,16 +531,19 @@ def combine_emu_outputs(emu_results: dict[str, Path],
                         "kingdom":  row.get("superkingdom", "Bacteria"),
                         "counts":   {s: 0 for s in sample_names},
                     }
-                # Emu outputs relative abundance (0–1).
-                # Try "estimated counts" (old Emu ≤2.x), then "abundance" (current).
-                raw = row.get("estimated counts") or row.get("estimated_counts") or row.get("abundance", "0")
-                val = float(raw) if raw else 0.0
-                # If value looks like relative abundance (≤ 1.0), scale to ppm
-                # so phyloseq and diversity tools get integer-like counts.
-                if val <= 1.0:
-                    est_counts = round(val * 1_000_000)
+                # "estimated counts" (written with --keep-counts) are reads and
+                # are used as they are — a taxon with 0.8 estimated reads is 1
+                # read, not 800,000. Only an output without that column (an Emu
+                # build that ignores --keep-counts) falls back to parts per
+                # million of the relative abundance, and the run records that,
+                # so the report never calls those numbers reads.
+                ec = row.get("estimated counts", row.get("estimated_counts"))
+                if ec not in (None, ""):
+                    est_counts = round(float(ec))
                 else:
-                    est_counts = round(val)
+                    COUNT_KIND["kind"] = "ppm"
+                    raw = row.get("abundance") or "0"
+                    est_counts = round(float(raw) * 1_000_000)
                 taxa_dict[tax_id]["counts"][sample] = est_counts
 
     return sample_names, taxa_dict
@@ -626,6 +639,8 @@ def write_summary(out_dir: Path, sample_names: list, n_taxa: int,
         "timestamp":      datetime.now().isoformat(),
         "pipeline":       "emu",
         "emu_min_abundance": args.min_abundance,
+        "emu_counts":     COUNT_KIND["kind"],
+        "emu_chimera_filter": bool(getattr(args, "chimera", False) and not args.skip_chimera),
     }
     path = out_dir / "summary.json"
     with open(path, "w") as f:

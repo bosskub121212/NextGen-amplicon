@@ -166,32 +166,26 @@ if (cutadapt_ok) {
   primer_r_rc <- RC(opt$primer_r)
 
   for (i in seq_along(fq_all)) {
-    # For PacBio CCS, reads can be in either orientation — use linked adapters
+    # PacBio CCS reads come off the instrument in either orientation. ONE
+    # cutadapt pass with --revcomp checks each read and its reverse complement
+    # and writes whichever matched the linked 27F...1492R adapter — so every
+    # output read is in the forward orientation.
+    # The previous version ran a second pass for the reverse primer and appended
+    # its reads WITHOUT reverse-complementing them: each organism then entered
+    # DADA2 in both orientations and came out as two ASVs.
     cmd <- sprintf(
-      "%s -g \"%s...%s\" --discard-untrimmed -m %d -M %d --max-n 0 -j %d -o %s %s > /dev/null 2>&1",
+      "%s -g \"%s...%s\" --revcomp --discard-untrimmed -m %d -M %d --max-n 0 -j %d -o %s %s > %s 2>&1",
       CUTADAPT_BIN,
       opt$primer_f, primer_r_rc,
       opt$min_length, opt$max_length,
       opt$threads,
-      fq_trim[i], fq_all[i]
+      shQuote(fq_trim[i]), shQuote(fq_all[i]),
+      shQuote(paste0(fq_trim[i], ".cutadapt.log"))
     )
-    rc_cmd <- sprintf(
-      "%s -g \"%s...%s\" --discard-untrimmed -m %d -M %d --max-n 0 -j %d -o %s.rc_temp %s > /dev/null 2>&1",
-      CUTADAPT_BIN,
-      opt$primer_r, primer_f_rc,
-      opt$min_length, opt$max_length,
-      opt$threads,
-      fq_trim[i], fq_all[i]
-    )
-    system(cmd)
-    system(rc_cmd)
-    # Merge both orientations if RC file exists and has reads
-    rc_temp <- paste0(fq_trim[i], ".rc_temp")
-    if (file.exists(rc_temp) && file.info(rc_temp)$size > 100) {
-      system(sprintf("cat %s >> %s && rm %s", rc_temp, fq_trim[i], rc_temp))
-    } else if (file.exists(rc_temp)) {
-      file.remove(rc_temp)
-    }
+    rc <- system(cmd)
+    if (rc != 0)
+      cat(sprintf("  [WARN] cutadapt exited %d for %s — see %s.cutadapt.log\n",
+                  rc, basename(fq_all[i]), basename(fq_trim[i])))
   }
 
   # Keep only files that have reads
@@ -201,8 +195,11 @@ if (cutadapt_ok) {
     sample_names <- sample_names[exists_trim]
     cat(sprintf("Primer trimming: %d/%d samples passed\n\n", sum(exists_trim), length(exists_trim)))
   } else {
-    cat("WARNING: No reads survived primer trimming. Proceeding with untrimmed reads.\n")
-    cat("Check that your primer sequences match the data.\n\n")
+    # Untrimmed full-length reads carry the primers and both orientations, so
+    # going on would give wrong ASVs with no error. Stop and say why.
+    stop(paste0("No reads survived primer trimming in any sample. Check that the primers (",
+                opt$primer_f, " / ", opt$primer_r, ") match the library; the cutadapt logs are in ",
+                trim_dir, "."))
   }
 } else {
   cat("WARNING: cutadapt not found. Proceeding without primer trimming.\n")

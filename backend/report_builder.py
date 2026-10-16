@@ -170,7 +170,11 @@ class Run:
         # million). Scaled to each sample's classified reads it becomes Emu's
         # estimated read count, so every "reads" figure below means reads.
         scale = {s: 1.0 for s in self.samples}
-        if self.emu:
+        # From v2.15 Emu writes real estimated read counts (--keep-counts) and
+        # says so in summary.json; older runs hold relative abundance x 1e6 and
+        # are rescaled to each sample's classified reads.
+        self.emu_counts = str(self.summary.get("emu_counts") or ("ppm" if self.emu else ""))
+        if self.emu and self.emu_counts != "estimated_reads":
             final = {}
             for t in self.tracking:
                 try:
@@ -229,7 +233,11 @@ class Run:
             if any(v and ("Mitochondria" in v or "Chloroplast" in v) for v in r.values())
         ]
         top = "Domain" if "Domain" in next(iter(self.tax.values()), {}) else "Kingdom"
-        self.euk_seqs = [
+        # Eukaryotic reads are off-target only for a bacterial marker; for 18S,
+        # 12S, ITS or COI they ARE the community and must not be set aside.
+        marker = str(self.summary.get("marker") or self.params.get("marker") or "16S").upper()
+        self.euk_target = any(k in marker for k in ("18S", "12S", "ITS", "COX", "COI", "NEMA", "EUK"))
+        self.euk_seqs = [] if self.euk_target else [
             s for s, r in self.tax.items()
             if s not in self.host_seqs and (r.get(top) or "") == "Eukaryota"
         ]
@@ -1832,10 +1840,14 @@ def _methods(run, an):
                    f"is shared between them in proportion to the evidence. The reference was "
                    f"<b>{esc(run.db_name)}</b>; taxa below a relative abundance of "
                    f"{esc(run.summary.get('emu_min_abundance') or p.get('ont_min_abundance') or 0.0001)} "
-                   f"were dropped. Read counts in this report are Emu's estimated counts (relative "
-                   f"abundance &times; classified reads).</p>")
+                   f"were dropped. "
+                   + ("Read counts in this report are Emu's estimated read counts per taxon."
+                      if run.emu_counts == "estimated_reads" else
+                      "Read counts in this report are derived from Emu's relative abundance "
+                      "&times; each sample's classified reads.") + "</p>")
         out.append('<p class="cmd">emu abundance --type map-ont --db ' + esc(run.db_name)
-                   + f' --min-abundance {esc(run.summary.get("emu_min_abundance") or 0.0001)} --keep-counts</p>')
+                   + f' --min-abundance {esc(run.summary.get("emu_min_abundance") or 0.0001)}'
+                   + (' --keep-counts' if run.emu_counts == "estimated_reads" else "") + '</p>')
     else:
         paired = any("denoisedR" in t for t in run.tracking[:1])
         e = p.get("cutadaptErrorRate", 0.1)

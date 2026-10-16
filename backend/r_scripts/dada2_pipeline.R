@@ -1187,9 +1187,14 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
         if (best > 0L) best else NA_integer_
       }, error=function(e) NA_integer_)
     }
-    db_depth <- detect_db_depth(db_path)
-    tax_levels <- NULL
-    if (!is.na(db_depth)) {
+    # Rank names come from the reference's own headers (tax_helpers.R): depth AND
+    # whether the last level is a species binomial. Naming by filename alone
+    # mislabelled SILVA's 7-level "wSpecies" file (Kingdom..Species) as
+    # Domain..Genus, shifting every rank by one, and gave PR2's 9 levels the
+    # wrong names. The inline fallback below is only for a missing helper file.
+    db_depth <- if (has_tax_helpers) NA_integer_ else detect_db_depth(db_path)
+    tax_levels <- if (has_tax_helpers) tax_pick_levels(db_path) else NULL
+    if (!has_tax_helpers && !is.na(db_depth)) {
       is_to_species <- grepl("tospecies", basename(db_path), ignore.case=TRUE)
       tax_levels <- if (db_depth >= 7 && !is_to_species) {
         # extra Kingdom rank (SILVA 144 / LPSN style)
@@ -1203,7 +1208,7 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
                   db_depth, paste(tax_levels, collapse=", ")))
       if (db_depth >= 7 && !is_to_species)
         cat("  (extra Kingdom rank detected — SILVA 144 / LPSN naming)\n")
-    } else {
+    } else if (!has_tax_helpers) {
       cat("  [warn] Could not read rank depth from the reference — using DADA2 defaults\n")
     }
 
@@ -1378,6 +1383,19 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
   }
 } else {
   cat("  No database file found — skipping taxonomy assignment.\n\n")
+}
+
+# A run whose taxonomy failed used to finish as "Complete" with an empty
+# taxonomy: every chart and report then showed one "Unclassified" block, and
+# nothing said why. Stop here with the reason instead, keeping the denoised
+# table (seqtab_nochim.rds) so the work up to this point is not lost.
+if (is.null(tax)) {
+  tryCatch(saveRDS(seqtab_nochim, file.path(opt$output, "seqtab_nochim.rds")),
+           error = function(e) NULL)
+  stop(paste0("Taxonomic assignment produced no result (database: ",
+              if (nchar(opt$dbPath) > 0) opt$dbPath else "none", "). ",
+              "See the taxonomy messages above — usually the database file is missing, ",
+              "unreadable, or memory ran out while loading it."))
 }
 
 # ═══════════════════════════════════════════════════════════════
