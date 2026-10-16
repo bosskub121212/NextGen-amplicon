@@ -195,6 +195,19 @@ def run_picrust2(
     with open(log_path, "a") as lf:
         lf.write(f"PICRUSt2 env: {env_path}\n")
 
+    # PICRUSt2's scripts call their helpers (hmmalign, epa-ng, gappa, castor via
+    # Rscript) by name, so the env's bin/ must be on PATH for every child — the
+    # backend's own PATH does not include it, which stopped place_seqs with
+    # "No such file or directory: 'hmmalign'". Passed per call, not exported, so
+    # the backend process itself is unchanged.
+    _penv = dict(os.environ)
+    _penv["PATH"] = str(Path(env_path) / "bin") + os.pathsep + _penv.get("PATH", "")
+    _penv["CONDA_PREFIX"] = str(env_path)
+
+    def _run(*a, **kw):
+        kw.setdefault("env", _penv)
+        return subprocess.run(*a, **kw)
+
     # Convert ASV table CSV → TSV
     _cp("convert_table", 8, "Converting ASV table")
     asv_tsv = os.path.join(output_dir, "asv_table.tsv")
@@ -216,7 +229,7 @@ def run_picrust2(
     place_out = os.path.join(output_dir, "placed_seqs.tre")
 
     try:
-        p = subprocess.run(
+        p = _run(
             [
                 _picrust2_bin(env_path, "place_seqs.py"),
                 "--study_fasta", asv_fasta,
@@ -250,7 +263,7 @@ def run_picrust2(
 
     for trait, out_f in [("16S", marker_out), ("KO", func_ko_out), ("EC", func_ec_out), ("COG", func_cog_out)]:
         try:
-            p = subprocess.run(
+            p = _run(
                 [
                     _picrust2_bin(env_path, "hsp.py"),
                     "-i", place_out,
@@ -277,7 +290,7 @@ def run_picrust2(
     os.makedirs(mg_out, exist_ok=True)
 
     try:
-        p = subprocess.run(
+        p = _run(
             [
                 _picrust2_bin(env_path, "metagenome_pipeline.py"),
                 "-s",            asv_tsv,
@@ -310,7 +323,7 @@ def run_picrust2(
 
     if os.path.exists(ko_metagenome):
         try:
-            p = subprocess.run(
+            p = _run(
                 [
                     _picrust2_bin(env_path, "pathway_pipeline.py"),
                     "-i", ko_metagenome,
@@ -341,7 +354,7 @@ def run_picrust2(
     if os.path.exists(pred_file):
         desc_out = os.path.join(output_dir, "KO_predicted_with_descriptions.tsv")
         try:
-            p = subprocess.run(
+            p = _run(
                 [
                     _picrust2_bin(env_path, "add_descriptions.py"),
                     "-i", pred_file,
@@ -362,7 +375,7 @@ def run_picrust2(
     if os.path.exists(pw_abund):
         pw_desc_out = os.path.join(output_dir, "pathways_with_descriptions.tsv")
         try:
-            p = subprocess.run(
+            p = _run(
                 [
                     _picrust2_bin(env_path, "add_descriptions.py"),
                     "-i", pw_abund,
@@ -384,7 +397,7 @@ def run_picrust2(
         cog_mg_out = os.path.join(output_dir, "COG")
         os.makedirs(cog_mg_out, exist_ok=True)
         try:
-            p = subprocess.run(
+            p = _run(
                 [
                     _picrust2_bin(env_path, "metagenome_pipeline.py"),
                     "-s",        asv_tsv,
@@ -404,7 +417,7 @@ def run_picrust2(
                 cog_pred = os.path.join(cog_mg_out, "pred_metagenome_unstrat.tsv")
             if os.path.exists(cog_pred):
                 cog_desc_out = os.path.join(output_dir, "COG_predicted_with_descriptions.tsv")
-                subprocess.run(
+                _run(
                     [
                         _picrust2_bin(env_path, "add_descriptions.py"),
                         "-i", cog_pred,
@@ -414,7 +427,7 @@ def run_picrust2(
                     capture_output=True, text=True, timeout=300
                 )
                 cat_path = os.path.join(output_dir, "COG_categories.tsv")
-                subprocess.run(
+                _run(
                     [
                         _picrust2_bin(env_path, "add_descriptions.py"),
                         "-i", cog_pred,
