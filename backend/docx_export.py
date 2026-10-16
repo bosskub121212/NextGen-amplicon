@@ -32,7 +32,7 @@ import shutil
 import subprocess
 from html.parser import HTMLParser
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 INK, ACC, MUT, FAINT = "16242B", "1E6E8C", "4E6672", "7D949E"
 RULE, NOTE_BG, NOTE_ACC_BG, HEAD_BG = "D6E0E4", "FAF6EC", "EDF4F7", "EDF4F7"
@@ -524,6 +524,13 @@ class _Writer:
             pb = self.doc.add_paragraph()
             pb.paragraph_format.page_break_before = True
             self.pending_break = False
+        elif self.after_block and container is None:
+            # two tables in a row (e.g. the KPI boxes and the sample table) would
+            # otherwise touch; a 4 pt spacer keeps them apart
+            sp = self.doc.add_paragraph()
+            sp.paragraph_format.space_before = sp.paragraph_format.space_after = _pt(0)
+            sp.add_run(" ").font.size = _pt(4)
+        self.after_block = False
         t = tgt.add_table(rows=len(rows), cols=ncol)
         t.style = self.doc.styles["Table Grid"]
         _table_no_borders(t)

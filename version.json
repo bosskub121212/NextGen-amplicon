@@ -1,10 +1,10 @@
 {
-  "version": "2.14.0",
+  "version": "2.14.1",
   "release_date": "2026-10-16",
-  "changelog": "Reports as Word files: the report dialog (amplicon) has a File type choice — PDF or Word (.docx, editable) — and ONT-WGS runs get a 'Word report' button next to 'PDF report'. The Word file is built from the same HTML as the PDF (new backend/docx_export.py): real headings (navigation pane), editable tables with repeated header rows, captions, notes, header/footer with page numbers, and the charts as high-resolution images. Needs python-docx and cairosvg in the backend venv. /report takes format: 'pdf' | 'docx'. Also: heatmap '<.1' cells written as valid XML. main.py changed — uvicorn --reload restarts the backend, so deploy when no job is running.",
+  "changelog": "Word report: a small gap between two tables that follow each other (KPI boxes and the sample table). docx_export.py is reloaded on every report, no restart needed.",
   "previous": {
-    "version": "2.13.5",
-    "release_date": "2026-10-13",
-    "changelog": "Amplicon PDF report: Bray-Curtis values that round to 1.00 print three decimals in the text too; read-tracking caption says 'classified' when no chimera filter ran; the Emu species table separates named species from unnamed reference strains ('sp. ...'); the beta section notes taxa that dominate one sample but appear at trace level (≤0.5%) in another, which may be barcode / index cross-talk. Beta: ONT 16S settings table lists only the parameters Emu uses. No restart needed."
+    "version": "2.14.0",
+    "release_date": "2026-10-16",
+    "changelog": "Reports as Word files: the report dialog (amplicon) has a File type choice — PDF or Word (.docx, editable) — and ONT-WGS runs get a 'Word report' button next to 'PDF report'. The Word file is built from the same HTML as the PDF (new backend/docx_export.py): real headings (navigation pane), editable tables with repeated header rows, captions, notes, header/footer with page numbers, and the charts as high-resolution images. Needs python-docx and cairosvg in the backend venv. /report takes format: 'pdf' | 'docx'. Also: heatmap '<.1' cells written as valid XML. main.py changed — uvicorn --reload restarts the backend, so deploy when no job is running."
   }
 }
