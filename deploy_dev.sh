@@ -94,6 +94,11 @@ if command -v rsync >/dev/null 2>&1; then
     rsync -rlt --itemize-changes "${EXCL[@]}" \
       "$WIN_SRC/frontend-beta/" "$APP_DIR/frontend-beta/" >>"$SYNC_LOG"
   fi
+  # tests/ (fast checks run by push_github.sh, mock-community tests)
+  if [[ -d "$WIN_SRC/tests" ]]; then
+    mkdir -p "$APP_DIR/tests"
+    rsync -rlt --itemize-changes "${EXCL[@]}" "$WIN_SRC/tests/" "$APP_DIR/tests/" >>"$SYNC_LOG"
+  fi
   rsync -rlt --itemize-changes "$WIN_SRC/version.json" "$APP_DIR/" >>"$SYNC_LOG"
   for f in "$WIN_SRC"/*.sh; do
     [[ -f "$f" ]] && rsync -rlt --itemize-changes "$f" "$APP_DIR/" >>"$SYNC_LOG"
@@ -110,8 +115,8 @@ if command -v rsync >/dev/null 2>&1; then
 else
   warn "rsync not installed — falling back to cp (cannot report what changed)"
   warn "Install for better output:  sudo apt install rsync"
-  mkdir -p "$APP_DIR/backend" "$APP_DIR/frontend" "$APP_DIR/frontend-beta"
-  ( cd "$WIN_SRC" && find backend frontend frontend-beta -type f \
+  mkdir -p "$APP_DIR/backend" "$APP_DIR/frontend" "$APP_DIR/frontend-beta" "$APP_DIR/tests"
+  ( cd "$WIN_SRC" && find backend frontend frontend-beta tests -type f \
       ! -path '*/node_modules/*' ! -path '*/dist/*' ! -path '*/venv/*' \
       ! -path '*/__pycache__/*'  ! -path '*/uploads/*' ! -path '*/results/*' \
       ! -path '*/databases/*'    ! -name '*.pyc' ! -name '*.log' \

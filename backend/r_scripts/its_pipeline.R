@@ -54,6 +54,8 @@ option_list <- list(
   make_option("--dbPath",      type="character", default=""),
   make_option("--minLen",      type="integer",  default=50),
   make_option("--minBoot",     type="integer",  default=50),
+  make_option("--tax_method",  type="character", default="auto",
+              help="auto | dada2 | vsearch — auto uses VSEARCH best hit when DADA2's classifier would not fit in memory"),
   make_option("--topN",        type="integer",  default=30),
   make_option("--metadata",    type="character", default=""),
   make_option("--marker",      type="character", default="ITS2"),
@@ -200,6 +202,10 @@ out <- filterAndTrim(
   minLen=opt$minLen,        # key ITS setting — remove fragments < 50 bp
   compress=TRUE, multithread=opt$threads
 )
+# filterAndTrim names its rows after the INPUT files ("mock1_F_trim.fastq.gz");
+# the read-tracking table below indexes them by sample name, which failed with
+# "subscript out of bounds" on every run. The rows are in input order.
+rownames(out) <- names(filtFs)
 cat("Filter results:\n")
 print(out)
 
@@ -376,7 +382,32 @@ if (nchar(unite_db)==0 || !file.exists(unite_db)) {
 }
 
 tax <- NULL
-if (nchar(unite_db)>0 && file.exists(unite_db)) {
+tax_method <- "dada2"
+# UNITE fungi with species is ~33,000 lineages: DADA2's classifier needs about
+# 9 GB for it. When that does not fit, classify by best VSEARCH hit instead.
+.th <- local({
+  args <- commandArgs(trailingOnly = FALSE)
+  fa   <- args[grepl("^--file=", args)]
+  sd   <- if (length(fa) > 0) dirname(normalizePath(sub("^--file=", "", fa[1]), mustWork = FALSE)) else getwd()
+  file.path(sd, "tax_helpers.R")
+})
+if (file.exists(.th)) source(.th)
+if (nchar(unite_db)>0 && file.exists(unite_db) && exists("tax_dada2_mem_gb", mode = "function")) {
+  tax_method <- tolower(opt$tax_method)
+  if (tax_method == "auto") {
+    need_gb <- tax_dada2_mem_gb(unite_db); have_gb <- tax_avail_mem_gb()
+    tax_method <- if (!is.na(need_gb) && !is.na(have_gb) && need_gb > 0.7 * have_gb) "vsearch" else "dada2"
+    cat(sprintf("  DADA2 classifier would need ~%.1f GB, %.1f GB free -> %s\n",
+                need_gb, have_gb, if (tax_method == "vsearch") "VSEARCH best hit" else "DADA2"))
+  }
+}
+if (nchar(unite_db)>0 && file.exists(unite_db) && tax_method == "vsearch") {
+  cat("  Using UNITE database:", unite_db, "\n")
+  tax <- tryCatch(tax_vsearch_tophit(colnames(seqtab_nochim), unite_db,
+                                     c("Kingdom","Phylum","Class","Order","Family","Genus","Species"),
+                                     TAX_CUTOFFS_ITS, threads = opt$threads),
+                  error = function(e) { cat("  Taxonomy error:", e$message, "\n"); NULL })
+} else if (nchar(unite_db)>0 && file.exists(unite_db)) {
   cat("  Using UNITE database:", unite_db, "\n")
   tryCatch({
     tax <- assignTaxonomy(
@@ -393,6 +424,20 @@ if (nchar(unite_db)>0 && file.exists(unite_db)) {
 if (is.null(tax)) {
   stop(paste0("ITS taxonomy produced no result (UNITE database: ",
               if (nchar(unite_db) > 0) unite_db else "not found", ")."))
+}
+
+# UNITE writes rank prefixes ("k__Fungi", "s__Aspergillus_niger") and
+# placeholders for unknown ranks ("g__unidentified"). The tables carry clean
+# names, the same as every other pipeline: prefix dropped, "unidentified" -> NA,
+# species written as the binomial ("Aspergillus niger").
+if (!is.null(tax)) {
+  tax[] <- sub("^[a-z]__", "", tax)
+  tax[grepl("^(unidentified|Incertae_sedis|.*_Incertae_sedis)$", tax, ignore.case = TRUE)] <- NA
+  if ("Species" %in% colnames(tax)) {
+    sp <- gsub("_", " ", tax[, "Species"])
+    sp[grepl(" sp\\.?$", sp)] <- NA                      # "Penicillium sp" is not a species call
+    tax[, "Species"] <- sp
+  }
 }
 
 # ── Save taxonomy table ───────────────────────────────────────
@@ -559,7 +604,30 @@ fasta_out <- file.path(output_dir, "asv_sequences.fasta")
 seqs <- colnames(seqtab_nochim)
 asv_ids <- paste0("ASV", seq_along(seqs))
 writeLines(c(rbind(paste0(">",asv_ids), seqs)), fasta_out)
+# asvs.fasta is the name every other pipeline uses
+writeLines(c(rbind(paste0(">",asv_ids), seqs)), file.path(output_dir, "asvs.fasta"))
 cat("  ASV sequences saved:", fasta_out, "\n")
+
+# ── summary.json (read by the results page and the report) ───
+tryCatch(write(toJSON(list(
+  pipeline     = "its",
+  marker       = region,
+  job_name     = opt$job_name,
+  completed_at = format(Sys.time()),
+  n_samples    = nrow(seqtab_nochim),
+  n_asvs       = ncol(seqtab_nochim),
+  total_reads  = sum(seqtab_nochim),
+  has_taxonomy = !is.null(tax),
+  taxonomy_db  = basename(unite_db),
+  minBoot      = opt$minBoot,
+  tax_method   = tax_method,
+  tax_cutoffs  = if (tax_method == "vsearch") as.list(TAX_CUTOFFS_ITS) else NULL,
+  maxEE        = c(opt$maxEE_f, opt$maxEE_r),
+  primer_f     = opt$primer_f,
+  primer_r     = opt$primer_r,
+  tax_levels   = if (!is.null(tax)) colnames(tax) else NULL
+), auto_unbox = TRUE, pretty = TRUE), file.path(output_dir, "summary.json")),
+error = function(e) cat("  summary.json not written:", e$message, "\n"))
 
 prog(100, "ITS pipeline complete!")
 cat("\n=== ITS Pipeline Complete ===\n")

@@ -86,6 +86,13 @@ KITOME = {
 }
 
 
+_DNA_RE = re.compile(r"^[ACGTUNRYSWKMBDHV]{20,}$", re.I)
+
+
+def _is_dna(s) -> bool:
+    return bool(_DNA_RE.match(str(s)))
+
+
 def esc(s) -> str:
     return html.escape(str(s))
 
@@ -118,13 +125,30 @@ class Run:
         self.params = self._json("run_params.json")
         self.summary = self._json("summary.json")
         self.qc = self._json("qc_report.json")
-        # ONT 16S (Emu): one row per TAXON, not per sequence variant; abundances
-        # are Emu's relative abundances; read stages are input/QC/primers/chimera.
-        self.emu = (self.summary.get("pipeline") == "emu"
-                    or (self.path / "emu_output").is_dir())
+        self.prov = self._json("provenance.json")
+        # Which pipeline made this folder. ONT 16S (Emu): one row per TAXON, not
+        # per sequence variant; VSEARCH: one row per OTU; the DADA2 family (16S,
+        # ITS, COX1, PacBio) one row per ASV.
+        self.kind = self._detect_kind()
+        self.emu = self.kind == "emu"
 
         self._load_tables()
         self._classify()
+
+    def _detect_kind(self) -> str:
+        pl = str(self.summary.get("pipeline") or "").lower()
+        mk = str(self.params.get("marker") or self.summary.get("marker") or "").upper()
+        if pl == "emu" or (self.path / "emu_output").is_dir():
+            return "emu"
+        if pl == "qiime2_vsearch" or self.params.get("sequencerType") == "qiime2_vsearch":
+            return "vsearch"
+        if pl == "its" or mk in ("ITS", "ITS1", "ITS2"):
+            return "its"
+        if pl == "cox1" or mk == "COX1":
+            return "cox1"
+        if pl.startswith("pacbio") or mk == "PACBIO":
+            return "pacbio"
+        return "dada2"
 
     # ── file helpers ──────────────────────────────────────────────────────────
     def _json(self, name) -> dict:
@@ -146,11 +170,12 @@ class Run:
     # ── tables ────────────────────────────────────────────────────────────────
     def _load_tables(self):
         tax_rows = self._rows("taxonomy_table.csv")
-        if not tax_rows and self.emu:
-            tax_rows = self._rows("taxonomy.csv")          # emu_pipeline's name for it
+        if not tax_rows and self.kind in ("emu", "vsearch"):
+            tax_rows = self._rows("taxonomy.csv")          # emu / vsearch name for it
         if not tax_rows:
             raise ValueError(f"{self.path.name}: taxonomy_table.csv missing or empty")
-        key = list(tax_rows[0].keys())[0]  # unnamed first column = the ASV sequence
+        key = list(tax_rows[0].keys())[0]  # first column = the ASV sequence (or feature id)
+        tax_rows = self._clean_tax(tax_rows, key)
         self.tax = {r[key]: r for r in tax_rows}
         # SILVA 144 inserts a Kingdom rank below Domain, so the column set differs
         # between references. Take whatever ranks are actually present.
@@ -160,8 +185,17 @@ class Run:
         if not asv_rows:
             raise ValueError(f"{self.path.name}: asv_table.csv missing or empty")
         cols = list(asv_rows[0].keys())
-        if self.emu:
-            seq_col = cols[0]                              # tax_id, first column
+        if cols and cols[0].strip().lower() in ("sample_id", "sampleid", "sample"):
+            # COX1 and PacBio before v2.17: one row per SAMPLE, a column per ASV id.
+            # Turn it the right way round so everything below reads one layout.
+            sc = cols[0]
+            samples = [str(r[sc]) for r in asv_rows]
+            asv_rows = [dict({"__id": fid}, **{samples[i]: asv_rows[i].get(fid) for i in range(len(samples))})
+                        for fid in cols[1:]]
+            cols = ["__id"] + samples
+            seq_col = "__id"
+        elif self.kind in ("emu", "vsearch"):
+            seq_col = cols[0]                              # tax_id / OTU id, first column
         else:
             seq_col = "sequence" if "sequence" in cols else cols[-1]
         self.samples = [c for c in cols if c != seq_col and c != ""]
@@ -213,6 +247,45 @@ class Run:
         self.alpha = self._rows("alpha_diversity.csv")
         self.rarefaction = self._rows("rarefaction.csv")
         self.orientation = self._json("orientation_report.json")
+
+    def _clean_tax(self, rows, key):
+        """Names as the reference meant them, whatever the run's age.
+
+        UNITE prefixes ("g__Aspergillus") and MIDORI2 taxids ("Musca_7370") are
+        stripped; MIDORI2 placeholders ("order_Sciaenidae") are blanked. COX1 runs
+        before v2.17 named MIDORI2's six levels Kingdom..Genus although they are
+        Phylum..Species; such a table is shifted back here, recognised by binomial
+        names sitting in its "Genus" column.
+        """
+        if not rows:
+            return rows
+        ranks = [c for c in rows[0] if c != key]
+        midori = self.kind == "cox1"
+        out = []
+        for r in rows:
+            r = dict(r)
+            for c in ranks:
+                v = r.get(c)
+                if v is None:
+                    continue
+                v = re.sub(r"^[a-z]__", "", str(v).strip())
+                if midori:
+                    v = re.sub(r"_[0-9]+$", "", v)
+                    if re.match(r"^(kingdom|phylum|class|order|family|genus|species)_", v):
+                        v = ""
+                if re.fullmatch(r"(?i)unidentified|.*_incertae_sedis", v):
+                    v = ""
+                r[c] = v
+            out.append(r)
+        if midori and "Species" not in rows[0] and "Genus" in rows[0]:
+            gv = [str(r.get("Genus") or "") for r in out if r.get("Genus")]
+            if gv and sum(" " in g for g in gv) > 0.5 * len(gv):
+                std = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]
+                new = ["Phylum", "Class", "Order", "Family", "Genus", "Species"]
+                out = [{**{k: v for k, v in r.items() if k not in std},
+                        **{n: r.get(o, "") for o, n in zip(std, new)}} for r in out]
+                self.rank_shift_fixed = True
+        return out
 
     # ── derived views ─────────────────────────────────────────────────────────
     def _clean_genus(self, g):
@@ -283,7 +356,10 @@ class Run:
                     self.species[name] = (self.species.get(name, (0, None))[0]
                                           + self.abund.get(s, 0), None)
                     continue
-                self.species[f"{g} {v}"] = (self.abund.get(s, 0), len(s))
+                v = v.replace("_", " ")
+                name = v if (" " in v or g == "?") else f"{g} {v}"
+                self.species[name] = (self.species.get(name, (0, None))[0] + self.abund.get(s, 0),
+                                      len(s) if _is_dna(s) else None)
         self.species = OrderedDict(
             sorted(self.species.items(), key=lambda kv: -kv[1][0])
         )
@@ -332,8 +408,8 @@ class Run:
                     deepest = f"{rank[0]}: {v}"
             host = seq in self.host_seqs
             out.append({
-                "id": f"T{i}" if self.emu else f"ASV{i}",
-                "len": None if self.emu else len(seq), "reads": reads,
+                "id": f"T{i}" if self.emu else f"OTU{i}" if self.kind == "vsearch" else f"ASV{i}",
+                "len": len(seq) if _is_dna(seq) else None, "reads": reads,
                 "pct": 100 * reads / self.total if self.total else 0,
                 "phylum": (r.get("Phylum") or "\u2014"),
                 "genus": (self._clean_genus(r.get("Genus")) or "\u2014"),
@@ -347,17 +423,64 @@ class Run:
         if self.emu:            # rows are taxa: there is no sequence length
             return c
         for s, v in self.abund.items():
-            c[len(s)] += v
+            if _is_dna(s):      # feature ids (old COX1/PacBio, VSEARCH OTUs) have none
+                c[len(s)] += v
         return c
 
     @property
     def db_name(self) -> str:
+        # what the run actually used (provenance.json), else what was asked for
+        for d in (self.prov.get("databases") or []):
+            if d.get("role") == "taxonomy" and d.get("file"):
+                f = d["file"].split("/")[0] if self.emu else d["file"]
+                lab = d.get("label") or ""
+                return f"{lab} ({f})" if lab and lab != f else f
         p = self.params.get("dbPath") or ""
         if p:
             pp = Path(p)
             # an Emu database is a folder; its file is always species_taxid.fasta
             return pp.parent.name if self.emu and pp.suffix else pp.name
-        return self.params.get("taxDatabase") or "(pipeline default)"
+        return (self.summary.get("taxonomy_db") or self.params.get("taxDatabase")
+                or "(pipeline default)")
+
+    def config(self, marker):
+        """Run configuration rows for the DADA2-family and VSEARCH pipelines."""
+        p, sm = self.params, self.summary
+        prim = [("Forward primer", p.get("primer_f") or sm.get("primer_f") or "—"),
+                ("Reverse primer", p.get("primer_r") or sm.get("primer_r") or "—")]
+        mb = (("Classifier", "VSEARCH best hit, rank kept above an identity cut-off")
+              if sm.get("tax_method") == "vsearch" else
+              ("Minimum bootstrap", sm.get("minBoot") or p.get("minBoot")))
+        if self.kind == "its":
+            return ([("Marker", marker), ("Reference database", self.db_name)] + prim
+                    + [("Length truncation", "none (ITS length varies between taxa)"),
+                       ("maxEE F / R", f'{p.get("maxEE_F")} / {p.get("maxEE_R")}'), mb])
+        if self.kind == "cox1":
+            return ([("Marker", marker), ("Reference database", self.db_name)] + prim
+                    + [("truncLen F / R", f'{p.get("truncLen_cox1_f", "—")} / {p.get("truncLen_cox1_r", "—")}'),
+                       ("maxEE F / R", f'{p.get("maxEE_F")} / {p.get("maxEE_R")}'),
+                       ("ASV length kept", sm.get("length_range")
+                        or f'{p.get("cox1_min_len", "—")}-{p.get("cox1_max_len", "—")} bp'),
+                       ("Genetic code (stop-codon filter)", sm.get("codon_table") or p.get("codon_table")),
+                       ("LULU curation", "yes" if sm.get("lulu", p.get("run_lulu", True)) else "no"),
+                       mb])
+        if self.kind == "pacbio":
+            return ([("Marker", "16S full length (PacBio HiFi)"), ("Reference database", self.db_name)]
+                    + prim
+                    + [("Read length kept", sm.get("length_range")
+                        or f'{p.get("pb_min_len", "—")}-{p.get("pb_max_len", "—")} bp'),
+                       ("maxEE", p.get("pb_maxEE")), ("Pooling", sm.get("pool") or p.get("pool") or "—"), mb])
+        if self.kind == "vsearch":
+            return ([("Marker", marker), ("Reference database", self.db_name)] + prim
+                    + [("Reads", "paired-end, merged with VSEARCH" if self.paired else "single-end"),
+                       ("Read length kept", "50 bp and longer after merging; expected errors ≤ 1"
+                        if self.paired else f'{p.get("ontMinLen", "—")}-{p.get("ontMaxLen", "—")} bp'),
+                       ("UNOISE alpha / minsize", f'{p.get("otuUnoiseAlpha", 2.0)} / {p.get("otuUnoiseMinsize", 8)}')])
+        return [("Marker", marker), ("Reference database", self.db_name)] + prim + [
+            ("truncLen F / R", self.trunc),
+            ("maxEE F / R", f'{p.get("maxEE_F")} / {p.get("maxEE_R")}'),
+            ("Pooling", p.get("pool") or "—"), mb,
+            ("Chimera method", p.get("chimeraMethod"))]
 
     @property
     def trunc(self) -> str:
@@ -376,7 +499,25 @@ class Run:
     # wording and read stages that differ between DADA2 and Emu runs
     @property
     def unit(self) -> str:
-        return "taxa" if self.emu else "sequence variants"
+        return {"emu": "taxa", "vsearch": "OTUs"}.get(self.kind, "sequence variants")
+
+    @property
+    def feat(self) -> str:
+        """Plural short name of a table row: taxa / OTUs / ASVs."""
+        return {"emu": "taxa", "vsearch": "OTUs"}.get(self.kind, "ASVs")
+
+    @property
+    def feat1(self) -> str:
+        return {"emu": "taxon", "vsearch": "OTU"}.get(self.kind, "ASV")
+
+    @property
+    def paired(self) -> bool:
+        t0 = self.tracking[0] if self.tracking else {}
+        return any(k in t0 for k in ("denoisedR", "denoised_R", "merged"))
+
+    @property
+    def reads_word(self) -> str:
+        return "read pairs" if self.paired else "reads"
 
     @property
     def stages(self):
@@ -384,12 +525,34 @@ class Run:
             last = "Classified" if _skipped(self).get("chimera") else "Non-chimeric"
             return [("Input", "input"), ("QC (Q / length)", "qc_filtered"),
                     ("Primers trimmed", "primer_trimmed"), (last, "final")]
-        return [("Input", "input"), ("Filtered", "filtered"),
-                ("Merged", "merged"), ("Non-chimeric", "nonchim")]
+        allst = {
+            "vsearch": [("Input", "input"), ("Primers trimmed", "primer_trimmed"),
+                        ("Merged", "merged"), ("QC filtered", "qc_filtered"),
+                        ("Mapped to OTUs", "final")],
+            "cox1": [("Input", "input"), ("Filtered", "filtered"), ("Merged", "merged"),
+                     ("Non-chimeric", "nonchim"), ("Length filtered", "length_filtered"),
+                     ("No stop codon", "codon_filtered"), ("LULU curated", "lulu_curated")],
+            "pacbio": [("Primer-oriented", "input"), ("Filtered", "filtered"),
+                       ("Denoised", "denoised"), ("Non-chimeric", "nonchim")],
+        }.get(self.kind, [("Input", "input"), ("Filtered", "filtered"),
+                          ("Merged", "merged"), ("Non-chimeric", "nonchim")])
+        t0 = self.tracking[0] if self.tracking else {}
+        have = [(l, k) for l, k in allst if k in t0]
+        return have or allst
 
     @property
     def retained_key(self) -> str:
-        return "final" if self.emu else "nonchim"
+        if self.emu:
+            return "final"
+        st = self.stages
+        return st[-1][1] if st else "nonchim"
+
+    @property
+    def bacterial(self) -> bool:
+        """A bacterial / archaeal marker: reagent kitome, archaea and organelle notes apply."""
+        mk = str(self.summary.get("marker") or self.params.get("marker") or "16S").upper()
+        return self.kind in ("emu", "pacbio") or (
+            self.kind in ("dada2", "vsearch") and not any(k in mk for k in ("18S", "12S", "NEMA", "EUK", "ITS", "COX")))
 
     def emu_config(self):
         p, sm = self.params, self.summary
@@ -1454,7 +1617,7 @@ def svg_steps(run, an) -> str:
     """Reads per pipeline step, one line per sample (box per step from 4 samples up)."""
     if not run.tracking:
         return ""
-    if run.emu:
+    if run.kind not in ("dada2", "its"):
         steps = [(l, k) for l, k in run.stages if k in run.tracking[0]]
     else:
         steps = [(c.capitalize() if c != "nonchim" else "Non-chimeric", c)
@@ -1579,7 +1742,7 @@ def svg_rare(an) -> str:
         p.append(f'<circle cx="{x0+pw*d/mx_x:.1f}" cy="{y0+ph-ph*v/mx_y:.1f}" r="2" fill="{c}"/>')
     p.append(f'<text x="{x0+pw/2:.1f}" y="{H-14}" font-size="8.4" fill="{MUT}" text-anchor="middle">Sequencing depth (reads)</text>')
     p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="8.4" fill="{MUT}" text-anchor="middle" '
-             f'transform="rotate(-90 9 {y0+ph/2:.1f})">Observed {"taxa" if an.run.emu else "ASVs"}</text>')
+             f'transform="rotate(-90 9 {y0+ph/2:.1f})">Observed {an.run.feat}</text>')
     lx = x0 + pw + 14
     for i, s in enumerate(samples[:20]):
         c = SERIES[i] if len(samples) <= len(SERIES) else _pal(i)
@@ -1766,9 +1929,49 @@ REFERENCES = [
      "FEMS Microbiology Reviews, 32(4), 557–578."),
     ("Salter, S. J., et al. (2014).", "Reagent and laboratory contamination can critically impact sequence-based microbiome analyses.",
      "BMC Biology, 12, 87."),
+    # 17
+    ("Abarenkov, K., et al. (2024).", "The UNITE database for molecular identification and taxonomic "
+     "communication of fungi and other eukaryotes: sequences, taxa and classifications reconsidered.",
+     "Nucleic Acids Research, 52(D1), D791–D797."),
+    ("Leray, M., Knowlton, N., & Machida, R. J. (2022).", "MIDORI2: A collection of quality controlled, "
+     "preformatted, and regularly updated reference databases for taxonomic assignment of eukaryotic "
+     "mitochondrial sequences.", "Environmental DNA, 4(4), 894–907."),
+    ("Frøslev, T. G., et al. (2017).", "Algorithm for post-clustering curation of DNA amplicon data yields "
+     "reliable biodiversity estimates.", "Nature Communications, 8, 1188."),
+    ("Callahan, B. J., et al. (2019).", "High-throughput amplicon sequencing of the full-length 16S rRNA gene "
+     "with single-nucleotide resolution.", "Nucleic Acids Research, 47(18), e103."),
+    ("Edgar, R. C. (2016).", "UNOISE2: improved error-correction for Illumina 16S and ITS amplicon sequencing.",
+     "bioRxiv, 081257."),
+    # 22
+    ("Guillou, L., et al. (2013).", "The Protist Ribosomal Reference database (PR2): a catalog of unicellular "
+     "eukaryote Small Sub-Unit rRNA sequences with curated taxonomy.", "Nucleic Acids Research, 41, D597–D604."),
+    ("Chuvochina, M., et al. (2026).", "SILVA in 2026: a global core biodata resource for rRNA within the "
+     "DSMZ digital diversity.", "Nucleic Acids Research, 54(D1), D334–D341."),
+    ("Parks, D. H., et al. (2022).", "GTDB: an ongoing census of bacterial and archaeal diversity through a "
+     "phylogenetically consistent, rank normalized and complete genome-based taxonomy.",
+     "Nucleic Acids Research, 50(D1), D785–D794."),
 ]
 REF_DADA2 = [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 REF_EMU = [5, 0, 6, 7, 4, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+
+
+def _ref_indices(run) -> list[int]:
+    """The reference list for this run: its tools, its database, its statistics."""
+    if run.emu:
+        return REF_EMU
+    db = " ".join([run.db_name] + [d.get("label", "") for d in (run.prov.get("databases") or [])]).lower()
+    dbref = ([23] if "silva 14" in db or "v144" in db else [3] if "silva" in db else []) \
+        + ([17] if "unite" in db or "sh_general" in db or run.kind == "its" else []) \
+        + ([18] if "midori" in db or run.kind == "cox1" else []) \
+        + ([22] if "pr2" in db else []) + ([24] if "gtdb" in db else [])
+    if run.kind == "vsearch":
+        tools = [0, 6, 21]
+    else:
+        tools = [0, 1] + ([20] if run.kind == "pacbio" else []) + [2] + ([19] if run.kind == "cox1" else [])
+    out = tools + dbref + [8, 9, 10, 11, 12, 13, 14, 15]
+    if run.bacterial:
+        out.append(16)
+    return list(dict.fromkeys(out))
 
 
 def _fig(svg, caption, folder=None, n=None):
@@ -1804,10 +2007,146 @@ def _skipped(run):
             "chimera_off": off}
 
 
+def _provenance_rows(run):
+    """[[name, version, md5]] from provenance.json; [] for runs made before v2.17."""
+    pv = run.prov or {}
+    if not pv:
+        return []
+    rows = []
+    if pv.get("app_version"):
+        rows.append(["NextGen-Amplicon", esc(pv["app_version"]), ""])
+    names = {"R": "R", "dada2": "DADA2", "DECIPHER": "DECIPHER", "phyloseq": "phyloseq",
+             "vegan": "vegan", "Biostrings": "Biostrings", "ShortRead": "ShortRead", "lulu": "LULU",
+             "cutadapt": "cutadapt", "vsearch": "VSEARCH", "emu": "Emu", "minimap2": "minimap2",
+             "chopper": "chopper"}
+    for k, v in (pv.get("tools") or {}).items():
+        rows.append([esc(names.get(k, k)), esc(v), ""])
+    for d in pv.get("databases") or []:
+        md5 = d.get("md5") or ""
+        ok = d.get("md5_ok")
+        mark = " &#10003;" if ok else (" &#10007; differs from the published file" if ok is False else "")
+        role = {"taxonomy": "Reference", "species": "Species reference"}.get(d.get("role"), "Reference")
+        rows.append([f'{role}: {esc(d.get("label") or d.get("file") or "")}',
+                     f'<span class="dim" style="font-size:7pt">{esc(d.get("file") or "")}</span>',
+                     f'<span class="mono" style="font-size:7pt">{esc(md5)}</span>{mark}'])
+    return rows
+
+
+def _tophit_text(run, marker):
+    cut = run.summary.get("tax_cutoffs") or {}
+    order = ["Species", "Genus", "Family", "Order", "Class", "Phylum"]
+    cuts = ", ".join(f"{r.lower()} {cut[r]:g}%" for r in order if isinstance(cut.get(r), (int, float)))
+    src = ("Ratnasingham &amp; Hebert 2013; common COI metabarcoding practice" if marker == "COI"
+           else "Vu et al. 2019")
+    return (f"<p>Each ASV took the lineage of its best match in <b>{esc(run.db_name)}</b> "
+            f"(VSEARCH <span class=\"mono\">--usearch_global</span>, both strands), and a rank was kept "
+            f"only where the identity reached its threshold" + (f" ({cuts}; {src})" if cuts else "")
+            + ". This reference has too many lineages for the DADA2 classifier to hold in memory "
+              "(it keeps one k-mer profile per lineage), so best-hit naming was used instead. ")
+
+
+def _methods_other(run, an):
+    """Method text for ITS, COX1, PacBio and VSEARCH runs."""
+    p, sm, out = run.params, run.summary, []
+    pf, pr = p.get("primer_f") or sm.get("primer_f") or "", p.get("primer_r") or sm.get("primer_r") or ""
+    mb = sm.get("minBoot") or p.get("minBoot") or 50
+    prim_ul = ("<ul>" + (f"<li>Forward primer: <b class=\"mono\">{esc(pf)}</b></li>" if pf else "")
+               + (f"<li>Reverse primer: <b class=\"mono\">{esc(pr)}</b></li>" if pr else "") + "</ul>"
+               if pf or pr else "")
+    e, o = p.get("cutadaptErrorRate", 0.1), p.get("cutadaptOverlap", 3)
+    if run.kind == "its":
+        out.append("<h3>Primer trimming</h3>")
+        out.append(f"<p>Primers were removed with cutadapt from both reads, including their reverse "
+                   f"complements where a short ITS amplicon reads through into the opposite primer "
+                   f"(error rate {e}, minimum overlap {o}). This matters more for ITS than for 16S because "
+                   f"ITS length varies widely between fungi.</p>" + prim_ul)
+        out.append("<h3>Denoising and ASV inference</h3>")
+        out.append(f"<p>Reads were quality-filtered with DADA2 <span class=\"mono\">filterAndTrim()</span> "
+                   f"without length truncation (maxEE = {p.get('maxEE_F')} / {p.get('maxEE_R')}, minimum "
+                   f"length 50 bp), error models were learned per read direction, ASVs were inferred with "
+                   f"<span class=\"mono\">dada()</span>, read pairs were merged and chimeras removed with "
+                   f"<span class=\"mono\">removeBimeraDenovo()</span> (consensus), following the DADA2 ITS "
+                   f"workflow.</p>")
+        out.append("<h3>Taxonomic assignment</h3>")
+        out.append((_tophit_text(run, "ITS") if sm.get("tax_method") == "vsearch" else
+                    f"<p>ASVs were classified with the DADA2 naive Bayesian classifier against "
+                    f"<b>{esc(run.db_name)}</b> (minimum bootstrap {esc(mb)}, both orientations tried). ")
+                   + "UNITE placeholders (&ldquo;unidentified&rdquo;, <i>incertae sedis</i>) are reported as "
+                     "unassigned at that rank.</p>")
+    elif run.kind == "cox1":
+        out.append("<h3>Primer trimming</h3>")
+        out.append(f"<p>Primers were removed with cutadapt (error rate {e}, minimum overlap {o}); reads "
+                   f"without a primer were discarded.</p>" + prim_ul)
+        out.append("<h3>Denoising and ASV inference</h3>")
+        out.append(f"<p>Reads were truncated at {p.get('truncLen_cox1_f', '—')} / "
+                   f"{p.get('truncLen_cox1_r', '—')} bases and filtered with DADA2 (maxEE = "
+                   f"{p.get('maxEE_F')} / {p.get('maxEE_R')}); ASVs were inferred, read pairs merged "
+                   f"(minimum overlap {sm.get('merge_overlap') or p.get('merge_overlap') or 20} bp) and "
+                   f"chimeras removed.</p>")
+        out.append("<h3>COI-specific curation</h3>")
+        out.append(f"<p>ASVs outside {esc(sm.get('length_range') or 'the expected length range')} were "
+                   f"removed, then every ASV was translated with genetic code "
+                   f"{esc(sm.get('codon_table') or p.get('codon_table') or 5)} and those with a stop codon "
+                   f"in every reading frame were discarded as likely nuclear pseudogenes (NUMTs"
+                   + (f"; {fmt(sm['numt_removed'])} removed" if sm.get("numt_removed") is not None else "")
+                   + "). "
+                   + ("Remaining ASVs were curated with LULU, which merges erroneous daughter sequences "
+                      "into their parent by co-occurrence"
+                      + (f" ({fmt(sm['lulu_removed'])} merged)" if sm.get("lulu_removed") is not None else "")
+                      + "." if sm.get("lulu", p.get("run_lulu", True)) else "LULU curation was not used.")
+                   + "</p>")
+        out.append("<h3>Taxonomic assignment</h3>")
+        out.append((_tophit_text(run, "COI") if sm.get("tax_method") == "vsearch" else
+                    f"<p>ASVs were classified with the DADA2 naive Bayesian classifier against "
+                    f"<b>{esc(run.db_name)}</b> (minimum bootstrap {esc(mb)}). ")
+                   + "MIDORI2 ranks run from phylum to species; NCBI taxon identifiers were stripped "
+                     "from the names.</p>")
+    elif run.kind == "pacbio":
+        out.append("<h3>Primer trimming and orientation</h3>")
+        out.append("<p>HiFi reads were searched for the primer pair in both orientations with cutadapt "
+                   "(<span class=\"mono\">--revcomp</span>), so every read leaves this step in the "
+                   "forward orientation; reads without both primers were discarded.</p>" + prim_ul)
+        out.append("<h3>Denoising and ASV inference</h3>")
+        out.append(f"<p>Reads of {esc(sm.get('length_range') or 'the expected length')} were filtered "
+                   f"(maxEE = {p.get('pb_maxEE', 3)}), and ASVs were inferred with DADA2 using the PacBio "
+                   f"error model (<span class=\"mono\">PacBioErrfun</span>, band size 32, pooling "
+                   f"{esc(sm.get('pool') or p.get('pool') or 'pseudo')}), following Callahan et al. "
+                   f"(2019). Chimeras were removed de novo.</p>")
+        out.append("<h3>Taxonomic assignment</h3>")
+        out.append(f"<p>ASVs were classified with the DADA2 naive Bayesian classifier against "
+                   f"<b>{esc(run.db_name)}</b> (minimum bootstrap {esc(mb)}); species were added by exact "
+                   f"match of the full-length sequence where the reference carries them.</p>")
+    elif run.kind == "vsearch":
+        out.append("<h3>Read preparation</h3>")
+        out.append("<p>" + ("Read pairs were primer-trimmed with cutadapt and merged with VSEARCH "
+                            "(<span class=\"mono\">--fastq_mergepairs</span>); merged reads with more than "
+                            "one expected error were discarded (<span class=\"mono\">--fastq_filter "
+                            "--fastq_maxee 1</span>). " if run.paired else
+                            "Reads were quality-filtered with chopper and primer-trimmed with cutadapt, "
+                            "searching both strands. ")
+                   + ("Merged reads shorter than 50 bp were discarded." if run.paired else
+                      f"Reads outside {p.get('ontMinLen', '—')}&ndash;{p.get('ontMaxLen', '—')} bp were "
+                      f"discarded.") + "</p>" + prim_ul)
+        out.append("<h3>OTU inference</h3>")
+        out.append(f"<p>Reads from all samples were pooled and dereplicated, chimeras were removed "
+                   f"against the reference (<span class=\"mono\">--uchime_ref</span>), and the remaining "
+                   f"unique sequences were denoised with UNOISE3 (<span class=\"mono\">--cluster_unoise</span>, "
+                   f"alpha {p.get('otuUnoiseAlpha', 2.0)}, minimum size {p.get('otuUnoiseMinsize', 8)}). "
+                   f"Every read was then mapped back to the OTU centroids "
+                   f"(<span class=\"mono\">--usearch_global</span>) to count it.</p>")
+        out.append("<h3>Taxonomic assignment</h3>")
+        out.append(f"<p>Each OTU took the taxonomy of its best hit in <b>{esc(run.db_name)}</b> "
+                   f"(<span class=\"mono\">--usearch_global</span>); ranks were kept only down to the "
+                   f"level the identity supports.</p>")
+    return out
+
+
 def _methods(run, an):
     p, out = run.params, []
     pf, pr = p.get("primer_f") or "", p.get("primer_r") or ""
-    if run.emu:
+    if run.kind in ("its", "cox1", "pacbio", "vsearch"):
+        out += _methods_other(run, an)
+    elif run.emu:
         sk = _skipped(run)
         reg = run.summary.get("region") or p.get("ont_region") or "V1-V9"
         lo, hi = {"V1-V9": (1000, 1700), "V7-V8": (250, 450)}.get(reg, (50, 2000))
@@ -1912,7 +2251,7 @@ def _methods(run, an):
                    f"(mitochondria, chloroplasts) and eukaryotic ASVs were identified from the assigned "
                    f"lineage and set aside from the community figures.</p>")
     out.append("<h3>Diversity analysis</h3>")
-    unit = "taxa" if run.emu else "ASVs"
+    unit = run.feat
     out.append(f"<p>Alpha diversity (Observed {unit}, Chao1, ACE, Shannon and Simpson) was computed "
                f"from the per-sample counts. Rarefaction curves give the expected number of {unit} in a "
                f"random subsample of each depth (Hurlbert&rsquo;s formula, as in vegan&rsquo;s "
@@ -2159,19 +2498,30 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     genus heatmap, archaea, alpha diversity and rarefaction, and beta diversity."""
     an = Analysis(run)
     S = an.samples
-    unit = "taxa" if run.emu else "ASVs"
+    unit = run.feat
     marker = run.summary.get("marker") or run.params.get("marker") or "16S"
-    region = run.summary.get("region") or ("V1–V9" if run.emu else "V3–V4"
+    if run.kind == "pacbio":
+        marker = "16S"
+    elif run.kind == "cox1":
+        marker = "COI"
+    region = run.summary.get("region") or ("V1–V9" if run.emu else
+                                          (run.params.get("pb_region") or "V1–V9") if run.kind == "pacbio"
+                                          else "V3–V4"
                                           if (run.params.get("primer_f") or "").startswith("CCTACGG")
                                           else "")
     rep_title = (f"16S {region} Amplicon Sequencing Report".replace("  ", " ")
                  if "16S" in marker.upper() else f"{marker} Amplicon Sequencing Report")
-    sample_label = ", ".join(S[:3]) + ("…" if len(S) > 3 else "")
     project = title if title and title.strip() and title.strip() != rep_title else None
     title = rep_title          # the report type heads the page; a user title becomes the project line
-    subtitle = subtitle or (f"{run.label} · {len(S)} sample{'s' if len(S) != 1 else ''} · "
-                            + ("Oxford Nanopore full-length 16S, classified with Emu" if run.emu
-                               else "Illumina paired-end, DADA2 amplicon sequence variants"))
+    tech = {
+        "emu": "Oxford Nanopore full-length 16S, classified with Emu",
+        "vsearch": ("Illumina paired-end" if run.paired else "single-end reads")
+                   + ", VSEARCH operational taxonomic units",
+        "its": "Illumina paired-end, DADA2 amplicon sequence variants, UNITE reference",
+        "cox1": "Illumina paired-end, DADA2 amplicon sequence variants, MIDORI2 reference",
+        "pacbio": "PacBio HiFi full-length 16S, DADA2 amplicon sequence variants",
+    }.get(run.kind, "Illumina paired-end, DADA2 amplicon sequence variants")
+    subtitle = subtitle or (f"{run.label} · {len(S)} sample{'s' if len(S) != 1 else ''} · " + tech)
     fig = [0]
     tab = [0]
 
@@ -2203,8 +2553,10 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     if project:
         out.append(f'<p class="project">{esc(project)}</p>')
     out.append(f'<p class="sub">{esc(subtitle)}</p>')
-    kpis = [(fmt(inp) if inp else "—", "reads sequenced" if run.emu else "read pairs sequenced"),
-            (fmt(fin), "reads classified" if run.emu else "non-chimeric reads"),
+    fin_word = {"emu": "reads classified", "vsearch": "reads mapped to OTUs",
+                "cox1": "reads after curation"}.get(run.kind, "non-chimeric reads")
+    kpis = [(fmt(inp) if inp else "—", f"{run.reads_word} sequenced"),
+            (fmt(fin), fin_word),
             (str(run.n_asvs), f"{unit} detected"),
             (f"{run.rank_pct('Genus') or 0}%", "reads with a genus")]
     out.append('<div class="kpis">' + "".join(
@@ -2221,17 +2573,16 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     pic = load_picrust(run, S)
     if pic:
         out += _picrust_methods(pic)
-    cfg = ([("Marker", marker)] + run.emu_config()) if run.emu else [
-        ("Marker", marker), ("Reference database", run.db_name),
-        ("Forward primer", run.params.get("primer_f") or "—"),
-        ("Reverse primer", run.params.get("primer_r") or "—"),
-        ("truncLen F / R", run.trunc),
-        ("maxEE F / R", f'{run.params.get("maxEE_F")} / {run.params.get("maxEE_R")}'),
-        ("Pooling", run.params.get("pool") or "—"),
-        ("Minimum bootstrap", run.params.get("minBoot")),
-        ("Chimera method", run.params.get("chimeraMethod"))]
+    cfg = ([("Marker", marker)] + run.emu_config()) if run.emu else run.config(marker)
     out.append(T(["Parameter", "Value"], [[k, esc(v if v is not None else "—")] for k, v in cfg],
                  "Run configuration."))
+    prov = _provenance_rows(run)
+    if prov:
+        out.append(T(["Software / reference", "Version", "Checksum (MD5)"], prov,
+                     "Software versions and reference files this run used, recorded when it "
+                     "finished (provenance.json in the result folder)."
+                     + (" &#10003; marks a reference whose checksum matches the file its publisher "
+                        "released." if any("&#10003;" in r[2] for r in prov) else "")))
 
     # ═══ RESULT ═══
     out.append('<h2 class="pbreak">Result</h2>')
@@ -2243,8 +2594,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
             i0 = float(t.get("input") or 0)
             f0 = float(t.get(run.retained_key) or 0)
             per.append((nm, i0, f0, 100 * f0 / i0 if i0 else 0))
-        steps = run.stages if run.emu else [("filtering", "filtered"), ("denoising", "denoisedF"),
-                                            ("merging", "merged"), ("chimera removal", "nonchim")]
+        steps = ([(l.lower(), k) for l, k in run.stages[1:]] if run.kind not in ("dada2", "its") else
+                 [("filtering", "filtered"), ("denoising", "denoisedF"),
+                  ("merging", "merged"), ("chimera removal", "nonchim")])
         losses = []
         prev = "input"
         for lbl, k in steps:
@@ -2256,25 +2608,41 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                 losses.append((lbl, 100 * (a - b) / a))
             prev = k
         worst = max(losses, key=lambda kv: kv[1]) if losses else None
+        flow = {
+            "vsearch": f"All {len(S)} samples were processed through primer trimming"
+                       + (", read-pair merging" if run.paired else "")
+                       + ", quality filtering, dereplication, chimera removal and UNOISE denoising "
+                         "in VSEARCH, and every read was then mapped back to the OTUs. ",
+            "cox1": f"All {len(S)} paired-end samples were processed through primer trimming, quality "
+                    f"filtering, denoising, read-pair merging and chimera removal in DADA2, followed by "
+                    f"a length filter, removal of sequences with stop codons (likely pseudogenes) and "
+                    f"LULU curation. ",
+            "pacbio": f"All {len(S)} samples were oriented and primer-trimmed with cutadapt, then "
+                      f"quality-filtered, denoised with the PacBio error model and checked for chimeras "
+                      f"in DADA2. ",
+            "its": f"All {len(S)} paired-end samples were processed through primer trimming (both "
+                   f"orientations, no length truncation), quality filtering, denoising, read-pair "
+                   f"merging and chimera removal in DADA2. ",
+        }.get(run.kind, f"All {len(S)} paired-end samples were processed through primer trimming, "
+                        f"quality filtering, denoising, read-pair merging and chimera removal in DADA2. ")
         out.append("<p><b>Overall pipeline outcome.</b> "
                    + (f"All {len(S)} samples were processed through "
                       + ", ".join(x for x, k in (("quality filtering", "qc"), ("primer trimming", None),
                                                  ("chimera removal", "chimera"))
                                   if not (k and _skipped(run)[k]))
                       + ", and the remaining reads were classified with Emu. "
-                      if run.emu else
-                      f"All {len(S)} paired-end samples were processed through primer trimming, quality "
-                      f"filtering, denoising, read-pair merging and chimera removal in DADA2. ")
-                   + f"From {fmt(inp)} input {'reads' if run.emu else 'read pairs'}, {fmt(fin)} "
+                      if run.emu else flow)
+                   + f"From {fmt(inp)} input {run.reads_word}, {fmt(fin)} "
                    f"({100*fin/inp if inp else 0:.1f}%) were retained "
                    + (f"and assigned to {run.n_asvs} taxa. " if run.emu else
-                      f"and resolved into {run.n_asvs} ASVs. ")
+                      f"and resolved into {run.n_asvs} {run.feat}. ")
                    + (f"{fmt(kreads.get('Bacteria', 0))} reads were classified as Bacteria and "
                       f"{fmt(kreads.get('Archaea', 0))} as Archaea. " if kreads else "")
                    + (f"{fmt(run.host + run.euk)} reads ({100*(run.host+run.euk)/run.total:.1f}%) were host "
                       f"organelle or eukaryotic and are excluded from the community figures. "
                       if run.total and (run.host + run.euk) > 0 else
-                      "No mitochondrial, chloroplast or eukaryotic reads were detected. ")
+                      "No mitochondrial, chloroplast or eukaryotic reads were detected. "
+                      if run.bacterial else "")
                    + "</p>")
         qi = (f"<p><b>QC interpretation.</b> Input depth ranged "
               f"{_range_txt([(n, i) for n, i, _f, _p in per])} per sample. The final retained reads "
@@ -2314,7 +2682,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
             qi += "Depth is reasonably even across samples. "
         out.append(qi + "</p>")
 
-        if run.emu:
+        if run.kind not in ("dada2", "its"):
             cols = [k for _l, k in run.stages if k in run.tracking[0]]
             heads = [l for l, k in run.stages if k in run.tracking[0]]
         else:
@@ -2328,7 +2696,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                      "Read counts per sample at each processing step"
                      + ((" (raw, QC-filtered, primer-trimmed, classified)." if _skipped(run).get("chimera")
                          else " (raw, QC-filtered, primer-trimmed, non-chimeric).") if run.emu else
-                        " (raw, filtered, denoisedF, denoisedR, merged, non-chimeric).")))
+                        " (raw, filtered, denoisedF, denoisedR, merged, non-chimeric)."
+                        if run.kind in ("dada2", "its") else
+                        " (" + ", ".join(l.lower() for l, _k in run.stages) + ").")))
         out.append(F(svg_steps(run, an), "Read count distribution per pipeline step. Each line is one "
                      "sample" + ("; boxes show the spread across samples." if len(S) >= 4 else "."),
                      folder("read_tracking.csv")))
@@ -2363,7 +2733,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                        "toward short amplicons. Treat the composition as provisional until the run is "
                        "repeated with a wider window.</p></div>")
 
-    out.append(T(["Sample", "Reads", f"n_{'taxa' if run.emu else 'ASV'}"],
+    out.append(T(["Sample", "Reads", f"n_{run.feat1}"],
                  [[esc(s), fmt(sum(an.mat[q][s] for q in run.abund)), fmt(an.n_features(s))] for s in S],
                  f"Reads and number of {unit} per sample after processing."))
     out.append(F(svg_rare(an), f"Rarefaction curves: expected number of {unit} against sequencing depth "
@@ -2435,8 +2805,11 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     out.append(F(svg_heatmap(an, "Genus", 30), "Top 30 genera &mdash; relative abundance heatmap with "
                  "clustering dendrogram.", folder("r_tables/taxonomy_heatmap_genus.csv")))
 
-    out.append("<h3>Archaeal community</h3>")
-    if n_arch > 0:
+    if run.bacterial:
+        out.append("<h3>Archaeal community</h3>")
+    if not run.bacterial:
+        pass                                   # 18S / ITS / COI: no archaea section
+    elif n_arch > 0:
         out.append(f"<p>Archaeal reads were {'rare' if n_arch / max(fin, 1) < 0.01 else 'present'} in this "
                    f"dataset: {fmt(n_arch)} reads in total, "
                    f"{100*n_arch/max(sum(an.comm_tot.values()),1):.3f}% of the community reads. "
@@ -2444,12 +2817,13 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                       "minimum rather than an estimate of archaeal load." if not run.emu else "") + "</p>")
     else:
         out.append("<p>No archaeal reads were detected in any sample.</p>")
-    out.append(T(["Sample", "Archaeal reads", "% of sample", "Dominant taxon"],
-                 [[esc(s), fmt(r), f"{p_:.3f}%", f"<i>{esc(t)}</i>" if t != "—" else t]
-                  for s, r, p_, t in arch_rows], "Archaeal reads per sample."))
+    if run.bacterial:
+        out.append(T(["Sample", "Archaeal reads", "% of sample", "Dominant taxon"],
+                     [[esc(s), fmt(r), f"{p_:.3f}%", f"<i>{esc(t)}</i>" if t != "—" else t]
+                      for s, r, p_, t in arch_rows], "Archaeal reads per sample."))
 
     # reagent-associated genera, top features, species
-    tg = run.top_genera(15)
+    tg = run.top_genera(15) if run.bacterial else []
     if tg:
         out.append('<h3 class="pbreak">Reagent-associated genera</h3>')
         out.append(T(["Genus", "Reads", "% bacteria", "Note"],
@@ -2465,7 +2839,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                    "organisms; without a sequenced blank extraction control the two cannot be told "
                    "apart.</p></div>")
 
-    out.append(f"<h3>Most abundant {'taxa' if run.emu else 'sequence variants'}</h3>")
+    out.append(f"<h3>Most abundant {run.unit}</h3>")
     per = len(S) <= 6                      # a share column per sample while it still fits
     def _lin(q):
         r = run.tax.get(q, {})
@@ -2478,25 +2852,27 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     rows = []
     for a in run.top_asvs(top_asv):
         q = a["seq"]
-        name = an.label(q, "Species") if run.emu else "Unclassified"
+        name = an.label(q, "Species") if run.kind in ("emu", "vsearch", "its", "cox1") else "Unclassified"
         if name == "Unclassified":
             name = a["genus"] if a["genus"] != "\u2014" else ""
         nm = ('<span class="dim">host organelle</span>' if a["host"]
               else f'<i>{esc(name)}</i>' if name else f'<span class="dim">{esc(a["deepest"])}</span>')
-        rows.append([f'<span class="mono">{a["id"]}</span>'] + ([] if run.emu else [f'{a["len"]}'])
+        rows.append([f'<span class="mono">{a["id"]}</span>'] + ([] if run.kind in ("emu", "vsearch") else [f'{a["len"] or "—"}'])
                     + [fmt(a["reads"]), f'{a["pct"]:.2f}%']
                     + ([f'{100*an.mat[q][s_]/an.comm_tot[s_]:.2f}' if an.comm_tot[s_] else "0"
                         for s_ in S] if per else [])
                     + [f'<div style="text-align:left">{nm}</div>',
                        f'<div style="text-align:left;font-size:7pt" class="dim">{_lin(q)}</div>'])
-    out.append(T((["Taxon"] if run.emu else ["ASV", "bp"]) + ["Reads", "All"]
+    out.append(T((["Taxon"] if run.emu else ["OTU"] if run.kind == "vsearch" else ["ASV", "bp"]) + ["Reads", "All"]
                  + ([f"{esc(h)} %" for h in _col_heads(S)] if per else [])
-                 + (["Species / genus"] if run.emu else ["Genus"]) + ["Phylum &rsaquo; Class &rsaquo; Order &rsaquo; Family"],
+                 + (["Species / genus"] if run.kind in ("emu", "vsearch", "its", "cox1") else ["Genus"])
+                 + ["Phylum &rsaquo; Class &rsaquo; Order &rsaquo; Family"],
                  rows,
                  f"The {top_asv} most abundant of {run.n_asvs} {unit}: reads and share over the whole run"
                  + (", and the share of each sample" if per else "")
                  + (". Identifiers are positional in abundance order; sequences are in asvs.fasta."
-                    if not run.emu else ".")))
+                    if run.kind not in ("emu", "vsearch") else
+                    ". Centroid sequences are in otus.fasta." if run.kind == "vsearch" else ".")))
 
     out.append("<h3>Species-level assignment</h3>")
     spc = an.rank_counts("Species")
@@ -2526,6 +2902,16 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                         "are near-identical (for example within <i>Stenotrophomonas</i> or the "
                         "<i>Bacillus cereus</i> group) cannot be separated by any 16S method; genus is "
                         "the robust level to report." if run.emu else
+                        "Species come from the UNITE species hypothesis the ASV was classified into; ITS "
+                        "separates most fungal species, but names in UNITE are only as good as the "
+                        "sequences deposited under them." if run.kind == "its" else
+                        "Species come from the MIDORI2 reference the ASV was classified into. COI separates "
+                        "most animal species, but a name is only as reliable as the reference coverage of "
+                        "that group; an unexpected species should be checked against BOLD." if run.kind == "cox1" else
+                        "Species are assigned by exact match of the full-length sequence; the whole gene "
+                        "separates many but not all species." if run.kind == "pacbio" else
+                        "Species come from the closest reference sequence above the identity threshold; "
+                        "treat them as the nearest named relative." if run.kind == "vsearch" else
                         "Species are assigned only by exact match of the whole fragment. A low rate is "
                         "expected for a ~440 bp V3&ndash;V4 amplicon; full-length 16S is the appropriate "
                         "marker where species identification is required.") + "</p>")
@@ -2682,7 +3068,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     if run.total and run.host + run.euk > 0:
         notes.append(f"{100*(run.host+run.euk)/run.total:.1f}% of analysed reads are host organelle or "
                      "other non-bacterial material and are excluded from the composition figures.")
-    if run.bacteria:
+    if run.bacteria and run.bacterial:
         notes.append(f"About {100*run.kit/run.bacteria:.0f}% of the bacterial reads belong to genera on "
                      "the reagent-contaminant list. A blank extraction control sequenced alongside the "
                      "samples would turn that estimate into a measurement.")
@@ -2692,11 +3078,23 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     if run.genera.get(HAEMOPLASMA_LABEL):
         notes.append("Haemotropic mycoplasmas are reported as one group (Eperythrozoon and "
                      "Haemobartonella combined).")
-    notes.append("Relative abundance from 16S amplicons reflects gene copies, not cells: taxa with many "
-                 "rRNA operons are over-represented.")
-    notes.append(f"Full tables are in the result folder: {'taxonomy.csv' if run.emu else 'taxonomy_table.csv'} "
-                 f"and asv_table.csv (per-{'taxon' if run.emu else 'ASV'} counts), r_tables/ (per-rank "
-                 f"tables, diversity) and read_tracking.csv.")
+    if getattr(run, "rank_shift_fixed", False):
+        notes.append("This run was made before v2.17, when COX1 rank names were one level off (MIDORI2 "
+                     "starts at phylum). The ranks are shown corrected here; the run's own "
+                     "taxonomy_table.csv still carries the old column names.")
+    notes.append({
+        "its": "Relative abundance from ITS amplicons reflects rDNA copies, not cells: copy number varies "
+               "more than tenfold between fungi, and ITS length differences favour shorter amplicons.",
+        "cox1": "Relative abundance from COI amplicons reflects mitochondrial copies and primer fit, not "
+                "biomass or individuals; COI primers are degenerate and amplify some groups better than "
+                "others.",
+    }.get(run.kind, "Relative abundance from rRNA amplicons reflects gene copies, not cells: taxa with "
+                    "many rRNA operons are over-represented."))
+    notes.append(f"Full tables are in the result folder: "
+                 f"{'taxonomy.csv' if run.kind in ('emu', 'vsearch') else 'taxonomy_table.csv'} "
+                 f"and asv_table.csv (per-{run.feat1} counts), r_tables/ (per-rank "
+                 f"tables, diversity) and read_tracking.csv"
+                 + ("; provenance.json records the software and reference versions." if run.prov else "."))
     if pic:
         notes.append("Predicted functions (PICRUSt2) are in PICRUSt2/: KO_metagenome_out and "
                      "EC_metagenome_out (gene families per sample), pathways_out (MetaCyc pathways); the "
@@ -2705,7 +3103,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     out.append("<h2>References</h2>")
     out.append('<ul class="refs">' + "".join(
         f"<li>{esc(a)} <i>{esc(t)}</i> {esc(j)}</li>"
-        for a, t, j in ([REFERENCES[i] for i in (REF_EMU if run.emu else REF_DADA2)]
+        for a, t, j in ([REFERENCES[i] for i in _ref_indices(run)]
                         + (REF_PICRUST if pic else []))) + "</ul>")
 
     css = _css(app, company, f"{run.label} · {marker}") + _CSS_FULL.replace("@@TITLE@@", esc(title))

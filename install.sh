@@ -356,36 +356,15 @@ echo -e "${BOLD}${CYAN}  Which databases do you want to download?${NC}"
 echo "  (Press Enter = Yes, type n = Skip)"
 echo ""
 
-# ── 1. SILVA 16S — DADA2 trainset (for R pipeline) ───────────────────────────
-SILVA_DADA2_DIR="$DB_DIR/SILVA"
-SILVA_DADA2_FILE="$SILVA_DADA2_DIR/silva_nr99_v138.1_train_set.fa.gz"
-SILVA_DADA2_SP_FILE="$SILVA_DADA2_DIR/silva_nr99_v138.1_wSpecies_train_set.fa.gz"
-
-if [[ ! -f "$SILVA_DADA2_FILE" ]]; then
-  if ask "Download SILVA 138.1 — DADA2 trainset (~130 MB, genus+species)?"; then
-    mkdir -p "$SILVA_DADA2_DIR"
-    info "Downloading SILVA 138.1 DADA2 genus-level trainset..."
-    wget -q --show-progress \
-      "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz" \
-      -O "$SILVA_DADA2_FILE" && ok "SILVA 16S genus trainset → $SILVA_DADA2_FILE"
-    info "Downloading SILVA 138.1 DADA2 species-level trainset..."
-    wget -q --show-progress \
-      "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_wSpecies_train_set.fa.gz" \
-      -O "$SILVA_DADA2_SP_FILE" && ok "SILVA 16S species trainset → $SILVA_DADA2_SP_FILE"
-    # Update db_paths.json
-    python3 - <<PYEOF
-import json, pathlib
-p = pathlib.Path("$DB_DIR/db_paths.json")
-d = json.loads(p.read_text())
-d["SILVA_16S"]    = "$SILVA_DADA2_FILE"
-d["SILVA_16S_sp"] = "$SILVA_DADA2_SP_FILE"
-p.write_text(json.dumps(d, indent=2))
-print("  ✓  db_paths.json updated: SILVA_16S, SILVA_16S_sp")
-PYEOF
-  fi
-else
-  ok "SILVA 16S DADA2 trainset already exists"
+# ── 1. DADA2 references: SILVA 144, UNITE, PR2, MIDORI2 (COI + 12S) ────────────
+# One script owns the reference downloads, so install and later updates fetch
+# the same releases with the same checksums (download_databases.sh). This used
+# to fetch SILVA 138.1 here while other places called it 138.2, plus UNITE and
+# MIDORI2 URLs that no longer exist.
+if ask "Download the DADA2 reference databases (SILVA 144, UNITE 2025, PR2 5.1.1, MIDORI2 GB273; ~500 MB)?"; then
+  bash "$INSTALL_DIR/download_databases.sh" || warn "Some databases failed — re-run: bash $INSTALL_DIR/download_databases.sh"
 fi
+SILVA_DADA2_FILE="$(python3 -c "import json,sys; print(json.load(open('$DB_DIR/db_paths.json')).get('SILVA_16S',''))" 2>/dev/null)"
 
 # ── 2. SILVA QIIME2 sequences + taxonomy (for QIIME2 + custom classifier training) ──
 SILVA_Q2_DIR="$DB_DIR/qiime2_classifiers"
@@ -432,83 +411,6 @@ if ask "Download pre-trained QIIME2 classifiers for SILVA (V3-V4, V4, full-lengt
       ok "$FNAME already exists"
     fi
   done
-fi
-
-# ── 4. UNITE ITS ─────────────────────────────────────────────────────────────
-UNITE_DIR="$DB_DIR/UNITE"
-UNITE_FILE="$UNITE_DIR/unite_ITS_v10.fa.gz"
-if [[ ! -f "$UNITE_FILE" ]]; then
-  if ask "Download UNITE v10 — ITS Fungi (~150 MB)?"; then
-    mkdir -p "$UNITE_DIR"
-    info "Downloading UNITE v10 for DADA2 (dynamic representatives)..."
-    wget -q --show-progress \
-      "https://files.plutof.ut.ee/public/orig/98/AJ/98AJ45OYPC4M7LO975UYQZ3LDSKLJLID7VXHCOHCFRQCNJYIWFQ.gz" \
-      -O "$UNITE_FILE" 2>/dev/null && ok "UNITE ITS → $UNITE_FILE" || {
-      warn "UNITE download failed — download manually from https://unite.ut.ee/repository.php"
-      warn "  → Save as: $UNITE_FILE"
-    }
-    python3 - <<PYEOF
-import json, pathlib
-p = pathlib.Path("$DB_DIR/db_paths.json")
-d = json.loads(p.read_text())
-d["UNITE_ITS1"] = "$UNITE_FILE"
-p.write_text(json.dumps(d, indent=2))
-PYEOF
-  fi
-else
-  ok "UNITE ITS already exists"
-fi
-
-# ── 5. MIDORI2 COX1 ──────────────────────────────────────────────────────────
-MIDORI_DIR="$DB_DIR/MIDORI2"
-MIDORI_FILE="$MIDORI_DIR/MIDORI2_COX1_dada2.fa.gz"
-if [[ ! -f "$MIDORI_FILE" ]]; then
-  if ask "Download MIDORI2 COX1 — Animal barcoding (~300 MB)?"; then
-    mkdir -p "$MIDORI_DIR"
-    info "Downloading MIDORI2 COX1 longest DADA2 release..."
-    # MIDORI2 GB256 COX1 — DADA2 format
-    MIDORI_URL="https://www.reference-midori.info/download/Databases/GenBank256_2023-12-15/DADA2/uniq/MIDORI2_UNIQ_NUC_GB256_CO1_DADA2.fasta.gz"
-    wget -q --show-progress "$MIDORI_URL" -O "$MIDORI_FILE" 2>/dev/null && \
-      ok "MIDORI2 COX1 → $MIDORI_FILE" || {
-      warn "MIDORI2 download failed — download manually from https://www.reference-midori.info/"
-      warn "  Format: DADA2, Gene: CO1, → Save as: $MIDORI_FILE"
-    }
-    python3 - <<PYEOF
-import json, pathlib
-p = pathlib.Path("$DB_DIR/db_paths.json")
-d = json.loads(p.read_text())
-d["MIDORI2_COX1"] = "$MIDORI_FILE"
-p.write_text(json.dumps(d, indent=2))
-PYEOF
-  fi
-else
-  ok "MIDORI2 COX1 already exists"
-fi
-
-# ── 6. NemaBase 18S ──────────────────────────────────────────────────────────
-NEMA_DIR="$DB_DIR/NemaBase"
-NEMA_FILE="$NEMA_DIR/NemaBase_18S.fa.gz"
-if [[ ! -f "$NEMA_FILE" ]]; then
-  if ask "Download NemaBase — Nematode 18S (~30 MB)?"; then
-    mkdir -p "$NEMA_DIR"
-    info "Downloading NemaBase 18S for DADA2..."
-    # PR2 v5 as fallback for 18S nematode (NemaBase is typically local install)
-    PR2_URL="https://github.com/pr2database/pr2database/releases/download/v5.0.0/pr2_version_5.0.0_SSU_dada2.fasta.gz"
-    wget -q --show-progress "$PR2_URL" -O "$NEMA_FILE" 2>/dev/null && \
-      ok "PR2 v5 SSU (18S) → $NEMA_FILE (used as NemaBase fallback)" || {
-      warn "Download failed — place your NemaBase FASTA at: $NEMA_FILE"
-    }
-    python3 - <<PYEOF
-import json, pathlib
-p = pathlib.Path("$DB_DIR/db_paths.json")
-d = json.loads(p.read_text())
-d["NemaBase_18S"] = "$NEMA_FILE"
-d["PR2_18S"]      = "$NEMA_FILE"
-p.write_text(json.dumps(d, indent=2))
-PYEOF
-  fi
-else
-  ok "NemaBase/PR2 18S already exists"
 fi
 
 # ── 7. Emu SILVA database ─────────────────────────────────────────────────────

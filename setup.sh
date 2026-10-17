@@ -151,14 +151,11 @@ DB_COUNT=$(find "$APP_DIR/backend/databases" -name "*.fa.gz" -o -name "*.fasta.g
 if [[ "$DB_COUNT" -eq 0 ]]; then
   echo ""
   echo "  ⚠  No taxonomy database found in backend/databases/"
-  echo "  Download SILVA 138.2 (recommended for 16S):"
+  echo "  Download the reference databases (SILVA 144, UNITE, PR2, MIDORI2 COI + 12S):"
   echo ""
-  echo "    cd $APP_DIR/backend/databases"
-  echo "    wget https://zenodo.org/records/10403693/files/silva_nr99_v138.2_train_set.fa.gz"
-  echo "    wget https://zenodo.org/records/10403693/files/silva_species_assignment_v138.2.fa.gz"
+  echo "    bash $APP_DIR/download_databases.sh"
   echo ""
-  echo "  Or for 12S (MitoFish):"
-  echo "    # Place your custom database .fa.gz here"
+  echo "  Add --silva138 for SILVA 138.2 or --gtdb for a GTDB R232 16S trainset."
 fi
 
 # ── Done ──────────────────────────────────────────────────────

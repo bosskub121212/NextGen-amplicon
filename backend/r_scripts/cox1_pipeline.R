@@ -56,6 +56,10 @@ option_list <- list(
               help="Minimum overlap for paired-end merging"),
   make_option("--threads",      type="integer",   default=4,
               help="Number of CPU threads"),
+  make_option("--minBoot",      type="integer",   default=50,
+              help="assignTaxonomy minimum bootstrap confidence (was fixed at 50)"),
+  make_option("--tax_method",   type="character", default="auto",
+              help="auto | dada2 | vsearch — auto uses VSEARCH best hit when DADA2's classifier would not fit in memory"),
   make_option("--job_name",     type="character", default="COX1_job",
               help="Job / sample set name"),
   make_option("--codon_table",  type="integer",   default=5,
@@ -268,7 +272,9 @@ truncLen_vec <- c(opt$truncLen_f, opt$truncLen_r)
 if (all(truncLen_vec == 0)) {
   out <- filterAndTrim(fnFs, fnFs_filt, fnRs, fnRs_filt,
                        maxEE=c(opt$maxEE_f, opt$maxEE_r),
-                       truncQ=2, minLen=opt$min_length, rm.phix=TRUE,
+                       # --min_length is the ASV (merged) length window, not a
+                       # read length: as minLen it discarded every 2x250 read
+                       truncQ=2, minLen=50, rm.phix=TRUE,
                        compress=TRUE, multithread=opt$threads)
 } else {
   out <- filterAndTrim(fnFs, fnFs_filt, fnRs, fnRs_filt,
@@ -278,6 +284,9 @@ if (all(truncLen_vec == 0)) {
                        compress=TRUE, multithread=opt$threads)
 }
 
+# filterAndTrim names rows after the input FILES; the tracking table is filled
+# by sample name below, which added a second, empty row per sample.
+rownames(out) <- sample_names
 cat("Filter results:\n")
 print(out)
 cat("\n")
@@ -394,10 +403,16 @@ translate_check <- function(seq, gc=opt$codon_table) {
     trim_len <- floor(nchar(sub_seq) / 3) * 3
     if (trim_len < 150) next  # too short
     sub_seq <- subseq(sub_seq, end=trim_len)
-    tryCatch({
-      aa <- translate(sub_seq, genetic.code=getGeneticCode(as.character(gc)))
-      if (!any(aa == "*")) return(TRUE)
-    }, error=function(e) NULL)
+    # `aa == "*"` on an AAString does not compare letters — it recursed until
+    # "C stack usage too close to the limit", the error was swallowed, every
+    # frame counted as failed, and with every ASV "failing" the filter switched
+    # itself off. So no NUMT was ever removed. Test the letters instead.
+    ok <- tryCatch({
+      aa <- translate(sub_seq, genetic.code=getGeneticCode(as.character(gc)),
+                      if.fuzzy.codon="X")
+      !grepl("*", as.character(aa), fixed=TRUE)
+    }, error=function(e) { cat("  translate() error:", conditionMessage(e), "\n"); FALSE })
+    if (isTRUE(ok)) return(TRUE)
   }
   return(FALSE)
 }
@@ -492,38 +507,69 @@ if (opt$lulu && requireNamespace("lulu", quietly=TRUE)) {
 write_checkpoint("taxonomy", 82, "Assigning taxonomy with MIDORI2")
 
 if (!is.null(dbs$genus) && file.exists(dbs$genus)) {
-  cat("Assigning taxonomy with MIDORI2 (genus level)...\n")
-  # Note: taxLevels is omitted so DADA2 auto-detects levels from the MIDORI2
-  # FASTA headers (which contain 7 levels: Kingdom→Species). Supplying an
-  # explicit 6-level taxLevels vector causes an internal "subscript out of
-  # bounds" error in older DADA2 versions when the DB has a different count.
-  tax <- tryCatch({
-    assignTaxonomy(seqtab_final, dbs$genus,
-                   multithread = opt$threads,
-                   minBoot     = 50,
-                   verbose     = FALSE)
-  }, error = function(e) {
+  cat("Assigning taxonomy with MIDORI2...\n")
+  # Rank names come from the reference's own headers. MIDORI2 starts at phylum
+  # (phylum;class;order;family;genus;species), so DADA2's default names put the
+  # phylum in "Kingdom" and the species in "Genus" — every COX1 table before
+  # v2.17 was shifted that way. tax_helpers.R reads the depth and the taxid
+  # pattern and names the columns Phylum..Species.
+  .helper_path <- local({
+    args <- commandArgs(trailingOnly = FALSE)
+    fa   <- args[grepl("^--file=", args)]
+    sd   <- if (length(fa) > 0) dirname(normalizePath(sub("^--file=", "", fa[1]), mustWork = FALSE)) else getwd()
+    file.path(sd, "tax_helpers.R")
+  })
+  if (file.exists(.helper_path)) source(.helper_path)
+  tax_levels <- if (exists("tax_pick_levels", mode = "function")) tax_pick_levels(dbs$genus) else NULL
+  if (is.null(tax_levels)) {
+    stop("Could not read the rank structure of ", dbs$genus,
+         " (tax_helpers.R missing or unreadable reference) — refusing to guess rank names.")
+  }
+  # MIDORI2 COI holds ~240,000 species lineages; DADA2's classifier needs
+  # 256 KB per lineage (~64 GB), so it is classified by best VSEARCH hit instead
+  # whenever the estimate does not fit in this machine's free memory.
+  tax_method <- tolower(opt$tax_method)
+  if (tax_method == "auto") {
+    need_gb <- tax_dada2_mem_gb(dbs$genus); have_gb <- tax_avail_mem_gb()
+    tax_method <- if (!is.na(need_gb) && !is.na(have_gb) && need_gb > 0.7 * have_gb) "vsearch" else "dada2"
+    cat(sprintf("  DADA2 classifier would need ~%.1f GB, %.1f GB free -> %s\n",
+                need_gb, have_gb, if (tax_method == "vsearch") "VSEARCH best hit" else "DADA2"))
+  }
+  if (tax_method == "vsearch") {
+    tax <- tax_vsearch_tophit(colnames(seqtab_final), dbs$genus, tax_levels,
+                              TAX_CUTOFFS_COI, threads = opt$threads)
+  } else {
+  .assign <- function(mt) assignTaxonomy(seqtab_final, dbs$genus, taxLevels = tax_levels,
+                                         multithread = mt, minBoot = opt$minBoot,
+                                         verbose = FALSE)
+  tax <- tryCatch(.assign(opt$threads), error = function(e) {
     cat("WARNING: assignTaxonomy error:", e$message, "\n")
     cat("Retrying once with a single thread (the usual cause is memory)...\n")
-    tryCatch({
-      assignTaxonomy(seqtab_final, dbs$genus,
-                     multithread = FALSE,
-                     minBoot     = 50,
-                     verbose     = FALSE)
-    }, error = function(e2) {
+    tryCatch(.assign(FALSE), error = function(e2) {
       # An empty taxonomy table used to be written here and the run marked
       # complete — a result that looks finished and identifies nothing.
       stop(paste("assignTaxonomy failed against", dbs$genus, ":", e2$message))
     })
   })
+  }
+  if (exists("tax_clean_midori", mode = "function")) tax <- tax_clean_midori(tax)
 
-  if (!is.null(dbs$species) && file.exists(dbs$species)) {
-    cat("Adding species-level assignments...\n")
-    tryCatch({
-      tax <- addSpecies(tax, dbs$species, allowMultiple=FALSE)
-    }, error = function(e) {
-      cat("WARNING: addSpecies failed:", e$message, "— skipping\n")
-    })
+  # addSpecies() needs an assignSpecies-format file (">ID Genus species"). The
+  # MIDORI2 "_sp" files are trainsets — species is already their last rank — so
+  # they are used only when they really are species-assignment files.
+  if (!is.null(dbs$species) && file.exists(dbs$species) && !("Species" %in% colnames(tax))) {
+    kind <- if (exists("tax_inspect_reference", mode = "function"))
+              tax_inspect_reference(dbs$species)$kind else "unknown"
+    if (identical(kind, "species_assignment")) {
+      cat("Adding species-level assignments...\n")
+      tryCatch({
+        tax <- addSpecies(tax, dbs$species, allowMultiple=FALSE)
+      }, error = function(e) {
+        cat("WARNING: addSpecies failed:", e$message, "— skipping\n")
+      })
+    } else {
+      cat("Species file", basename(dbs$species), "is not an assignSpecies file — skipped\n")
+    }
   }
 
   rownames(tax) <- paste0("ASV", seq_len(nrow(tax)))
@@ -582,15 +628,17 @@ dev.off()
 # ------------------------------------------------------------------
 write_checkpoint("save_tables", 90, "Saving ASV and taxonomy tables")
 
-# ASV table: samples x ASVs
-asv_df <- as.data.frame(seqtab_final)
-asv_df <- cbind(sample_id=rownames(asv_df), asv_df)
+# Same layout as dada2_pipeline.R, so viz_pipeline.R, PICRUSt2 and the report
+# read every pipeline the same way: asv_table.csv has one row per ASV, a column
+# per sample and the sequence in "sequence"; taxonomy_table.csv is keyed by the
+# sequence. (Until v2.17 COX1 wrote samples as rows keyed by ASV id.)
+asv_df <- as.data.frame(t(seqtab_final), check.names = FALSE)
+asv_df$sequence <- final_seqs
 write.csv(asv_df, file.path(opt$output_dir, "asv_table.csv"), row.names=FALSE)
 
-# Taxonomy table
 tax_df <- as.data.frame(tax, stringsAsFactors=FALSE)
-tax_df <- cbind(ASV_ID=rownames(tax_df), tax_df)
-write.csv(tax_df, file.path(opt$output_dir, "taxonomy_table.csv"), row.names=FALSE)
+rownames(tax_df) <- final_seqs
+write.csv(tax_df, file.path(opt$output_dir, "taxonomy_table.csv"))
 
 # ASV FASTA (for external tools) — IDs and sequences from the same table, so
 # ASV7 in asvs.fasta is ASV7 in the ASV and taxonomy tables. The earlier
@@ -749,6 +797,17 @@ summary_list <- list(
 )
 write(toJSON(summary_list, auto_unbox=TRUE, pretty=TRUE),
       file.path(opt$output_dir, "pipeline_summary.json"))
+# summary.json is what the report and the results page read for every pipeline
+summary_list$pipeline   <- "cox1"
+summary_list$marker     <- "COX1"
+summary_list$has_taxonomy <- TRUE
+summary_list$tax_levels <- colnames(tax)
+summary_list$minBoot    <- opt$minBoot
+summary_list$tax_method <- if (exists("tax_method")) tax_method else "dada2"
+if (identical(summary_list$tax_method, "vsearch")) summary_list$tax_cutoffs <- as.list(TAX_CUTOFFS_COI)
+summary_list$lulu       <- isTRUE(opt$lulu)
+write(toJSON(summary_list, auto_unbox=TRUE, pretty=TRUE),
+      file.path(opt$output_dir, "summary.json"))
 
 cat("\n=== COX1 Pipeline Complete ===\n")
 cat("Samples:            ", n_samples, "\n")

@@ -139,7 +139,7 @@ class RunParams(BaseModel):
     nbases:        float = 1e8
     pool:          str   = "FALSE"
     chimeraMethod: str   = "consensus"
-    taxDatabase:   str   = "SILVA_138.2"
+    taxDatabase:   str   = "SILVA"      # replaced by the label of the file that runs
     dbPath:        str   = ""
     minBoot:       int   = 50
     topN:          int   = 30
@@ -679,7 +679,7 @@ def _db_reject_reason(p: str) -> str:
     # toSpecies trainsets are NOT rejected: silva_nr99_*_toSpecies_trainset.fa.gz
     # is a full 7-rank trainset, and the old check threw it away for having
     # "tospecies" in its name. Only assignSpecies-style names are refused.
-    if "assignspecies" in n or "assign_species" in n:
+    if "assignspecies" in n or "assign_species" in n or "species_assignment" in n:
         return ("this is an assignSpecies file — species labels only, with no "
                 "Domain..Genus hierarchy. Pick the *_toGenus_trainset file instead; "
                 "the species file is found automatically from the same folder.")
@@ -711,7 +711,7 @@ def resolve_taxonomy_db(marker: str, db_path: str, db_paths_json: str = ""):
         # 12S deliberately has no cross-marker fallback: it used to fall back to
         # an 18S protist reference, which gives confidently-wrong taxonomy.
         prefs = {"16S": ["SILVA_16S_sp", "SILVA_16S"],
-                 "12S": ["12S"],
+                 "12S": ["12S", "MIDORI2_12S"],     # MIDORI2 srRNA = mitochondrial 12S
                  "18S-NEMA": ["NemaBase_18S", "PR2_18S"]}.get(marker_up, ["SILVA_16S_sp", "SILVA_16S"])
         for k in prefs:
             v = dp.get(k, "")
@@ -793,6 +793,20 @@ async def run_analysis(job_id: str, params: RunParams):
     params.dbPath = _db_resolved
     if _db_auto:
         print(f"[db] No database chosen — auto-resolved to {Path(_db_resolved).name}")
+    # The database label shown in Job Detail and written to summary.json used to
+    # be the form default "SILVA_138.2" whatever file actually ran (installs had
+    # SILVA 138.1, later 144). Name it from the file that will be used.
+    if _db_resolved:
+        try:
+            from provenance import db_label as _db_label
+            params.taxDatabase = _db_label(_db_resolved)
+        except Exception:
+            pass
+    else:
+        params.taxDatabase = {"ITS": "UNITE", "ITS1": "UNITE", "ITS2": "UNITE", "COX1": "MIDORI2",
+                              "ONT-16S": "Emu database", "ONT16S": "Emu database",
+                              "ONT": "Emu database", "ONT-WGS": "WGS databases"}.get(
+                                  (params.marker or "").upper(), params.taxDatabase)
 
     # Snapshot the exact settings this run was submitted with, so it can be
     # reviewed later from Job Detail — regardless of outcome (success/error).
@@ -904,6 +918,16 @@ def run_r_pipeline(job_id: str, params: RunParams):
     # from the first — and the post-run step that needed to know had no copy at
     # all: it referenced a name that was never defined anywhere.
     _ran_dada2 = False
+    # what ran, for provenance.json and the report; set in each branch below
+    _pipe_kind = "dada2"
+    _pipe_dbs: list = []          # [(role, path)] — the reference files this run used
+
+    def _dbp(key: str) -> str:
+        try:
+            v = json.loads(Path(db_paths_json).read_text()).get(key, "")
+            return v if v and Path(v).exists() else ""
+        except Exception:
+            return ""
 
     if marker in ("ITS1", "ITS2", "ITS"):
         # ── ITS fungal pipeline ─────────────────────────────────────────────
@@ -934,6 +958,10 @@ def run_r_pipeline(job_id: str, params: RunParams):
         # the UNITE file picked in the UI (it used to be ignored)
         if params.dbPath and Path(params.dbPath).is_file():
             cmd += ["--dbPath", params.dbPath]
+        cmd += ["--minBoot", str(params.minBoot)]
+        _pipe_kind = "its"
+        _pipe_dbs = [("taxonomy", params.dbPath if params.dbPath and Path(params.dbPath).is_file()
+                      else _dbp("UNITE_ITS1" if region == "ITS1" else "UNITE_ITS2"))]
 
     elif marker == "COX1":
         # ── COX1 metabarcoding pipeline ────────────────────────────────────
@@ -968,6 +996,10 @@ def run_r_pipeline(job_id: str, params: RunParams):
         # the MIDORI2 file picked in the UI (it used to be ignored)
         if params.dbPath and Path(params.dbPath).is_file():
             cmd += ["--dbPath", params.dbPath]
+        cmd += ["--minBoot", str(params.minBoot)]
+        _pipe_kind = "cox1"
+        _pipe_dbs = [("taxonomy", params.dbPath if params.dbPath and Path(params.dbPath).is_file()
+                      else _dbp("MIDORI2_COX1"))]
 
     elif marker == "ONT-WGS":
         # ── ONT whole-genome, bacterial isolates ────────────────────────────
@@ -1096,6 +1128,8 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--chimera"]
         if params.metadata:
             cmd += ["--metadata", metadata_path]
+        _pipe_kind = "emu"
+        _pipe_dbs = [("taxonomy", ont_db)]
 
     elif marker == "PACBIO":
         # ── PacBio CCS long-read 16S pipeline ──────────────────────────────
@@ -1122,6 +1156,8 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--metadata", metadata_path]
         if db_paths_json:
             cmd += ["--db_paths_json", db_paths_json]
+        _pipe_kind = "pacbio"
+        _pipe_dbs = [("taxonomy", db_path)]
 
     elif params.sequencerType == "qiime2_vsearch":
         # ── 16S / 12S / 18S-nema — QIIME2/VSEARCH OTU-picking pipeline ─────
@@ -1183,10 +1219,13 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--primer_r", params.primer_r]
         if params.metadata:
             cmd += ["--metadata", metadata_path]
+        _pipe_kind = "qiime2_vsearch"
+        _pipe_dbs = [("taxonomy", vsearch_db)]
 
     else:
         # ── 16S / 12S / 18S-nema — standard DADA2 pipeline ─────────────────
         _ran_dada2 = True
+        _pipe_dbs = [("taxonomy", db_path)]
         cmd = [
             "Rscript", str(R_SCRIPTS_DIR / "dada2_pipeline.R"),
             "--input",         input_dir,      "--output",        output_dir,
@@ -1468,6 +1507,20 @@ def run_r_pipeline(job_id: str, params: RunParams):
         # against the job and written to the log, and the run keeps whatever
         # status the PIPELINE earned it.
         try:
+          # ── provenance.json: tool versions + reference checksums ──────────
+          if proc.returncode == 0:
+              try:
+                  import provenance as _prov
+                  with jobs_lock:
+                      jobs[job_id]["step_label"] = "Recording tool and database versions..."
+                  _dbs = list(_pipe_dbs)
+                  _spf = _prov.species_file_from_log(Path(output_dir))
+                  if _spf:
+                      _dbs.append(("species", _spf))
+                  _prov.write(output_dir, _pipe_kind, _dbs)
+              except Exception as _pe2:
+                  print(f"[provenance] WARNING: {_pe2}")
+
           # ── PICRUSt2 functional prediction (post-pipeline) ────────────────
           if proc.returncode == 0 and params.run_picrust2:
               try:
@@ -1503,7 +1556,11 @@ def run_r_pipeline(job_id: str, params: RunParams):
           # ── Auto-run viz_pipeline.R for DADA2 pipelines ──────────────────────
           # Generates r_tables/*.csv and r_plots/*.pdf used by Edit Charts.
           _viz_script = R_SCRIPTS_DIR / "viz_pipeline.R"
-          if proc.returncode == 0 and _ran_dada2 and _viz_script.exists():
+          # ITS, COX1 and PacBio write the same table layout as DADA2 from
+          # v2.17, so they get the same statistics and chart tables (they used
+          # to stop at alpha diversity).
+          if proc.returncode == 0 and (_ran_dada2 or _pipe_kind in ("its", "cox1", "pacbio")) \
+                  and _viz_script.exists():
               try:
                   with jobs_lock:
                       jobs[job_id]["step_label"] = "Building interactive charts (r_tables)..."
@@ -2173,16 +2230,27 @@ def browse_databases():
     db_dir.mkdir(parents=True, exist_ok=True)
 
     DB_EXTS = {".gz", ".fasta", ".fa", ".fastq"}
+    # release label + checksum status written by download_databases.sh
+    try:
+        _man = json.loads((db_dir / "db_manifest.json").read_text())
+    except Exception:
+        _man = {}
     files = []
     for f in sorted(db_dir.rglob("*")):
-        if f.is_file() and f.suffix in DB_EXTS:
+        if f.is_file() and f.suffix in DB_EXTS and not f.name.endswith(".part"):
             rel = f.relative_to(db_dir)
-            files.append({
+            ent = _man.get(str(f), {})
+            row = {
                 "name":     f.name,
                 "path":     str(f),
                 "rel_path": str(rel),
                 "size_mb":  round(f.stat().st_size / 1_048_576, 1),
-            })
+            }
+            if ent.get("label"):
+                row["label"] = ent["label"]
+            if ent.get("md5_expected") and ent.get("md5"):
+                row["md5_ok"] = ent["md5_expected"] == ent["md5"]
+            files.append(row)
 
     return {
         "db_dir": str(db_dir),

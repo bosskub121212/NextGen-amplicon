@@ -5455,6 +5455,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     return {map:map, problems:problems.concat(dupCheck(map)), strict:P.strict};
   }
 
+  /* VSEARCH takes either kind of data: Illumina pairs are merged first, ONT or
+     single-end reads go straight in. Pair the files when every one of them has
+     a mate; otherwise each file is a sample. */
+  function isSingle(names){
+    var seq = (document.getElementById("seq") || {}).value || "illumina";
+    if(seq === "illumina") return false;
+    if(seq !== "qiime2_vsearch") return true;
+    var fq = names.filter(function(n){ return EXT.test(n); });
+    var d = detectSamples(names, false);
+    return !(fq.length && d.map.length * 2 === fq.length && !d.problems.some(function(p){
+      return p.kind === "unpaired" || p.kind === "orphanR2" || p.kind === "untokened"; }));
+  }
+
   function dupCheck(map){
     var seen = {}, dup = [];
     map.forEach(function(m){
@@ -5945,9 +5958,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + '<select id="seq">'
               + '<option value="illumina">Illumina (paired-end)</option>'
               + '<option value="ont">ONT R10.4+ (single-end)</option>'
-              + '<option value="qiime2_vsearch">QIIME2 VSEARCH (OTU clustering)</option>'
+              + '<option value="qiime2_vsearch">VSEARCH OTUs (paired- or single-end)</option>'
             + '</select>'
-            + '<span class="note">Single-end changes how the files are paired and how samples are named</span></div>'
+            + '<span class="note">Single-end changes how the files are paired and how samples are named. VSEARCH merges Illumina pairs itself when every file has a mate.</span></div>'
           + '<div class="f" id="otuBox" hidden><label for="f_otuSimilarity">OTU identity</label>'
             + '<input type="text" id="f_otuSimilarity" data-k="otuSimilarity" data-kind="num" value="0.97">'
             + '<span class="note">VSEARCH clustering identity — 0.97 is the usual 97% OTU</span></div>'
@@ -6079,7 +6092,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       /* Single-end changes what counts as a sample, so re-detect immediately
          rather than at submit time. */
       if(FORM.uploaded.length && !FORM.merge)
-        FORM.detect = detectSamples(FORM.uploaded, this.value !== "illumina");
+        FORM.detect = detectSamples(FORM.uploaded, isSingle(FORM.uploaded));
       paintSamples();
       preflight(dbOpts, dbCount);
     });
@@ -6179,7 +6192,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     /* Show the pairing BEFORE the upload, from the local filenames. If the
        names are wrong, the user finds out now instead of after a transfer. */
-    var single = document.getElementById("seq").value !== "illumina";
+    var single = isSingle(names);
     FORM.detect = FORM.merge ? groupLocal(FORM.files) : detectSamples(names, single);
     paintSamples(true);
     preflight(dbOpts, dbCount);
@@ -6312,7 +6325,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         /* Trust the backend's file list, not the browser's: a .zip arrives as
            one file and comes back as the FASTQs it contained. */
         FORM.uploaded = Array.isArray(j.files) ? j.files : [];
-        var single    = document.getElementById("seq").value !== "illumina";
+        var single    = isSingle(FORM.uploaded);
         FORM.detect   = FORM.merge ? fromGroups(j.wgs_groups) : detectSamples(FORM.uploaded, single);
         document.getElementById("fqState").textContent =
           "Uploaded · " + FORM.uploaded.length + " file"
@@ -6593,13 +6606,15 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var files = (STATE.browse && Array.isArray(STATE.browse.files)) ? STATE.browse.files : [];
     if(!files.length) return [];
 
-    var marker = key === "12S"      ? /12s|mifish|pr2/i
-               : key === "16S"      ? /silva|16s/i
+    /* MIDORI2 ships COI and 12S (mitochondrial srRNA) under one name stem, so
+       the gene token decides: srRNA is 12S, CO1 is COI. */
+    var marker = key === "12S"      ? /12s|mifish|srrna/i
+               : key === "16S"      ? /silva|gtdb|16s/i
                : key === "18S-nema" ? /nema|18s|pr2/i
                : key === "ONT-16S"  ? /emu|silva|16s/i
-               : key === "PacBio"   ? /silva|16s/i
-               : key === "ITS1" || key === "ITS2" ? /unite|its/i
-               : key === "COX1"     ? /midori|cox1|coi/i
+               : key === "PacBio"   ? /silva|gtdb|16s/i
+               : key === "ITS1" || key === "ITS2" ? /unite|its|sh_general/i
+               : key === "COX1"     ? /^(?!.*srrna).*(midori|cox1|co1|coi)/i
                : new RegExp(key.replace(/[^\w]/g, ""), "i");
 
     /* ONT 16S runs Emu, which reads an Emu database FOLDER (species_taxid.fasta
@@ -6619,7 +6634,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var o = {
         path:  f.path,
         dir:   dir,
-        label: base + (f.size_mb ? "   (" + f.size_mb + " MB)" : ""),
+        label: (f.label ? f.label + " — " : "") + base + (f.size_mb ? "   (" + f.size_mb + " MB)" : "")
+               + (f.md5_ok === false ? "   ⚠ checksum differs from the published file" : ""),
         name:  base
       };
       var ok = isEmu ? (/^emu/i.test(dir) && /^(species_taxid|sequences)\.fasta$/i.test(base))

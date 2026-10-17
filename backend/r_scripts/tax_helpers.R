@@ -112,8 +112,14 @@ tax_inspect_reference <- function(p, n_headers = 2000) {
     # Kingdom..Species for a 7-level file even when the species test cannot.
     second <- vapply(parts[d >= 3], function(x) x[2], character(1))
     has_kingdom <- if (length(second) >= 20) mean(grepl("ati$", second)) > 0.5 else NA
+    # MIDORI2 writes the NCBI taxid after every name ("Arthropoda_6656;...;
+    # Musca domestica_7370;") and starts at phylum: 6 levels = Phylum..Species.
+    # Read with DADA2's default names every rank lands one column too high
+    # (phylum as "Kingdom", species as "Genus").
+    last <- vapply(full, function(x) x[length(x)], character(1))
+    midori <- length(last) >= 20 && mean(grepl("_[0-9]+$", last)) > 0.8
     list(depth = depth, has_species = has_sp, has_kingdom = has_kingdom,
-         kind = "trainset", n = length(hdrs))
+         midori = midori, kind = "trainset", n = length(hdrs))
   }, error = function(e) default)
 }
 
@@ -144,7 +150,11 @@ tax_pick_levels <- function(db_path, verbose = TRUE) {
   # family > genus > species. Division is the phylum-level rank, so it is named
   # Phylum here — everything downstream (plots, report) reads Phylum..Species.
   is_pr2 <- depth >= 9 || grepl("pr2", basename(db_path), ignore.case = TRUE)
-  lv <- if (is_pr2 && depth >= 8) {
+  is_midori <- isTRUE(info$midori) || grepl("midori", basename(db_path), ignore.case = TRUE)
+  lv <- if (is_midori && depth <= 7) {
+    # MIDORI2: phylum;class;order;family;genus;species (6), or with kingdom (7)
+    c("Kingdom","Phylum","Class","Order","Family","Genus","Species")[(8 - depth):7]
+  } else if (is_pr2 && depth >= 8) {
     c("Kingdom","Supergroup","Phylum","Subdivision","Class","Order","Family","Genus","Species")[1:min(depth, 9)]
   } else if (depth >= 8) {
     c("Domain","Kingdom","Phylum","Class","Order","Family","Genus","Species")[1:min(depth, 8)]
@@ -157,7 +167,9 @@ tax_pick_levels <- function(db_path, verbose = TRUE) {
   }
   if (verbose) {
     cat(sprintf("  Reference has %d rank level(s) -> %s\n", depth, paste(lv, collapse = ", ")))
-    if (is_pr2 && depth >= 8)
+    if (is_midori && depth <= 7)
+      cat("  (MIDORI2 ranks: phylum to species; NCBI taxids are stripped from the names)\n")
+    else if (is_pr2 && depth >= 8)
       cat("  (PR2 ranks: Division reported as Phylum)\n")
     else if (has_domain)
       cat("  (extra Kingdom rank detected — SILVA 144 / LPSN naming)\n")
@@ -305,3 +317,181 @@ tax_add_species <- function(tax, sp_file, verbose = TRUE) {
   }
   tax
 }
+
+
+# MIDORI2 names carry the NCBI taxid ("Arthropoda_6656") and fill a missing rank
+# with a placeholder built from the rank below ("order_Sciaenidae_30870"). The
+# taxid is stripped; a placeholder means the rank is unknown, so it becomes NA.
+tax_clean_midori <- function(tax) {
+  if (is.null(tax)) return(tax)
+  v <- tax
+  v[] <- sub("_[0-9]+$", "", v)
+  v[grepl("^(kingdom|phylum|class|order|family|genus|species)_", v)] <- NA
+  v
+}
+
+
+# ── When the reference is too big for assignTaxonomy() ───────────────────────
+# DADA2's classifier keeps one 8-mer profile (65,536 floats) per distinct lineage
+# in the reference. Memory is therefore (lineages x 256 KB): SILVA at genus level
+# ~1 GB, UNITE fungi with species ~9 GB, and MIDORI2 COI with species ~64 GB —
+# which no analysis machine has, so a COX1 run against MIDORI2 died out of memory.
+# These helpers measure that up front and, when it will not fit, classify with
+# the best VSEARCH hit instead, keeping each rank only where the identity
+# supports it.
+
+tax_lineage_of <- function(h) {                      # vectorised
+  h <- sub("^>", "", h)
+  bar <- grepl("|", h, fixed = TRUE)                  # UNITE: name|acc|SH|ref|lineage
+  h[bar] <- sub("^.*\\|", "", h[bar])
+  h
+}
+
+# number of distinct lineages, read from the headers (UNITE, MIDORI2, SILVA, PR2)
+tax_count_lineages <- function(db) {
+  tryCatch({
+    con <- if (grepl("\\.gz$", db)) gzfile(db, "rt") else file(db, "rt")
+    on.exit(close(con), add = TRUE)
+    seen <- new.env(hash = TRUE, size = 200000L)
+    repeat {
+      ch <- readLines(con, n = 200000L, warn = FALSE)
+      if (length(ch) == 0) break
+      for (l in unique(tax_lineage_of(ch[startsWith(ch, ">")])))
+        assign(l, TRUE, envir = seen)
+    }
+    length(ls(seen, all.names = TRUE))
+  }, error = function(e) NA_integer_)
+}
+
+tax_dada2_mem_gb <- function(db) {
+  n <- tax_count_lineages(db)
+  if (is.na(n)) NA_real_ else n * 65536 * 4 / 1e9
+}
+
+tax_avail_mem_gb <- function() {
+  tryCatch({
+    m <- readLines("/proc/meminfo", warn = FALSE)
+    kb <- as.numeric(sub("\\D+(\\d+).*", "\\1", m[grepl("^MemAvailable:", m)]))
+    kb / 1e6
+  }, error = function(e) NA_real_)
+}
+
+tax_find_vsearch <- function() {
+  v <- Sys.which("vsearch")
+  if (nzchar(v)) return(unname(v))
+  home <- Sys.getenv("HOME")
+  for (b in c("miniconda3", "anaconda3", "miniforge3", "mambaforge"))
+    for (e in c("emu", "ngamp-wgs", "ngamp-phylo", "wgs")) {
+      p <- file.path(home, b, "envs", e, "bin", "vsearch")
+      if (file.exists(p)) return(p)
+    }
+  ""
+}
+
+# Best-hit classification. `levels` names the ranks of the reference's lineage
+# (as tax_pick_levels returns them); `cutoffs` is a named vector of the minimum
+# identity (%) for keeping each rank. Returns a matrix like assignTaxonomy's:
+# one row per sequence (rownames = sequences), one column per rank.
+# A reference FASTA as pieces of at most n records (the file itself when smaller).
+tax_split_fasta <- function(db, n = 250000L) {
+  con <- if (grepl("\\.gz$", db)) gzfile(db, "rt") else file(db, "rt")
+  on.exit(close(con), add = TRUE)
+  files <- character(0); k <- 0L
+  repeat {
+    ch <- readLines(con, n = 1000000L, warn = FALSE)
+    if (length(ch) == 0) break
+    rec <- k + cumsum(startsWith(ch, ">"))            # record number of every line
+    k <- rec[length(rec)]
+    part <- (pmax(rec, 1L) - 1L) %/% n + 1L
+    for (pi in unique(part)) {
+      while (length(files) < pi) files <- c(files, tempfile(fileext = ".fasta"))
+      cat(ch[part == pi], file = files[pi], sep = "\n", append = TRUE)
+    }
+  }
+  if (length(files) <= 1L) { unlink(files); return(db) }
+  files
+}
+
+tax_vsearch_tophit <- function(seqs, db, levels, cutoffs, threads = 1, verbose = TRUE,
+                               near = 0.5, agree = 0.8) {
+  # Best-hit naming with a consensus over near-best hits: every hit within
+  # `near` % identity of the best is considered, uninformative names
+  # ("unidentified", "Incertae_sedis", "Genus_sp", MIDORI2 placeholders) are
+  # ignored, and a rank is named only when at least `agree` of the informative
+  # names there agree — otherwise it and every rank below stay unassigned. A
+  # single top hit alone let a reference record labelled "Ascomycota_sp" erase
+  # the genus of a sequence that matched named Aspergillus records just as well.
+  vs <- tax_find_vsearch()
+  if (!nzchar(vs)) stop("vsearch not found — it is needed to classify against ", basename(db),
+                        " (too large for DADA2's classifier on this machine)")
+  fa  <- tempfile(fileext = ".fasta")
+  on.exit(unlink(fa), add = TRUE)
+  writeLines(as.vector(rbind(paste0(">q", seq_along(seqs)), seqs)), fa)
+  minid <- max(0.5, min(cutoffs[cutoffs > 0]) / 100)
+  # vsearch indexes the whole reference in memory (~4 bytes per base: MIDORI2
+  # COI is ~5 GB). A large reference is searched in pieces of 250,000 records
+  # and the hits pooled, so the peak is a fraction of that.
+  parts <- tax_split_fasta(db, 250000L)
+  on.exit(unlink(setdiff(parts, db)), add = TRUE)
+  if (verbose) cat(sprintf("  vsearch --usearch_global against %s (%d piece%s) ...\n",
+                           basename(db), length(parts), if (length(parts) == 1) "" else "s"))
+  hits <- NULL
+  for (part in parts) {
+    out <- tempfile(fileext = ".tsv")
+    args <- c("--usearch_global", fa, "--db", part, "--id", sprintf("%.3f", minid),
+              "--maxaccepts", "50", "--maxrejects", "200", "--maxhits", "50",
+              "--strand", "both", "--userout", out, "--userfields", "query+target+id",
+              "--threads", as.character(threads), "--quiet")
+    rc <- system2(vs, args, stdout = FALSE, stderr = FALSE)
+    if (!identical(rc, 0L) || !file.exists(out))
+      stop("vsearch --usearch_global failed (exit ", rc, if (identical(rc, 137L)) ", out of memory" else "", ")")
+    h <- tryCatch(utils::read.delim(out, header = FALSE, quote = "", comment.char = "",
+                                    stringsAsFactors = FALSE),
+                  error = function(e) NULL)
+    unlink(out)
+    if (!is.null(h) && nrow(h)) hits <- rbind(hits, h)
+  }
+  if (is.null(hits)) hits <- data.frame(V1 = character(0), V2 = character(0), V3 = numeric(0))
+  clean <- function(lin) {
+    x <- trimws(strsplit(tax_lineage_of(lin), ";")[[1]])
+    x <- x[nzchar(x)]
+    x <- sub("^[a-z]__", "", x)
+    x <- sub("_[0-9]+$", "", x)                                      # MIDORI2 taxid
+    x <- gsub("_", " ", x)
+    x[grepl("^(kingdom|phylum|class|order|family|genus|species) ", x) |
+      grepl("unidentified|incertae sedis", x, ignore.case = TRUE) |
+      grepl("( sp\\.?$)|( sp [0-9])", x)] <- NA
+    x[seq_len(min(length(x), length(levels)))]
+  }
+  tax <- matrix(NA_character_, nrow = length(seqs), ncol = length(levels),
+                dimnames = list(seqs, levels))
+  n_hit <- 0L
+  for (q in split(hits, hits$V1)) {
+    qi  <- as.integer(sub("^q", "", q$V1[1]))
+    top <- max(q$V3)
+    near_hits <- q[q$V3 >= top - near, , drop = FALSE]
+    lins <- lapply(near_hits$V2, clean)
+    n_hit <- n_hit + 1L
+    for (j in seq_along(levels)) {
+      cut <- if (!is.na(cutoffs[levels[j]])) cutoffs[[levels[j]]] else 0
+      if (top < cut) break
+      v <- vapply(lins, function(x) if (length(x) >= j) x[j] else NA_character_, character(1))
+      v <- v[!is.na(v)]
+      if (length(v) == 0) next                 # no informative name here; deeper ranks may have one
+      tab <- sort(table(v), decreasing = TRUE)
+      if (tab[1] / length(v) < agree) break    # informative names disagree: stop (LCA)
+      tax[qi, j] <- names(tab)[1]
+    }
+  }
+  if (verbose) cat(sprintf("  %d of %d sequences had a hit at >= %.0f%% identity\n",
+                           n_hit, length(seqs), 100 * minid))
+  tax
+}
+
+# Rank cut-offs (% identity) for best-hit naming.
+#   COI: Ratnasingham & Hebert BIN / common metabarcoding practice — species 97,
+#        genus 95, family 90, order 85, class 80, phylum 75.
+#   ITS: Vu et al. 2019 (Stud. Mycol. 92) — species 98.5, genus 94.3, family 88.5,
+#        order 81.2, class 80.9, phylum 75.
+TAX_CUTOFFS_COI <- c(Kingdom = 0, Phylum = 75, Class = 80, Order = 85, Family = 90, Genus = 95, Species = 97)
+TAX_CUTOFFS_ITS <- c(Kingdom = 0, Phylum = 75, Class = 80.9, Order = 81.2, Family = 88.5, Genus = 94.3, Species = 98.5)

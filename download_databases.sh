@@ -1,251 +1,292 @@
 #!/usr/bin/env bash
 # ============================================================
 #  NextGen-Amplicon — Reference Database Downloader
-#  Downloads:
-#    1. SILVA 138.2   (16S / 12S rRNA)
-#    2. UNITE v10     (ITS fungi)
-#    3. PR2 v5        (18S eukaryotes / nematodes)
-#    4. MIDORI2 COX1  (animal COX1 metabarcoding)
-#    5. Tax4Fun2      (16S functional prediction)
 #
-#  Usage:  bash ~/r16s-app/download_databases.sh
+#  Default set (current releases, checked October 2026):
+#    1. SILVA 144          16S / 18S  — DADA2 files published by SILVA (Aug 2026)
+#    2. UNITE 2025-02-19   ITS fungi  — general FASTA release v10.0
+#    3. PR2 5.1.1          18S eukaryotes (DADA2 format)
+#       18S-NemaBase       nematodes (optional, PR2 is the fallback)
+#    4. MIDORI2 GB273      COI and 12S (mitochondrial srRNA), DADA2 format
+#    5. Tax4Fun2           16S functional prediction
+#  On request:
+#    --silva138  SILVA 138.2 (Nov 2024) — for comparison with published work
+#    --gtdb      GTDB R232 16S trainset, built from GTDB's own SSU files
+#    --unite-euk UNITE all-eukaryotes release (ITS of non-fungi too)
+#
+#  Every file is checked against the publisher's MD5 where one is published,
+#  registered in backend/databases/db_paths.json (other keys are kept), and
+#  recorded with its version and checksum in backend/databases/db_manifest.json,
+#  which provenance.py uses so every report can say which file it ran on.
+#  Existing files are never deleted; re-running only fetches what is missing.
+#
+#  Usage:  bash ~/r16s-app/download_databases.sh [--silva138] [--gtdb] [--unite-euk]
+#                                                [--only silva,unite,pr2,midori,tax4fun]
 # ============================================================
-set -uo pipefail   # -u = undefined vars, -o pipefail; NO -e so downloads don't abort whole script
+set -uo pipefail   # no -e: one failed download must not abort the rest
 
-DB_DIR="$HOME/r16s-app/backend/databases"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DB_DIR="${DB_DIR:-$APP_DIR/backend/databases}"
+PY="${PYTHON:-$APP_DIR/venv/bin/python}"
+[[ -x "$PY" ]] || PY="$(command -v python3)"
 mkdir -p "$DB_DIR"
 
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BOLD='\033[1m'; NC='\033[0m'
 ok()   { echo -e "  ${GREEN}✔ $*${NC}"; }
 warn() { echo -e "  ${YELLOW}⚠ $*${NC}"; }
 fail() { echo -e "  ${RED}✘ $*${NC}"; }
+hdr()  { echo; echo -e "${BOLD}$*${NC}"; }
 
-echo ""
+WANT_SILVA138=0; WANT_GTDB=0; WANT_UNITE_EUK=0; ONLY=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --silva138)  WANT_SILVA138=1 ;;
+    --gtdb)      WANT_GTDB=1 ;;
+    --unite-euk) WANT_UNITE_EUK=1 ;;
+    --only)      ONLY="${2:-}"; shift ;;
+    -h|--help)   sed -n '2,27p' "$0"; exit 0 ;;
+    *) warn "unknown option $1" ;;
+  esac
+  shift
+done
+want() { [[ -z "$ONLY" || ",$ONLY," == *",$1,"* ]]; }
+
 echo "============================================================"
-echo "  NextGen-Amplicon  —  Reference Database Downloader"
+echo "  NextGen-Amplicon — Reference Database Downloader"
 echo "  Target: $DB_DIR"
 echo "============================================================"
-echo ""
 
-# ── Robust download helper ─────────────────────────────────────
-# try_download <label> <dest_file> <url> [<url2> ...]
-# Returns 0 if file downloaded OK, 1 if all URLs failed
-try_download() {
-  local label="$1"; local dest="$2"; shift 2
-  if [[ -f "$dest" && -s "$dest" ]]; then
-    ok "Already exists: $(basename "$dest")"; return 0
-  fi
+# fetch <dest> <md5 or -> <url> [url2 ...]   — resumes, retries, verifies
+fetch() {
+  local dest="$1" md5="$2"; shift 2
   mkdir -p "$(dirname "$dest")"
-  for url in "$@"; do
-    echo "  Trying: $url"
-    if wget -q --show-progress --timeout=30 --read-timeout=30 --tries=1 \
-            --user-agent="Mozilla/5.0" \
-            -O "$dest" "$url" 2>/dev/null && [[ -s "$dest" ]]; then
-      ok "$label"
-      return 0
+  if [[ -s "$dest" ]]; then
+    if [[ "$md5" == "-" ]] || [[ "$(md5sum "$dest" | cut -d' ' -f1)" == "$md5" ]]; then
+      ok "have $(basename "$dest")"; return 0
     fi
-    rm -f "$dest"
+    warn "$(basename "$dest") is incomplete or changed — downloading again"
+    mv "$dest" "$dest.bad.$(date +%s)"
+  fi
+  local url
+  for url in "$@"; do
+    echo "    $url"
+    if curl -fL -# --retry 5 --retry-delay 5 --connect-timeout 30 -C - -A "Mozilla/5.0" \
+            -o "$dest.part" "$url"; then
+      if [[ "$md5" != "-" ]] && [[ "$(md5sum "$dest.part" | cut -d' ' -f1)" != "$md5" ]]; then
+        fail "checksum mismatch for $(basename "$dest") — discarded"
+        rm -f "$dest.part"; continue
+      fi
+      mv "$dest.part" "$dest"; ok "$(basename "$dest")"; return 0
+    fi
   done
-  fail "$label — all URLs failed"
+  rm -f "$dest.part"
+  fail "$(basename "$dest") — every source failed"
   return 1
 }
 
-# ── 1. SILVA 138.2 — 16S / 12S rRNA ──────────────────────────
-echo "[1/5] SILVA 138.2  (16S / 12S — ~130 MB)"
-SILVA_DIR="$DB_DIR/SILVA"
-mkdir -p "$SILVA_DIR"
+# register <db_paths key or -> <path> <label> <version> <source> <md5 or ->
+register() {
+  "$PY" - "$DB_DIR" "$@" <<'PYEOF'
+import hashlib, json, os, sys, time
+from pathlib import Path
+db, key, path, label, version, source, md5x = sys.argv[1:8]
+p = Path(path)
+if not p.exists():
+    sys.exit(0)
+dp = Path(db) / "db_paths.json"
+d = json.loads(dp.read_text()) if dp.exists() else {}
+if key != "-":
+    d[key] = str(p)
+    dp.write_text(json.dumps(d, indent=2))
+mp = Path(db) / "db_manifest.json"
+m = json.loads(mp.read_text()) if mp.exists() else {}
+st = p.stat()
+e = m.get(str(p), {})
+if not (e.get("bytes") == st.st_size and e.get("mtime") == int(st.st_mtime) and e.get("md5")):
+    h = hashlib.md5()
+    with open(p, "rb") as fh:
+        for b in iter(lambda: fh.read(8 << 20), b""):
+            h.update(b)
+    e.update(bytes=st.st_size, mtime=int(st.st_mtime), md5=h.hexdigest(),
+             hashed_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+e.update(label=label, version=version, source=source)
+if md5x != "-":
+    e["md5_expected"] = md5x
+m[str(p)] = e
+mp.write_text(json.dumps(m, indent=2, ensure_ascii=False))
+PYEOF
+}
 
-try_download "SILVA 138.1 genus-level (16S train set)" \
-  "$SILVA_DIR/silva_nr99_v138.1_train_set.fa.gz" \
-  "https://zenodo.org/records/4587955/files/silva_nr99_v138.1_train_set.fa.gz" \
-  "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz" || \
-warn "Manual: wget -O $SILVA_DIR/silva_nr99_v138.1_train_set.fa.gz 'https://zenodo.org/records/4587955/files/silva_nr99_v138.1_train_set.fa.gz'"
-
-try_download "SILVA 138.1 species assignment" \
-  "$SILVA_DIR/silva_species_assignment_v138.1.fa.gz" \
-  "https://zenodo.org/records/4587955/files/silva_species_assignment_v138.1.fa.gz" \
-  "https://zenodo.org/record/4587955/files/silva_species_assignment_v138.1.fa.gz" || \
-warn "Manual: wget -O $SILVA_DIR/silva_species_assignment_v138.1.fa.gz 'https://zenodo.org/records/4587955/files/silva_species_assignment_v138.1.fa.gz'"
-
-# ── 2. UNITE v10 — ITS Fungi ──────────────────────────────────
-echo ""
-echo "[2/5] UNITE v10  (ITS fungi — ~300 MB)"
-UNITE_DIR="$DB_DIR/UNITE"
-mkdir -p "$UNITE_DIR"
-
-UNITE_FASTA="$UNITE_DIR/sh_general_release_dynamic_all.fasta"
-if [[ -f "$UNITE_FASTA" && -s "$UNITE_FASTA" ]]; then
-  ok "Already exists: UNITE v10"
-else
-  UNITE_TGZ="$UNITE_DIR/unite_v10.tgz"
-  DOWNLOADED=0
-  for url in \
-    "https://files.plutof.ut.ee/doi/10.15156/BIO/2938079" \
-    "https://files.plutof.ut.ee/doi/10.15156/BIO/2959332" \
-    "https://unite.ut.ee/sh_files/UNITE_public_all_04.04.2024.tgz"
-  do
-    echo "  Trying: $url"
-    if wget -q --show-progress --timeout=30 --read-timeout=60 --tries=1 \
-            --user-agent="Mozilla/5.0" \
-            -O "$UNITE_TGZ" "$url" 2>/dev/null && [[ -s "$UNITE_TGZ" ]]; then
-      DOWNLOADED=1; break
-    fi
-    rm -f "$UNITE_TGZ"
-  done
-
-  if [[ $DOWNLOADED -eq 1 ]]; then
-    echo "  Extracting UNITE..."
-    tar -xzf "$UNITE_TGZ" -C "$UNITE_DIR" --strip-components=1 2>/dev/null || \
-    tar -xzf "$UNITE_TGZ" -C "$UNITE_DIR" 2>/dev/null || true
-    rm -f "$UNITE_TGZ"
-    # Rename the extracted fasta to a known name if needed
-    FOUND=$(find "$UNITE_DIR" -name "sh_general_release*.fasta" | head -1)
-    if [[ -n "$FOUND" && "$FOUND" != "$UNITE_FASTA" ]]; then
-      cp "$FOUND" "$UNITE_FASTA"
-    fi
-    if [[ -f "$UNITE_FASTA" ]]; then
-      ok "UNITE v10"
-    else
-      warn "Extracted but FASTA not found at expected path. Check: $UNITE_DIR"
-    fi
-  else
-    fail "UNITE v10 — all URLs failed"
-    warn "Manual download: https://unite.ut.ee/repository.php"
-    warn "Extract and place .fasta at: $UNITE_FASTA"
+# ── 1. SILVA ────────────────────────────────────────────────────────────────
+if want silva; then
+  hdr "[1/5] SILVA 144 — 16S / 18S (~330 MB)"
+  S="$DB_DIR/SILVA"
+  BASE="https://www.arb-silva.de/fileadmin/silva_databases/release_144/DADA2/1.36.0/SSU"
+  # The genus trainset feeds assignTaxonomy(); the species file is picked up
+  # automatically from the same folder by version (v144) for addSpecies().
+  fetch "$S/silva_nr99_v144_toGenus_trainset.fa.gz" 9e8a4c92c81efeeecdd091b1249f40fd \
+        "$BASE/silva_nr99_v144_toGenus_trainset.fa.gz" &&
+    register SILVA_16S "$S/silva_nr99_v144_toGenus_trainset.fa.gz" "SILVA 144" "144 (DADA2 1.36.0 build, 2026-08-12)" \
+             "$BASE/silva_nr99_v144_toGenus_trainset.fa.gz" 9e8a4c92c81efeeecdd091b1249f40fd
+  fetch "$S/silva_v144_assignSpecies.fa.gz" 444de7c0cce0b66addda7a3f8b38e012 \
+        "$BASE/silva_v144_assignSpecies.fa.gz" &&
+    register SILVA_16S_sp "$S/silva_v144_assignSpecies.fa.gz" "SILVA 144 species" "144" \
+             "$BASE/silva_v144_assignSpecies.fa.gz" 444de7c0cce0b66addda7a3f8b38e012
+  "$PY" - "$DB_DIR" <<'PYEOF'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1]) / "db_paths.json"
+d = json.loads(p.read_text()) if p.exists() else {}
+d["SILVA_144"] = d.get("SILVA_16S", "")
+p.write_text(json.dumps(d, indent=2))
+PYEOF
+  if [[ $WANT_SILVA138 == 1 ]]; then
+    Z="https://zenodo.org/records/14169026/files"
+    fetch "$S/silva_nr99_v138.2_toGenus_trainset.fa.gz" 1764e2a36b4500ccb1c7d5261948a414 \
+          "$Z/silva_nr99_v138.2_toGenus_trainset.fa.gz?download=1" &&
+      register SILVA_138_2 "$S/silva_nr99_v138.2_toGenus_trainset.fa.gz" "SILVA 138.2" "138.2 (Nov 2024)" \
+               "$Z/silva_nr99_v138.2_toGenus_trainset.fa.gz" 1764e2a36b4500ccb1c7d5261948a414
+    fetch "$S/silva_v138.2_assignSpecies.fa.gz" 62fd939bd1aa9832d2089847f9f0b87d \
+          "$Z/silva_v138.2_assignSpecies.fa.gz?download=1" &&
+      register - "$S/silva_v138.2_assignSpecies.fa.gz" "SILVA 138.2 species" "138.2" \
+               "$Z/silva_v138.2_assignSpecies.fa.gz" 62fd939bd1aa9832d2089847f9f0b87d
   fi
 fi
 
-# ── 3. PR2 v5 — 18S eukaryotes / nematodes ───────────────────
-echo ""
-echo "[3/5] PR2 v5  (18S eukaryotes / nematodes — ~50 MB)"
-NEMA_DIR="$DB_DIR/NemaBase"
-mkdir -p "$NEMA_DIR"
-
-try_download "PR2 v5 SSU DADA2" \
-  "$NEMA_DIR/pr2_v5_dada2.fasta.gz" \
-  "https://github.com/pr2database/pr2database/releases/download/v5.0.0/pr2_version_5.0.0_SSU_dada2.fasta.gz" \
-  "https://github.com/pr2database/pr2database/releases/download/v4.14.0/pr2_version_4.14.0_SSU_dada2.fasta.gz" || \
-warn "Download from https://github.com/pr2database/pr2database/releases"
-
-# 18S NemaBase (Zenodo) — optional, PR2 is the reliable fallback
-try_download "18S-NemaBase (nematode-specific)" \
-  "$NEMA_DIR/18S-NemaBase_train.fasta.gz" \
-  "https://zenodo.org/record/7660142/files/18S-NemaBase_train.fasta.gz" \
-  "https://zenodo.org/record/7660142/files/NemaBase_18S_DADA2.fasta.gz" || \
-warn "NemaBase not available — PR2 v5 will be used as fallback for 18S"
-
-# ── 4. MIDORI2 COX1 — Animal metabarcoding ────────────────────
-echo ""
-echo "[4/5] MIDORI2 COX1  (animal COX1 — ~2 GB, may take a while)"
-COX1_DIR="$DB_DIR/MIDORI2"
-mkdir -p "$COX1_DIR"
-
-MIDORI_FILE="MIDORI2_UNIQ_NUC_GB264_CO1_DADA2.fasta.gz"
-MIDORI_OUT="$COX1_DIR/$MIDORI_FILE"
-MIDORI_BASE="https://www.reference-midori.info/forceDownload.php?fName=download/Databases/GenBank264/DADA2"
-
-try_download "MIDORI2 COX1 genus" \
-  "$MIDORI_OUT" \
-  "${MIDORI_BASE}/${MIDORI_FILE}" \
-  "https://www.reference-midori.info/forceDownload.php?fName=download/Databases/GenBank264/DADA2_sp/${MIDORI_FILE}" || {
-  warn "MIDORI2 auto-download failed (their server blocks bots)"
-  warn "Manual download:"
-  warn "  1. Go to: https://www.reference-midori.info/download.php"
-  warn "  2. Download: $MIDORI_FILE"
-  warn "  3. Place at: $MIDORI_OUT"
-}
-
-# Species-level file (optional, for addSpecies step)
-MIDORI_SP="MIDORI2_UNIQ_NUC_GB264_CO1_DADA2_sp.fasta.gz"
-MIDORI_SP_OUT="$COX1_DIR/$MIDORI_SP"
-if [[ ! -f "$MIDORI_SP_OUT" ]]; then
-  wget -q --show-progress --timeout=30 --read-timeout=60 --tries=1 \
-       --user-agent="Mozilla/5.0" \
-       -O "$MIDORI_SP_OUT" \
-       "${MIDORI_BASE}/${MIDORI_SP}" 2>/dev/null && ok "MIDORI2 COX1 species" || \
-  { rm -f "$MIDORI_SP_OUT"; warn "MIDORI2 species-level file skipped (optional)"; }
-fi
-
-# ── 5. Tax4Fun2 — 16S functional prediction ───────────────────
-echo ""
-echo "[5/5] Tax4Fun2 Ref99NR  (16S functional prediction — ~1 GB)"
-TF2_DIR="$DB_DIR/Tax4Fun2"
-mkdir -p "$TF2_DIR"
-
-if [[ -d "$TF2_DIR/Tax4Fun2_ReferenceData_v2" ]]; then
-  ok "Already exists: Tax4Fun2 reference data"
-else
-  TF2_ZIP="$TF2_DIR/Tax4Fun2_ReferenceData_v2.zip"
-  try_download "Tax4Fun2 reference data" \
-    "$TF2_ZIP" \
-    "https://zenodo.org/record/5794357/files/Tax4Fun2_ReferenceData_v2.zip" \
-    "https://cloudstor.aarnet.edu.au/plus/s/DnBdEDxRzE6FPrR/download" && {
-    echo "  Extracting Tax4Fun2..."
-    unzip -q "$TF2_ZIP" -d "$TF2_DIR" 2>/dev/null && rm -f "$TF2_ZIP" && ok "Tax4Fun2 extracted"
-  } || {
-    warn "Tax4Fun2 auto-download failed"
-    warn "Alternative: run in R:"
-    warn "  Tax4Fun2::downloadTax4Fun2Ref(path='$TF2_DIR')"
-  }
-fi
-
-# ── Write db_paths.json ───────────────────────────────────────
-echo ""
-echo "Writing database paths config..."
-
-# Find SILVA fasta (genus-level)
-SILVA_FASTA=$(find "$SILVA_DIR" -name "silva_nr99*train*.fa*" | head -1)
-SILVA_SP=$(find "$SILVA_DIR" -name "silva_species*.fa*" | head -1)
-
-# Find UNITE fasta
-UNITE_FASTA_FOUND=$(find "$UNITE_DIR" -name "*.fasta" | head -1)
-
-# Find PR2
-PR2_FASTA=$(find "$NEMA_DIR" -name "pr2_v5*.fasta.gz" | head -1)
-NEMA_FASTA=$(find "$NEMA_DIR" -name "18S*.fasta.gz" | head -1)
-[[ -z "$NEMA_FASTA" ]] && NEMA_FASTA="$PR2_FASTA"  # fallback to PR2 if NemaBase missing
-
-cat > "$DB_DIR/db_paths.json" << EOF
-{
-  "SILVA_16S":       "${SILVA_FASTA:-$SILVA_DIR/silva_nr99_v138.1_train_set.fa.gz}",
-  "SILVA_16S_sp":    "${SILVA_SP:-$SILVA_DIR/silva_species_assignment_v138.1.fa.gz}",
-  "UNITE_ITS1":      "${UNITE_FASTA_FOUND:-$UNITE_DIR/sh_general_release_dynamic_all.fasta}",
-  "UNITE_ITS2":      "${UNITE_FASTA_FOUND:-$UNITE_DIR/sh_general_release_dynamic_all.fasta}",
-  "NemaBase_18S":    "${NEMA_FASTA:-$NEMA_DIR/18S-NemaBase_train.fasta.gz}",
-  "PR2_18S":         "${PR2_FASTA:-$NEMA_DIR/pr2_v5_dada2.fasta.gz}",
-  "MIDORI2_COX1":    "$COX1_DIR/MIDORI2_UNIQ_NUC_GB264_CO1_DADA2.fasta.gz",
-  "MIDORI2_COX1_sp": "$COX1_DIR/MIDORI2_UNIQ_NUC_GB264_CO1_DADA2_sp.fasta.gz",
-  "Tax4Fun2_ref":    "$TF2_DIR/Tax4Fun2_ReferenceData_v2"
-}
-EOF
-ok "db_paths.json saved to $DB_DIR/db_paths.json"
-
-# ── Summary ───────────────────────────────────────────────────
-echo ""
-echo "============================================================"
-echo "  Download summary"
-echo ""
-check_db() {
-  local label="$1"; local path="$2"
-  if [[ -f "$path" && -s "$path" ]] || [[ -d "$path" ]]; then
-    echo -e "  ${GREEN}✔${NC} $label"
-  else
-    echo -e "  ${RED}✘${NC} $label  (${path})"
+# ── 2. UNITE ────────────────────────────────────────────────────────────────
+if want unite; then
+  hdr "[2/5] UNITE general FASTA release 10.0, 2025-02-19 — ITS fungi (~30 MB)"
+  U="$DB_DIR/UNITE"
+  UF="$U/sh_general_release_dynamic_19.02.2025.fasta"
+  if [[ ! -s "$UF" ]]; then
+    fetch "$U/sh_general_release_19.02.2025.tgz" 8ffa0bb111e9421e5f8ca8448ac5b7e4 \
+          "https://s3.hpc.ut.ee/plutof-public/original/9489f7bc-7cc1-4e0a-84dc-c732476b9acd.tgz" &&
+      tar -xzf "$U/sh_general_release_19.02.2025.tgz" -C "$U" sh_general_release_dynamic_19.02.2025.fasta
   fi
-}
+  if [[ -s "$UF" ]]; then
+    ok "UNITE fungi: $(basename "$UF")"
+    register UNITE_ITS1 "$UF" "UNITE general release 2025-02-19 (fungi)" "10.0" \
+             "https://doi.org/10.15156/BIO/3301229" -
+    register UNITE_ITS2 "$UF" "UNITE general release 2025-02-19 (fungi)" "10.0" \
+             "https://doi.org/10.15156/BIO/3301229" -
+  else
+    fail "UNITE not installed — manual: https://doi.org/10.15156/BIO/3301229 → $U/"
+  fi
+  if [[ $WANT_UNITE_EUK == 1 ]]; then
+    UE="$U/sh_general_release_dynamic_all_19.02.2025.fasta"
+    if [[ ! -s "$UE" ]]; then
+      fetch "$U/sh_general_release_all_19.02.2025.tgz" - \
+            "https://s3.hpc.ut.ee/plutof-public/original/e861a3d6-54f4-42dc-882a-5f129beac39a.tgz" &&
+        tar -xzf "$U/sh_general_release_all_19.02.2025.tgz" -C "$U" --wildcards '*dynamic_all*' 2>/dev/null
+    fi
+    [[ -s "$UE" ]] && register UNITE_ALL_EUK "$UE" "UNITE general release 2025-02-19 (all eukaryotes)" \
+                               "10.0" "https://doi.org/10.15156/BIO/3301231" -
+  fi
+fi
 
-check_db "SILVA 138.2  (16S/12S)" \
-  "${SILVA_FASTA:-$SILVA_DIR/silva_nr99_v138.1_train_set.fa.gz}"
-check_db "UNITE v10    (ITS)" \
-  "${UNITE_FASTA_FOUND:-$UNITE_DIR/sh_general_release_dynamic_all.fasta}"
-check_db "PR2 v5       (18S)" \
-  "${PR2_FASTA:-$NEMA_DIR/pr2_v5_dada2.fasta.gz}"
-check_db "MIDORI2 COX1 (COX1)" \
-  "$COX1_DIR/MIDORI2_UNIQ_NUC_GB264_CO1_DADA2.fasta.gz"
-check_db "Tax4Fun2     (16S functional)" \
-  "$TF2_DIR/Tax4Fun2_ReferenceData_v2"
+# ── 3. PR2 / NemaBase ───────────────────────────────────────────────────────
+if want pr2; then
+  hdr "[3/5] PR2 5.1.1 — 18S eukaryotes (~55 MB)"
+  N="$DB_DIR/NemaBase"
+  PR2URL="https://github.com/pr2database/pr2database/releases/download/v5.1.1/pr2_version_5.1.1_SSU_dada2.fasta.gz"
+  fetch "$N/pr2_version_5.1.1_SSU_dada2.fasta.gz" - "$PR2URL" &&
+    register PR2_18S "$N/pr2_version_5.1.1_SSU_dada2.fasta.gz" "PR2 5.1.1" "5.1.1 (2025-10-27)" "$PR2URL" -
+  if [[ ! -s "$N/18S-NemaBase_train.fasta.gz" ]]; then
+    fetch "$N/18S-NemaBase_train.fasta.gz" - \
+          "https://zenodo.org/record/7660142/files/18S-NemaBase_train.fasta.gz" \
+      && register NemaBase_18S "$N/18S-NemaBase_train.fasta.gz" "18S-NemaBase" "Zenodo 7660142" \
+                  "https://zenodo.org/record/7660142" - \
+      || warn "NemaBase not available — PR2 is used for 18S nematodes"
+  fi
+  "$PY" - "$DB_DIR" <<'PYEOF'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1]) / "db_paths.json"
+d = json.loads(p.read_text()) if p.exists() else {}
+if not (d.get("NemaBase_18S") and Path(d["NemaBase_18S"]).exists()) and d.get("PR2_18S"):
+    d["NemaBase_18S"] = d["PR2_18S"]
+    p.write_text(json.dumps(d, indent=2))
+PYEOF
+fi
 
-echo ""
-echo "  Config: $DB_DIR/db_paths.json"
+# ── 4. MIDORI2 ──────────────────────────────────────────────────────────────
+if want midori; then
+  hdr "[4/5] MIDORI2 GenBank 273 (2026-09-10) — COI and 12S (~110 MB)"
+  M="$DB_DIR/MIDORI2"; mkdir -p "$M"
+  # MIDORI2 ships each release as one ZIP of every gene (~380 MB); only the two
+  # files we use are read out of it, by HTTP range requests.
+  ZIP="https://zenodo.org/api/records/22685701/files/MIDORI2_GB273_DADA2.zip/content"
+  need=()
+  [[ -s "$M/MIDORI2_UNIQ_NUC_GB273_CO1_DADA2.fasta.gz" ]] || \
+    need+=(DADA2/uniq/MIDORI2_UNIQ_NUC_GB273_CO1_DADA2.fasta.gz "$M/MIDORI2_UNIQ_NUC_GB273_CO1_DADA2.fasta.gz")
+  [[ -s "$M/MIDORI2_UNIQ_NUC_GB273_srRNA_DADA2.fasta.gz" ]] || \
+    need+=(DADA2/uniq/MIDORI2_UNIQ_NUC_GB273_srRNA_DADA2.fasta.gz "$M/MIDORI2_UNIQ_NUC_GB273_srRNA_DADA2.fasta.gz")
+  if [[ ${#need[@]} -gt 0 ]]; then
+    "$PY" "$APP_DIR/backend/python_scripts/zip_member_fetch.py" "$ZIP" "${need[@]}" \
+      || fail "MIDORI2 download failed — manual: https://doi.org/10.5281/zenodo.22685700 (MIDORI2_GB273_DADA2.zip)"
+  fi
+  [[ -s "$M/MIDORI2_UNIQ_NUC_GB273_CO1_DADA2.fasta.gz" ]] && ok "MIDORI2 COI" &&
+    register MIDORI2_COX1 "$M/MIDORI2_UNIQ_NUC_GB273_CO1_DADA2.fasta.gz" "MIDORI2 GenBank 273 (COI)" \
+             "GB273 (2026-09-10)" "https://doi.org/10.5281/zenodo.22685700" -
+  [[ -s "$M/MIDORI2_UNIQ_NUC_GB273_srRNA_DADA2.fasta.gz" ]] && ok "MIDORI2 12S (srRNA)" &&
+    register MIDORI2_12S "$M/MIDORI2_UNIQ_NUC_GB273_srRNA_DADA2.fasta.gz" "MIDORI2 GenBank 273 (12S srRNA)" \
+             "GB273 (2026-09-10)" "https://doi.org/10.5281/zenodo.22685700" -
+  # the "_sp" species-trainset name the COX1 pipeline used to look for is no
+  # longer needed: MIDORI2 trainsets already end at species.
+fi
+
+# ── 5. Tax4Fun2 ─────────────────────────────────────────────────────────────
+if want tax4fun; then
+  hdr "[5/5] Tax4Fun2 Ref99NR — 16S functional prediction (~1 GB)"
+  T="$DB_DIR/Tax4Fun2"
+  if [[ -d "$T/Tax4Fun2_ReferenceData_v2" ]]; then
+    ok "have Tax4Fun2 reference data"
+  else
+    fetch "$T/Tax4Fun2_ReferenceData_v2.zip" - \
+          "https://zenodo.org/record/5794357/files/Tax4Fun2_ReferenceData_v2.zip" &&
+      unzip -q "$T/Tax4Fun2_ReferenceData_v2.zip" -d "$T" && rm -f "$T/Tax4Fun2_ReferenceData_v2.zip" ||
+      warn "Tax4Fun2 failed — alternative in R: Tax4Fun2::downloadTax4Fun2Ref(path='$T')"
+  fi
+  [[ -d "$T/Tax4Fun2_ReferenceData_v2" ]] && "$PY" - "$DB_DIR" "$T/Tax4Fun2_ReferenceData_v2" <<'PYEOF'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1]) / "db_paths.json"
+d = json.loads(p.read_text()) if p.exists() else {}
+d["Tax4Fun2_ref"] = sys.argv[2]
+p.write_text(json.dumps(d, indent=2))
+PYEOF
+fi
+
+# ── GTDB (on request) ───────────────────────────────────────────────────────
+if [[ $WANT_GTDB == 1 ]]; then
+  hdr "[+] GTDB R232 (2026-04-15) — 16S trainset built from GTDB's SSU files (~35 MB download)"
+  G="$DB_DIR/GTDB"
+  "$PY" "$APP_DIR/backend/python_scripts/build_gtdb_dada2.py" --release 232 --out "$G" &&
+    register GTDB_16S "$G/gtdb_r232_ssu_toGenus_trainset.fa.gz" "GTDB R232" "R232 (2026-04-15)" \
+             "https://data.gtdb.ecogenomic.org/releases/release232/" - &&
+    register - "$G/gtdb_r232_ssu_assignSpecies.fa.gz" "GTDB R232 species" "R232" \
+             "https://data.gtdb.ecogenomic.org/releases/release232/" - ||
+    fail "GTDB build failed"
+fi
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+hdr "Summary — backend/databases/db_paths.json"
+"$PY" - "$DB_DIR" <<'PYEOF'
+import json, sys
+from pathlib import Path
+db = Path(sys.argv[1])
+d = json.loads((db / "db_paths.json").read_text()) if (db / "db_paths.json").exists() else {}
+m = json.loads((db / "db_manifest.json").read_text()) if (db / "db_manifest.json").exists() else {}
+for k in ("SILVA_16S", "SILVA_16S_sp", "SILVA_138_2", "GTDB_16S", "UNITE_ITS1", "UNITE_ALL_EUK",
+          "PR2_18S", "NemaBase_18S", "MIDORI2_COX1", "MIDORI2_12S", "Tax4Fun2_ref"):
+    v = d.get(k)
+    if not v:
+        continue
+    e = m.get(v, {})
+    okk = Path(v).exists()
+    chk = ("md5 ok" if e.get("md5_expected") == e.get("md5") else "MD5 MISMATCH") if e.get("md5_expected") else ""
+    print(f"  {'✔' if okk else '✘'} {k:14s} {e.get('label') or Path(v).name:45s} {chk}")
+PYEOF
+echo
+echo "  Old reference files are left where they are; pick between versions in the run settings."
 echo "============================================================"
-echo ""

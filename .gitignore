@@ -40,3 +40,6 @@ tools/
 # Large database files — stored locally, not in git
 databases/
 backend/classifiers/
+
+# tests/ is the test suite, not output
+!tests/

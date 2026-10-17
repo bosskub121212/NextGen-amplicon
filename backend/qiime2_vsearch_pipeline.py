@@ -53,6 +53,26 @@ def progress(pct: int, label: str):
 def log(msg: str):
     print(msg, flush=True)
 
+
+def find_tool(name: str) -> str | None:
+    """On PATH, else in one of the app's conda environments (same rule as
+    emu_pipeline.py). The backend runs from its venv, whose PATH does not include
+    conda envs — vsearch and chopper usually live in the emu or ngamp-wgs env."""
+    hit = shutil.which(name)
+    if hit:
+        return hit
+    local = Path.home() / ".local" / "bin" / name
+    if local.exists():
+        return str(local)
+    bases = [Path(os.environ["CONDA_PREFIX"]).parent.parent] if os.environ.get("CONDA_PREFIX") else []
+    bases += [Path.home() / d for d in ("miniconda3", "anaconda3", "miniforge3", "mambaforge")]
+    for b in bases:
+        for env in ("emu", "ngamp-wgs", "ngamp-phylo", "wgs"):
+            c = b / "envs" / env / "bin" / name
+            if c.exists() and os.access(c, os.X_OK):
+                return str(c)
+    return None
+
 # ── Argument parsing ────────────────────────────────────────────────────────────
 def parse_args():
     p = argparse.ArgumentParser()
@@ -115,6 +135,99 @@ def find_fastq(input_dir: Path) -> dict[str, Path]:
             samples[name] = f
     return samples
 
+_PAIR_RE = re.compile(r"^(?P<name>.+?)(?:_S\d+)?(?:_L\d{3})?[_.](?:R)?(?P<mate>[12])(?:_001)?\.(?:fastq|fq)(?:\.gz)?$")
+
+
+def find_pairs(input_dir: Path) -> dict[str, tuple[Path, Path]]:
+    """Paired-end samples: {sample: (R1, R2)} — from the manifest's file1/file2, else
+    from file names (_R1/_R2, _1/_2, with or without _S1_L001_..._001). Empty when the
+    run is single-end."""
+    manifest_path = input_dir / "sample_manifest.json"
+    if manifest_path.exists():
+        try:
+            rows = json.loads(manifest_path.read_text())
+            pairs = {}
+            for row in rows:
+                sample = re.sub(r"[\\/]+", "_", str(row.get("sample", "")).strip())
+                f1, f2 = str(row.get("file1", "")).strip(), str(row.get("file2", "")).strip()
+                if sample and f1 and f2 and (input_dir / f1).exists() and (input_dir / f2).exists():
+                    pairs[sample] = (input_dir / f1, input_dir / f2)
+            if pairs and len(pairs) == len([r for r in rows if r.get("sample")]):
+                return pairs
+        except Exception as e:
+            log(f"  [WARN] sample_manifest.json unreadable for pairing: {e}")
+    files = [f for ext in ("*.fastq.gz", "*.fastq", "*.fq.gz", "*.fq") for f in sorted(input_dir.glob(ext))]
+    mates: dict[str, dict[str, Path]] = {}
+    for f in files:
+        m = _PAIR_RE.match(f.name)
+        if not m:
+            return {}
+        mates.setdefault(m.group("name"), {})[m.group("mate")] = f
+    if mates and all(set(v) == {"1", "2"} for v in mates.values()):
+        # Names alone are not proof: two single-end samples called x_1 / x_2 look
+        # the same. Real mates carry the same read id in the same position.
+        def first_id(f):
+            for h, _s, _p, _q in _fastq_iter(f):
+                return re.split(r"[\s/]", h[1:], 1)[0]
+            return None
+        if all(first_id(v["1"]) == first_id(v["2"]) for v in mates.values()):
+            return {k: (v["1"], v["2"]) for k, v in sorted(mates.items())}
+        log("  File names look paired but read ids differ between mates — treating as single-end")
+    return {}
+
+
+def prepare_paired(pairs: dict, out_dir: Path, primer_f: str, primer_r: str, threads: int,
+                   error_rate: float, overlap: int, min_len: int, max_len: int,
+                   vsearch: str, maxee: float = 1.0):
+    """Illumina paired-end reads -> one merged, quality-filtered FASTQ per sample.
+
+    cutadapt removes both primers from their own read (and the opposite primer's
+    reverse complement where a short amplicon reads through), VSEARCH merges each
+    pair (--fastq_mergepairs) and drops merged reads with more than `maxee`
+    expected errors (--fastq_filter). Returns ({sample: merged_fastq}, counts) where
+    counts[sample] = {input, primer_trimmed, merged, qc_filtered}.
+    """
+    cutadapt = find_tool("cutadapt")
+    wdir = out_dir / "paired"
+    wdir.mkdir(exist_ok=True)
+    merged_out, counts = {}, {}
+    for name, (r1, r2) in pairs.items():
+        c = {"input": count_reads(r1)}
+        t1, t2 = r1, r2
+        if (primer_f or primer_r) and cutadapt:
+            t1, t2 = wdir / f"{name}_R1.trim.fastq.gz", wdir / f"{name}_R2.trim.fastq.gz"
+            cmd = [cutadapt, "-j", str(threads), "-e", str(error_rate), "-O", str(overlap),
+                   "--discard-untrimmed", "-m", "20"]
+            if primer_f:
+                cmd += ["-g", primer_f, "-A", _rev_comp(primer_f)]
+            if primer_r:
+                cmd += ["-G", primer_r, "-a", _rev_comp(primer_r)]
+            cmd += ["-o", str(t1), "-p", str(t2), str(r1), str(r2)]
+            run_cmd(cmd, f"Trim primers (paired) {name}")
+            if not t1.exists():
+                t1, t2 = r1, r2
+        elif primer_f or primer_r:
+            log("  [WARN] cutadapt not found — primers were not removed before merging")
+        c["primer_trimmed"] = count_reads(t1)
+        mg = wdir / f"{name}.merged.fastq"
+        run_cmd([vsearch, "--fastq_mergepairs", str(t1), "--reverse", str(t2),
+                 "--fastq_minovlen", "16", "--fastq_maxdiffs", "10", "--fastq_allowmergestagger",
+                 "--fastqout", str(mg), "--threads", str(threads)], f"Merge pairs {name}")
+        c["merged"] = count_reads(mg) if mg.exists() else 0
+        qc = wdir / f"{name}.filtered.fastq"
+        cmd = [vsearch, "--fastq_filter", str(mg), "--fastq_maxee", str(maxee),
+               "--fastq_minlen", str(min_len), "--fastq_maxns", "0", "--fastqout", str(qc)]
+        if max_len:
+            cmd += ["--fastq_maxlen", str(max_len)]
+        run_cmd(cmd, f"Expected-error filter {name}")
+        c["qc_filtered"] = count_reads(qc) if qc.exists() else 0
+        counts[name] = c
+        merged_out[name] = qc
+        log(f"  {name}: {c['input']} pairs -> {c['primer_trimmed']} with primers -> "
+            f"{c['merged']} merged -> {c['qc_filtered']} after maxEE {maxee}")
+    return merged_out, counts
+
+
 def count_reads(fastq: Path) -> int:
     try:
         if str(fastq).endswith(".gz"):
@@ -160,7 +273,7 @@ def _fastq_iter(path: Path):
 # ── Step 1: QC filter raw reads with Chopper ────────────────────────────────────
 def qc_filter_chopper(samples: dict, out_dir: Path, min_qual: int,
                       threads: int) -> dict[str, Path]:
-    chopper = shutil.which("chopper")
+    chopper = find_tool("chopper")
     if not chopper:
         log("  [WARN] chopper not found — skipping QC filtering "
             "(install with: conda install -c bioconda chopper)")
@@ -201,8 +314,7 @@ def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
         log("  Primers not specified — skipping cutadapt trimming")
         return samples
 
-    cutadapt = shutil.which("cutadapt") or shutil.which(
-        str(Path.home() / ".local" / "bin" / "cutadapt"))
+    cutadapt = find_tool("cutadapt")
     if not cutadapt:
         log("  [WARN] cutadapt not found — skipping primer trimming")
         return samples
@@ -510,7 +622,6 @@ def _assign_taxonomy_trainset_format(vsearch: str, otus_fasta: Path, ref_fasta: 
            "--threads", str(threads)]
     run_cmd(cmd, f"Assign OTU taxonomy (vsearch @ {identity * 100:.0f}% identity vs. SILVA trainset FASTA)")
 
-    ranks = ["superkingdom", "phylum", "class", "order", "family", "genus", "species"]
     otu_tax: dict[str, dict] = {}
     n_truncated = 0
     if hits_path.exists():
@@ -526,8 +637,7 @@ def _assign_taxonomy_trainset_format(vsearch: str, otus_fasta: Path, ref_fasta: 
                     pct_id = float(pct_id_str)
                 except ValueError:
                     pct_id = 100.0  # malformed field — don't truncate, fail open
-                pieces = [p.strip() for p in lineage.split(";") if p.strip()]
-                tax = dict(zip(ranks, pieces))
+                tax = parse_lineage(lineage)
                 truncated = _truncate_by_identity(tax, pct_id)
                 if len(truncated) < len(tax):
                     n_truncated += 1
@@ -538,6 +648,42 @@ def _assign_taxonomy_trainset_format(vsearch: str, otus_fasta: Path, ref_fasta: 
         f"({n_species} resolved to species, {n_truncated} truncated to a lower rank — "
         "hit's %identity didn't clear that rank's confidence threshold)")
     return otu_tax
+
+def parse_lineage(lineage: str) -> dict:
+    """{rank: name} from a trainset header, named by what the levels ARE.
+
+    A fixed rank list zipped onto the header used to label every SILVA 144 rank
+    one level too high (144 inserts an LPSN kingdom — "Bacillati",
+    "Pseudomonadati" — below the domain), so genus columns held family names.
+    The same happens with PR2 (9 levels) and MIDORI2 (starts at phylum, names
+    carry NCBI taxids). Shapes recognised:
+      SILVA 138   Bacteria;Firmicutes;Bacilli;...;Genus[;species]
+      SILVA 144   Bacteria;Bacillati;Bacillota;...;Genus[;species]
+      PR2         Eukaryota;TSAR;Alveolata;...;Genus;Genus_species   (9 levels)
+      MIDORI2     Arthropoda_6656;Insecta_50557;...;Musca domestica_7370
+    """
+    pieces = [p.strip() for p in lineage.split(";") if p.strip()]
+    if pieces and sum(bool(re.search(r"_\d+$", p)) for p in pieces) >= max(1, len(pieces) - 1):
+        clean = [re.sub(r"_\d+$", "", p) for p in pieces]
+        clean = ["" if re.match(r"^(kingdom|phylum|class|order|family|genus|species)_", c) else c
+                 for c in clean]
+        ranks = ["phylum", "class", "order", "family", "genus", "species"]
+        if len(clean) == 7:
+            ranks = ["superkingdom"] + ranks
+        return {r: v for r, v in zip(ranks, clean) if v}
+    if len(pieces) >= 9:
+        ranks = ["superkingdom", "supergroup", "phylum", "subdivision", "class", "order",
+                 "family", "genus", "species"]
+        tax = dict(zip(ranks, pieces))
+        if tax.get("species"):
+            tax["species"] = tax["species"].replace("_", " ")
+        return tax
+    if len(pieces) >= 3 and pieces[1].endswith("ati"):
+        ranks = ["superkingdom", "kingdom", "phylum", "class", "order", "family", "genus", "species"]
+    else:
+        ranks = ["superkingdom", "phylum", "class", "order", "family", "genus", "species"]
+    return dict(zip(ranks, pieces))
+
 
 # ── Step 9: Write ASV/taxonomy tables (same format as emu_pipeline.py) ─────────
 def write_tables(sample_names: list, otu_counts: dict, otu_tax: dict, out_dir: Path):
@@ -583,7 +729,17 @@ def write_tables(sample_names: list, otu_counts: dict, otu_tax: dict, out_dir: P
 
 # ── Step 10: read_tracking.csv (multi-stage) ────────────────────────────────────
 def write_read_tracking(samples_raw: dict, samples_qc: dict, samples_trimmed: dict,
-                        mapped_totals: dict, out_dir: Path):
+                        mapped_totals: dict, out_dir: Path, paired_counts: dict | None = None):
+    if paired_counts:
+        rows = [{"sample": n, **paired_counts[n],
+                 "final": mapped_totals.get(n, (0, 0))[1]} for n in sorted(paired_counts)]
+        fields = ["sample", "input", "primer_trimmed", "merged", "qc_filtered", "final"]
+        with open(out_dir / "read_tracking.csv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(rows)
+        log("  Saved: read_tracking.csv (paired-end)")
+        return rows
     rows = []
     for name in sorted(samples_raw.keys()):
         raw_fq  = samples_raw.get(name)
@@ -620,6 +776,11 @@ def write_summary(out_dir: Path, sample_names: list, n_otus: int,
         "timestamp":      datetime.now().isoformat(),
         "pipeline":       "qiime2_vsearch",
         "otu_similarity": args.otu_similarity,
+        "paired":         bool(getattr(args, "_paired", False)),
+        "unoise_alpha":   args.unoise_alpha,
+        "unoise_minsize": args.unoise_minsize,
+        "primer_f":       args.primer_f,
+        "primer_r":       args.primer_r,
     }
     path = out_dir / "summary.json"
     with open(path, "w") as f:
@@ -657,7 +818,7 @@ def main():
     log(f"  OTU identity: {args.otu_similarity*100:.1f}%  |  DB: {args.db_path}")
     log("=" * 50)
 
-    vsearch = shutil.which("vsearch")
+    vsearch = find_tool("vsearch")
     if not vsearch:
         log("[ERROR] vsearch not found — this pipeline requires it (unlike Emu's optional "
             "chimera step, VSEARCH OTU clustering IS this pipeline's core algorithm).")
@@ -666,14 +827,39 @@ def main():
 
     # ── 1. Find samples ────────────────────────────────────────────────────────
     progress(5, "Step 1/9 — Scanning input FASTQ files")
-    samples_raw = find_fastq(input_dir)
-    if not samples_raw:
-        log(f"[ERROR] No FASTQ files found in: {input_dir}")
-        sys.exit(1)
-    log(f"  Found {len(samples_raw)} samples: {', '.join(sorted(samples_raw))}")
+    pairs = find_pairs(input_dir)
+    paired_counts = None
+    args._paired = bool(pairs)
+    if pairs:
+        # Illumina paired-end: merge each pair first. chopper's quality filter is a
+        # long-read tool; for short reads the standard is VSEARCH's own merge +
+        # expected-error filter (used by every UNOISE/OTU workflow).
+        log(f"  Found {len(pairs)} paired-end samples: {', '.join(pairs)}")
+        samples_raw = {k: v[0] for k, v in pairs.items()}
+        progress(12, "Step 2/9 — Trimming primers and merging read pairs (cutadapt + vsearch)")
+        # The read-length window in the settings is the ONT one (300-2000 bp by
+        # default) and would throw away a whole V4 run; for merged pairs the
+        # primers already fix the length, so only fragments are removed.
+        samples_trimmed, paired_counts = prepare_paired(
+            pairs, out_dir, args.primer_f, args.primer_r, args.threads,
+            error_rate=args.cutadapt_error_rate, overlap=args.cutadapt_overlap,
+            min_len=50, max_len=0, vsearch=vsearch)
+        samples_qc = samples_trimmed
+        if not any(c["qc_filtered"] for c in paired_counts.values()):
+            log("[ERROR] No read pair merged and passed the filter — check that the primers are "
+                "right and that the reads overlap (amplicon shorter than R1 + R2 - 16 bp).")
+            sys.exit(1)
+    else:
+        samples_raw = find_fastq(input_dir)
+        if not samples_raw:
+            log(f"[ERROR] No FASTQ files found in: {input_dir}")
+            sys.exit(1)
+        log(f"  Found {len(samples_raw)} samples: {', '.join(sorted(samples_raw))}")
 
     # ── 2. QC filter ────────────────────────────────────────────────────────────
-    if args.skip_qc:
+    if pairs:
+        pass
+    elif args.skip_qc:
         log("  Step 2/9 — QC filtering skipped (--skip_qc)")
         samples_qc = samples_raw
     else:
@@ -681,11 +867,12 @@ def main():
         samples_qc = qc_filter_chopper(samples_raw, out_dir, args.qc_min_qual, args.threads)
 
     # ── 3. Trim primers ─────────────────────────────────────────────────────────
-    progress(20, "Step 3/9 — Trimming primers (cutadapt)")
-    samples_trimmed = trim_primers(
-        samples_qc, out_dir, args.primer_f, args.primer_r, args.threads,
-        error_rate=args.cutadapt_error_rate, overlap=args.cutadapt_overlap,
-        min_len=args.min_len, max_len=args.max_len)
+    if not pairs:
+        progress(20, "Step 3/9 — Trimming primers (cutadapt)")
+        samples_trimmed = trim_primers(
+            samples_qc, out_dir, args.primer_f, args.primer_r, args.threads,
+            error_rate=args.cutadapt_error_rate, overlap=args.cutadapt_overlap,
+            min_len=args.min_len, max_len=args.max_len)
 
     # ── 4. Pool + dereplicate ───────────────────────────────────────────────────
     progress(30, "Step 4/9 — Pooling samples & dereplicating (vsearch)")
@@ -733,7 +920,8 @@ def main():
     # ── 9. Write tables + viz ───────────────────────────────────────────────────
     progress(86, "Step 9/9 — Writing tables & generating plots")
     sorted_otus = write_tables(sample_names, otu_counts, otu_tax, out_dir)
-    read_rows = write_read_tracking(samples_raw, samples_qc, samples_trimmed, mapped_totals, out_dir)
+    read_rows = write_read_tracking(samples_raw, samples_qc, samples_trimmed, mapped_totals, out_dir,
+                                    paired_counts)
     write_summary(out_dir, sample_names, len(sorted_otus), read_rows, args)
     run_viz(out_dir, args.metadata, args.topN, args.threads, args.marker)
 

@@ -433,6 +433,7 @@ if (nchar(db_path) > 0 && file.exists(db_path)) {
       if (length(sp_cands) > 0) sp_cands[1] else NULL
     }
     if (!is.null(sp_file)) {
+      cat("  Species file :", sp_file, "\n")     # read back by provenance.py
       tryCatch({
         # Same two problems as the short-read pipeline, and full-length
         # references are the larger ones, so this matters more here:
@@ -521,18 +522,24 @@ print(p); dev.off()
 # ------------------------------------------------------------------
 write_checkpoint("save_tables", 88, "Saving ASV and taxonomy tables")
 
-asv_ids <- paste0("ASV", seq_len(ncol(seqtab_nochim)))
+# The sequences, captured BEFORE the columns are renamed to ASV ids — asvs.fasta
+# used to rebuild them from seqtab_len with an index from a different table and
+# without the chimera step, so ASVn in asvs.fasta was not ASVn in the tables.
+asv_seqs <- colnames(seqtab_nochim)
+asv_ids  <- paste0("ASV", seq_len(ncol(seqtab_nochim)))
 colnames(seqtab_nochim) <- asv_ids
 
-asv_df <- as.data.frame(seqtab_nochim)
-asv_df <- cbind(sample_id=rownames(asv_df), asv_df)
+# Same layout as dada2_pipeline.R (one row per ASV, "sequence" column; taxonomy
+# keyed by sequence) so viz_pipeline.R, PICRUSt2 and the report read it as-is.
+asv_df <- as.data.frame(t(seqtab_nochim), check.names = FALSE)
+asv_df$sequence <- asv_seqs
 write.csv(asv_df, file.path(opt$output_dir, "asv_table.csv"), row.names=FALSE)
 
 if (!is.null(tax)) {
   rownames(tax) <- asv_ids
   tax_df <- as.data.frame(tax, stringsAsFactors=FALSE)
-  tax_df <- cbind(ASV_ID=rownames(tax_df), tax_df)
-  write.csv(tax_df, file.path(opt$output_dir, "taxonomy_table.csv"), row.names=FALSE)
+  rownames(tax_df) <- asv_seqs
+  write.csv(tax_df, file.path(opt$output_dir, "taxonomy_table.csv"))
 
   # taxonomy_summary.json for frontend
   asv_counts <- colSums(seqtab_nochim)
@@ -553,14 +560,7 @@ if (!is.null(tax)) {
 }
 
 # ASV FASTA
-asv_seqs_orig <- colnames(seqtab_len)[keep_len]
-if (length(asv_seqs_orig) != length(asv_ids)) {
-  asv_seqs_orig <- colnames(seqtab_len)
-  if (length(asv_seqs_orig) > length(asv_ids))
-    asv_seqs_orig <- asv_seqs_orig[seq_along(asv_ids)]
-}
-fa_lines <- unlist(mapply(function(id, seq) c(paste0(">", id), seq),
-                           asv_ids, asv_seqs_orig))
+fa_lines <- as.vector(rbind(paste0(">", asv_ids), asv_seqs))
 writeLines(fa_lines, file.path(opt$output_dir, "asvs.fasta"))
 
 # ------------------------------------------------------------------
@@ -683,7 +683,11 @@ tryCatch({
 write_checkpoint("summary", 99, "Writing summary")
 
 summary_list <- list(
-  pipeline        = "PacBio_CCS_16S",
+  pipeline        = "pacbio",
+  marker          = "PACBIO",
+  minBoot         = opt$minBoot,
+  pool            = opt$pool,
+  tax_levels      = if (!is.null(tax)) colnames(tax) else NULL,
   job_name        = opt$job_name,
   region          = opt$region,
   completed_at    = format(Sys.time()),
@@ -710,4 +714,6 @@ cat("Finished:", format(Sys.time()), "\n")
 
 write_checkpoint("done", 100, "PacBio CCS pipeline complete")
 
-sink(type="output"); sink(type="message"); close(con)
+# (A leftover from when this script logged through sink(): with no sink and no
+# connection it raised "object 'con' not found" AFTER the run had finished, so
+# every PacBio job exited 1 and was marked failed with all its results written.)

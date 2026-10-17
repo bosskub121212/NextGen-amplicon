@@ -1273,6 +1273,7 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
           cat(sprintf("  Version-matched species file (trainset v%s) out of %d candidates\n",
                       train_ver, length(sp_candidates)))
         }
+        cat("  Species file :", sp_file, "\n")     # read back by provenance.py
         tryCatch({
           # ── Species assignment in a SEPARATE R process ──────────────────
           # assignTaxonomy() and addSpecies() never need their references at the

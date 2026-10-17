@@ -7,6 +7,7 @@
 #    bash ~/r16s-app/push_github.sh                    # message from version.json
 #    bash ~/r16s-app/push_github.sh --ask              # confirm before committing
 #    bash ~/r16s-app/push_github.sh --dry-run          # show what would go, push nothing
+#    bash ~/r16s-app/push_github.sh --no-test          # skip tests/test_fast.py
 #
 #  It commits and pushes WITHOUT asking. What is about to be published is still
 #  printed first — the file list, the diffstat and the commit message — because
@@ -55,12 +56,14 @@ OLD_TOKEN_FILE="$HOME/.config/amplicon/github_token"
 MSG=""
 ASSUME_YES=1          # push without prompting; --ask restores the confirmation
 DRY_RUN=0
+RUN_TESTS=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -m|--message)      MSG="${2:-}"; shift 2 ;;
     -y|--yes)          ASSUME_YES=1; shift ;;   # kept: it is what scripts pass
     -i|--ask|--confirm) ASSUME_YES=0; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
+    --no-test)         RUN_TESTS=0; shift ;;
     -h|--help)         sed -n '2,17p' "$0"; exit 0 ;;
     -*)           die "Unknown option: $1" ;;
     *)            MSG="$1"; shift ;;
@@ -105,6 +108,21 @@ if [[ -z "$MSG" ]]; then
     info "Message from version.json"
   else
     die "No commit message given and version.json has no version"
+  fi
+fi
+
+# ── Fast checks (tests/test_fast.py, a few seconds) ───────────────────────
+# Rank naming, every pipeline's table layout and the report builder. A push
+# that breaks one of them is stopped here instead of reaching nextapp.
+# --no-test skips it (for a push that only touches docs).
+if [[ "$RUN_TESTS" -eq 1 && -f tests/test_fast.py ]]; then
+  step "Fast checks"
+  PYT="$APP_DIR/venv/bin/python"; [[ -x "$PYT" ]] || PYT="python3"
+  if "$PYT" tests/test_fast.py > /tmp/ngamp_test_fast.log 2>&1; then
+    ok "$(tail -1 /tmp/ngamp_test_fast.log)"
+  else
+    grep -E "FAIL|failed" /tmp/ngamp_test_fast.log | head -20
+    die "Fast checks failed — nothing was pushed (full log: /tmp/ngamp_test_fast.log; --no-test to skip)"
   fi
 fi
 
