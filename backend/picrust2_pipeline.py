@@ -253,197 +253,109 @@ def run_picrust2(
             "message": f"place_seqs.py not found in env {env_path}. Is PICRUSt2 installed?"
         }
 
-    # ── 2. hsp (hidden state prediction) ────────────────────────────
-    _cp("hsp_marker", 30, "Predicting 16S copy numbers (EC + KO)")
+    def _log(msg: str):
+        with open(log_path, "a") as lf:
+            lf.write(msg if msg.endswith("\n") else msg + "\n")
 
-    marker_out  = os.path.join(output_dir, "hsp_marker.tsv")
-    func_ko_out = os.path.join(output_dir, "hsp_ko.tsv")
-    func_ec_out = os.path.join(output_dir, "hsp_ec.tsv")
-    func_cog_out= os.path.join(output_dir, "hsp_cog.tsv")
-
-    for trait, out_f in [("16S", marker_out), ("KO", func_ko_out), ("EC", func_ec_out), ("COG", func_cog_out)]:
+    def _step(cmd: list, timeout: int, label: str):
+        """Run one PICRUSt2 script; log its output; return (ok, stderr tail)."""
         try:
-            p = _run(
-                [
-                    _picrust2_bin(env_path, "hsp.py"),
-                    "-i", place_out,
-                    "-t", trait,
-                    "-o", out_f,
-                    "-p", str(threads),
-                    "--calculate_NSTI",
-                ],
-                capture_output=True, text=True, timeout=1800
-            )
-            with open(log_path, "a") as lf:
-                lf.write(p.stdout + p.stderr)
-            if p.returncode != 0:
-                with open(log_path, "a") as lf:
-                    lf.write(f"WARNING: hsp.py {trait} failed: {p.stderr[-300:]}\n")
+            p = _run(cmd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
-            with open(log_path, "a") as lf:
-                lf.write(f"WARNING: hsp.py {trait} timed out\n")
+            _log(f"WARNING: {label} timed out")
+            return False, f"{label} timed out"
+        _log(p.stdout + p.stderr)
+        if p.returncode != 0:
+            _log(f"WARNING: {label} failed (exit {p.returncode}): {p.stderr[-300:]}")
+            return False, p.stderr[-500:]
+        return True, ""
+
+    def _first(*paths):
+        for x in paths:
+            if os.path.exists(x):
+                return x
+        return None
+
+    # ── 2. hsp (hidden state prediction) ────────────────────────────
+    # PICRUSt2 2.6 CLI: hsp.py -i <trait table> -t <placed tree> -o <out> -p N
+    # (-i takes the trait name, -t the tree; -n adds the NSTI column, which
+    # metagenome_pipeline needs for --max_nsti, so it goes on the marker run).
+    _cp("hsp_marker", 30, "Predicting 16S copy numbers")
+
+    marker_out   = os.path.join(output_dir, "marker_predicted_and_nsti.tsv.gz")
+    func_ko_out  = os.path.join(output_dir, "KO_predicted.tsv.gz")
+    func_ec_out  = os.path.join(output_dir, "EC_predicted.tsv.gz")
+    func_cog_out = os.path.join(output_dir, "COG_predicted.tsv.gz")
+
+    ok, err = _step([_picrust2_bin(env_path, "hsp.py"),
+                     "-i", "16S", "-t", place_out, "-o", marker_out,
+                     "-p", str(threads), "-n"], 1800, "hsp.py 16S")
+    if not ok or not os.path.exists(marker_out):
+        return {"success": False, "message": f"hsp.py 16S failed: {err}"}
+
+    hsp_pct = {"KO": 38, "EC": 45, "COG": 50}
+    func_tabs = {}
+    for trait, out_f in [("EC", func_ec_out), ("KO", func_ko_out), ("COG", func_cog_out)]:
+        _cp(f"hsp_{trait.lower()}", hsp_pct[trait], f"Predicting {trait} copy numbers")
+        ok, _ = _step([_picrust2_bin(env_path, "hsp.py"),
+                       "-i", trait, "-t", place_out, "-o", out_f,
+                       "-p", str(threads)], 3600, f"hsp.py {trait}")
+        if ok and os.path.exists(out_f):
+            func_tabs[trait] = out_f
+    if not func_tabs:
+        return {"success": False, "message": "hsp.py failed for every function table (EC, KO, COG)"}
 
     # ── 3. metagenome_pipeline ──────────────────────────────────────
-    _cp("metagenome", 55, "Predicting metagenome functional abundances")
-
-    mg_out = os.path.join(output_dir, "metagenome")
-    os.makedirs(mg_out, exist_ok=True)
-
-    try:
-        p = _run(
-            [
-                _picrust2_bin(env_path, "metagenome_pipeline.py"),
-                "-s",            asv_tsv,
-                "-f",            func_ko_out,
-                "-m",            marker_out,
-                "--out_dir",     mg_out,
-                "--max_nsti",    "2.0",
-            ],
-            capture_output=True, text=True, timeout=3600
-        )
-        with open(log_path, "a") as lf:
-            lf.write(p.stdout + p.stderr)
-        if p.returncode != 0:
-            return {
-                "success": False,
-                "message": f"metagenome_pipeline failed (exit {p.returncode}): {p.stderr[-500:]}"
-            }
-    except subprocess.TimeoutExpired:
-        return {"success": False, "message": "metagenome_pipeline timed out"}
+    # 2.6 CLI: metagenome_pipeline.py -i <table> -m <marker> -f <func> -o <dir>
+    mg_dirs = {"EC": "EC_metagenome_out", "KO": "KO_metagenome_out", "COG": "COG_metagenome_out"}
+    mg_pct = {"EC": 58, "KO": 64, "COG": 70}
+    mg_done = {}
+    first_err = ""
+    for trait, func in func_tabs.items():
+        _cp(f"metagenome_{trait.lower()}", mg_pct[trait], f"Predicting {trait} metagenome")
+        outd = os.path.join(output_dir, mg_dirs[trait])
+        ok, err = _step([_picrust2_bin(env_path, "metagenome_pipeline.py"),
+                         "-i", asv_tsv, "-m", marker_out, "-f", func,
+                         "-o", outd, "--max_nsti", "2.0"], 3600,
+                        f"metagenome_pipeline {trait}")
+        unstrat = _first(os.path.join(outd, "pred_metagenome_unstrat.tsv.gz"),
+                         os.path.join(outd, "pred_metagenome_unstrat.tsv"))
+        if ok and unstrat:
+            mg_done[trait] = unstrat
+        elif not first_err:
+            first_err = err
+    if not mg_done:
+        return {"success": False, "message": f"metagenome_pipeline failed: {first_err}"}
 
     # ── 4. pathway_pipeline ─────────────────────────────────────────
-    _cp("pathway", 75, "Inferring MetaCyc pathway abundances")
-
-    pw_out = os.path.join(output_dir, "pathways")
-    os.makedirs(pw_out, exist_ok=True)
-
-    ko_metagenome = os.path.join(mg_out, "pred_metagenome_unstrat.tsv.gz")
-    if not os.path.exists(ko_metagenome):
-        ko_metagenome = os.path.join(mg_out, "pred_metagenome_unstrat.tsv")
-
-    if os.path.exists(ko_metagenome):
-        try:
-            p = _run(
-                [
-                    _picrust2_bin(env_path, "pathway_pipeline.py"),
-                    "-i", ko_metagenome,
-                    "-o", pw_out,
-                    "-p", str(threads),
-                ],
-                capture_output=True, text=True, timeout=3600
-            )
-            with open(log_path, "a") as lf:
-                lf.write(p.stdout + p.stderr)
-            if p.returncode != 0:
-                with open(log_path, "a") as lf:
-                    lf.write(f"WARNING: pathway_pipeline failed: {p.stderr[-300:]}\n")
-        except subprocess.TimeoutExpired:
-            with open(log_path, "a") as lf:
-                lf.write("WARNING: pathway_pipeline timed out\n")
+    # MetaCyc pathways are inferred from the EC metagenome, not KO.
+    _cp("pathway", 78, "Inferring MetaCyc pathway abundances")
+    pw_out = os.path.join(output_dir, "pathways_out")
+    pw_abund = None
+    if "EC" in mg_done:
+        ok, _ = _step([_picrust2_bin(env_path, "pathway_pipeline.py"),
+                       "-i", mg_done["EC"], "-o", pw_out, "-p", str(threads)],
+                      3600, "pathway_pipeline")
+        pw_abund = _first(os.path.join(pw_out, "path_abun_unstrat.tsv.gz"),
+                          os.path.join(pw_out, "path_abun_unstrat.tsv"))
     else:
-        with open(log_path, "a") as lf:
-            lf.write("WARNING: KO metagenome output not found, skipping pathway_pipeline\n")
+        _log("WARNING: EC metagenome not available — skipping pathway_pipeline")
 
     # ── 5. add_descriptions ─────────────────────────────────────────
-    _cp("descriptions", 88, "Adding KEGG/MetaCyc descriptions")
+    _cp("descriptions", 88, "Adding KEGG / EC / MetaCyc / COG descriptions")
+    desc_jobs = [(mg_done.get(t), t, os.path.join(output_dir, mg_dirs[t],
+                  "pred_metagenome_unstrat_descrip.tsv.gz")) for t in ("KO", "EC", "COG")]
+    desc_jobs.append((pw_abund, "METACYC",
+                      os.path.join(pw_out, "path_abun_unstrat_descrip.tsv.gz")))
+    for src_f, mapping, out_f in desc_jobs:
+        if src_f:
+            _step([_picrust2_bin(env_path, "add_descriptions.py"),
+                   "-i", src_f, "-m", mapping, "-o", out_f], 600,
+                  f"add_descriptions {mapping}")
 
-    pred_file = os.path.join(mg_out, "pred_metagenome_unstrat.tsv.gz")
-    if not os.path.exists(pred_file):
-        pred_file = os.path.join(mg_out, "pred_metagenome_unstrat.tsv")
-
-    if os.path.exists(pred_file):
-        desc_out = os.path.join(output_dir, "KO_predicted_with_descriptions.tsv")
-        try:
-            p = _run(
-                [
-                    _picrust2_bin(env_path, "add_descriptions.py"),
-                    "-i", pred_file,
-                    "-m", "KO",
-                    "-o", desc_out,
-                ],
-                capture_output=True, text=True, timeout=300
-            )
-            with open(log_path, "a") as lf:
-                lf.write(p.stdout + p.stderr)
-        except Exception as e:
-            with open(log_path, "a") as lf:
-                lf.write(f"add_descriptions skipped: {e}\n")
-
-    pw_abund = os.path.join(pw_out, "path_abun_unstrat.tsv.gz")
-    if not os.path.exists(pw_abund):
-        pw_abund = os.path.join(pw_out, "path_abun_unstrat.tsv")
-    if os.path.exists(pw_abund):
-        pw_desc_out = os.path.join(output_dir, "pathways_with_descriptions.tsv")
-        try:
-            p = _run(
-                [
-                    _picrust2_bin(env_path, "add_descriptions.py"),
-                    "-i", pw_abund,
-                    "-m", "METACYC",
-                    "-o", pw_desc_out,
-                ],
-                capture_output=True, text=True, timeout=300
-            )
-            with open(log_path, "a") as lf:
-                lf.write(p.stdout + p.stderr)
-        except Exception as e:
-            with open(log_path, "a") as lf:
-                lf.write(f"pathway add_descriptions skipped: {e}\n")
-
-    # ── COG metagenome + descriptions ──────────────────────────────
-    _cp("cog", 92, "Predicting COG functional categories")
-
-    if os.path.exists(func_cog_out):
-        cog_mg_out = os.path.join(output_dir, "COG")
-        os.makedirs(cog_mg_out, exist_ok=True)
-        try:
-            p = _run(
-                [
-                    _picrust2_bin(env_path, "metagenome_pipeline.py"),
-                    "-s",        asv_tsv,
-                    "-f",        func_cog_out,
-                    "-m",        marker_out,
-                    "--out_dir", cog_mg_out,
-                    "--max_nsti", "2.0",
-                ],
-                capture_output=True, text=True, timeout=3600
-            )
-            with open(log_path, "a") as lf:
-                lf.write(p.stdout + p.stderr)
-
-            # add COG descriptions
-            cog_pred = os.path.join(cog_mg_out, "pred_metagenome_unstrat.tsv.gz")
-            if not os.path.exists(cog_pred):
-                cog_pred = os.path.join(cog_mg_out, "pred_metagenome_unstrat.tsv")
-            if os.path.exists(cog_pred):
-                cog_desc_out = os.path.join(output_dir, "COG_predicted_with_descriptions.tsv")
-                _run(
-                    [
-                        _picrust2_bin(env_path, "add_descriptions.py"),
-                        "-i", cog_pred,
-                        "-m", "COG",
-                        "-o", cog_desc_out,
-                    ],
-                    capture_output=True, text=True, timeout=300
-                )
-                cat_path = os.path.join(output_dir, "COG_categories.tsv")
-                _run(
-                    [
-                        _picrust2_bin(env_path, "add_descriptions.py"),
-                        "-i", cog_pred,
-                        "-m", "COG_category",
-                        "-o", cat_path,
-                    ],
-                    capture_output=True, text=True, timeout=300
-                )
-                with open(log_path, "a") as lf:
-                    lf.write("COG predictions + descriptions written.\n")
-        except Exception as e:
-            with open(log_path, "a") as lf:
-                lf.write(f"COG metagenome skipped: {e}\n")
-    else:
-        with open(log_path, "a") as lf:
-            lf.write("WARNING: COG hsp output not found — skipping COG metagenome\n")
+    missing = [t for t in ("EC", "KO", "COG") if t not in mg_done]
+    if pw_abund is None:
+        missing.append("pathways")
 
     # ── Done ────────────────────────────────────────────────────────
     _cp("done", 100, "PICRUSt2 complete")
@@ -456,7 +368,9 @@ def run_picrust2(
 
     summary = {
         "success":    True,
-        "message":    "PICRUSt2 functional prediction complete",
+        "message":    "PICRUSt2 functional prediction complete"
+                      + (f" (missing: {', '.join(missing)})" if missing else ""),
+        "missing":    missing,
         "output_dir": output_dir,
         "files":      output_files,
     }
