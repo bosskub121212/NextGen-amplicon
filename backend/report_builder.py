@@ -2138,17 +2138,17 @@ def _picrust_result(pc, F, T, top=25):
                  rows, f"The {len(keep)} most abundant predicted MetaCyc pathways, as a percentage of each "
                  f"sample&rsquo;s total predicted pathway abundance"
                  + (", with the value for each sample." if per else ".")))
-    out.append(F(svg_pathway_heat(pc, 30), "Predicted abundance of the 30 most abundant MetaCyc pathways "
-                 "per sample. Numbers are the percentage of the sample&rsquo;s total predicted pathway "
-                 "abundance; colour is scaled within each pathway from the sample with the lowest value "
-                 "(light) to the highest (dark), so it shows which sample is enriched, not how large the "
-                 "difference is.", "PICRUSt2/pathways_out"))
     out.append('<div class="note"><p style="margin:0"><b>These are predictions, not measurements.</b> '
                "PICRUSt2 infers gene content from the closest sequenced genomes of each ASV; it cannot "
                "see strain-level gene gain or loss, plasmids or genes absent from the reference genomes. "
                "Highly conserved housekeeping pathways dominate every profile, so differences between "
                "samples are more informative than the ranking itself. Shotgun metagenomics is needed to "
                "confirm a functional difference.</p></div>")
+    out.append(F(svg_pathway_heat(pc, 30), "Predicted abundance of the 30 most abundant MetaCyc pathways "
+                 "per sample. Numbers are the percentage of the sample&rsquo;s total predicted pathway "
+                 "abundance; colour is scaled within each pathway from the sample with the lowest value "
+                 "(light) to the highest (dark), so it shows which sample is enriched, not how large the "
+                 "difference is.", "PICRUSt2/pathways_out"))
     return out
 
 
