@@ -912,6 +912,25 @@ def _short(s, n):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _col_heads(S, n=12):
+    """Sample names short enough for a column header and still distinct: a prefix every
+    name shares (up to a separator, e.g. "Bacteria_") is dropped, and if cutting to n
+    characters still makes two headers equal, the end of the name is kept instead."""
+    names = [str(s) for s in S]
+    if len(names) > 1:
+        pre = names[0]
+        for x in names[1:]:
+            while not x.startswith(pre):
+                pre = pre[:-1]
+        cut = max(pre.rfind(c) for c in "_-. ") + 1
+        if cut > 0 and all(len(x) > cut for x in names):
+            names = [x[cut:] for x in names]
+    out = [_short(x, n) for x in names]
+    if len(set(out)) < len(out):
+        out = [x if len(x) <= n else "…" + x[-(n - 1):] for x in names]
+    return out
+
+
 # ── numerical helpers ─────────────────────────────────────────────────────────
 def _alpha_of(counts) -> dict:
     """Observed, Chao1 (bias-corrected), ACE, Shannon (ln) and Simpson (1 - D),
@@ -1998,7 +2017,12 @@ def svg_pathway_heat(pc, n=30) -> str:
     keep = sorted(pc["pct"], key=lambda k: -sum(pc["pct"][k][1].values()))[:n]
     if not keep:
         return ""
-    vmax = max((pc["pct"][k][1][s] for k in keep for s in S), default=1) or 1
+    # Every pathway sits within a narrow band (≈0.5–2%), so one colour scale for the whole
+    # map is near-uniform; colour is scaled within each row (lowest → highest sample).
+    rng_ = {}
+    for k in keep:
+        vs = [pc["pct"][k][1][s] for s in S]
+        rng_[k] = (min(vs), max(vs))
     W = 560
     lab_w = 262
     x0, y0 = 46, 20                 # left margin: rotated sample names run left of their column
@@ -2008,12 +2032,14 @@ def svg_pathway_heat(pc, n=30) -> str:
     H = int(y0 + ch * len(keep) + 22 + min(longest, 22) * 4.0 + 38)
     p = _svg_open(W, H)
     p.append(f'<text x="0" y="11" font-size="9.4" fill="{MUT}">Top {len(keep)} MetaCyc pathways '
-             f'— % of predicted pathway abundance</text>')
+             f'— % of predicted pathway abundance (colour scaled per row)</text>')
     for j, s in enumerate(S):
         for i, k in enumerate(keep):
             v = pc["pct"][k][1][s]
             x, y = x0 + j * cw, y0 + i * ch
-            c = _heat_col(v, vmax)
+            lo_, hi_ = rng_[k]
+            f_ = (v - lo_) / (hi_ - lo_) if hi_ > lo_ else 0.5
+            c = _heat_col(0.01 * 10 ** (3 * f_) - 0.01 + 0.001, 9.99)   # f 0→1 maps to light→dark
             p.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{cw:.1f}" height="{ch:.1f}" fill="{c}" '
                      f'stroke="#fff" stroke-width=".5"/>')
             if cw >= 24:
@@ -2030,13 +2056,14 @@ def svg_pathway_heat(pc, n=30) -> str:
     yb = y0 + ch * len(keep)
     _xlabels(p, S, [x0 + (j + 0.5) * cw for j in range(len(S))], yb + 9)
     ky = H - 14
-    p.append(f'<text x="0" y="{ky-4}" font-size="7.6" fill="{MUT}">% (log scale)</text>')
-    stops = sorted({round(sv, 2) for sv in (0, 0.01, 0.1, 1, vmax) if sv <= vmax})
-    for k, sv in enumerate(stops):
-        p.append(f'<rect x="{k*34}" y="{ky}" width="34" height="7" fill="{_heat_col(sv, vmax)}" '
+    p.append(f'<text x="0" y="{ky-4}" font-size="7.6" fill="{MUT}">Within each pathway</text>')
+    for k, (f_, lab) in enumerate(((0, "lowest"), (0.25, ""), (0.5, ""), (0.75, ""), (1, "highest"))):
+        c = _heat_col(0.01 * 10 ** (3 * f_) - 0.01 + 0.001, 9.99)
+        p.append(f'<rect x="{k*34}" y="{ky}" width="34" height="7" fill="{c}" '
                  f'stroke="{RULE}" stroke-width=".4"/>')
-        p.append(f'<text x="{k*34 + 17}" y="{ky+14}" font-size="7.2" fill="{FAINT}" '
-                 f'text-anchor="middle" {MONO}>{sv:g}</text>')
+        if lab:
+            p.append(f'<text x="{k*34 + 17}" y="{ky+14}" font-size="7.2" fill="{FAINT}" '
+                     f'text-anchor="middle">{lab}</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -2107,13 +2134,15 @@ def _picrust_result(pc, F, T, top=25):
         rows.append([f'<div style="text-align:left">{esc(dsc or k)}</div>',
                      f'<span class="mono" style="font-size:6.8pt">{esc(k)}</span>', f"{mean:.2f}"]
                     + ([f"{v[s]:.2f}" for s in S] if per else []))
-    out.append(T(["Pathway", "MetaCyc ID", "Mean %"] + ([f"{esc(_short(s, 12))} %" for s in S] if per else []),
+    out.append(T(["Pathway", "MetaCyc ID", "Mean %"] + ([f"{esc(h)} %" for h in _col_heads(S)] if per else []),
                  rows, f"The {len(keep)} most abundant predicted MetaCyc pathways, as a percentage of each "
                  f"sample&rsquo;s total predicted pathway abundance"
                  + (", with the value for each sample." if per else ".")))
     out.append(F(svg_pathway_heat(pc, 30), "Predicted abundance of the 30 most abundant MetaCyc pathways "
-                 "per sample (percentage of the sample&rsquo;s total predicted pathway abundance, log colour "
-                 "scale).", "PICRUSt2/pathways_out"))
+                 "per sample. Numbers are the percentage of the sample&rsquo;s total predicted pathway "
+                 "abundance; colour is scaled within each pathway from the sample with the lowest value "
+                 "(light) to the highest (dark), so it shows which sample is enriched, not how large the "
+                 "difference is.", "PICRUSt2/pathways_out"))
     out.append('<div class="note"><p style="margin:0"><b>These are predictions, not measurements.</b> '
                "PICRUSt2 infers gene content from the closest sequenced genomes of each ASV; it cannot "
                "see strain-level gene gain or loss, plasmids or genes absent from the reference genomes. "
@@ -2461,7 +2490,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                     + [f'<div style="text-align:left">{nm}</div>',
                        f'<div style="text-align:left;font-size:7pt" class="dim">{_lin(q)}</div>'])
     out.append(T((["Taxon"] if run.emu else ["ASV", "bp"]) + ["Reads", "All"]
-                 + ([f"{esc(_short(s_, 12))} %" for s_ in S] if per else [])
+                 + ([f"{esc(h)} %" for h in _col_heads(S)] if per else [])
                  + (["Species / genus"] if run.emu else ["Genus"]) + ["Phylum &rsaquo; Class &rsaquo; Order &rsaquo; Family"],
                  rows,
                  f"The {top_asv} most abundant of {run.n_asvs} {unit}: reads and share over the whole run"
@@ -2482,7 +2511,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                         + ([f'{100*spc[t][s_]/an.comm_tot[s_]:.2f}' if an.comm_tot[s_] else "0"
                             for s_ in S] if per else []))
         cov = 100 * sum(sum(spc[t].values()) for t in named) / tot_all
-        out.append(T(["Species", "Reads", "All"] + ([f"{esc(_short(s_, 12))} %" for s_ in S] if per else []),
+        out.append(T(["Species", "Reads", "All"] + ([f"{esc(h)} %" for h in _col_heads(S)] if per else []),
                      rows,
                      f"Species-level assignments: {len(named)} reference taxa below genus carrying "
                      f"{cov:.1f}% of the community reads"

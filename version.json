@@ -1,19 +1,24 @@
 {
-  "version": "2.16.0",
+  "version": "2.16.1",
   "release_date": "2026-10-17",
-  "changelog": "Reports (PDF and Word) gain a PICRUSt2 section whenever the job has PICRUSt2 results: Method text with the commands, a weighted-NSTI table with a reliability verdict per sample, the 25 most abundant MetaCyc pathways (percent of predicted pathway abundance per sample), a heatmap of the top 30, a caution note that these are predictions, and the PICRUSt2 references. picrust2_pipeline records the PICRUSt2 version in picrust2_summary.json. A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
+  "changelog": "Report: PICRUSt2 heatmap colour is scaled within each pathway (every pathway sits at about 0.5–2%, so one shared scale was uniformly dark); sample column headers drop a prefix all samples share and stay distinct (\"Bacteria_Pre-R1\" and \"Bacteria_Pre-R2\" both showed as \"BACTERIA_PR…\") — also in the top-ASV and species tables. report_builder.py only: /report reloads it, no backend restart.",
   "previous": {
-    "version": "2.15.3",
+    "version": "2.16.0",
     "release_date": "2026-10-17",
-    "changelog": "PICRUSt2: function tables the installed version does not ship (COG in 2.6) are skipped with a note instead of a hsp.py KeyError, and are not reported as missing. Progress order EC → KO fixed. A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
+    "changelog": "Reports (PDF and Word) gain a PICRUSt2 section whenever the job has PICRUSt2 results: Method text with the commands, a weighted-NSTI table with a reliability verdict per sample, the 25 most abundant MetaCyc pathways (percent of predicted pathway abundance per sample), a heatmap of the top 30, a caution note that these are predictions, and the PICRUSt2 references. picrust2_pipeline records the PICRUSt2 version in picrust2_summary.json. A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
     "previous": {
-      "version": "2.15.2",
-      "release_date": "2026-10-16",
-      "changelog": "PICRUSt2 runs to the end with the 2.6 command line: hsp.py had -i (trait) and -t (tree) swapped, metagenome_pipeline lacked -i/-o, and pathways were inferred from KO instead of EC. Outputs now follow PICRUSt2's own layout (EC_/KO_/COG_metagenome_out, pathways_out, *_descrip.tsv.gz). A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
+      "version": "2.15.3",
+      "release_date": "2026-10-17",
+      "changelog": "PICRUSt2: function tables the installed version does not ship (COG in 2.6) are skipped with a note instead of a hsp.py KeyError, and are not reported as missing. Progress order EC → KO fixed. A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
       "previous": {
-        "version": "2.15.1",
+        "version": "2.15.2",
         "release_date": "2026-10-16",
-        "changelog": "PICRUSt2: its helper programs (hmmalign, epa-ng, gappa) are found — the picrust2 env's bin/ is put on PATH for each PICRUSt2 step; place_seqs failed with \"No such file or directory: 'hmmalign'\". A .py change: uvicorn --reload restarts the backend, so deploy when no job is running."
+        "changelog": "PICRUSt2 runs to the end with the 2.6 command line: hsp.py had -i (trait) and -t (tree) swapped, metagenome_pipeline lacked -i/-o, and pathways were inferred from KO instead of EC. Outputs now follow PICRUSt2's own layout (EC_/KO_/COG_metagenome_out, pathways_out, *_descrip.tsv.gz). A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
+        "previous": {
+          "version": "2.15.1",
+          "release_date": "2026-10-16",
+          "changelog": "PICRUSt2: its helper programs (hmmalign, epa-ng, gappa) are found — the picrust2 env's bin/ is put on PATH for each PICRUSt2 step; place_seqs failed with \"No such file or directory: 'hmmalign'\". A .py change: uvicorn --reload restarts the backend, so deploy when no job is running."
+        }
       }
     }
   }
