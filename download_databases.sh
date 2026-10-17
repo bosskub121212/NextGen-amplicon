@@ -6,7 +6,7 @@
 #    1. SILVA 144          16S / 18S  — DADA2 files published by SILVA (Aug 2026)
 #    2. UNITE 2025-02-19   ITS fungi  — general FASTA release v10.0
 #    3. PR2 5.1.1          18S eukaryotes (DADA2 format)
-#       18S-NemaBase       nematodes (optional, PR2 is the fallback)
+#       18S-NemaBase       nematodes (GitHub WormsEtAl, rewritten as a DADA2 trainset)
 #    4. MIDORI2 GB273      COI and 12S (mitochondrial srRNA), DADA2 format
 #    5. Tax4Fun2           16S functional prediction
 #  On request:
@@ -191,21 +191,71 @@ if want pr2; then
   PR2URL="https://github.com/pr2database/pr2database/releases/download/v5.1.1/pr2_version_5.1.1_SSU_dada2.fasta.gz"
   fetch "$N/pr2_version_5.1.1_SSU_dada2.fasta.gz" - "$PR2URL" &&
     register PR2_18S "$N/pr2_version_5.1.1_SSU_dada2.fasta.gz" "PR2 5.1.1" "5.1.1 (2025-10-27)" "$PR2URL" -
-  if [[ ! -s "$N/18S-NemaBase_train.fasta.gz" ]]; then
-    fetch "$N/18S-NemaBase_train.fasta.gz" - \
-          "https://zenodo.org/record/7660142/files/18S-NemaBase_train.fasta.gz" \
-      && register NemaBase_18S "$N/18S-NemaBase_train.fasta.gz" "18S-NemaBase" "Zenodo 7660142" \
-                  "https://zenodo.org/record/7660142" - \
-      || warn "NemaBase not available — PR2 is used for 18S nematodes"
+  # 18S-NemaBase (Gattoni et al. 2023) is published on GitHub as a plain FASTA
+  # with a 16-level WoRMS lineage after the accession; the old Zenodo link in
+  # this script never existed. It is rewritten here into a DADA2 trainset with
+  # the seven ranks the pipelines and report use (Kingdom..Species).
+  NB="$N/18S_NemaBase_dada2.fasta.gz"
+  if [[ ! -s "$NB" ]]; then
+    NBURL="https://raw.githubusercontent.com/WormsEtAl/18SNemaBase/main/18S_NemaBase_fix.fasta.zip"
+    fetch "$N/18S_NemaBase_fix.fasta.zip" - "$NBURL" && "$PY" - "$N/18S_NemaBase_fix.fasta.zip" "$NB" <<'PYEOF'
+import gzip, io, sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+z = zipfile.ZipFile(src)
+name = next(n for n in z.namelist() if n.endswith((".fasta", ".fa")) and not n.startswith("__MACOSX"))
+# accession_Eukaryota;Kingdom;Phylum;subphylum;superclass;Class;subclass;superorder;Order;
+#   suborder;infraorder;superfamily;Family;subfamily;Genus;Genus_species
+pick = [1, 2, 5, 8, 12, 14, 15]
+n = 0
+with z.open(name) as fh, gzip.open(dst, "wt") as out:
+    keep = False
+    for ln in io.TextIOWrapper(fh, encoding="utf-8", errors="replace"):
+        if ln.startswith(">"):
+            lin = ln[1:].strip().split("_", 1)[-1].split(";")
+            if len(lin) < 16:
+                keep = False
+                continue
+            ranks = ["" if lin[i].startswith("NA_") or lin[i] == "NA" else lin[i] for i in pick]
+            ranks[-1] = ranks[-1].replace("_", " ")
+            out.write(">" + ";".join(ranks) + ";\n")
+            keep, n = True, n + 1
+        elif keep:
+            out.write(ln)
+print(f"  18S-NemaBase: {n} nematode sequences -> {dst}")
+PYEOF
   fi
+  if [[ -s "$NB" ]]; then
+    register NemaBase_18S "$NB" "18S-NemaBase (Gattoni et al. 2023)" "GitHub WormsEtAl/18SNemaBase" \
+             "https://github.com/WormsEtAl/18SNemaBase" -
+  else
+    warn "18S-NemaBase not available — PR2 is used for 18S nematodes"
+  fi
+  # install.sh used to save PR2 5.0 under the name NemaBase_18S.fa.gz and register
+  # it as NemaBase. A NemaBase_18S entry whose headers have PR2's nine levels is
+  # pointed at the real NemaBase, or at the current PR2, instead.
   "$PY" - "$DB_DIR" <<'PYEOF'
-import json, sys
+import gzip, json, sys
 from pathlib import Path
 p = Path(sys.argv[1]) / "db_paths.json"
 d = json.loads(p.read_text()) if p.exists() else {}
-if not (d.get("NemaBase_18S") and Path(d["NemaBase_18S"]).exists()) and d.get("PR2_18S"):
-    d["NemaBase_18S"] = d["PR2_18S"]
-    p.write_text(json.dumps(d, indent=2))
+cur = d.get("NemaBase_18S", "")
+def depth(f):
+    try:
+        op = gzip.open if f.endswith(".gz") else open
+        with op(f, "rt") as fh:
+            for ln in fh:
+                if ln.startswith(">"):
+                    return len([x for x in ln[1:].strip().split(";") if x])
+    except Exception:
+        return 0
+    return 0
+real = Path(sys.argv[1]) / "NemaBase" / "18S_NemaBase_dada2.fasta.gz"
+if not cur or not Path(cur).exists() or depth(cur) >= 9:
+    new = str(real) if real.exists() else d.get("PR2_18S", "")
+    if new and new != cur:
+        d["NemaBase_18S"] = new
+        p.write_text(json.dumps(d, indent=2))
+        print(f"  NemaBase_18S -> {Path(new).name}" + (f" (was {Path(cur).name}, a PR2 copy)" if cur else ""))
 PYEOF
 fi
 
@@ -237,15 +287,17 @@ fi
 
 # ── 5. Tax4Fun2 ─────────────────────────────────────────────────────────────
 if want tax4fun; then
-  hdr "[5/5] Tax4Fun2 Ref99NR — 16S functional prediction (~1 GB)"
+  hdr "[5/5] Tax4Fun2 reference data v2 — 16S functional prediction (~2 GB)"
   T="$DB_DIR/Tax4Fun2"
   if [[ -d "$T/Tax4Fun2_ReferenceData_v2" ]]; then
     ok "have Tax4Fun2 reference data"
   else
-    fetch "$T/Tax4Fun2_ReferenceData_v2.zip" - \
-          "https://zenodo.org/record/5794357/files/Tax4Fun2_ReferenceData_v2.zip" &&
-      unzip -q "$T/Tax4Fun2_ReferenceData_v2.zip" -d "$T" && rm -f "$T/Tax4Fun2_ReferenceData_v2.zip" ||
-      warn "Tax4Fun2 failed — alternative in R: Tax4Fun2::downloadTax4Fun2Ref(path='$T')"
+    # Tax4Fun2's own downloader points at CloudStor, which closed in 2023; the
+    # authors' Zenodo deposit (10035668) carries the same reference data.
+    T2URL="https://zenodo.org/api/records/10035668/files/Tax4Fun2_ReferenceData_v2.tar.gz/content"
+    fetch "$T/Tax4Fun2_ReferenceData_v2.tar.gz" 5c2edff2f597e5f061f79a5782a27567 "$T2URL" &&
+      tar -xzf "$T/Tax4Fun2_ReferenceData_v2.tar.gz" -C "$T" && rm -f "$T/Tax4Fun2_ReferenceData_v2.tar.gz" ||
+      warn "Tax4Fun2 reference data failed — manual: https://doi.org/10.5281/zenodo.10035668"
   fi
   [[ -d "$T/Tax4Fun2_ReferenceData_v2" ]] && "$PY" - "$DB_DIR" "$T/Tax4Fun2_ReferenceData_v2" <<'PYEOF'
 import json, sys

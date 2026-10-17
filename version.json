@@ -1,31 +1,36 @@
 {
-  "version": "2.17.0",
+  "version": "2.17.1",
   "release_date": "2026-10-17",
-  "changelog": "Databases, provenance, mock tests, VSEARCH paired-end and full reports for ITS / COX1 / PacBio. (1) download_databases.sh fetches current releases with publisher checksums: SILVA 144 (default; 138.2 with --silva138), UNITE 2025-02-19, PR2 5.1.1, MIDORI2 GB273 COI and 12S, GTDB R232 16S trainset with --gtdb; install.sh uses it (it fetched SILVA 138.1 while labels said 138.2). (2) provenance.json in every result: R/DADA2/cutadapt/VSEARCH/Emu versions and reference MD5; the report prints a Software and reference table. (3) tests/: test_fast.py runs before every push; run_mock_tests.py simulates mock communities (ZymoBIOMICS 16S, fungi ITS, insect COI) and runs DADA2, VSEARCH, PacBio, ITS and COX1 end to end. (4) VSEARCH merges Illumina pairs (cutadapt + --fastq_mergepairs + maxEE 1); SILVA 144 / PR2 / MIDORI2 ranks were mislabelled in VSEARCH. (5) ITS, COX1 and PacBio write the DADA2 table layout, get viz_pipeline statistics, and get their own Method, configuration, notes and references in the report. Bugs fixed: COX1 ranks were shifted one level (MIDORI2 starts at phylum) - old COX1 reports are corrected when rebuilt; PacBio asvs.fasta did not match the table ids; every PacBio run exited with an error after finishing (close(con)). main.py changed: uvicorn --reload restarts the backend, so deploy when no job is running.",
+  "changelog": "download_databases.sh: 18S-NemaBase comes from its GitHub release (WormsEtAl/18SNemaBase) and is rewritten as a 7-rank DADA2 trainset; a NemaBase_18S entry that was really a PR2 copy (install.sh saved PR2 5.0 under that name) is repointed. Tax4Fun2 reference data comes from Zenodo 10035668 (Tax4Fun2's own CloudStor link closed in 2023), MD5-checked. Both old links returned 403. Script only: no backend restart.",
   "previous": {
-    "version": "2.16.2",
+    "version": "2.17.0",
     "release_date": "2026-10-17",
-    "changelog": "Report: the PICRUSt2 caution note sits before the pathway heatmap, so it no longer lands alone on a page after it. report_builder.py only.",
+    "changelog": "Databases, provenance, mock tests, VSEARCH paired-end and full reports for ITS / COX1 / PacBio. (1) download_databases.sh fetches current releases with publisher checksums: SILVA 144 (default; 138.2 with --silva138), UNITE 2025-02-19, PR2 5.1.1, MIDORI2 GB273 COI and 12S, GTDB R232 16S trainset with --gtdb; install.sh uses it (it fetched SILVA 138.1 while labels said 138.2). (2) provenance.json in every result: R/DADA2/cutadapt/VSEARCH/Emu versions and reference MD5; the report prints a Software and reference table. (3) tests/: test_fast.py runs before every push; run_mock_tests.py simulates mock communities (ZymoBIOMICS 16S, fungi ITS, insect COI) and runs DADA2, VSEARCH, PacBio, ITS and COX1 end to end. (4) VSEARCH merges Illumina pairs (cutadapt + --fastq_mergepairs + maxEE 1); SILVA 144 / PR2 / MIDORI2 ranks were mislabelled in VSEARCH. (5) ITS, COX1 and PacBio write the DADA2 table layout, get viz_pipeline statistics, and get their own Method, configuration, notes and references in the report. Bugs fixed: COX1 ranks were shifted one level (MIDORI2 starts at phylum) - old COX1 reports are corrected when rebuilt; PacBio asvs.fasta did not match the table ids; every PacBio run exited with an error after finishing (close(con)). main.py changed: uvicorn --reload restarts the backend, so deploy when no job is running.",
     "previous": {
-      "version": "2.16.1",
+      "version": "2.16.2",
       "release_date": "2026-10-17",
-      "changelog": "Report: PICRUSt2 heatmap colour is scaled within each pathway (every pathway sits at about 0.5–2%, so one shared scale was uniformly dark); sample column headers drop a prefix all samples share and stay distinct (\"Bacteria_Pre-R1\" and \"Bacteria_Pre-R2\" both showed as \"BACTERIA_PR…\") — also in the top-ASV and species tables. report_builder.py only: /report reloads it, no backend restart.",
+      "changelog": "Report: the PICRUSt2 caution note sits before the pathway heatmap, so it no longer lands alone on a page after it. report_builder.py only.",
       "previous": {
-        "version": "2.16.0",
+        "version": "2.16.1",
         "release_date": "2026-10-17",
-        "changelog": "Reports (PDF and Word) gain a PICRUSt2 section whenever the job has PICRUSt2 results: Method text with the commands, a weighted-NSTI table with a reliability verdict per sample, the 25 most abundant MetaCyc pathways (percent of predicted pathway abundance per sample), a heatmap of the top 30, a caution note that these are predictions, and the PICRUSt2 references. picrust2_pipeline records the PICRUSt2 version in picrust2_summary.json. A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
+        "changelog": "Report: PICRUSt2 heatmap colour is scaled within each pathway (every pathway sits at about 0.5–2%, so one shared scale was uniformly dark); sample column headers drop a prefix all samples share and stay distinct (\"Bacteria_Pre-R1\" and \"Bacteria_Pre-R2\" both showed as \"BACTERIA_PR…\") — also in the top-ASV and species tables. report_builder.py only: /report reloads it, no backend restart.",
         "previous": {
-          "version": "2.15.3",
+          "version": "2.16.0",
           "release_date": "2026-10-17",
-          "changelog": "PICRUSt2: function tables the installed version does not ship (COG in 2.6) are skipped with a note instead of a hsp.py KeyError, and are not reported as missing. Progress order EC → KO fixed. A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
+          "changelog": "Reports (PDF and Word) gain a PICRUSt2 section whenever the job has PICRUSt2 results: Method text with the commands, a weighted-NSTI table with a reliability verdict per sample, the 25 most abundant MetaCyc pathways (percent of predicted pathway abundance per sample), a heatmap of the top 30, a caution note that these are predictions, and the PICRUSt2 references. picrust2_pipeline records the PICRUSt2 version in picrust2_summary.json. A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
           "previous": {
-            "version": "2.15.2",
-            "release_date": "2026-10-16",
-            "changelog": "PICRUSt2 runs to the end with the 2.6 command line: hsp.py had -i (trait) and -t (tree) swapped, metagenome_pipeline lacked -i/-o, and pathways were inferred from KO instead of EC. Outputs now follow PICRUSt2's own layout (EC_/KO_/COG_metagenome_out, pathways_out, *_descrip.tsv.gz). A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
+            "version": "2.15.3",
+            "release_date": "2026-10-17",
+            "changelog": "PICRUSt2: function tables the installed version does not ship (COG in 2.6) are skipped with a note instead of a hsp.py KeyError, and are not reported as missing. Progress order EC → KO fixed. A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
             "previous": {
-              "version": "2.15.1",
+              "version": "2.15.2",
               "release_date": "2026-10-16",
-              "changelog": "PICRUSt2: its helper programs (hmmalign, epa-ng, gappa) are found — the picrust2 env's bin/ is put on PATH for each PICRUSt2 step; place_seqs failed with \"No such file or directory: 'hmmalign'\". A .py change: uvicorn --reload restarts the backend, so deploy when no job is running."
+              "changelog": "PICRUSt2 runs to the end with the 2.6 command line: hsp.py had -i (trait) and -t (tree) swapped, metagenome_pipeline lacked -i/-o, and pathways were inferred from KO instead of EC. Outputs now follow PICRUSt2's own layout (EC_/KO_/COG_metagenome_out, pathways_out, *_descrip.tsv.gz). A .py change: uvicorn --reload restarts the backend, so deploy when no job is running.",
+              "previous": {
+                "version": "2.15.1",
+                "release_date": "2026-10-16",
+                "changelog": "PICRUSt2: its helper programs (hmmalign, epa-ng, gappa) are found — the picrust2 env's bin/ is put on PATH for each PICRUSt2 step; place_seqs failed with \"No such file or directory: 'hmmalign'\". A .py change: uvicorn --reload restarts the backend, so deploy when no job is running."
+              }
             }
           }
         }
