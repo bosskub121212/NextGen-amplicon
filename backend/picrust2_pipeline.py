@@ -293,9 +293,27 @@ def run_picrust2(
     if not ok or not os.path.exists(marker_out):
         return {"success": False, "message": f"hsp.py 16S failed: {err}"}
 
-    hsp_pct = {"KO": 38, "EC": 45, "COG": 50}
+    # Which function tables this PICRUSt2 install ships. 2.6 has no COG table
+    # (hsp.py accepted "-i COG" and then died with KeyError: 'COG'), so ask the
+    # env before running; if the query itself fails, try all three.
+    avail = None
+    try:
+        q = _run([str(Path(env_path) / "bin" / "python"), "-c",
+                  "from picrust2.default import default_tables_bac as d; print(' '.join(d))"],
+                 capture_output=True, text=True, timeout=120)
+        if q.returncode == 0 and q.stdout.strip():
+            avail = set(q.stdout.split())
+    except Exception:
+        pass
+
+    hsp_pct = {"EC": 38, "KO": 45, "COG": 50}
     func_tabs = {}
+    unavailable = []
     for trait, out_f in [("EC", func_ec_out), ("KO", func_ko_out), ("COG", func_cog_out)]:
+        if avail is not None and trait not in avail:
+            unavailable.append(trait)
+            _log(f"NOTE: this PICRUSt2 version has no {trait} reference table — {trait} skipped")
+            continue
         _cp(f"hsp_{trait.lower()}", hsp_pct[trait], f"Predicting {trait} copy numbers")
         ok, _ = _step([_picrust2_bin(env_path, "hsp.py"),
                        "-i", trait, "-t", place_out, "-o", out_f,
@@ -353,7 +371,7 @@ def run_picrust2(
                    "-i", src_f, "-m", mapping, "-o", out_f], 600,
                   f"add_descriptions {mapping}")
 
-    missing = [t for t in ("EC", "KO", "COG") if t not in mg_done]
+    missing = [t for t in ("EC", "KO", "COG") if t not in mg_done and t not in unavailable]
     if pw_abund is None:
         missing.append("pathways")
 
@@ -371,6 +389,7 @@ def run_picrust2(
         "message":    "PICRUSt2 functional prediction complete"
                       + (f" (missing: {', '.join(missing)})" if missing else ""),
         "missing":    missing,
+        "not_in_reference": unavailable,
         "output_dir": output_dir,
         "files":      output_files,
     }
