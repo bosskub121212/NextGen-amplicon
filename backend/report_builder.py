@@ -1912,6 +1912,217 @@ def _methods(run, an):
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  PICRUSt2 (predicted function) — read from <run>/PICRUSt2 when it exists
+# ══════════════════════════════════════════════════════════════════════════════
+REF_PICRUST = [
+    ("Douglas, G. M., et al. (2020).", "PICRUSt2 for prediction of metagenome functions.",
+     "Nature Biotechnology, 38, 685–688."),
+    ("Barbera, P., et al. (2019).", "EPA-ng: massively parallel evolutionary placement of genetic sequences.",
+     "Systematic Biology, 68(2), 365–369."),
+    ("Czech, L., Barbera, P., & Stamatakis, A. (2020).", "Genesis and Gappa: processing, analyzing and "
+     "visualizing phylogenetic (placement) data.", "Bioinformatics, 36(10), 3263–3265."),
+    ("Louca, S., & Doebeli, M. (2018).", "Efficient comparative phylogenetics on large trees.",
+     "Bioinformatics, 34(6), 1053–1055."),
+    ("Ye, Y., & Doak, T. G. (2009).", "A parsimony approach to biological pathway reconstruction/inference "
+     "for genomes and metagenomes.", "PLoS Computational Biology, 5(8), e1000465."),
+    ("Caspi, R., et al. (2020).", "The MetaCyc database of metabolic pathways and enzymes — a 2019 update.",
+     "Nucleic Acids Research, 48, D445–D453."),
+    ("Kanehisa, M., & Goto, S. (2000).", "KEGG: Kyoto Encyclopedia of Genes and Genomes.",
+     "Nucleic Acids Research, 28(1), 27–30."),
+]
+
+
+def _read_tsv_any(p: Path):
+    """Rows of a PICRUSt2 table (.tsv or .tsv.gz) as lists of strings; [] when absent."""
+    import gzip
+    for f in (p, p.with_suffix("") if p.suffix == ".gz" else Path(str(p) + ".gz")):
+        if f.exists():
+            op = gzip.open if f.suffix == ".gz" else open
+            with op(f, "rt", encoding="utf-8", errors="replace") as fh:
+                return [ln.rstrip("\n").split("\t") for ln in fh if ln.strip()]
+    return []
+
+
+def load_picrust(run, samples):
+    """PICRUSt2 results of a run, or None. Pathway abundances are turned into % of each
+    sample's total predicted pathway abundance."""
+    d = run.path / "PICRUSt2"
+    pw = _read_tsv_any(d / "pathways_out" / "path_abun_unstrat_descrip.tsv.gz")
+    has_desc = bool(pw)
+    if not pw:
+        pw = _read_tsv_any(d / "pathways_out" / "path_abun_unstrat.tsv.gz")
+    if len(pw) < 2:
+        return None
+    head = pw[0]
+    c0 = 2 if has_desc else 1
+    cols = head[c0:]
+    order = [s for s in samples if s in cols] + [s for s in cols if s not in samples]
+    idx = {s: cols.index(s) + c0 for s in order}
+    raw = {}
+    for r in pw[1:]:
+        try:
+            raw[r[0]] = ((r[1] if has_desc else ""), {s: float(r[idx[s]] or 0) for s in order})
+        except (ValueError, IndexError):
+            continue
+    tot = {s: sum(v[s] for _d, v in raw.values()) or 1.0 for s in order}
+    pct = {k: (dsc, {s: 100 * v[s] / tot[s] for s in order}) for k, (dsc, v) in raw.items()}
+    nsti = {}
+    for sub in ("KO_metagenome_out", "EC_metagenome_out"):
+        rows = _read_tsv_any(d / sub / "weighted_nsti.tsv.gz")
+        for r in rows[1:]:
+            try:
+                nsti[r[0]] = float(r[1])
+            except (ValueError, IndexError):
+                pass
+        if nsti:
+            break
+
+    def n_feat(sub):
+        rows = _read_tsv_any(d / sub / "pred_metagenome_unstrat.tsv.gz")
+        return max(len(rows) - 1, 0) if rows else None
+
+    summ = {}
+    try:
+        summ = json.loads((d / "picrust2_summary.json").read_text())
+    except Exception:
+        pass
+    return {"samples": order, "pct": pct, "n_path": len(raw), "nsti": nsti,
+            "n_ko": n_feat("KO_metagenome_out"), "n_ec": n_feat("EC_metagenome_out"),
+            "version": summ.get("picrust2_version") or "", "summary": summ}
+
+
+def svg_pathway_heat(pc, n=30) -> str:
+    """Top-n MetaCyc pathways (by mean %) × samples, ordered by mean abundance."""
+    S = pc["samples"]
+    keep = sorted(pc["pct"], key=lambda k: -sum(pc["pct"][k][1].values()))[:n]
+    if not keep:
+        return ""
+    vmax = max((pc["pct"][k][1][s] for k in keep for s in S), default=1) or 1
+    W = 560
+    lab_w = 262
+    x0, y0 = 46, 20                 # left margin: rotated sample names run left of their column
+    cw = min(60, (W - lab_w - x0 - 6) / max(len(S), 1))
+    ch = 14.0
+    longest = max((len(str(s)) for s in S), default=4)
+    H = int(y0 + ch * len(keep) + 22 + min(longest, 22) * 4.0 + 38)
+    p = _svg_open(W, H)
+    p.append(f'<text x="0" y="11" font-size="9.4" fill="{MUT}">Top {len(keep)} MetaCyc pathways '
+             f'— % of predicted pathway abundance</text>')
+    for j, s in enumerate(S):
+        for i, k in enumerate(keep):
+            v = pc["pct"][k][1][s]
+            x, y = x0 + j * cw, y0 + i * ch
+            c = _heat_col(v, vmax)
+            p.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{cw:.1f}" height="{ch:.1f}" fill="{c}" '
+                     f'stroke="#fff" stroke-width=".5"/>')
+            if cw >= 24:
+                rgb = [int(c[i:i+2], 16) for i in (1, 3, 5)]
+                dark = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] < 165
+                txt = f"{v:.2f}" if v >= 0.005 else ("0" if v == 0 else "&lt;.01")
+                p.append(f'<text x="{x+cw/2:.1f}" y="{y+ch*0.72:.1f}" font-size="7" '
+                         f'fill="{"#fff" if dark else INK}" text-anchor="middle" {MONO}>{txt}</text>')
+    lx = x0 + cw * len(S) + 5
+    for i, k in enumerate(keep):
+        dsc = pc["pct"][k][0] or k
+        p.append(f'<text x="{lx:.1f}" y="{y0+i*ch+ch*0.74:.1f}" font-size="7.6" fill="{INK}">'
+                 f'{esc(_short(dsc, 62))}</text>')
+    yb = y0 + ch * len(keep)
+    _xlabels(p, S, [x0 + (j + 0.5) * cw for j in range(len(S))], yb + 9)
+    ky = H - 14
+    p.append(f'<text x="0" y="{ky-4}" font-size="7.6" fill="{MUT}">% (log scale)</text>')
+    stops = sorted({round(sv, 2) for sv in (0, 0.01, 0.1, 1, vmax) if sv <= vmax})
+    for k, sv in enumerate(stops):
+        p.append(f'<rect x="{k*34}" y="{ky}" width="34" height="7" fill="{_heat_col(sv, vmax)}" '
+                 f'stroke="{RULE}" stroke-width=".4"/>')
+        p.append(f'<text x="{k*34 + 17}" y="{ky+14}" font-size="7.2" fill="{FAINT}" '
+                 f'text-anchor="middle" {MONO}>{sv:g}</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def _nsti_word(v):
+    return ("close to reference genomes" if v <= 0.06 else
+            "acceptable" if v <= 0.15 else "distant from reference genomes — read with caution")
+
+
+def _picrust_methods(pc):
+    ver = f" v{esc(pc['version'])}" if pc.get("version") else ""
+    feats = " and ".join(x for x in (("KEGG orthologs (KO)" if pc.get("n_ko") is not None else ""),
+                                     ("Enzyme Commission numbers (EC)" if pc.get("n_ec") is not None else ""))
+                         if x) or "gene families"
+    out = ["<h3>Functional prediction (PICRUSt2)</h3>",
+           f"<p>The functional potential of each community was predicted from the ASVs with "
+           f"PICRUSt2{ver} (Douglas et al. 2020). ASV sequences were aligned to the PICRUSt2 reference "
+           f"(HMMER) and placed into its reference phylogeny of bacterial genomes with EPA-ng and gappa. "
+           f"For every ASV, the 16S rRNA gene copy number and the copy numbers of {feats} were inferred "
+           f"from its placement by hidden-state prediction (castor), and the nearest sequenced taxon "
+           f"index (NSTI) was recorded as its distance to the closest reference genome. ASV abundances "
+           f"were divided by their predicted 16S copy number and multiplied by the predicted gene copy "
+           f"numbers to give a predicted metagenome per sample; ASVs with NSTI above 2 were excluded. "
+           f"MetaCyc pathway abundances were inferred from the predicted EC profile with MinPath "
+           f"(pathway_pipeline), and descriptions were added from KEGG and MetaCyc.</p>",
+           '<p class="cmd">place_seqs.py -s study_seqs.fna -o placed_seqs.tre<br>'
+           'hsp.py -i 16S -t placed_seqs.tre -o marker_predicted_and_nsti.tsv.gz -n<br>'
+           'hsp.py -i EC|KO -t placed_seqs.tre -o EC|KO_predicted.tsv.gz<br>'
+           'metagenome_pipeline.py -i asv_table.tsv -m marker_predicted_and_nsti.tsv.gz '
+           '-f EC|KO_predicted.tsv.gz -o EC|KO_metagenome_out --max_nsti 2.0<br>'
+           'pathway_pipeline.py -i EC_metagenome_out/pred_metagenome_unstrat.tsv.gz -o pathways_out<br>'
+           'add_descriptions.py -m KO|EC|METACYC</p>']
+    return out
+
+
+def _picrust_result(pc, F, T, top=25):
+    S = pc["samples"]
+    out = ['<h3 class="pbreak">Predicted functional profile (PICRUSt2)</h3>']
+    nz = pc["nsti"]
+    parts = []
+    if pc.get("n_ko") is not None:
+        parts.append(f"{fmt(pc['n_ko'])} KEGG orthologs")
+    if pc.get("n_ec") is not None:
+        parts.append(f"{fmt(pc['n_ec'])} EC numbers")
+    parts.append(f"{fmt(pc['n_path'])} MetaCyc pathways")
+    txt = f"<p>PICRUSt2 predicted {', '.join(parts[:-1]) + ' and ' if len(parts) > 1 else ''}{parts[-1]} across the {len(S)} sample{'s' if len(S) != 1 else ''}. "
+    if nz:
+        vals = [(s, nz[s]) for s in S if s in nz] or list(nz.items())
+        hi = max(v for _s, v in vals)
+        txt += (f"Weighted NSTI ranged {_range_txt(vals, lambda v: f'{v:.3f}')}; "
+                + ("every sample is below 0.15, so the ASVs are close enough to sequenced genomes for the "
+                   "prediction to be informative. " if hi <= 0.15 else
+                   "samples above 0.15 contain many ASVs distant from any sequenced genome, and their "
+                   "predictions are less reliable. "))
+    out.append(txt + "</p>")
+    if nz:
+        out.append(T(["Sample", "Weighted NSTI", "Assessment"],
+                     [[esc(s), f"{nz[s]:.3f}", _nsti_word(nz[s])] for s in S if s in nz],
+                     "Weighted nearest sequenced taxon index per sample: the mean branch distance of the "
+                     "sample&rsquo;s reads to the closest reference genome. Lower is better; values above "
+                     "0.15 call for caution."))
+    keep = sorted(pc["pct"], key=lambda k: -sum(pc["pct"][k][1].values()))[:top]
+    per = len(S) <= 6
+    rows = []
+    for k in keep:
+        dsc, v = pc["pct"][k]
+        mean = sum(v.values()) / len(S)
+        rows.append([f'<div style="text-align:left">{esc(dsc or k)}</div>',
+                     f'<span class="mono" style="font-size:6.8pt">{esc(k)}</span>', f"{mean:.2f}"]
+                    + ([f"{v[s]:.2f}" for s in S] if per else []))
+    out.append(T(["Pathway", "MetaCyc ID", "Mean %"] + ([f"{esc(_short(s, 12))} %" for s in S] if per else []),
+                 rows, f"The {len(keep)} most abundant predicted MetaCyc pathways, as a percentage of each "
+                 f"sample&rsquo;s total predicted pathway abundance"
+                 + (", with the value for each sample." if per else ".")))
+    out.append(F(svg_pathway_heat(pc, 30), "Predicted abundance of the 30 most abundant MetaCyc pathways "
+                 "per sample (percentage of the sample&rsquo;s total predicted pathway abundance, log colour "
+                 "scale).", "PICRUSt2/pathways_out"))
+    out.append('<div class="note"><p style="margin:0"><b>These are predictions, not measurements.</b> '
+               "PICRUSt2 infers gene content from the closest sequenced genomes of each ASV; it cannot "
+               "see strain-level gene gain or loss, plasmids or genes absent from the reference genomes. "
+               "Highly conserved housekeeping pathways dominate every profile, so differences between "
+               "samples are more informative than the ranking itself. Shotgun metagenomics is needed to "
+               "confirm a functional difference.</p></div>")
+    return out
+
+
 def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                        subtitle=None, top_asv=30) -> str:
     """Full result report for one run, laid out as Method / Result / References with a
@@ -1978,6 +2189,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     # ═══ METHOD ═══
     out.append("<h2>Method</h2>")
     out += _methods(run, an)
+    pic = load_picrust(run, S)
+    if pic:
+        out += _picrust_methods(pic)
     cfg = ([("Marker", marker)] + run.emu_config()) if run.emu else [
         ("Marker", marker), ("Reference database", run.db_name),
         ("Forward primer", run.params.get("primer_f") or "—"),
@@ -2430,6 +2644,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
             out.append(F(svg_stacked(an, rank, 30, samples=list(grp), table=tbl_),
                          f"Top 30 {rank.lower()} &mdash; mean relative abundance per group."))
 
+    if pic:
+        out += _picrust_result(pic, F, T)
+
     # ── notes / references ───────────────────────────────────────────────────
     out.append('<h2 class="pbreak">Notes on reading this report</h2>')
     notes = []
@@ -2451,11 +2668,16 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     notes.append(f"Full tables are in the result folder: {'taxonomy.csv' if run.emu else 'taxonomy_table.csv'} "
                  f"and asv_table.csv (per-{'taxon' if run.emu else 'ASV'} counts), r_tables/ (per-rank "
                  f"tables, diversity) and read_tracking.csv.")
+    if pic:
+        notes.append("Predicted functions (PICRUSt2) are in PICRUSt2/: KO_metagenome_out and "
+                     "EC_metagenome_out (gene families per sample), pathways_out (MetaCyc pathways); the "
+                     "*_descrip.tsv.gz files carry descriptions.")
     out.append("<ul>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>")
     out.append("<h2>References</h2>")
     out.append('<ul class="refs">' + "".join(
         f"<li>{esc(a)} <i>{esc(t)}</i> {esc(j)}</li>"
-        for a, t, j in (REFERENCES[i] for i in (REF_EMU if run.emu else REF_DADA2))) + "</ul>")
+        for a, t, j in ([REFERENCES[i] for i in (REF_EMU if run.emu else REF_DADA2)]
+                        + (REF_PICRUST if pic else []))) + "</ul>")
 
     css = _css(app, company, f"{run.label} · {marker}") + _CSS_FULL.replace("@@TITLE@@", esc(title))
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'

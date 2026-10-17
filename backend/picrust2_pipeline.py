@@ -306,6 +306,16 @@ def run_picrust2(
     except Exception:
         pass
 
+    p2ver = ""
+    try:
+        q = _run([str(Path(env_path) / "bin" / "python"), "-c",
+                  "import picrust2; print(picrust2.__version__)"],
+                 capture_output=True, text=True, timeout=120)
+        if q.returncode == 0:
+            p2ver = q.stdout.strip()
+    except Exception:
+        pass
+
     hsp_pct = {"EC": 38, "KO": 45, "COG": 50}
     func_tabs = {}
     unavailable = []
@@ -390,6 +400,7 @@ def run_picrust2(
                       + (f" (missing: {', '.join(missing)})" if missing else ""),
         "missing":    missing,
         "not_in_reference": unavailable,
+        "picrust2_version": p2ver,
         "output_dir": output_dir,
         "files":      output_files,
     }
