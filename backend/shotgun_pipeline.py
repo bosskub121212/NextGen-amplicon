@@ -245,7 +245,11 @@ def main(argv=None):
     ap.add_argument("--kraken_db", required=True)
     ap.add_argument("--host", default="none", help="none | human | mouse | path to a host FASTA")
     ap.add_argument("--threads", type=int, default=8)
-    ap.add_argument("--confidence", type=float, default=0.1)
+    # 0, Kraken 2's own default. With the capped (8 / 16 GB) indexes and with
+    # Nanopore reads, 0.05–0.1 left most reads unclassified and dropped whole
+    # species (S. aureus, B. subtilis) in the mock test; Bracken's minimum-read
+    # threshold is the false-positive filter instead.
+    ap.add_argument("--confidence", type=float, default=0.0)
     ap.add_argument("--bracken_level", default="S", choices=["S", "G"])
     ap.add_argument("--bracken_threshold", type=int, default=10)
     ap.add_argument("--min_len", type=int, default=500, help="ONT: minimum read length")
@@ -292,6 +296,20 @@ def main(argv=None):
         log("[ERROR] no FASTQ files found")
         return 2
     log(f"{len(samples)} sample(s): " + ", ".join(samples))
+    if not a.memory_mapping:
+        try:
+            mem_avail = next(int(ln.split()[1]) * 1024 for ln in open("/proc/meminfo")
+                             if ln.startswith("MemAvailable:"))
+            need = (db / "hash.k2d").stat().st_size
+            if need > 0.9 * mem_avail:
+                a.memory_mapping = True
+                log(f"[note] the index ({need / 1e9:.1f} GB) does not fit in free memory "
+                    f"({mem_avail / 1e9:.1f} GB) — reading it from disk (--memory-mapping, slower)")
+        except Exception:
+            pass
+    if a.confidence > 0:
+        log(f"[note] Kraken 2 confidence {a.confidence}: fewer reads are classified; with a capped "
+            "index or Nanopore reads this can drop species entirely (0 is recommended)")
     avail = kmer_lengths(db)
     if not br or not avail:
         log("[warn] Bracken " + ("not installed" if not br else "k-mer distributions missing in the index")

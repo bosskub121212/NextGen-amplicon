@@ -6089,7 +6089,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
        fields:[
         ["sg_kraken_db", "Kraken 2 index", "path", k2, k2 ? "folder with hash.k2d — set by setup_shotgun.sh"
                                                         : "not installed yet: bash ~/r16s-app/setup_shotgun.sh"],
-        ["sg_confidence", "Confidence threshold", "num", "0.1", "0 = Kraken 2 default; higher = fewer, surer calls"],
+        ["sg_confidence", "Confidence threshold", "num", "0", "keep 0 (Kraken 2 default): 0.05–0.1 dropped whole species in the mock test with the 16 GB index and with Nanopore reads"],
         ["sg_bracken_level", "Abundance level", "select", "S", [["S", "species"], ["G", "genus"]]],
         ["sg_bracken_threshold", "Minimum reads per taxon", "int", "10", "Bracken -t"],
         ["nThreads", "CPU threads", "int", "8", ""],

@@ -256,7 +256,7 @@ class RunParams(BaseModel):
     mockStandard:       str   = "zymo_d6300"   # controls.STANDARDS key for the mock samples
     # --- Shotgun metagenome (beta; marker "SHOTGUN", shotgun_pipeline.py) ---
     sg_kraken_db:       str   = ""        # Kraken2 index folder (default: db_paths.json kraken2_db)
-    sg_confidence:      float = 0.1       # kraken2 --confidence
+    sg_confidence:      float = 0.0       # kraken2 --confidence (0 = Kraken 2 default; see shotgun_pipeline.py)
     sg_host:            str   = "none"    # none | human | mouse | path to a host FASTA
     sg_bracken_level:   str   = "S"
     sg_bracken_threshold: int = 10

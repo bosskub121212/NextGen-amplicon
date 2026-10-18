@@ -46,7 +46,23 @@ done
 CONDA=""
 for c in mamba conda; do command -v "$c" >/dev/null 2>&1 && { CONDA="$c"; break; }; done
 [[ -z "$CONDA" && -x "$HOME/miniconda3/bin/conda" ]] && CONDA="$HOME/miniconda3/bin/conda"
-BASE="$($CONDA info --base 2>/dev/null || echo "$HOME/miniconda3")"
+# The conda base folder. `mamba info --base` (mamba 2) prints " base environment : /path"
+# instead of the bare path, which broke every tool path below on nextapp — so
+# take the last path-looking token of whichever command answers, and check it.
+BASE=""
+for c in conda mamba "$HOME/miniconda3/bin/conda"; do
+  if command -v "$c" >/dev/null 2>&1 || [[ -x "$c" ]]; then
+    b=$("$c" info --base 2>/dev/null | grep -o '/[^ ]*' | tail -1)
+    [[ -n "$b" && -d "$b/envs" ]] && { BASE="$b"; break; }
+  fi
+done
+if [[ -z "$BASE" ]]; then
+  for b in "${CONDA_EXE:+$(dirname "$(dirname "$CONDA_EXE")")}" "$HOME/miniconda3" "$HOME/miniforge3" \
+           "$HOME/anaconda3" "$HOME/mambaforge"; do
+    [[ -n "$b" && -d "$b/envs" ]] && { BASE="$b"; break; }
+  done
+fi
+[[ -n "$BASE" ]] || BASE="$HOME/miniconda3"
 EBIN="$BASE/envs/$ENV/bin"
 
 if [[ $STATUS == 1 ]]; then
