@@ -151,6 +151,8 @@ fi
 
 if [[ $HOST == 1 ]]; then
   step "Human host index (hostile)"
+  # hostile calls bowtie2 / minimap2 by name: the env's bin folder has to be on PATH
+  export PATH="$EBIN:$PATH"
   "$EBIN/hostile" index fetch --name human-t2t-hla --bowtie2 && ok "Bowtie2 index (Illumina)" \
     || warn "Bowtie2 index not fetched — it downloads on the first run that needs it"
   "$EBIN/hostile" index fetch --name human-t2t-hla --minimap2 && ok "Minimap2 index (Nanopore)" \
