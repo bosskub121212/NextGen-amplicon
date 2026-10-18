@@ -225,6 +225,15 @@ class RunParams(BaseModel):
     # --- CPU threads (applies to all pipelines) ---
     nThreads:      int   = 4
     ont_chimera:   bool  = False   # ONT-16S: reference-based chimera removal (off by default)
+    ont_parallel:  int   = 0       # ONT-16S: Emu samples at once (0 = from CPU count and free memory)
+    # MaAsLin 3 (multivariable differential abundance) — runs when metadata has a
+    # variable with replicated levels. Empty fixed = every usable metadata column.
+    run_fastqc:        bool = False   # also run FastQC + MultiQC when installed (read_qc.py always runs)
+    run_maaslin3:      bool = True
+    maaslin_fixed:     str  = ""     # "group,age"
+    maaslin_random:    str  = ""     # "subject"  (repeated measures)
+    maaslin_reference: str  = ""     # "group,Control;site,North"
+    maaslin_rank:      str  = "Genus"
     # --- Shared db paths override ---
     db_paths_json: str   = ""
     # --- Read orientation repair (paired-end DADA2 only) ---
@@ -243,6 +252,8 @@ class RunParams(BaseModel):
     decontam:           str   = "none"    # none | prevalence
     decontamThreshold:  float = 0.1
     controlSamples:     list[str] = []    # sample IDs that are blanks/negative controls
+    mockSamples:        list[str] = []    # sample IDs that are mock communities (positive controls)
+    mockStandard:       str   = "zymo_d6300"   # controls.STANDARDS key for the mock samples
 
 class WorkerConfig(BaseModel):
     max_workers: int = 2
@@ -274,14 +285,43 @@ except ImportError:
     pass
 
 # ─────────────────────────────────────────────────────────────────────────────
-@app.get("/")
-def root():
-    # Serve frontend if built, otherwise return API info
+def _classic_index():
     for d in [BASE_DIR.parent / "frontend" / "dist", BASE_DIR.parent / "frontend" / "build"]:
         idx = d / "index.html"
         if idx.exists():
-            return FileResponse(str(idx))
+            return idx
+    return None
+
+
+def _default_ui_is_classic() -> bool:
+    """v2.18: the console (frontend-beta/) is the page at /, the old React UI
+    moved to /classic. Either of these puts the old one back at / without a
+    redeploy:  NGA_DEFAULT_UI=classic  in the environment, or an empty file
+    backend/ui_classic  (touch it, restart the backend)."""
+    return (os.environ.get("NGA_DEFAULT_UI", "").lower() == "classic"
+            or (BASE_DIR / "ui_classic").exists())
+
+
+@app.get("/")
+def root():
+    console = BASE_DIR.parent / "frontend-beta" / "index.html"
+    if console.exists() and not _default_ui_is_classic():
+        return FileResponse(str(console), headers={"Cache-Control": "no-cache"})
+    idx = _classic_index()
+    if idx:
+        return FileResponse(str(idx))
     return {"message": "16S/12S Analysis API 🧬", "max_workers": MAX_WORKERS}
+
+
+@app.get("/classic", include_in_schema=False)
+@app.get("/classic/", include_in_schema=False)
+def classic_ui():
+    """The previous React console, kept for the chart types and tools that
+    have not moved to the new console yet."""
+    idx = _classic_index()
+    if idx:
+        return FileResponse(str(idx))
+    return JSONResponse(status_code=404, content={"error": "The classic UI is not built on this machine."})
 
 # ── 1. Upload ─────────────────────────────────────────────────────────────────
 FASTQ_EXTS = (".fastq", ".fastq.gz", ".fq", ".fq.gz")
@@ -1126,6 +1166,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--primer_r", params.primer_r]
         if params.ont_chimera:
             cmd += ["--chimera"]
+        cmd += ["--parallel", str(max(0, int(params.ont_parallel or 0)))]
         if params.metadata:
             cmd += ["--metadata", metadata_path]
         _pipe_kind = "emu"
@@ -1273,6 +1314,22 @@ def run_r_pipeline(job_id: str, params: RunParams):
             cmd += ["--decontam",           params.decontam,
                     "--decontam_threshold", str(params.decontamThreshold),
                     "--control_samples",    ",".join(params.controlSamples)]
+
+    # ── Read quality before the run (read_qc.py, a few seconds) ──────────────
+    # Kept with the result so the report can show what the raw reads looked like
+    # and whether truncLen matched them. Never stops a run.
+    if marker != "ONT-WGS":
+        try:
+            import read_qc
+            with jobs_lock:
+                jobs[job_id]["step_label"] = "Checking read quality..."
+            _qc = read_qc.run(input_dir, params.primer_f or "", params.primer_r or "", None, n=20000,
+                              fastqc_dir=str(Path(output_dir) / "qc" / "fastqc") if params.run_fastqc else None,
+                              threads=max(1, int(params.nThreads or 1)))
+            (Path(output_dir) / "qc").mkdir(exist_ok=True)
+            (Path(output_dir) / "qc" / "read_qc.json").write_text(json.dumps(_qc))
+        except Exception as _qe:
+            print(f"[read_qc] WARNING: {_qe}")
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -1591,6 +1648,36 @@ def run_r_pipeline(job_id: str, params: RunParams):
                   print(f"[viz] WARNING: viz_pipeline.R timed out for job {job_id}")
               except Exception as _ve:
                   print(f"[viz] WARNING: viz_pipeline.R failed: {_ve}")
+
+          # ── MaAsLin 3: every metadata variable at once ─────────────────────
+          _ma_script = R_SCRIPTS_DIR / "maaslin3_run.R"
+          if (proc.returncode == 0 and params.run_maaslin3 and _ma_script.exists()
+                  and metadata_path and Path(metadata_path).exists()
+                  and _pipe_kind in ("dada2", "its", "cox1", "pacbio", "emu", "qiime2_vsearch")):
+              try:
+                  with jobs_lock:
+                      jobs[job_id]["step_label"] = "MaAsLin 3 differential abundance..."
+                      jobs[job_id]["progress"]   = 98
+                  _ma_cmd = [shutil.which("Rscript") or "Rscript", str(_ma_script),
+                             "--output_dir", output_dir, "--metadata", metadata_path,
+                             "--rank", params.maaslin_rank or "Genus",
+                             "--threads", str(max(1, int(params.nThreads or 1)))]
+                  if params.maaslin_fixed:
+                      _ma_cmd += ["--fixed", params.maaslin_fixed]
+                  if params.maaslin_random:
+                      _ma_cmd += ["--random", params.maaslin_random]
+                  if params.maaslin_reference:
+                      _ma_cmd += ["--reference", params.maaslin_reference]
+                  _ex = [x for x in list(params.controlSamples or []) + list(params.mockSamples or []) if x]
+                  if _ex:
+                      _ma_cmd += ["--exclude", ",".join(_ex)]
+                  _ma = subprocess.run(_ma_cmd, capture_output=True, text=True, timeout=1800)
+                  with open(log_file, "a") as _lf:
+                      _lf.write("\n--- maaslin3_run.R ---\n" + (_ma.stdout or "")[-4000:])
+                      if _ma.returncode != 0:
+                          _lf.write("\n[maaslin3 ERROR]\n" + (_ma.stderr or "")[-1500:])
+              except Exception as _me:
+                  print(f"[maaslin3] WARNING: {_me}")
 
         except Exception as _pe:
             _msg = f"Post-run step failed after a successful pipeline: {_pe}"
@@ -2206,6 +2293,32 @@ def cleanup_orphan_results():
     return {"removed": len(removed), "paths": removed, "errors": errors}
 
 # -- 9c. Database paths -------------------------------------------------------
+@app.get("/qc/{job_id}")
+def read_quality(job_id: str, primer_f: str = "", primer_r: str = "", expected_len: int = 0):
+    """Read quality of an upload, before any run: per-position quality, lengths,
+    and a truncLen suggestion for paired amplicons (read_qc.py). Cached until
+    the files or the primers change."""
+    d = UPLOAD_DIR / job_id
+    if not d.is_dir():
+        return JSONResponse(status_code=404, content={"error": "upload not found"})
+    try:
+        import read_qc
+        files = sorted(f for f in d.rglob("*") if f.is_file() and read_qc.FQ_RE.search(f.name))
+        sig = json.dumps([primer_f, primer_r, expected_len,
+                          [(f.name, f.stat().st_size, int(f.stat().st_mtime)) for f in files]])
+        cache = d / "_read_qc.json"
+        if cache.exists():
+            c = json.loads(cache.read_text())
+            if c.get("_sig") == sig:
+                return c
+        res = read_qc.run(str(d), primer_f, primer_r, expected_len or None, n=10000)
+        res["_sig"] = sig
+        cache.write_text(json.dumps(res))
+        return res
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"read QC failed: {e}"})
+
+
 @app.get("/databases")
 def get_databases():
     """Return available taxonomy databases and their paths."""

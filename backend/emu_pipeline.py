@@ -15,7 +15,8 @@ Usage (called by main.py):
                            [--job_name NAME]
 """
 
-import argparse, csv, gzip, json, os, re, shutil, subprocess, sys
+import argparse, csv, gzip, json, os, re, shutil, subprocess, sys, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -69,6 +70,8 @@ def parse_args():
                    help="Enable reference-based chimera removal (vsearch --uchime_ref); off by default")
     p.add_argument("--cutadapt_error_rate", type=float, default=0.20, help="cutadapt -e (max error rate)")
     p.add_argument("--cutadapt_overlap",    type=int,   default=10,   help="cutadapt -O (min primer overlap)")
+    p.add_argument("--parallel",      type=int, default=0,
+                   help="Emu samples run at the same time (0 = decide from CPU count and free memory)")
     return p.parse_args()
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -414,9 +417,43 @@ def remove_chimeras(samples: dict, out_dir: Path, db_path: str,
     return cleaned
 
 # ── Step 2: Run Emu on each sample ─────────────────────────────────────────────
+def _mem_available_gb() -> float:
+    try:
+        for ln in open("/proc/meminfo"):
+            if ln.startswith("MemAvailable:"):
+                return int(ln.split()[1]) / 1e6
+    except Exception:
+        pass
+    return 0.0
+
+
+def emu_parallelism(samples: dict, threads: int, requested: int = 0) -> tuple[int, int]:
+    """(samples at once, threads each).
+
+    Emu's alignment (minimap2) uses every thread, but the expectation-maximisation
+    that follows runs on one core and takes most of the time — two samples took
+    5.5 hours one after the other on an 8-core machine with seven cores idle for
+    most of it. Running several samples at once uses those cores. Each Emu process
+    holds its alignments in memory (roughly 6 GB for a large ONT sample, measured
+    from the reads it is given), so free memory caps how many run together.
+    """
+    n = len(samples)
+    if n <= 1:
+        return 1, max(1, threads)
+    if requested and requested > 0:
+        par = min(n, requested)
+    else:
+        size_gb = max((Path(f).stat().st_size for f in samples.values()), default=0) / 1e9
+        per_gb = max(2.0, 6.0 * size_gb / 0.5)        # ~6 GB per 0.5 GB of gzipped reads
+        by_mem = max(1, int(_mem_available_gb() * 0.8 // per_gb)) if _mem_available_gb() else 1
+        by_cpu = max(1, threads // 2)
+        par = max(1, min(n, by_cpu, by_mem))
+    return par, max(1, threads // par)
+
+
 def run_emu(samples: dict, out_dir: Path, db_path: str,
-            min_abundance: float, threads: int) -> dict[str, Path]:
-    """Run emu abundance on each sample. Returns map of sample → TSV output."""
+            min_abundance: float, threads: int, parallel: int = 0) -> dict[str, Path]:
+    """Run emu abundance on each sample, several at once. Returns sample → TSV output."""
     # Build the emu command prefix.
     # Prefer 'conda run -n emu' to avoid venv/PATH conflicts when backend runs
     # in a Python virtualenv — emu uses #!/usr/bin/env python3 which would
@@ -459,15 +496,18 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
     emu_out_dir = out_dir / "emu_output"
     emu_out_dir.mkdir(exist_ok=True)
     results = {}
+    par, per_threads = emu_parallelism(samples, threads, parallel)
+    log(f"  Emu: {len(samples)} sample(s), {par} at a time, {per_threads} thread(s) each "
+        f"({_mem_available_gb():.0f} GB free memory)")
 
-    for name, fq in samples.items():
+    def one(name: str, fq: Path):
         sample_out = emu_out_dir / name
         sample_out.mkdir(parents=True, exist_ok=True)
         cmd = emu_prefix + [
             "abundance",
             "--type", "map-ont",
             "--db", db_path,
-            "--threads", str(threads),
+            "--threads", str(per_threads),
             "--min-abundance", str(min_abundance),
             # Real per-taxon read estimates in the output ("estimated counts").
             # Without it Emu writes only relative abundance, which this script
@@ -479,20 +519,41 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             "--output-dir", str(sample_out),
             str(fq),
         ]
-        success = run_cmd(cmd, f"Emu: {name}", env=emu_env)
-        # Prefer the thresholded file (already filtered by --min-abundance).
-        # Emu names: <basename>_rel-abundance-threshold-<N>.tsv (current)
-        #            <basename>_rel-abundance.tsv              (fallback / older)
-        tsv_thresh = list(sample_out.glob("*rel-abundance-threshold*.tsv"))
-        tsv_plain  = list(sample_out.glob("*rel-abundance.tsv"))
-        # Exclude threshold files from plain list
-        tsv_plain  = [p for p in tsv_plain if "threshold" not in p.name]
-        if tsv_thresh:
-            results[name] = tsv_thresh[0]
-        elif tsv_plain:
-            results[name] = tsv_plain[0]
-        elif not success:
-            log(f"  [WARN] Emu failed for sample: {name}")
+        t0 = time.time()
+        # each sample logs to its own file; interleaved output from parallel runs
+        # would be unreadable in pipeline.log
+        with open(sample_out / "emu.log", "w") as lf:
+            lf.write("CMD: " + " ".join(str(c) for c in cmd) + "\n")
+            lf.flush()
+            rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=emu_env).returncode
+        return name, sample_out, rc, time.time() - t0
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=par) as ex:
+        futs = [ex.submit(one, name, fq) for name, fq in samples.items()]
+        for fut in as_completed(futs):
+            name, sample_out, rc, secs = fut.result()
+            done += 1
+            # Prefer the thresholded file (already filtered by --min-abundance).
+            # Emu names: <basename>_rel-abundance-threshold-<N>.tsv (current)
+            #            <basename>_rel-abundance.tsv              (fallback / older)
+            tsv_thresh = list(sample_out.glob("*rel-abundance-threshold*.tsv"))
+            tsv_plain  = [p for p in sample_out.glob("*rel-abundance.tsv") if "threshold" not in p.name]
+            if tsv_thresh:
+                results[name] = tsv_thresh[0]
+            elif tsv_plain:
+                results[name] = tsv_plain[0]
+            status = "ok" if name in results else f"FAILED (exit {rc})"
+            log(f"  Emu {done}/{len(samples)}: {name} {status} in {secs/60:.1f} min")
+            if name not in results:
+                try:
+                    tail = (sample_out / "emu.log").read_text(errors="replace").strip().splitlines()[-8:]
+                    for t in tail:
+                        log(f"    | {t[:300]}")
+                except Exception:
+                    pass
+            progress(42 + int(18 * done / max(1, len(samples))),
+                     f"Step 5/8 — Emu: {done}/{len(samples)} samples done")
 
     return results
 
@@ -745,7 +806,7 @@ def main():
     # ── 5. Run Emu ─────────────────────────────────────────────────────────────
     progress(42, f"Step 5/8 — Running Emu on {len(samples_clean)} samples")
     emu_results = run_emu(
-        samples_clean, out_dir, args.db_path, args.min_abundance, args.threads)
+        samples_clean, out_dir, args.db_path, args.min_abundance, args.threads, args.parallel)
 
     if not emu_results:
         log("[ERROR] Emu produced no output. Check db_path and input FASTQ files.")

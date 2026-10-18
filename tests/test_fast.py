@@ -157,6 +157,49 @@ def main():
             except Exception:
                 check(f"{kind}: report pipeline", False, traceback.format_exc(limit=3))
 
+    print("Read QC, controls, Emu parallelism (v2.18)")
+    import read_qc
+    # Q36 for 250 bp, then falling to Q15: the cut sits where the median drops under Q25
+    prof = [[30, 34, 36, 37, 35.0]] * 200 + [[10, 12, 15, 18, 15.0]] * 50
+    P = {"median_len": 250, "per_position": prof}
+    sg = read_qc.suggest_trunc(P, P, "CCTACGGGNGGCWGCAG", "GACTACHVGGGTATCTAATCC", 420)
+    check("truncLen: quality cut, pairs still overlap", sg["truncLen_F"] + sg["truncLen_R"] >= 440
+          and sg["truncLen_F"] <= 250 - 17 - 3, sg)
+    sg2 = read_qc.suggest_trunc(P, P, "CTTGGTCATTTAGAGGAAGTAA", "GCTGCGTTCTTCATCGATGC", None)
+    check("truncLen: ITS is not truncated", sg2["truncLen_F"] == 0 and sg2["truncLen_R"] == 0, sg2)
+    import controls
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "dada2"
+        make_result(d, "dada2")
+        run = rb.Run(d, set())
+        s0, s1 = run.samples[0], run.samples[1]
+        run.params["controlSamples"] = [s0]
+        run.params["mockSamples"] = [s1]
+        negs, mocks = controls.identify(run)
+        check("controls: named in the run", negs == [s0] and mocks == [s1], (negs, mocks))
+        an = rb.Analysis(run)
+        ns = controls.negative_summary(an, negs, mocks)
+        check("controls: blank summary", ns["negatives"][0]["sample"] == s0 and ns["genera"], ns)
+        ms = controls.mock_summary(an, mocks, "zymo_d6300")
+        check("controls: mock compared", len(ms["samples"]) == 1
+              and 0 <= ms["samples"][0]["bray_curtis"] <= 1, ms)
+        html = rb.build_profile_html(run)
+        check("controls: report section", "Controls" in html)
+    import emu_pipeline as ep
+    par, per = ep.emu_parallelism({k: "" for k in "abcd"}, 8, 2)
+    check("emu: requested parallelism honoured", par == 2 and per == 4, (par, per))
+    par, per = ep.emu_parallelism({"a": ""}, 8, 0)
+    check("emu: one sample runs alone", par == 1 and per == 8, (par, per))
+
+    print("Console")
+    page = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
+    for k in ("mockSamples", "maaslin_fixed", "ont_parallel", "run_fastqc", "/qc/", "renderSettings",
+              "/license/activate", "/update/check", "/results/cleanup", "orientation-check", "mpAdd"):
+        check(f"console offers {k}", k in page)
+    main_src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+    check("console served at /, old UI at /classic", '@app.get("/classic"' in main_src
+          and "frontend-beta" in main_src)
+
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

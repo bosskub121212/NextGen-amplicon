@@ -289,8 +289,10 @@ else
   echo ""
   echo -e "${BOLD}${CYAN}  Emu enables ONT 16S analysis (V7-V8, V1-V9). Requires ~500 MB conda env.${NC}"
   if ask "Install Emu now?"; then
+    # Pinned: Emu 3.4.5 fails with "f sums to 0, rather than 1" on pandas 3 /
+    # numpy 2, which an unpinned env now resolves to (checked October 2026).
     run_timed "Emu conda env create (~5–10 min)" \
-      $_CONDA_CMD create -n emu -c bioconda -c conda-forge emu -y || true
+      $_CONDA_CMD create -n emu -c conda-forge -c bioconda python=3.11 emu=3.4.5 "pandas<2.2" "numpy<2" minimap2 -y || true
     # Ensure pysam is present (required by Emu; sometimes missing after conda create)
     conda run -n emu pip install pysam --quiet 2>/dev/null || \
       $_CONDA_CMD install -n emu -c bioconda pysam -y --quiet 2>/dev/null || true

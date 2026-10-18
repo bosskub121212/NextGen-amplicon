@@ -84,7 +84,8 @@ bioc_pkgs <- c(
   "ggtree",              # Phylogenetic tree visualization
   "treeio",              # Tree I/O (ggtree dependency)
   # QC additions
-  "decontam"             # Reagent/kit contaminant removal using negative controls
+  "decontam",            # Reagent/kit contaminant removal using negative controls
+  "maaslin3"             # Multivariable differential abundance + prevalence (needs R >= 4.4)
 )
 for (p in bioc_pkgs) install_if_missing(p, bioc=TRUE)
 

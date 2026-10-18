@@ -2,7 +2,7 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NextGen-Amplicon Console (Beta)</title>
+<title>NextGen-Amplicon</title>
 
 <!-- Fonts load non-blockingly on purpose. This app is routinely run on a lab
      machine with no internet: a normal stylesheet link there stalls first paint
@@ -527,7 +527,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         <rect x="13.5" y="14.5" width="5.5" height="3" rx="1.5" fill="var(--accent-ink)"/>
       </svg>
       <div style="min-width:0">
-        <h1>NextGen-Amplicon <span class="beta">Beta</span></h1>
+        <h1>NextGen-Amplicon</h1>
         <p>Amplicon sequencing analysis · DADA2 · Emu</p>
       </div>
     </div>
@@ -536,7 +536,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         <b>NextGen Network Corporation</b>
         <span id="verLine">Company Limited</span>
       </div>
-      <a class="btn" href="/" title="Open the production console">Production UI</a>
+      <a class="btn" href="/classic" title="The previous console — chart types and tools not moved here yet">Classic UI</a>
       <button class="iconbtn" id="theme" title="Switch light / dark" aria-label="Switch light or dark theme">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
@@ -563,6 +563,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         <span class="count num" id="jobCount">—</span>
       </button>
 
+      <button class="navbtn" id="setBtn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
+        Settings
+      </button>
+
       <div class="lic" id="licBox">Reading licence…</div>
     </nav>
 
@@ -575,7 +580,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   "use strict";
 
   /* ═══════════════════════════════════════════════════════════════════════
-     NextGen-Amplicon — beta console.
+     NextGen-Amplicon — console.
 
      This is a SEPARATE, read-mostly front end served at /beta by the same
      backend that serves the production UI at /. It shares the API, the job
@@ -583,13 +588,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      build step, so a mistake in here can neither break the production bundle
      nor stop deploy_dev.sh.
 
-     Scope of this first cut, deliberately: everything that READS is real —
-     job list, job detail, step timeline, live log, run parameters, licence
-     entitlements, database list. Job SUBMISSION is not wired up. A half-wired
-     submit button that posts a subtly wrong payload would waste hours of
-     compute and produce a plausible-looking wrong answer, which is the exact
-     failure mode the last five patches were about. Start jobs in the
-     production UI until this side is finished and verified.
+     From v2.18 this is THE console, served at / (and still at /beta); the
+     old React UI moved to /classic. Setting NGA_DEFAULT_UI=classic or touching
+     backend/ui_classic puts the old one back at / without a redeploy.
      ═══════════════════════════════════════════════════════════════════════ */
 
   var work     = document.getElementById("work");
@@ -825,7 +826,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     });
     if(view.name === "history") histBtn.setAttribute("aria-current","true");
     else histBtn.removeAttribute("aria-current");
+    var sb = document.getElementById("setBtn");
+    if(sb){ if(view.name === "settings") sb.setAttribute("aria-current","true"); else sb.removeAttribute("aria-current"); }
 
+    if(view.name === "settings") return renderSettings();
     if(view.name === "history")  return renderHistory();
     if(view.name === "job")      return renderJob(view.id);
     if(view.name === "pipeline") return renderPipeline(view.key);
@@ -835,6 +839,159 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       return renderResults(view.id);
     }
     if(view.name === "charts")   return renderCharts(view.id);
+  }
+
+  /* ═══ settings: licence, updates, workers, housekeeping ═════════════════
+     The admin tools of the classic console, against the same endpoints. Every
+     destructive action asks first and then reports what the backend says it
+     removed, not what was intended. */
+  function renderSettings(){
+    work.innerHTML =
+        '<div class="crumb">Settings</div><h2 class="ttl">Settings</h2>'
+      + '<p class="sub">Licence, updates, how many jobs run at once, and disk housekeeping.</p>'
+      + '<div class="panel"><div class="sechdr"><h3>Licence</h3><span class="hint" id="stLicHint"></span></div>'
+        + '<div style="padding:12px 14px" id="stLic">Reading…</div>'
+        + '<div class="grid2"><div class="f span2"><label for="stKey">Licence key</label>'
+        + '<input type="text" class="mono" id="stKey" placeholder="NGA-…"></div></div>'
+        + '<div style="padding:0 14px 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        + '<button class="btn pri" id="stAct">Activate</button>'
+        + '<button class="btn" id="stDeact">Remove licence from this machine</button>'
+        + '<span class="s" id="stLicMsg"></span></div></div>'
+
+      + '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Updates</h3>'
+        + '<span class="hint" id="stVer"></span></div>'
+        + '<div style="padding:12px 14px" id="stUpd">Checking…</div>'
+        + '<div style="padding:0 14px 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        + '<button class="btn" id="stChk">Check again</button>'
+        + '<button class="btn pri" id="stApply" hidden>Download update</button>'
+        + '<span class="s" id="stUpdMsg"></span></div>'
+        + '<div class="s" style="padding:0 14px 12px">The button pulls the code and rebuilds the classic UI. '
+        + 'A release that adds R packages or tools needs the full updater in a terminal: '
+        + '<span class="mono">bash ~/r16s-app/update.sh</span>. Restart the backend after either.</div></div>'
+
+      + '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Jobs at once</h3>'
+        + '<span class="hint">how many runs the queue starts in parallel</span></div>'
+        + '<div style="padding:12px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        + '<input type="text" inputmode="numeric" id="stWk" style="width:90px">'
+        + '<button class="btn" id="stWkSave">Save</button><span class="s" id="stWkMsg"></span></div>'
+        + '<div class="s" style="padding:0 14px 12px">Each run already uses several CPU threads; two at once is '
+        + 'usually the most a workstation handles. Running jobs are not interrupted. Resets to the default '
+        + 'when the backend restarts.</div></div>'
+
+      + '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Housekeeping</h3>'
+        + '<span class="hint">permanent — there is no trash</span></div>'
+        + '<div style="padding:12px 14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        + '<button class="btn" id="stClear">Delete all finished jobs…</button>'
+        + '<button class="btn" id="stOrphan">Remove orphaned folders…</button>'
+        + '<span class="s" id="stHkMsg"></span></div>'
+        + '<div class="s" style="padding:0 14px 12px">“Finished” means completed, failed, cancelled or never '
+        + 'started; running, queued and paused jobs are kept. Orphaned folders are result or upload folders '
+        + 'with no job in the history.</div></div>'
+
+      + '<div class="note" style="margin-top:12px">Chart types and tools that have not moved to this console '
+      + 'yet are in the <a href="/classic">classic UI</a>.</div>';
+
+    function msg(id, t, bad){ var e = document.getElementById(id);
+      if(e){ e.textContent = t; e.style.color = bad ? "var(--bad)" : ""; } }
+    function send(method, path, body){
+      return fetch(path, {method:method, headers:{"Content-Type":"application/json"},
+                          body: body ? JSON.stringify(body) : undefined})
+        .then(function(r){ return r.json().catch(function(){ return {}; }).then(function(j){
+          if(!r.ok) throw new Error(j.message || j.error || ("HTTP " + r.status)); return j; }); });
+    }
+
+    function loadLic(){
+      Promise.all([api("/license/status").catch(function(){ return null; }),
+                   api("/license/machine-id").catch(function(){ return {}; })]).then(function(v){
+        var L = v[0], mid = (v[1] || {}).machine_id || "—";
+        if(L){ STATE.license = L; STATE.unlocked = {};
+               (L.pipelines || []).forEach(function(n){ STATE.unlocked[n] = 1; });
+               renderLicenceBox(); renderNavPipes(); }
+        document.getElementById("stLicHint").textContent = L ? (L.status || "") : "unavailable";
+        document.getElementById("stLic").innerHTML = (L
+          ? '<b>' + esc(L.message || L.status || "") + '</b>'
+            + (L.customer ? '<br>Licensed to ' + esc(L.customer) : "")
+            + (L.expires || L.expiry ? '<br>Expires ' + esc(L.expires || L.expiry) : "")
+            + (Array.isArray(L.pipelines) ? '<br>Pipelines: ' + esc(L.pipelines.join(", ") || "none") : "")
+          : 'The backend did not answer /license/status.')
+          + '<br>Machine ID: <span class="mono" id="stMid">' + esc(mid) + '</span> '
+          + '<button class="btn" id="stCopy" style="padding:2px 8px">Copy</button>'
+          + '<div class="s">Send the machine ID to get a key for this computer.</div>';
+        document.getElementById("stCopy").addEventListener("click", function(){
+          try{ navigator.clipboard.writeText(mid); this.textContent = "Copied"; }catch(e){}
+        });
+      });
+    }
+    document.getElementById("stAct").addEventListener("click", function(){
+      var k = document.getElementById("stKey").value.trim();
+      if(!k){ msg("stLicMsg", "Paste the key first.", true); return; }
+      msg("stLicMsg", "Activating…");
+      send("POST", "/license/activate", {license_key:k}).then(function(j){
+        msg("stLicMsg", j.message || (j.success ? "Activated." : "Not activated."), !j.success);
+        loadLic();
+      }).catch(function(e){ msg("stLicMsg", String(e.message || e), true); });
+    });
+    document.getElementById("stDeact").addEventListener("click", function(){
+      if(!confirm("Remove the licence from this machine? Licensed pipelines lock until a key is entered again.")) return;
+      send("POST", "/license/deactivate").then(function(j){
+        msg("stLicMsg", j.message || "Removed."); loadLic();
+      }).catch(function(e){ msg("stLicMsg", String(e.message || e), true); });
+    });
+
+    function loadUpd(){
+      document.getElementById("stUpd").textContent = "Checking…";
+      api("/update/check").then(function(u){
+        document.getElementById("stVer").textContent = u.current_version ? "this machine: v" + u.current_version : "";
+        var ap = document.getElementById("stApply");
+        ap.hidden = !u.available;
+        document.getElementById("stUpd").innerHTML = u.available
+          ? '<b>v' + esc(u.latest_version) + ' is available</b>' + (u.release_date ? ' · ' + esc(u.release_date) : "")
+            + (u.changelog ? '<div class="s" style="white-space:pre-wrap;margin-top:6px">' + esc(String(u.changelog).slice(0, 1500)) + '</div>' : "")
+          : u.local_is_newer ? 'This machine is ahead of the published release (v' + esc(u.latest_version || "?") + ') — unpublished changes.'
+          : u.error ? 'Could not check: ' + esc(u.message || u.error)
+          : (u.latest_version ? 'Up to date.' : 'Could not reach the update server — try again later.');
+      }).catch(function(){ document.getElementById("stUpd").textContent = "The update check is not available in this build."; });
+    }
+    document.getElementById("stChk").addEventListener("click", loadUpd);
+    document.getElementById("stApply").addEventListener("click", function(){
+      var running = STATE.jobs.filter(function(j){ return j.status === "running" || j.status === "queued"; }).length;
+      if(!confirm((running ? running + " job(s) are running or queued. " : "")
+                  + "Download the update now? Restart the backend afterwards.")) return;
+      var b = this; b.disabled = true; msg("stUpdMsg", "Updating — this can take a few minutes…");
+      send("POST", "/update/apply").then(function(j){
+        var steps = (j.steps || []).map(function(s){ return s.step + (s.success ? " ✓" : " ✗"); }).join(" · ");
+        msg("stUpdMsg", (j.message || (j.success ? "Done." : "Update failed.")) + (steps ? " — " + steps : ""), !j.success);
+      }).catch(function(e){ msg("stUpdMsg", String(e.message || e), true); })
+        .then(function(){ b.disabled = false; });
+    });
+
+    api("/config").then(function(c){ document.getElementById("stWk").value = c.max_workers; }).catch(function(){});
+    document.getElementById("stWkSave").addEventListener("click", function(){
+      var n = parseInt(document.getElementById("stWk").value, 10);
+      if(!(n >= 1 && n <= 16)){ msg("stWkMsg", "1 to 16.", true); return; }
+      send("POST", "/config", {max_workers:n}).then(function(c){
+        msg("stWkMsg", "Saved — " + c.max_workers + " at once."); document.getElementById("stWk").value = c.max_workers;
+      }).catch(function(e){ msg("stWkMsg", String(e.message || e), true); });
+    });
+
+    document.getElementById("stClear").addEventListener("click", function(){
+      var n = STATE.jobs.filter(function(j){ return ["completed","cancelled","error","uploaded"].indexOf(j.status) !== -1; }).length;
+      if(!n){ msg("stHkMsg", "No finished jobs to delete."); return; }
+      if(!confirm("Permanently delete " + n + " finished job(s) — their results AND uploaded reads?")) return;
+      send("DELETE", "/history").then(function(j){
+        msg("stHkMsg", "Deleted " + (j.cleared || 0) + " job(s).");
+        refreshJobs();
+      }).catch(function(e){ msg("stHkMsg", String(e.message || e), true); });
+    });
+    document.getElementById("stOrphan").addEventListener("click", function(){
+      if(!confirm("Permanently remove result / upload folders that belong to no job in the history?")) return;
+      send("DELETE", "/results/cleanup").then(function(j){
+        msg("stHkMsg", "Removed " + (j.removed || 0) + " folder(s)" + ((j.errors || []).length ? ", " + j.errors.length + " could not be removed" : "") + ".",
+            (j.errors || []).length > 0);
+      }).catch(function(e){ msg("stHkMsg", String(e.message || e), true); });
+    });
+
+    loadLic(); loadUpd();
   }
 
   /* ═══ home: project history ════════════════════════════════════════════ */
@@ -883,7 +1040,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<b>Could not read the job list.</b>\n' + esc(STATE.listErr)
         + '\n\nThis screen is showing nothing because it knows nothing — not because there are no jobs.</div>';
       if(sum) sum.textContent = "backend unreachable";
-      if(note) note.innerHTML = '<div class="note bad"><b>Is the backend up?</b> The beta console is served by the '
+      if(note) note.innerHTML = '<div class="note bad"><b>Is the backend up?</b> This console is served by the '
         + 'same process as the production UI, so if this cannot reach <span class="mono">/jobs</span>, '
         + 'neither can the production console. Check <span class="mono">bash ~/r16s-app/start_backend.sh</span>.</div>';
       return;
@@ -1243,7 +1400,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           : M.live
           ? '<button class="btn" id="cancelBtn" title="The log updates as the pipeline writes it. '
               + 'Closing this page does not affect the run.">Cancel job</button>'
-            + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>'
+            + '<a class="btn" href="/classic?job=' + encodeURIComponent(jid) + '">Open in the classic UI</a>'
           /* A failed run can still have written results — this one did: the
              pipeline finished and a step AFTER it threw. Hiding the results
              behind the status would mean 21 minutes of finished work being
@@ -1251,7 +1408,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           : '<button class="btn danger" id="delBtn">Delete job</button>'
             + (isWgs ? '<button class="btn pri" id="wgReJob" data-resume="1" title="Carry on from where it stopped: samples and steps already finished are kept">Resume run</button>' : "")
             + '<button class="btn" id="resBtn">View any results</button>'
-            + '<a class="btn" href="/?job=' + encodeURIComponent(jid) + '">Open in the production UI</a>';
+            + '<a class="btn" href="/classic?job=' + encodeURIComponent(jid) + '">Open in the classic UI</a>';
       body.innerHTML =
           (M.live ? "" : '<div id="delBox"></div><div id="repBox"></div>')
         + '<div class="kpis">' + M.kpis.map(function(x){
@@ -1536,6 +1693,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     row("Metadata supplied",   (p.metadata || (p.metadataRows && p.metadataRows.length)) ? "yes" : "no");
     row("Manual sample map",   (p.sampleFileMap && Object.keys(p.sampleFileMap).length) ? "yes" : "no");
     row("Reads re-oriented",   D.reoriented ? "yes" : "");
+    }
+    if(p.marker !== "ONT-WGS"){
+      var csv = function(v){ return Array.isArray(v) ? v.join(", ") : (v || ""); };
+      row("Negative controls",   csv(p.controlSamples));
+      row("Mock community",      csv(p.mockSamples) ? csv(p.mockSamples) + " · " + (p.mockStandard || "") : "");
+      if(p.ont_parallel !== undefined && /ONT/.test(p.marker || ""))
+        row("Emu samples in parallel", p.ont_parallel ? p.ont_parallel : "auto");
+      if(p.run_maaslin3 !== undefined)
+        row("MaAsLin 3", p.run_maaslin3
+          ? "on · " + (p.maaslin_rank || "Genus")
+            + (p.maaslin_fixed ? " · fixed: " + p.maaslin_fixed : " · all usable columns")
+            + (p.maaslin_random ? " · random: " + p.maaslin_random : "")
+            + (p.maaslin_reference ? " · reference: " + p.maaslin_reference : "")
+          : "off");
     }
 
     if(!rows.length) return "";
@@ -5340,7 +5511,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<div class="kv"><span>Marker-specific primer handling</span><span>Matched reference database</span>'
         + '<span>Same QC checkpoints</span><span>Same report builder</span></div>'
         + '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">'
-        + '<a class="btn pri" href="/">Enter a licence key in the production UI</a></div></div>'
+        + '<a class="btn pri" href="#settings">Enter a licence key</a></div></div>'
       + '</div></div>'
       + '<div class="note">Locked pipelines stay visible on purpose. Hiding them would make the app look '
       + 'smaller than it is, and nobody buys a capability they never knew existed.</div>';
@@ -5599,7 +5770,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["primer_r",          "Reverse primer",   "mono",   "", ""],
         ["cutadaptErrorRate", "Error rate",       "num",    "0.1", "fraction of mismatches allowed (-e)"],
         ["cutadaptOverlap",   "Minimum overlap",  "int",    "3",   "bases (-O)"],
-        ["discardUntrimmed",  "Discard untrimmed","bool",   "false", "drop reads with no primer found"]
+        ["discardUntrimmed",  "Discard untrimmed","bool",   "false", "drop reads with no primer found"],
+        ["run_fastqc",        "FastQC + MultiQC", "bool",   "false",
+         "per-file HTML reports in qc/ (only if fastqc is installed); the read-quality summary is made either way"]
       ]});
 
     if(dada2) steps.push({n:"1b", title:"Read orientation repair",
@@ -5650,6 +5823,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["ontMinLen",         "Minimum read length","int",   "300", "bp"],
         ["ontMaxLen",         "Maximum read length","int",   "600", "bp"],
         ["nThreads",          "CPU threads",       "int",    "8", "minimap2 / Emu, chopper, VSEARCH (Emu ran on 4 before)"],
+        ["ont_parallel",      "Samples in parallel", "int",  "0",
+         "Emu runs this many samples at once, sharing the threads; 0 = automatic from CPU and free RAM"],
         ["ont_chimera",       "Chimera removal (VSEARCH)", "bool", "false",
          "reference-based; off by default — on ONT reads it removes real reads of taxa the reference covers poorly"]
       ]});
@@ -5716,8 +5891,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                              "Eukaryota / Mitochondria / Chloroplast"]
       ]});
 
-    steps.push({n:7, title:"Differential abundance",
-      why:"Decontam needs negative-control samples named in the metadata.",
+    steps.push({n:7, title:"Controls and differential abundance",
+      why:"Controls can also be marked in the metadata: a column control / sample_type / type with negative, blank, NTC or mock.",
       fields:[
         ["run_lulu",          "LULU curation",      "bool",   "true", ""],
         ["decontam", "Decontam", "select", "none", [
@@ -5725,7 +5900,23 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           ["prevalence", "prevalence — needs negative controls"]]],
         ["decontamThreshold", "Decontam threshold", "num",    "0.1", ""],
         ["_controls",         "Negative controls",  "controls", "",
-                              "sample IDs, comma separated — must match the Sample column above"]
+                              "sample IDs, comma separated — must match the Sample column above"],
+        ["_mocks",            "Mock community",     "mocks", "",
+                              "sample IDs of mock / positive controls, comma separated"],
+        ["mockStandard", "Mock standard", "select", "zymo_d6300", [
+          ["zymo_d6300", "ZymoBIOMICS D6300 / D6305 / D6306 (8 bacteria)"],
+          ["zymo_d6331", "ZymoBIOMICS Gut D6331 (listed, no expected %)"]]],
+        ["run_maaslin3",      "MaAsLin 3",          "bool",   "true",
+                              "multivariable abundance + prevalence model; skipped when the metadata has nothing to test"],
+        ["maaslin_fixed",     "MaAsLin fixed effects",  "text", "",
+                              "metadata columns, comma separated — blank = every usable column"],
+        ["maaslin_random",    "MaAsLin random effects", "text", "",
+                              "e.g. subject, for repeated samples from the same source"],
+        ["maaslin_reference", "MaAsLin reference levels", "text", "",
+                              "column,level; column,level — e.g. group,Control"],
+        ["maaslin_rank", "MaAsLin rank", "select", "Genus", [
+          ["Phylum","Phylum"],["Class","Class"],["Order","Order"],["Family","Family"],
+          ["Genus","Genus"],["Species","Species"]]]
       ]});
 
     steps.push({n:8, title:"Functional analysis",
@@ -5798,6 +5989,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     } else if(kind === "controls"){
       wide = true;
       ctl = '<input type="text" id="f_controls" placeholder="e.g. BLANK1, NTC2">';
+    } else if(kind === "mocks"){
+      wide = true;
+      ctl = '<input type="text" id="f_mocks" placeholder="e.g. MOCK1, ZYMO">';
     } else if(kind === "ro"){
       ctl = '<input type="text" value="' + esc(def) + '" readonly>';
     } else {
@@ -5949,6 +6143,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + '</div>'
 
       + '<div id="sampleBox"></div>'
+      + '<div id="qcBox"></div>'
 
       + '<div class="panel adv">'
         + '<div class="sechdr"><h3>Run type</h3>'
@@ -6280,7 +6475,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           jn.value = String(j.source).split(/[\\\/]/).filter(Boolean).pop() || "";
       })
       .catch(function(e){ FORM.lastError = "Folder not usable — " + (e.message || e); st.textContent = ""; })
-      .then(function(){ FORM.busy = false; paintSamples(); preflight(dbOpts, dbCount); });
+      .then(function(){ FORM.busy = false; paintSamples(); preflight(dbOpts, dbCount);
+                        if(FORM.jobId) runQC(); });
   }
 
   function chooseMeta(file, dbOpts, dbCount){
@@ -6345,6 +6541,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         btn.disabled = !!FORM.jobId;
         paintSamples();
         preflight(dbOpts, dbCount);
+        if(FORM.jobId) runQC();
       });
   }
 
@@ -6355,20 +6552,28 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   function paintSamples(provisional){
     var box = document.getElementById("sampleBox");
     if(!box) return;
+    var qb = document.getElementById("qcBox");
+    if(qb && !FORM.jobId){ qb.innerHTML = ""; FORM.qc = null; }
     var D = FORM.detect;
     if(!D || !D.map.length && !D.problems.length){ box.innerHTML = ""; return; }
 
     var metaIds = FORM.meta.map(function(m){ return m.sampleId; });
     if(D.merged) return paintMerged(box, D, metaIds, provisional);
-    var rows = D.map.map(function(m){
-      var matched = metaIds.indexOf(m.sample) !== -1;
-      return '<tr><td><b>' + esc(m.sample) + '</b></td>'
+    function metaCell(name){
+      return !FORM.meta.length ? '<span style="color:var(--fg-3)">—</span>'
+        : metaIds.indexOf(name) !== -1 ? '<span style="color:var(--ok)">matched</span>'
+        : '<span style="color:var(--warn)">no metadata row</span>';
+    }
+    var rows = D.map.map(function(m, i){
+      return '<tr><td><input type="text" class="smName" data-i="' + i + '" value="' + esc(m.sample)
+        + '" style="width:100%;min-width:110px"></td>'
         + '<td>' + esc(m.file1) + '</td>'
         + '<td>' + (m.file2 ? esc(m.file2) : '<span style="color:var(--fg-3)">single-end</span>') + '</td>'
-        + '<td>' + (!FORM.meta.length ? '<span style="color:var(--fg-3)">—</span>'
-            : matched ? '<span style="color:var(--ok)">matched</span>'
-                      : '<span style="color:var(--warn)">no metadata row</span>') + '</td></tr>';
+        + '<td class="smMeta" data-i="' + i + '">' + metaCell(m.sample) + '</td>'
+        + '<td style="text-align:right"><button class="btn smDel" data-i="' + i
+        + '" title="Take this row out of the run (the files stay uploaded)">×</button></td></tr>';
     }).join("");
+    var left = leftoverFastq(D);
 
     var extraMeta = metaIds.filter(function(id){
       return !D.map.some(function(m){ return m.sample === id; });
@@ -6379,10 +6584,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       orphanR2:  "Reverse reads with no matching forward file",
       untokened: "FASTQ files with no _R1/_R2 or _1/_2 token — they cannot be assigned to a read direction",
       duplicate: "Two files resolved to the SAME sample name — one would overwrite the other",
-      ignored:   "Not FASTQ, ignored"
+      ignored:   "Not FASTQ, ignored",
+      leftover:  "Files not in any sample (left out of the run)"
     };
     var probs = D.problems.filter(function(p){ return p.kind !== "ignored" || true; }).map(function(p){
-      var bad = p.kind !== "ignored";
+      var bad = p.kind !== "ignored" && p.kind !== "leftover";
       return '<div class="' + (bad ? "errbox" : "warnbox") + '" style="border-radius:0">'
         + '<b>' + esc(PROB[p.kind] || p.kind) + ':</b> ' + esc(p.detail) + '</div>';
     }).join("");
@@ -6393,9 +6599,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + (provisional && !FORM.jobId ? " · from the filenames, before upload" : "")
       + (D.strict ? "" : " · matched on a loose _R1/_R2 rule") + '</span></div>'
       + (rows ? '<table class="parms samples"><thead><tr><th>Sample</th><th>Forward</th>'
-          + '<th>Reverse</th><th>Metadata</th></tr></thead><tbody>' + rows + '</tbody></table>'
+          + '<th>Reverse</th><th>Metadata</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
         : '<div class="skel">No sample could be resolved from these filenames.</div>')
-      + probs
+      + '<div id="smProbs">' + probs + '</div>'
+      + (left.length ? '<div class="manual" style="padding:10px 14px;border-top:1px solid var(--line);'
+          + 'display:flex;flex-wrap:wrap;gap:8px;align-items:center">'
+          + '<b>Pair manually</b>'
+          + '<select id="mpF" title="forward / single file">' + left.map(function(f){
+              return '<option>' + esc(f) + '</option>'; }).join("") + '</select>'
+          + '<select id="mpR" title="reverse file"><option value="">— no reverse (single-end) —</option>'
+          + left.map(function(f){ return '<option>' + esc(f) + '</option>'; }).join("") + '</select>'
+          + '<input type="text" id="mpS" placeholder="sample name" style="width:150px">'
+          + '<button class="btn" id="mpAdd">Add sample</button>'
+          + '<span class="s">names the sample and fixes its files; the run uses this table, not the filenames</span>'
+          + '</div>' : "")
       + (extraMeta.length
           ? '<div class="warnbox"><b>' + extraMeta.length + ' metadata row'
             + (extraMeta.length === 1 ? "" : "s") + ' match no sample:</b> ' + esc(extraMeta.join(", "))
@@ -6404,6 +6621,61 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + (FORM.metaErr ? '<div class="errbox" style="border-radius:0 0 var(--r) var(--r)"><b>Metadata:</b> '
           + esc(FORM.metaErr) + '</div>' : "")
       + '</div>';
+    wireManual(box, D, metaCell);
+  }
+
+  /* FASTQ files that no row of the sample table uses. */
+  function allFastq(){
+    var names = FORM.jobId ? FORM.uploaded : FORM.files.map(function(f){ return f.name; });
+    return names.filter(function(n){ return EXT.test(n); });
+  }
+  function leftoverFastq(D){
+    var used = {};
+    D.map.forEach(function(m){ used[m.file1] = 1; if(m.file2) used[m.file2] = 1; });
+    return allFastq().filter(function(f){ return !used[f]; });
+  }
+  /* Once the table has been edited by hand, the filename rules no longer
+     describe it: the problems are recomputed from the table itself, and files
+     left out are a note, not a blocker. */
+  function manualProblems(D){
+    var keep = D.problems.filter(function(p){ return p.kind === "ignored"; });
+    var left = leftoverFastq(D);
+    if(left.length) keep.push({kind:"leftover", detail:left.join(", ")});
+    return keep.concat(dupCheck(D.map));
+  }
+  function wireManual(box, D, metaCell){
+    Array.prototype.forEach.call(box.querySelectorAll(".smName"), function(el){
+      el.addEventListener("input", function(){
+        var i = parseInt(el.dataset.i, 10);
+        D.map[i].sample = cleanName(el.value);
+        D.manual = true;
+        D.problems = manualProblems(D);
+        var mc = box.querySelector('.smMeta[data-i="' + i + '"]');
+        if(mc) mc.innerHTML = metaCell(D.map[i].sample);
+        if(FORM.pf) FORM.pf();
+      });
+      el.addEventListener("change", function(){ paintSamples(); });
+    });
+    Array.prototype.forEach.call(box.querySelectorAll(".smDel"), function(b){
+      b.addEventListener("click", function(){
+        D.map.splice(parseInt(b.dataset.i, 10), 1);
+        D.manual = true;
+        D.problems = manualProblems(D);
+        paintSamples();
+        if(FORM.pf) FORM.pf();
+      });
+    });
+    var add = document.getElementById("mpAdd");
+    if(add) add.addEventListener("click", function(){
+      var f1 = document.getElementById("mpF").value, f2 = document.getElementById("mpR").value;
+      var nm = cleanName(document.getElementById("mpS").value || f1.replace(EXT, "").replace(/[_.-]R?1$/i, ""));
+      if(!f1 || f1 === f2 || !nm) return;
+      D.map.push({sample:nm, file1:f1, file2:f2});
+      D.manual = true;
+      D.problems = manualProblems(D);
+      paintSamples();
+      if(FORM.pf) FORM.pf();
+    });
   }
 
   function paintMerged(box, D, metaIds, provisional){
@@ -6453,12 +6725,161 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     });
   }
 
+  /* ═══ read quality, before the run (GET /qc/{job}) ═══════════════════════
+     Per-position quality and read lengths from a subsample of every file,
+     and — for paired amplicons — a truncLen that keeps the pairs overlapping.
+     It is a suggestion: Apply copies it into step 2, nothing changes on its own. */
+  function runQC(){
+    var box = document.getElementById("qcBox");
+    if(!box || !FORM.jobId) return;
+    var pf = (document.getElementById("f_primer_f") || {}).value || "";
+    var pr = (document.getElementById("f_primer_r") || {}).value || "";
+    var jid = FORM.jobId;
+    FORM.qc = null;
+    box.innerHTML = '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Read quality</h3>'
+      + '<span class="hint">reading a subsample of every file…</span></div></div>';
+    fetch("/qc/" + encodeURIComponent(jid) + "?primer_f=" + encodeURIComponent(pf.trim())
+          + "&primer_r=" + encodeURIComponent(pr.trim()), {cache:"no-store"})
+      .then(function(r){ return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.error || ("HTTP " + r.status)); return j; }); })
+      .then(function(j){ if(FORM.jobId === jid){ FORM.qc = j; paintQC(); } })
+      .catch(function(e){
+        if(FORM.jobId !== jid) return;
+        box.innerHTML = '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Read quality</h3></div>'
+          + '<div class="warnbox">Could not read the files: ' + esc(e.message || e)
+          + ' — the run itself is not affected.</div></div>';
+      });
+  }
+
+  function qcSvg(P, cut, sugg, label){
+    var prof = (P && P.per_position) || [];
+    if(!prof.length) return "";
+    var W = 330, H = 120, L = 26, B = 18, n = prof.length;
+    var x = function(i){ return L + (W - L - 6) * i / Math.max(1, n - 1); };
+    var y = function(q){ return 6 + (H - B - 6) * (1 - Math.min(41, q) / 41); };
+    var band = prof.map(function(p, i){ return x(i).toFixed(1) + "," + y(p[3]).toFixed(1); }).join(" ")
+      + " " + prof.slice().reverse().map(function(p, k){
+        return x(n - 1 - k).toFixed(1) + "," + y(p[1]).toFixed(1); }).join(" ");
+    var med = prof.map(function(p, i){ return x(i).toFixed(1) + "," + y(p[2]).toFixed(1); }).join(" ");
+    function vline(v, col, dash, t){
+      if(!v || v > n) return "";
+      return '<line x1="' + x(v - 1) + '" x2="' + x(v - 1) + '" y1="6" y2="' + (H - B) + '" stroke="' + col
+        + '" stroke-width="1.5"' + (dash ? ' stroke-dasharray="4 3"' : "") + '><title>' + t + '</title></line>';
+    }
+    var g = [20, 30].map(function(q){
+      return '<line x1="' + L + '" x2="' + (W - 6) + '" y1="' + y(q) + '" y2="' + y(q)
+        + '" stroke="var(--line)" stroke-dasharray="2 3"/><text x="2" y="' + (y(q) + 3)
+        + '" font-size="9" fill="var(--fg-3)">Q' + q + '</text>'; }).join("");
+    return '<figure style="margin:0;min-width:0"><svg viewBox="0 0 ' + W + ' ' + H
+      + '" style="width:100%;max-width:420px;display:block" role="img" aria-label="' + esc(label)
+      + ' per-position quality">' + g
+      + '<polygon points="' + band + '" fill="var(--accent)" opacity=".18"/>'
+      + '<polyline points="' + med + '" fill="none" stroke="var(--accent)" stroke-width="1.6"/>'
+      + vline(cut, "var(--fg-2)", false, "truncLen in the form")
+      + vline(sugg, "var(--ok)", true, "suggested truncLen")
+      + '<text x="' + L + '" y="' + (H - 4) + '" font-size="9" fill="var(--fg-3)">1</text>'
+      + '<text x="' + (W - 6) + '" y="' + (H - 4) + '" font-size="9" fill="var(--fg-3)" text-anchor="end">'
+      + n + ' bp</text></svg>'
+      + '<figcaption class="s">' + esc(label) + ' — median (line), 25–75% (band); grey = form, green dashed = suggested</figcaption></figure>';
+  }
+
+  function paintQC(){
+    var box = document.getElementById("qcBox"), Q = FORM.qc;
+    if(!box || !Q) return;
+    var names = Object.keys(Q.samples || {});
+    if(!names.length){ box.innerHTML = ""; return; }
+    var isCox = FORM.marker === "COX1";
+    var idF = isCox ? "f_truncLen_cox1_f" : "f_truncLen_F", idR = isCox ? "f_truncLen_cox1_r" : "f_truncLen_R";
+    var curF = parseInt((document.getElementById(idF) || {}).value, 10) || 0;
+    var curR = parseInt((document.getElementById(idR) || {}).value, 10) || 0;
+    var S = Q.suggestion, long = Q.platform === "long";
+    var rows = names.map(function(nm){
+      var fs = Q.samples[nm].files || [], f = fs[0] || {};
+      var low = (Q.low_depth || []).indexOf(nm) !== -1;
+      return '<tr><td><b>' + esc(nm) + '</b></td>'
+        + '<td style="text-align:right">' + nfmt(f.reads_examined || 0) + (low ? ' <span style="color:var(--warn)">low</span>' : "") + '</td>'
+        + '<td style="text-align:right">' + fs.map(function(x){ return x.median_len || "—"; }).join(" / ") + '</td>'
+        + '<td style="text-align:right">' + fs.map(function(x){ return x.mean_q != null ? x.mean_q : "—"; }).join(" / ") + '</td>'
+        + '<td style="text-align:right">' + fs.map(function(x){ return x.pct_q30 != null ? x.pct_q30 + "%" : "—"; }).join(" / ") + '</td>'
+        + (long ? '<td style="text-align:right">' + (f.n50 || "—") + '</td>' : "") + '</tr>';
+    }).join("");
+    var P = Q.pooled || {};
+    var sugHtml = "";
+    if(S){
+      var canApply = !!document.getElementById(idF) && S.truncLen_F !== undefined;
+      sugHtml = '<div class="' + (S.ok === false ? "errbox" : "note") + '" style="margin:10px 14px">'
+        + '<b>Suggested truncLen ' + S.truncLen_F + ' / ' + S.truncLen_R + '</b>'
+        + (S.insert_len ? ' · amplicon ' + S.insert_len + ' bp after primers' : "")
+        + (S.overlap !== undefined ? ' · overlap ' + S.overlap + ' bp' : "")
+        + '<br>' + esc(S.reason || "")
+        + (canApply ? ' <button class="btn" id="qcApply" style="margin-left:6px">Apply to step 2</button>' : "")
+        + '</div>';
+    }
+    var figs = (!long && P.R1) ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;padding:6px 14px">'
+      + qcSvg(P.R1, curF ? curF + ((document.getElementById("f_primer_f") || {}).value || "").trim().length : 0,
+              S ? S.truncLen_F + ((document.getElementById("f_primer_f") || {}).value || "").trim().length : 0, "Forward reads (R1)")
+      + qcSvg(P.R2, curR ? curR + ((document.getElementById("f_primer_r") || {}).value || "").trim().length : 0,
+              S ? S.truncLen_R + ((document.getElementById("f_primer_r") || {}).value || "").trim().length : 0, "Reverse reads (R2)")
+      + '</div><div class="s" style="padding:0 14px 6px">Positions are on the raw reads, primer included; '
+      + 'truncLen counts from after the primer, so the lines are shifted by the primer length.</div>' : "";
+    box.innerHTML = '<div class="panel" style="margin-top:12px">'
+      + '<div class="sechdr"><h3>Read quality</h3><span class="hint">' + names.length + ' sample'
+      + (names.length === 1 ? "" : "s") + ' · first ' + nfmt(Q.reads_per_file_examined || 0)
+      + ' reads of each file · ' + esc(Q.platform || "") + '</span>'
+      + '<span class="sp" style="flex:1"></span>'
+      + '<button class="btn" id="qcAgain" title="Read again with the primers now in step 1">Re-check</button>'
+      + (FORM.marker !== "ONT-16S" && Q.platform === "paired"
+          ? ' <button class="btn" id="orCheck" title="Pairs that start at the reverse primer cannot be merged">Check orientation</button>' : "")
+      + '</div>'
+      + sugHtml + figs
+      + '<table class="parms samples"><thead><tr><th>Sample</th><th style="text-align:right">Reads read</th>'
+      + '<th style="text-align:right">Median length</th><th style="text-align:right">Mean Q</th>'
+      + '<th style="text-align:right">≥Q30</th>' + (long ? '<th style="text-align:right">N50</th>' : "")
+      + '</tr></thead><tbody>' + rows + '</tbody></table>'
+      + ((Q.low_depth || []).length ? '<div class="warnbox"><b>Low depth:</b> ' + esc(Q.low_depth.join(", "))
+          + ' — fewer than 1,000 reads. Rarefaction and diversity will be driven by these samples.</div>' : "")
+      + '<div id="orBox"></div></div>';
+    var ap = document.getElementById("qcApply");
+    if(ap) ap.addEventListener("click", function(){
+      setVal(idF, String(S.truncLen_F)); setVal(idR, String(S.truncLen_R));
+      ap.textContent = "Applied"; ap.disabled = true;
+      paintQC();
+    });
+    document.getElementById("qcAgain").addEventListener("click", runQC);
+    var oc = document.getElementById("orCheck");
+    if(oc) oc.addEventListener("click", checkOrientation);
+  }
+
+  function checkOrientation(){
+    var ob = document.getElementById("orBox");
+    var pf = ((document.getElementById("f_primer_f") || {}).value || "").trim();
+    var pr = ((document.getElementById("f_primer_r") || {}).value || "").trim();
+    if(!ob) return;
+    if(!pf || !pr){ ob.innerHTML = '<div class="warnbox">Both primers are needed (step 1).</div>'; return; }
+    ob.innerHTML = '<div class="note" style="margin:10px 14px">Checking 20,000 pairs per sample…</div>';
+    fetch("/prep/" + encodeURIComponent(FORM.jobId) + "/orientation-check", {method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({primer_f:pf, primer_r:pr})})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if(j.error) throw new Error(j.error);
+        var per = (j.samples || []).map(function(x){
+          return esc(x.sample) + " " + (x.error ? "error" : (x.pct_flipped || 0) + "%"); }).join(" · ");
+        ob.innerHTML = '<div class="' + (j.needs_reorientation ? "warnbox" : "note") + '" style="margin:10px 14px">'
+          + '<b>' + esc(j.recommendation || j.message || "") + '</b>'
+          + (per ? '<br><span class="s">Reversed pairs: ' + per + '</span>' : "")
+          + (j.needs_reorientation ? '<br>Step 1b set to <b>always repair</b> — the run will reorient every pair first.' : "")
+          + '</div>';
+        if(j.needs_reorientation) setVal("f_reorient", "TRUE");
+      })
+      .catch(function(e){ ob.innerHTML = '<div class="warnbox">Orientation check failed: ' + esc(e.message || e) + '</div>'; });
+  }
+
   function preflight(dbOpts, dbCount){
     var el = document.getElementById("pre");
     if(!el) return;
     var D  = FORM.detect;
     var n  = D ? D.map.length : 0;
-    var hardProblems = D ? D.problems.filter(function(p){ return p.kind !== "ignored"; }) : [];
+    var hardProblems = D ? D.problems.filter(function(p){ return p.kind !== "ignored" && p.kind !== "leftover"; }) : [];
     var metaOk  = !FORM.meta.length || (!FORM.metaErr && D && D.map.every(function(m){
       return FORM.meta.some(function(x){ return x.sampleId === m.sample; });
     }));
@@ -6542,6 +6963,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var ctl = document.getElementById("f_controls");
     p.controlSamples = ctl
       ? ctl.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean)
+      : [];
+    var mk = document.getElementById("f_mocks");
+    p.mockSamples = mk
+      ? mk.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean)
       : [];
     return p;
   }
@@ -7241,6 +7666,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     pipes.hidden = open;
   });
   histBtn.addEventListener("click", function(){ go({name:"history"}); });
+  document.getElementById("setBtn").addEventListener("click", function(){ go({name:"settings"}); });
+  window.addEventListener("hashchange", function(){
+    if(location.hash === "#settings") go({name:"settings"});
+  });
 
   document.getElementById("theme").addEventListener("click", function(){
     var r = document.documentElement;
@@ -7275,12 +7704,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      already says what this UI is; claiming a different version number here
      would be the first thing to mislead someone reading a bug report. */
   api("/version").then(function(v){
-    if(v && v.version) verLine.textContent = "Company Limited · v" + v.version + " · beta console";
+    if(v && v.version) verLine.textContent = "Company Limited · v" + v.version;
   }).catch(function(){
-    verLine.textContent = "Company Limited · beta console";
+    verLine.textContent = "Company Limited";
   });
 
-  go({name:"history"});
+  go(location.hash === "#settings" ? {name:"settings"} : {name:"history"});
 })();
 </script>
 </html>

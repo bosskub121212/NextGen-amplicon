@@ -1950,6 +1950,9 @@ REFERENCES = [
     ("Parks, D. H., et al. (2022).", "GTDB: an ongoing census of bacterial and archaeal diversity through a "
      "phylogenetically consistent, rank normalized and complete genome-based taxonomy.",
      "Nucleic Acids Research, 50(D1), D785–D794."),
+    # 25
+    ("Nickols, W. A., et al. (2024).", "MaAsLin 3: Refining and extending generalized multivariable linear "
+     "models for meta-omic association discovery.", "bioRxiv, 2024.12.13.628459."),
 ]
 REF_DADA2 = [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 REF_EMU = [5, 0, 6, 7, 4, 8, 9, 10, 11, 12, 13, 14, 15, 16]
@@ -1969,6 +1972,8 @@ def _ref_indices(run) -> list[int]:
     else:
         tools = [0, 1] + ([20] if run.kind == "pacbio" else []) + [2] + ([19] if run.kind == "cox1" else [])
     out = tools + dbref + [8, 9, 10, 11, 12, 13, 14, 15]
+    if (run.path / "r_tables" / "maaslin3_results.csv").exists():
+        out.append(25)
     if run.bacterial:
         out.append(16)
     return list(dict.fromkeys(out))
@@ -2491,6 +2496,262 @@ def _picrust_result(pc, F, T, top=25):
     return out
 
 
+def svg_qprofile(qc, trunc=None, sugg=None) -> str:
+    """Median quality per position with the 25-75% band, R1 and R2 side by side."""
+    pooled = qc.get("pooled") or {}
+    panels = [(k, (pooled.get(k) or {}).get("per_position") or []) for k in ("R1", "R2")]
+    panels = [(k, p) for k, p in panels if p]
+    if not panels:
+        return ""
+    W, H, ml, mr, mt, mb, gap = 560, 210, 34, 8, 18, 30, 26
+    pw = (W - ml - mr - gap * (len(panels) - 1)) / len(panels)
+    ph = H - mt - mb
+    p = _svg_open(W, H)
+    for j, (name, prof) in enumerate(panels):
+        x0 = ml + j * (pw + gap)
+        L = len(prof)
+        X = lambda i: x0 + pw * i / max(1, L - 1)
+        Y = lambda q: mt + ph * (1 - min(41, max(0, q)) / 41)
+        for qv in (20, 30):
+            p.append(f'<line x1="{x0:.1f}" x2="{x0+pw:.1f}" y1="{Y(qv):.1f}" y2="{Y(qv):.1f}" '
+                     f'stroke="{RULE}" stroke-dasharray="3 3"/>')
+            if j == 0:
+                p.append(f'<text x="{x0-4:.1f}" y="{Y(qv)+3:.1f}" font-size="7.5" fill="{FAINT}" '
+                         f'text-anchor="end">Q{qv}</text>')
+        band = [f"{X(i):.1f},{Y(r[3]):.1f}" for i, r in enumerate(prof)] + \
+               [f"{X(i):.1f},{Y(r[1]):.1f}" for i, r in reversed(list(enumerate(prof)))]
+        p.append(f'<polygon points="{" ".join(band)}" fill="{ACC}" opacity="0.18"/>')
+        p.append('<polyline fill="none" stroke="' + ACC + '" stroke-width="1.4" points="'
+                 + " ".join(f"{X(i):.1f},{Y(r[2]):.1f}" for i, r in enumerate(prof)) + '"/>')
+        p.append(f'<rect x="{x0:.1f}" y="{mt}" width="{pw:.1f}" height="{ph}" fill="none" stroke="{RULE}"/>')
+        p.append(f'<text x="{x0:.1f}" y="{mt-5}" font-size="8.6" fill="{INK}" font-weight="700">{name}</text>')
+        for tick in range(0, L + 1, 50):
+            p.append(f'<text x="{X(min(tick, L-1)):.1f}" y="{H-mb+12}" font-size="7.4" fill="{FAINT}" '
+                     f'text-anchor="middle">{tick}</text>')
+        for val, col, lab in ((trunc[j] if trunc else None, STOP, "used"),
+                              (sugg[j] if sugg else None, "#2E6B46", "suggested")):
+            if val:
+                xv = X(min(L - 1, val))
+                p.append(f'<line x1="{xv:.1f}" x2="{xv:.1f}" y1="{mt}" y2="{mt+ph}" stroke="{col}" '
+                         f'stroke-width="1.1" stroke-dasharray="4 2"/>')
+                p.append(f'<text x="{xv-3:.1f}" y="{mt+10 + (0 if lab == "used" else 10)}" font-size="7.4" '
+                         f'fill="{col}" text-anchor="end">{lab} {val}</text>')
+    p.append(f'<text x="{W/2:.0f}" y="{H-4}" font-size="8" fill="{MUT}" text-anchor="middle">'
+             f'position in read (bp)</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def svg_longread(qc) -> str:
+    """Read length and mean read quality, pooled over samples (NanoPlot-style)."""
+    lh = [0] * 40
+    qh = [0] * 41
+    for ent in (qc.get("samples") or {}).values():
+        for f in ent.get("files", []):
+            for i, v in enumerate(f.get("len_hist_100bp") or []):
+                lh[i] += v
+            for i, v in enumerate(f.get("meanq_hist") or []):
+                qh[i] += v
+    if not sum(lh):
+        return ""
+    W, H, mt, mb = 560, 170, 16, 28
+    p = _svg_open(W, H)
+    for j, (hist, lab, unit, step) in enumerate(((lh, "Read length", "kb", 100), (qh, "Mean read quality", "Q", 1))):
+        x0, pw, ph = 30 + j * 280, 240, H - mt - mb
+        last = max(i for i, v in enumerate(hist) if v) + 1
+        hist = hist[:max(last, 5)]
+        mx = max(hist) or 1
+        bw = pw / len(hist)
+        for i, v in enumerate(hist):
+            h = ph * v / mx
+            p.append(f'<rect x="{x0+i*bw:.1f}" y="{mt+ph-h:.1f}" width="{max(bw-0.6,0.6):.1f}" '
+                     f'height="{h:.1f}" fill="{ACC}"/>')
+        p.append(f'<text x="{x0}" y="{mt-4}" font-size="8.6" font-weight="700" fill="{INK}">{lab}</text>')
+        for i in range(0, len(hist) + 1, max(1, len(hist) // 5)):
+            t = f"{i*step/1000:g}" if unit == "kb" else f"{i}"
+            p.append(f'<text x="{x0+i*bw:.1f}" y="{H-mb+11}" font-size="7.4" fill="{FAINT}" '
+                     f'text-anchor="middle">{t}</text>')
+        p.append(f'<text x="{x0+pw/2:.0f}" y="{H-4}" font-size="7.8" fill="{MUT}" '
+                 f'text-anchor="middle">{"kb" if unit == "kb" else "Phred Q"}</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def _readqc_section(run, F, T):
+    qc = run._json("qc/read_qc.json")
+    if not qc or not qc.get("samples"):
+        return []
+    out = ["<h3>Raw read quality</h3>"]
+    rows = []
+    for name, ent in qc["samples"].items():
+        fs = ent.get("files", [])
+        if not fs:
+            continue
+        f1 = fs[0]
+        rows.append([esc(name), fmt(f1.get("reads_examined", 0)),
+                     " / ".join(str(int(f.get("median_len") or 0)) for f in fs),
+                     " / ".join(f'{f.get("mean_q") or 0:.1f}' for f in fs),
+                     " / ".join(f'{f.get("pct_q30") or 0:.1f}%' for f in fs)]
+                    + ([fmt(f1.get("n50", 0))] if qc.get("platform") == "long" else []))
+    paired = qc.get("platform") == "paired"
+    out.append(T(["Sample", "Reads examined", "Median length" + (" R1 / R2" if paired else ""),
+                  "Mean Q" + (" R1 / R2" if paired else ""), "Bases ≥ Q30"]
+                 + (["N50"] if qc.get("platform") == "long" else []), rows,
+                 f"Raw reads before any trimming: the first {fmt(qc.get('reads_per_file_examined', 0))} reads of "
+                 f"each file (read_qc.py; qc/read_qc.json)."))
+    s = qc.get("suggestion") or {}
+    used = (run.params.get("truncLen_F"), run.params.get("truncLen_R")) if run.kind == "dada2" else None
+    if paired:
+        pf = len(run.params.get("primer_f") or "")
+        pr = len(run.params.get("primer_r") or "")
+        # the figure is in raw-read positions; truncLen counts after the primer
+        tr = (used[0] + pf if used and used[0] else None, used[1] + pr if used and used[1] else None) if used else None
+        sg = (s.get("truncLen_F", 0) + pf if s.get("truncLen_F") else None,
+              s.get("truncLen_R", 0) + pr if s.get("truncLen_R") else None) if s else None
+        out.append(F(svg_qprofile(qc, tr, sg),
+                     "Quality along the read, all samples pooled: the line is the median, the band the 25th to 75th "
+                     "percentile. Dashed lines mark where reads were cut (red) and where the data suggest cutting "
+                     "(green); both are drawn in raw-read positions, i.e. including the primer.",
+                     "qc/read_qc.json"))
+        if s and run.kind == "dada2":
+            txt = (f"<p><b>truncLen.</b> The data suggest {s.get('truncLen_F')} / {s.get('truncLen_R')} bp "
+                   f"after primer removal. {esc(s.get('reason', ''))}")
+            if used and all(used):
+                diff = abs(int(used[0]) - int(s.get('truncLen_F') or 0)) + abs(int(used[1]) - int(s.get('truncLen_R') or 0))
+                txt += (f" This run used {used[0]} / {used[1]} bp"
+                        + (", which matches." if diff <= 10 else ".") )
+            out.append(txt + "</p>")
+    elif qc.get("platform") == "long":
+        out.append(F(svg_longread(qc), "Read length and mean read quality of the raw reads, all samples pooled.",
+                     "qc/read_qc.json"))
+    if qc.get("low_depth"):
+        out.append(f'<p class="dim">Fewer than 1,000 reads in: {", ".join(esc(x) for x in qc["low_depth"])}.</p>')
+    if (qc.get("tools") or {}).get("multiqc"):
+        out.append('<p class="dim">FastQC and MultiQC reports: qc/fastqc/ (multiqc_report.html).</p>')
+    return out
+
+
+def _controls_section(run, an, T):
+    """Negative controls and mock communities, whatever the pipeline (controls.py)."""
+    try:
+        import controls
+    except Exception:
+        return []
+    negs, mocks = controls.identify(run)
+    if not negs and not mocks:
+        return []
+    out = ['<h3 class="pbreak">Controls</h3>']
+    if negs:
+        ns = controls.negative_summary(an, negs, mocks)
+        out.append("<p><b>Negative controls.</b> "
+                   + "; ".join(f"{esc(n['sample'])}: {fmt(n['reads'])} reads"
+                               + (f" ({100*n['ratio_to_median']:.1f}% of the median sample)"
+                                  if n.get("ratio_to_median") is not None else "")
+                               for n in ns["negatives"])
+                   + ". A blank with more than a few percent of a typical sample's reads points to "
+                     "contamination or cross-talk worth checking before the results are used. "
+                   + (f"Genera at least twice as abundant in the blanks as in the samples — the signature of a "
+                      f"reagent or handling contaminant — are marked: "
+                      f"{', '.join('<i>' + esc(g) + '</i>' for g in ns['flagged'])}." if ns["flagged"] else
+                      "No genus is markedly more abundant in the blanks than in the samples.")
+                   + "</p>")
+        rows = [[f"<i>{esc(r['genus'])}</i>" + (' <b style="color:#A83232">&#9888;</b>' if r["flag"] else ""),
+                 f"{r['pct_in_blanks']:.2f}%", f"{r['mean_pct_in_samples']:.2f}%",
+                 f"{r['samples_present']} / {r['n_samples']}"] for r in ns["genera"]]
+        out.append(T(["Genus", "% of blank reads", "Mean % in samples", "Samples with ≥ 0.1%"], rows,
+                     "The most abundant genera in the negative controls (reads pooled over blanks) and how "
+                     "much of them the samples carry. &#9888; = at least 1% of blank reads and at least twice "
+                     "as abundant in the blanks as in the samples. Nothing has been removed"
+                     + (" (Decontam was not run)." if run.params.get("decontam") in (None, "", "none") else ".")))
+    if mocks:
+        std = run.params.get("mockStandard") or "zymo_d6300"
+        ms = controls.mock_summary(an, mocks, std)
+        if ms.get("no_composition"):
+            out.append(f"<p><b>Mock community.</b> {esc(', '.join(mocks))} ({esc(ms['standard'])}): no "
+                       "theoretical composition is on file for this standard, so it is shown only in the "
+                       "composition figures.</p>")
+        for m in ms.get("samples", []):
+            verdict = ("matches the standard closely" if m["bray_curtis"] <= 0.15 else
+                       "is close to the standard" if m["bray_curtis"] <= 0.30 else
+                       "departs clearly from the standard")
+            out.append(f"<p><b>Mock community {esc(m['sample'])}</b> ({esc(ms['standard'])}) {verdict}: "
+                       f"Bray&ndash;Curtis {m['bray_curtis']:.2f} to the theoretical composition, "
+                       f"{m['other_pct']:.2f}% of reads in genera that are not in the standard"
+                       + (f", not found: {', '.join('<i>' + esc(g) + '</i>' for g in m['missing'])}"
+                          if m["missing"] else "")
+                       + ". Ratios far from 1 for one genus usually reflect primer bias or 16S copy number "
+                         "rather than a pipeline error; genera that are missing or reads in unexpected "
+                         "genera are the warning signs.</p>")
+            rows = [[f"<i>{esc(r['genus'])}</i>", f"{r['expected']:.1f}%",
+                     (f"{r['observed']:.1f}%" if not r["family_only"] else
+                      f'{r["observed"]:.1f}% <span class="dim">(family only)</span>'),
+                     f"{r['ratio']:.2f}" if r["ratio"] is not None else "—"] for r in m["genera"]]
+            out.append(T(["Genus", "Expected", "Observed", "Observed / expected"], rows,
+                         f"Mock community {esc(m['sample'])}: theoretical and observed genus composition."))
+    return out
+
+
+def _maaslin_section(run, T):
+    """MaAsLin 3 results (r_tables/maaslin3_results.csv), or why it did not run."""
+    d = run.path / "maaslin3"
+    res = run._rows("r_tables/maaslin3_results.csv")
+    skipped = (d / "SKIPPED.txt").read_text().strip() if (d / "SKIPPED.txt").exists() else ""
+    if not res and not skipped:
+        return []
+    out = ['<h3 class="pbreak">Differential abundance (MaAsLin 3)</h3>']
+    if not res:
+        out.append(f"<p>MaAsLin 3 was not run: {esc(skipped)}.</p>")
+        return out
+    try:
+        design = json.loads((d / "design.json").read_text())
+    except Exception:
+        design = {}
+    fixed = design.get("fixed") or sorted({r.get("metadata", "") for r in res})
+    rank = design.get("rank") or (res[0].get("rank") if res else "Genus")
+    thr = float(design.get("max_significance") or 0.1)
+
+    def q(r):
+        try:
+            return float(r.get("qval_individual") or "nan")
+        except ValueError:
+            return float("nan")
+    sig = sorted([r for r in res if q(r) == q(r) and q(r) < thr], key=q)
+    out.append(
+        f"<p>Each {esc(rank.lower())} was tested for an association with "
+        + ", ".join(f"<b>{esc(v)}</b>" for v in fixed)
+        + (f" (random effect: {', '.join(esc(x) for x in design['random'])})" if design.get("random") else "")
+        + f", all variables in one model, in two ways: <i>abundance</i> (how much of it, where it is "
+          f"present; log of total-sum-scaled counts) and <i>prevalence</i> (whether it is present at all). "
+          f"{len(res)} tests on {design.get('n_features', '?')} features and {design.get('n_samples', '?')} "
+          f"samples; p-values were corrected by Benjamini&ndash;Hochberg. "
+        + (f"{len(sig)} association{'s' if len(sig) != 1 else ''} reached q &lt; {thr:g}." if sig else
+           f"No association reached q &lt; {thr:g}.")
+        + (f" Not tested (no level with two or more samples): {', '.join(esc(x) for x in design['not_tested'])}."
+           if design.get("not_tested") else "") + "</p>")
+    if sig:
+        rows = []
+        for r in sig[:40]:
+            try:
+                coef = float(r.get("coef") or 0)
+            except ValueError:
+                coef = 0.0
+            rows.append([f"<i>{esc(r.get('feature', ''))}</i>", esc(r.get("metadata", "")),
+                         esc(r.get("value", "")), esc(r.get("model", "")),
+                         f'<span style="color:{"#2E6B46" if coef > 0 else "#A83232"}">{coef:+.2f}</span>',
+                         f"{q(r):.3g}"])
+        out.append(T(["Feature", "Variable", "Level", "Model", "Coefficient", "q"], rows,
+                     f"Associations with q &lt; {thr:g}, strongest first"
+                     + (f" (the first 40 of {len(sig)})" if len(sig) > 40 else "")
+                     + ". A positive coefficient means more (abundance) or more often present (prevalence) "
+                       "at the level shown than at the reference level, or with a higher value of a "
+                       "numeric variable. All results: r_tables/maaslin3_results.csv; figures in maaslin3/."))
+    out.append('<div class="note"><p style="margin:0"><b>Read with the design in mind.</b> MaAsLin 3 '
+               "adjusts every association for the other variables listed. With few samples per group the "
+               "test has little power, so the absence of significant features is not evidence that groups "
+               "are the same.</p></div>")
+    return out
+
+
 def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                        subtitle=None, top_asv=30) -> str:
     """Full result report for one run, laid out as Method / Result / References with a
@@ -2704,6 +2965,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                      folder("read_tracking.csv")))
         out.append(F(svg_readflow(run), "Reads surviving each stage across the whole run, as a share "
                      "of input; the right-hand figure is what that stage cost.", None))
+
+    out += _readqc_section(run, F, T)
 
     o = (run.orientation or {}).get("checked") or {}
     if o:
@@ -3059,6 +3322,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
             out.append(F(svg_stacked(an, rank, 30, samples=list(grp), table=tbl_),
                          f"Top 30 {rank.lower()} &mdash; mean relative abundance per group."))
 
+    out += _controls_section(run, an, T)
+    out += _maaslin_section(run, T)
+
     if pic:
         out += _picrust_result(pic, F, T)
 
@@ -3069,9 +3335,17 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         notes.append(f"{100*(run.host+run.euk)/run.total:.1f}% of analysed reads are host organelle or "
                      "other non-bacterial material and are excluded from the composition figures.")
     if run.bacteria and run.bacterial:
+        try:
+            import controls as _ct
+            _has_blank = bool(_ct.identify(run)[0])
+        except Exception:
+            _has_blank = False
         notes.append(f"About {100*run.kit/run.bacteria:.0f}% of the bacterial reads belong to genera on "
-                     "the reagent-contaminant list. A blank extraction control sequenced alongside the "
-                     "samples would turn that estimate into a measurement.")
+                     "the reagent-contaminant list. "
+                     + ("The negative controls (see Controls) show which of them this run's reagents carried."
+                        if _has_blank else
+                        "A blank extraction control sequenced alongside the samples would turn that "
+                        "estimate into a measurement."))
     if run.unresolved:
         notes.append(f"{fmt(sum(run.unresolved.values()))} reads carry a genus label the reference marks "
                      "as unresolved (&ldquo;--other&rdquo;); they are counted under the parent genus here.")

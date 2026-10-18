@@ -84,6 +84,15 @@ CASES = {
                                  "--pool", "pseudo", "--dbPath", db, "--minBoot", "50",
                                  "--primer_f", FL_F, "--primer_r", FL_R],
         kind="pacbio"),
+    "emu": dict(
+        title="16S full length, ONT + Emu (samples in parallel)", db="emu", marker="ONT-16S",
+        sim=["--refs", "refs_16s.fasta", "--composition", "zymo_16s", "--primer_f", FL_F,
+             "--primer_r", FL_R, "--platform", "ont", "--reads", "1500"],
+        params=dict(marker="ONT-16S", primer_f=FL_F, primer_r=FL_R, ont_region="V1-V9"),
+        cmd=lambda i, o, db, t: [py(), str(BACKEND / "emu_pipeline.py"), "--input", i, "--output", o,
+                                 "--db_path", db, "--threads", str(t), "--primer_f", FL_F,
+                                 "--primer_r", FL_R, "--marker", "ONT-16S", "--skip_qc"],
+        kind="emu"),
     "its": dict(
         title="ITS1, DADA2 + UNITE (Illumina 2x250)", db="unite", marker="ITS1",
         sim=["--refs", "refs_its.fasta", "--composition", "fungi_its", "--primer_f", ITS_F,
@@ -126,7 +135,13 @@ def find_dbs(a) -> dict:
             if v and Path(v).exists():
                 return v
         return ""
-    return {"silva": pick(a.silva, "SILVA_16S", "SILVA_144", "SILVA_138_2"),
+    emu = pick(a.emu, "emu_db_mar2026", "emu_silva")
+    if not emu:
+        emu = next((v for k, v in dp.items() if k.startswith("emu") and v and Path(v).exists()), "")
+    if emu and Path(emu).is_file():
+        emu = str(Path(emu).parent)
+    return {"emu": emu,
+            "silva": pick(a.silva, "SILVA_16S", "SILVA_144", "SILVA_138_2"),
             "unite": pick(a.unite, "UNITE_ITS1", "UNITE_ITS2"),
             "midori": pick(a.midori, "MIDORI2_COX1")}
 
@@ -163,6 +178,7 @@ def main(argv=None):
     ap.add_argument("--silva")
     ap.add_argument("--unite")
     ap.add_argument("--midori")
+    ap.add_argument("--emu", help="Emu database folder")
     ap.add_argument("--threads", type=int, default=max(1, min(8, os.cpu_count() or 2)))
     ap.add_argument("--keep", help="work folder to keep (default: a temporary one, removed)")
     ap.add_argument("--timeout", type=int, default=3600)
