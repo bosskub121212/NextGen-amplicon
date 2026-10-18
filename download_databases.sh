@@ -70,7 +70,10 @@ fetch() {
   local url
   for url in "$@"; do
     echo "    $url"
-    if curl -fL -# --retry 5 --retry-delay 5 --connect-timeout 30 -C - -A "Mozilla/5.0" \
+    # An honest user agent: Zenodo answers 403 to a bare "Mozilla/5.0" (it reads
+    # as a disguised bot), which is how the Tax4Fun2 download failed.
+    if curl -fL -# --retry 5 --retry-delay 5 --connect-timeout 30 -C - \
+            -A "NextGen-Amplicon/2.17 (database downloader; curl)" \
             -o "$dest.part" "$url"; then
       if [[ "$md5" != "-" ]] && [[ "$(md5sum "$dest.part" | cut -d' ' -f1)" != "$md5" ]]; then
         fail "checksum mismatch for $(basename "$dest") — discarded"

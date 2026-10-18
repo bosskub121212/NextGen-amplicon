@@ -16,7 +16,7 @@ import sys
 import urllib.request
 import zipfile
 
-UA = {"User-Agent": "Mozilla/5.0 (NextGen-Amplicon database downloader)"}
+UA = {"User-Agent": "NextGen-Amplicon/2.17 (database downloader; python urllib)"}
 
 
 class HTTPRangeFile(io.RawIOBase):
