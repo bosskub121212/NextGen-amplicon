@@ -55,7 +55,7 @@ SPECIES_ANI = 95.0
 SPECIES_ANI_STRICT = 96.0
 TETRA_SPECIES = 0.99
 RRNA_SPECIES = 98.65          # Kim et al. 2014
-MAP_VERSION = 1
+MAP_VERSION = 2           # 2: gap-compressed assembly identity
 
 
 def bind(**kw):
@@ -176,6 +176,16 @@ def type_strains(genus: str, cache: Path, max_age_days: int = 90) -> list[dict]:
             H.log(f"    NCBI unreachable — using cached type-strain list for {gname}")
             return json.loads(cf.read_text())
         return []
+    out = pick_type_strains(reps, gname)
+    cf.parent.mkdir(parents=True, exist_ok=True)
+    cf.write_text(json.dumps(out, indent=1))
+    return out
+
+
+def pick_type_strains(reps: list[dict], gname: str) -> list[dict]:
+    """NCBI dataset_report rows → one genome per (sub)species, the most complete
+    assembly first (shared with wgs_typestrain_db.py, which builds the offline
+    cache with exactly the same choice)."""
     best: dict[str, dict] = {}
     for r in reps:
         acc = r.get("accession", "")
@@ -207,8 +217,6 @@ def type_strains(genus: str, cache: Path, max_age_days: int = 90) -> list[dict]:
         rec.pop("_key", None)
         out.append(rec)
     out.sort(key=lambda r: r["organism"])
-    cf.parent.mkdir(parents=True, exist_ok=True)
-    cf.write_text(json.dumps(out, indent=1))
     return out
 
 
@@ -1146,7 +1154,11 @@ def reference_mapping(reads: Path, asm: Path, ref: dict, outdir: Path, work: Pat
                     if all_q else None,
                     "snps": snp, "indels": ind, "indel_bp": ind_b,
                     "snps_per_100kb": round(snp / (ref_aln / 1e5), 1) if ref_aln else None,
-                    "alignment_identity": round(100.0 * matches / alnlen, 3) if alnlen else None,
+                    # gap-compressed: each indel counts once, whatever its length. PAF
+                    # column 11 (block length) includes every gapped base, so one 50 kb
+                    # insertion inside a block took 98 % ANI isolates down to "83 %"
+                    "alignment_identity": round(100.0 * matches / (matches + snp + ind), 3)
+                    if matches else None,
                     "isolate_unique_regions": len(uniq),
                     "isolate_unique_bp": sum(e - s + 1 for _, s, e in uniq)})
         blocks.sort(key=lambda b: -(b[2] - b[1]))

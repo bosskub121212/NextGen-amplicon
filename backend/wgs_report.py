@@ -534,7 +534,7 @@ def section_mapping(r: dict) -> str:
          "Reference covered by assembly", pct(m.get("asm_ref_aligned_pct"), 1)],
         ["Reference covered ≥ 1x / ≥ 10x",
          f"{pct(m.get('breadth_1x'), 1)} / {pct(m.get('breadth_10x'), 1)}",
-         "Identity in aligned blocks", pct(m.get("alignment_identity"), 2)],
+         "Identity in aligned blocks (gap-compressed)", pct(m.get("alignment_identity"), 2)],
         ["Reference regions absent (≥ 1 kb)",
          f"{m.get('absent_regions', '—')} ({bp(m.get('absent_bp'))})",
          "SNPs / indels vs reference",

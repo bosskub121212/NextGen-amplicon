@@ -191,6 +191,18 @@ def main():
     par, per = ep.emu_parallelism({"a": ""}, 8, 0)
     check("emu: one sample runs alone", par == 1 and per == 8, (par, per))
 
+    print("ONT-WGS offline type strains")
+    import wgs_taxonomy as WT
+    rep = lambda acc, name, lvl, n50: {"accession": acc, "organism": {"organism_name": name},
+                                        "assembly_info": {"assembly_level": lvl},
+                                        "assembly_stats": {"contig_n50": n50, "total_sequence_length": 4e6}}
+    picked = WT.pick_type_strains([rep("GCA_1.1", "Bacillus subtilis DSM 10", "Contig", 50000),
+                                   rep("GCF_2.1", "Bacillus subtilis DSM 10", "Complete Genome", 4e6),
+                                   rep("GCF_3.1", "Bacillus sp. X", "Complete Genome", 4e6)], "Bacillus")
+    check("type strains: one per species, complete genome first, no 'sp.'",
+          [r["accession"] for r in picked] == ["GCF_2.1"], picked)
+    import wgs_typestrain_db  # noqa: F401  (imports cleanly)
+
     print("Console")
     page = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
     for k in ("mockSamples", "maaslin_fixed", "ont_parallel", "run_fastqc", "/qc/", "renderSettings",
