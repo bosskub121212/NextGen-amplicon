@@ -140,6 +140,8 @@ class Run:
         mk = str(self.params.get("marker") or self.summary.get("marker") or "").upper()
         if pl == "emu" or (self.path / "emu_output").is_dir():
             return "emu"
+        if pl == "shotgun":                     # shotgun_pipeline.py (beta): rows are species
+            return "shotgun"
         if pl == "qiime2_vsearch" or self.params.get("sequencerType") == "qiime2_vsearch":
             return "vsearch"
         if pl == "its" or mk in ("ITS", "ITS1", "ITS2"):
@@ -170,8 +172,8 @@ class Run:
     # ── tables ────────────────────────────────────────────────────────────────
     def _load_tables(self):
         tax_rows = self._rows("taxonomy_table.csv")
-        if not tax_rows and self.kind in ("emu", "vsearch"):
-            tax_rows = self._rows("taxonomy.csv")          # emu / vsearch name for it
+        if not tax_rows and self.kind in ("emu", "vsearch", "shotgun"):
+            tax_rows = self._rows("taxonomy.csv")          # emu / vsearch / shotgun name for it
         if not tax_rows:
             raise ValueError(f"{self.path.name}: taxonomy_table.csv missing or empty")
         key = list(tax_rows[0].keys())[0]  # first column = the ASV sequence (or feature id)
@@ -194,7 +196,7 @@ class Run:
                         for fid in cols[1:]]
             cols = ["__id"] + samples
             seq_col = "__id"
-        elif self.kind in ("emu", "vsearch"):
+        elif self.kind in ("emu", "vsearch", "shotgun"):
             seq_col = cols[0]                              # tax_id / OTU id, first column
         else:
             seq_col = "sequence" if "sequence" in cols else cols[-1]
@@ -309,7 +311,9 @@ class Run:
         # Eukaryotic reads are off-target only for a bacterial marker; for 18S,
         # 12S, ITS or COI they ARE the community and must not be set aside.
         marker = str(self.summary.get("marker") or self.params.get("marker") or "16S").upper()
-        self.euk_target = any(k in marker for k in ("18S", "12S", "ITS", "COX", "COI", "NEMA", "EUK"))
+        # shotgun: fungi and protists are part of the community too
+        self.euk_target = any(k in marker for k in ("18S", "12S", "ITS", "COX", "COI", "NEMA", "EUK",
+                                                    "SHOTGUN")) or self.kind == "shotgun"
         self.euk_seqs = [] if self.euk_target else [
             s for s, r in self.tax.items()
             if s not in self.host_seqs and (r.get(top) or "") == "Eukaryota"
@@ -408,7 +412,7 @@ class Run:
                     deepest = f"{rank[0]}: {v}"
             host = seq in self.host_seqs
             out.append({
-                "id": f"T{i}" if self.emu else f"OTU{i}" if self.kind == "vsearch" else f"ASV{i}",
+                "id": f"T{i}" if self.emu or self.kind == "shotgun" else f"OTU{i}" if self.kind == "vsearch" else f"ASV{i}",
                 "len": len(seq) if _is_dna(seq) else None, "reads": reads,
                 "pct": 100 * reads / self.total if self.total else 0,
                 "phylum": (r.get("Phylum") or "\u2014"),
@@ -499,16 +503,16 @@ class Run:
     # wording and read stages that differ between DADA2 and Emu runs
     @property
     def unit(self) -> str:
-        return {"emu": "taxa", "vsearch": "OTUs"}.get(self.kind, "sequence variants")
+        return {"emu": "taxa", "vsearch": "OTUs", "shotgun": "species"}.get(self.kind, "sequence variants")
 
     @property
     def feat(self) -> str:
         """Plural short name of a table row: taxa / OTUs / ASVs."""
-        return {"emu": "taxa", "vsearch": "OTUs"}.get(self.kind, "ASVs")
+        return {"emu": "taxa", "vsearch": "OTUs", "shotgun": "species"}.get(self.kind, "ASVs")
 
     @property
     def feat1(self) -> str:
-        return {"emu": "taxon", "vsearch": "OTU"}.get(self.kind, "ASV")
+        return {"emu": "taxon", "vsearch": "OTU", "shotgun": "species"}.get(self.kind, "ASV")
 
     @property
     def paired(self) -> bool:
@@ -2757,6 +2761,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     """Full result report for one run, laid out as Method / Result / References with a
     figure for every analysis: read tracking, composition at every rank, a clustered
     genus heatmap, archaea, alpha diversity and rarefaction, and beta diversity."""
+    if run.kind == "shotgun":                  # its own layout: no amplicon steps or markers
+        import shotgun_report
+        return shotgun_report.build(run, title=title, app=app, company=company, subtitle=subtitle)
     an = Analysis(run)
     S = an.samples
     unit = run.feat

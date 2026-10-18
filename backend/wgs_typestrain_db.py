@@ -301,6 +301,8 @@ def summary(cache: Path | str | None = None) -> dict:
         out.update({k: m.get(k) for k in ("built", "genera", "genomes", "genomes_on_disk",
                                           "bytes", "scope", "last_partial")})
         out["failed"] = len(m.get("failed") or [])
+        if out.get("genomes_on_disk") is None:     # v2.18.1 builds did not record it
+            out["genomes_on_disk"] = max(0, int(m.get("genomes") or 0) - out["failed"])
         ep = m.get("built_epoch")
         if not ep and m.get("built"):          # written by v2.18.1 before this field existed
             try:

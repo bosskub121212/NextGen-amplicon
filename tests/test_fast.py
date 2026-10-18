@@ -99,6 +99,18 @@ def make_result(d: Path, kind: str):
             {"pipeline": "qiime2_vsearch" if kind == "vsearch" else "emu",
              **({"emu_counts": "estimated_reads"} if kind == "emu" else {})}))
         (d / "run_params.json").write_text(json.dumps({"marker": "16S" if kind == "vsearch" else "ONT-16S"}))
+    elif kind == "shotgun":
+        ids = [str(2000 + i) for i in range(6)]
+        write_csv(d / "asv_table.csv", ["tax_id"] + S, [[a] + c for a, c in zip(ids, counts)])
+        write_csv(d / "taxonomy.csv", ["tax_id", "Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"],
+                  [[a, "Bacteria", "Bacillota", "Bacilli", "Bacillales", "Bacillaceae", f"Genus{i}",
+                    f"Genus{i} alpha"] for i, a in enumerate(ids)])
+        write_csv(d / "read_tracking.csv", ["sample", "input", "after_qc", "host_removed", "classified",
+                                            "unclassified", "host_classified", "final"],
+                  [[s, 200, 190, 0, 180, 10, 0, sum(c[j] for c in counts)] for j, s in enumerate(S)])
+        (d / "summary.json").write_text(json.dumps({"pipeline": "shotgun", "platform": "illumina",
+                                                    "tools": {"kraken2": "2.17.2"}}))
+        (d / "run_params.json").write_text(json.dumps({"marker": "SHOTGUN", "sequencerType": "illumina"}))
 
 
 def main():
@@ -203,11 +215,37 @@ def main():
           [r["accession"] for r in picked] == ["GCF_2.1"], picked)
     import wgs_typestrain_db  # noqa: F401  (imports cleanly)
 
+    print("Shotgun metagenome (beta)")
+    import shotgun_pipeline as SG
+    with tempfile.TemporaryDirectory() as td:
+        rp = Path(td) / "k.report"
+        rp.write_text("10.00\t10\t10\tU\t0\tunclassified\n"
+                      "90.00\t90\t0\tR\t1\troot\n"
+                      "90.00\t90\t0\tD\t2\t  Bacteria\n"
+                      "90.00\t90\t0\tP\t1239\t    Bacillota\n"
+                      "90.00\t90\t0\tG\t1386\t      Bacillus\n"
+                      "60.00\t60\t60\tS\t1423\t        Bacillus subtilis\n"
+                      "30.00\t30\t30\tS\t1396\t        Bacillus cereus\n")
+        lin, sp, un, cl = SG.parse_report(rp)
+        check("shotgun: Kraken 2 report lineage", lin[1423]["Genus"] == "Bacillus"
+              and lin[1423]["Kingdom"] == "Bacteria" and sp[1396] == 30 and un == 10 and cl == 90, (lin, sp))
+        check("shotgun: Bracken read length", SG.pick_read_len([100, 150, 250], 148) == 100
+              and SG.pick_read_len([150, 1000], 5000) == 1000)
+        d = Path(td) / "sg"
+        make_result(d, "shotgun")
+        run = rb.Run(d, set())
+        html = rb.build_profile_html(run)
+        check("shotgun: read as shotgun, own report", run.kind == "shotgun"
+              and "Shotgun Metagenome Sequencing Report" in html and "Bracken" in html)
+    import build_16s_typestrain_db as B16
+    check("16S multicopy: alignment-defined gene ends", B16.merge([(1, 5), (100, 200), (150, 300)], 10)
+          == [(1, 5), (100, 300)])
+
     print("Console")
     page = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
     for k in ("mockSamples", "maaslin_fixed", "ont_parallel", "run_fastqc", "/qc/", "renderSettings",
               "/license/activate", "/update/check", "/results/cleanup", "orientation-check", "mpAdd",
-              "/wgs/typestrains", "tsBanner", "wgDirIn"):
+              "/wgs/typestrains", "tsBanner", "wgDirIn", "shotgunSpec", "sg_kraken_db"):
         check(f"console offers {k}", k in page)
     main_src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
     check("console served at /, old UI at /classic", '@app.get("/classic"' in main_src

@@ -254,6 +254,15 @@ class RunParams(BaseModel):
     controlSamples:     list[str] = []    # sample IDs that are blanks/negative controls
     mockSamples:        list[str] = []    # sample IDs that are mock communities (positive controls)
     mockStandard:       str   = "zymo_d6300"   # controls.STANDARDS key for the mock samples
+    # --- Shotgun metagenome (beta; marker "SHOTGUN", shotgun_pipeline.py) ---
+    sg_kraken_db:       str   = ""        # Kraken2 index folder (default: db_paths.json kraken2_db)
+    sg_confidence:      float = 0.1       # kraken2 --confidence
+    sg_host:            str   = "none"    # none | human | mouse | path to a host FASTA
+    sg_bracken_level:   str   = "S"
+    sg_bracken_threshold: int = 10
+    sg_min_len:         int   = 500       # ONT read filter
+    sg_min_q:           float = 10.0
+    sg_memory_mapping:  bool  = False     # Kraken2 index read from disk instead of RAM
 
 class WorkerConfig(BaseModel):
     max_workers: int = 2
@@ -697,7 +706,7 @@ def prep_reorient(job_id: str, body: PrepBody):
 # ═══════════════════════════════════════════════════════════════════════════
 
 DADA2_TAXONOMY_MARKERS_EXCLUDED = ("ONT-16S", "ONT16S", "ONT", "PACBIO",
-                                   "ITS1", "ITS2", "ITS", "COX1", "ONT-WGS")
+                                   "ITS1", "ITS2", "ITS", "COX1", "ONT-WGS", "SHOTGUN")
 
 
 def _db_reject_reason(p: str) -> str:
@@ -845,7 +854,8 @@ async def run_analysis(job_id: str, params: RunParams):
     else:
         params.taxDatabase = {"ITS": "UNITE", "ITS1": "UNITE", "ITS2": "UNITE", "COX1": "MIDORI2",
                               "ONT-16S": "Emu database", "ONT16S": "Emu database",
-                              "ONT": "Emu database", "ONT-WGS": "WGS databases"}.get(
+                              "ONT": "Emu database", "ONT-WGS": "WGS databases",
+                              "SHOTGUN": "Kraken2 index"}.get(
                                   (params.marker or "").upper(), params.taxDatabase)
 
     # Snapshot the exact settings this run was submitted with, so it can be
@@ -1101,6 +1111,35 @@ def run_r_pipeline(job_id: str, params: RunParams):
         if params.wgs_sample_names:
             cmd += ["--sample_names", json.dumps(params.wgs_sample_names, ensure_ascii=False)]
 
+    elif marker == "SHOTGUN":
+        # ── Shotgun metagenome (beta) — shotgun_pipeline.py ──────────────────
+        # A separate script and conda env (ngamp-meta); nothing here is shared
+        # with the amplicon or WGS branches.
+        _k2 = params.sg_kraken_db
+        if not _k2:
+            try:
+                _k2 = json.loads(Path(db_paths_json).read_text()).get("kraken2_db", "")
+            except Exception:
+                _k2 = ""
+        cmd = [
+            sys.executable, str(R_SCRIPTS_DIR.parent / "shotgun_pipeline.py"),
+            "--input_dir",  input_dir,
+            "--output_dir", output_dir,
+            "--platform",   "ont" if params.sequencerType == "ont" else "illumina",
+            "--kraken_db",  _k2,
+            "--host",       params.sg_host or "none",
+            "--threads",    str(params.nThreads),
+            "--confidence", str(params.sg_confidence),
+            "--bracken_level", params.sg_bracken_level or "S",
+            "--bracken_threshold", str(params.sg_bracken_threshold),
+            "--min_len",    str(params.sg_min_len),
+            "--min_q",      str(params.sg_min_q),
+        ]
+        if params.sg_memory_mapping:
+            cmd += ["--memory_mapping"]
+        _pipe_kind = "shotgun"
+        _pipe_dbs = [("kraken2", _k2)]
+
     elif marker in ("ONT-16S", "ONT16S", "ONT"):
         # ── ONT 16S pipeline via Emu ────────────────────────────────────────
         emu_script = R_SCRIPTS_DIR.parent / "emu_pipeline.py"
@@ -1318,7 +1357,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
     # ── Read quality before the run (read_qc.py, a few seconds) ──────────────
     # Kept with the result so the report can show what the raw reads looked like
     # and whether truncLen matched them. Never stops a run.
-    if marker != "ONT-WGS":
+    if marker not in ("ONT-WGS", "SHOTGUN"):
         try:
             import read_qc
             with jobs_lock:
@@ -1574,7 +1613,13 @@ def run_r_pipeline(job_id: str, params: RunParams):
                   _spf = _prov.species_file_from_log(Path(output_dir))
                   if _spf:
                       _dbs.append(("species", _spf))
-                  _prov.write(output_dir, _pipe_kind, _dbs)
+                  _xt = None
+                  if _pipe_kind == "shotgun":      # the pipeline recorded its own tool versions
+                      try:
+                          _xt = json.loads((Path(output_dir) / "summary.json").read_text()).get("tools")
+                      except Exception:
+                          _xt = None
+                  _prov.write(output_dir, _pipe_kind, _dbs, extra_tools=_xt)
               except Exception as _pe2:
                   print(f"[provenance] WARNING: {_pe2}")
 
@@ -1653,7 +1698,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
           _ma_script = R_SCRIPTS_DIR / "maaslin3_run.R"
           if (proc.returncode == 0 and params.run_maaslin3 and _ma_script.exists()
                   and metadata_path and Path(metadata_path).exists()
-                  and _pipe_kind in ("dada2", "its", "cox1", "pacbio", "emu", "qiime2_vsearch")):
+                  and _pipe_kind in ("dada2", "its", "cox1", "pacbio", "emu", "qiime2_vsearch", "shotgun")):
               try:
                   with jobs_lock:
                       jobs[job_id]["step_label"] = "MaAsLin 3 differential abundance..."

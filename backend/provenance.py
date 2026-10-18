@@ -51,6 +51,7 @@ R_PKGS = {
     "pacbio": ["dada2", "phyloseq", "vegan", "Biostrings", "ShortRead"],
     "emu":    ["phyloseq", "vegan"],
     "qiime2_vsearch": ["phyloseq", "vegan"],
+    "shotgun": [],
 }
 CLI_TOOLS = {
     "dada2":  ["cutadapt"],
@@ -59,6 +60,7 @@ CLI_TOOLS = {
     "pacbio": ["cutadapt"],
     "emu":    ["emu", "minimap2", "chopper", "cutadapt", "vsearch"],
     "qiime2_vsearch": ["vsearch", "cutadapt", "chopper"],
+    "shotgun": ["kraken2", "bracken", "fastp", "hostile", "chopper", "seqkit"],
 }
 
 
@@ -71,7 +73,7 @@ def find_tool(name: str) -> str | None:
     bases = [Path(os.environ["CONDA_PREFIX"]).parent.parent] if os.environ.get("CONDA_PREFIX") else []
     bases += [Path.home() / d for d in ("miniconda3", "anaconda3", "miniforge3", "mambaforge")]
     for b in bases:
-        for env in ("emu", "ngamp-wgs", "ngamp-phylo", "wgs", "picrust2"):
+        for env in ("emu", "ngamp-wgs", "ngamp-phylo", "wgs", "picrust2", "ngamp-meta"):
             c = b / "envs" / env / "bin" / name
             if c.exists() and os.access(c, os.X_OK):
                 return str(c)

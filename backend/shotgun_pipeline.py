@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+"""shotgun_pipeline.py — shotgun metagenome profiling (beta), Illumina or ONT.
+
+    python3 shotgun_pipeline.py --input_dir UP --output_dir OUT --platform illumina|ont
+        --kraken_db DIR [--host none|human|mouse|/path/genome.fa] [--threads 8]
+        [--confidence 0.1] [--bracken_level S] [--bracken_threshold 10]
+        [--min_len 500 --min_q 10]   (ONT read filter)
+
+Per sample:
+  1. read QC            Illumina: fastp (adapters, quality, length ≥ 50)
+                        ONT: chopper (mean Q, length), else seqkit
+  2. host removal       optional: hostile (Bowtie2 for Illumina pairs,
+                        minimap2 for ONT) against human T2T+HLA, mouse, or a
+                        genome given as a FASTA file
+  3. classification     Kraken2 against the chosen index (k-mer, every read)
+  4. abundance          Bracken re-estimates species read counts from the
+                        Kraken2 report, using the k-mer distribution for the
+                        read length nearest the sample's
+Output — the layout the report, diversity, MaAsLin 3 and Controls already read:
+  asv_table.csv   one row per species (id = NCBI taxid), estimated reads per sample
+  taxonomy.csv    id, Kingdom … Species (from the Kraken2 report lineage)
+  read_tracking.csv, summary.json, shotgun/<sample>/ (fastp / Kraken2 / Bracken files)
+Host (Homo sapiens / Mus musculus) reads that Kraken2 still classifies are
+counted in read_tracking and kept out of the community table.
+
+Separate from every amplicon and WGS pipeline: it changes nothing they use.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections import OrderedDict, defaultdict
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+FQ_RE = re.compile(r"\.(fastq|fq)(\.gz)?$", re.I)
+PAIR_RE = re.compile(r"^(?P<name>.+?)[._-](?:R)?(?P<mate>[12])(?:_001)?\.(?:fastq|fq)(?:\.gz)?$", re.I)
+HOST_TAXA = {9606: "Homo sapiens", 10090: "Mus musculus"}
+RANK_CODES = {"D": "Kingdom", "K": "Kingdom", "P": "Phylum", "C": "Class", "O": "Order",
+              "F": "Family", "G": "Genus", "S": "Species"}
+RANK_ORDER = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
+ENVS = ["ngamp-meta"]
+LOGF: Path | None = None
+
+
+def log(msg: str):
+    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    print(line, flush=True)
+
+
+def progress(pct: int, label: str):
+    print(f"PROGRESS:{pct}|{label}", flush=True)
+
+
+# ── tools ────────────────────────────────────────────────────────────────────
+def conda_bases() -> list[Path]:
+    out = []
+    for b in (os.environ.get("CONDA_PREFIX_1"),
+              os.environ.get("CONDA_EXE") and str(Path(os.environ["CONDA_EXE"]).parent.parent),
+              str(Path.home() / "miniconda3"), str(Path.home() / "miniforge3"),
+              str(Path.home() / "anaconda3"), str(Path.home() / "mambaforge")):
+        if b and Path(b).is_dir():
+            out.append(Path(b))
+    return out
+
+
+_TOOLS: dict = {}
+
+
+def tool(name: str):
+    """(path, env) of a tool from the ngamp-meta env, else PATH; None if absent."""
+    if name in _TOOLS:
+        return _TOOLS[name]
+    found = None
+    extra = os.environ.get("NGAMP_META_BIN", "")
+    cands = [Path(extra) / name] if extra else []
+    for base in conda_bases():
+        cands += [base / "envs" / e / "bin" / name for e in ENVS]
+    w = shutil.which(name)
+    if w:
+        cands.append(Path(w))
+    for p in cands:
+        if p.exists() and os.access(p, os.X_OK):
+            env = os.environ.copy()
+            env["PATH"] = f"{p.parent}{os.pathsep}{env.get('PATH', '')}"
+            found = (str(p), env)
+            break
+    _TOOLS[name] = found
+    return found
+
+
+def run(t, args: list, logfile: Path, stdout_to: Path | None = None) -> int:
+    cmd = [t[0]] + [str(a) for a in args]
+    log("  $ " + " ".join([Path(t[0]).name] + [str(a) for a in args])[:500])
+    logfile.parent.mkdir(parents=True, exist_ok=True)
+    with open(logfile, "a") as lf:
+        lf.write(f"\n### {' '.join(cmd)}\n")
+        lf.flush()
+        out = open(stdout_to, "w") if stdout_to else lf
+        try:
+            return subprocess.run(cmd, stdout=out, stderr=lf, env=t[1]).returncode
+        finally:
+            if stdout_to:
+                out.close()
+
+
+def count_reads(fq: Path, t_seqkit) -> int:
+    if t_seqkit:
+        p = subprocess.run([t_seqkit[0], "stats", "-T", str(fq)], capture_output=True, text=True,
+                           env=t_seqkit[1])
+        try:
+            return int(p.stdout.splitlines()[1].split("\t")[3].replace(",", ""))
+        except Exception:
+            pass
+    import gzip
+    op = gzip.open if str(fq).endswith(".gz") else open
+    with op(fq, "rt") as fh:
+        return sum(1 for _ in fh) // 4
+
+
+# ── samples ──────────────────────────────────────────────────────────────────
+def find_samples(d: Path, platform: str) -> "OrderedDict[str, dict]":
+    """{sample: {"r1": [files], "r2": [files]}} — the UI's manifest first."""
+    out: "OrderedDict[str, dict]" = OrderedDict()
+    man = d / "sample_manifest.json"
+    if man.exists():
+        try:
+            for r in json.loads(man.read_text()):
+                s = str(r.get("sample", "")).strip()
+                f1, f2 = str(r.get("file1", "") or ""), str(r.get("file2", "") or "")
+                if not s or not f1 or not (d / f1).exists():
+                    continue
+                g = out.setdefault(s, {"r1": [], "r2": []})
+                g["r1"].append(d / f1)
+                if f2 and (d / f2).exists():
+                    g["r2"].append(d / f2)
+            if out:
+                return out
+        except Exception as e:
+            log(f"[warn] sample_manifest.json unreadable ({e}) — detecting samples from file names")
+    files = sorted(f for f in d.rglob("*") if (f.is_file() or f.is_symlink()) and FQ_RE.search(f.name))
+    if platform == "ont":
+        sys.path.insert(0, str(HERE))
+        import ont_wgs_pipeline as W                  # MinKNOW chunk grouping, fastq_fail left out
+        rel = [str(f.relative_to(d)) for f in files]
+        folders = {r: str(Path(r).parent) if str(Path(r).parent) != "." else "" for r in rel}
+        for g in W.group_fastqs(rel, folders):
+            out[g["sample"]] = {"r1": [d / f for f in g["files"]], "r2": []}
+        return out
+    pairs = defaultdict(dict)
+    for f in files:
+        m = PAIR_RE.match(f.name)
+        if m:
+            pairs[m.group("name")][m.group("mate")] = f
+        else:
+            out[FQ_RE.sub("", f.name)] = {"r1": [f], "r2": []}
+    for k, v in sorted(pairs.items()):
+        out[k] = {"r1": [v["1"]] if "1" in v else [], "r2": [v["2"]] if "2" in v else []}
+        if not out[k]["r1"]:
+            out[k] = {"r1": [v["2"]], "r2": []}
+    return out
+
+
+def concat(files: list[Path], dest: Path) -> Path:
+    """One file per mate: gzip members concatenate into a valid gzip stream."""
+    if len(files) == 1:
+        return files[0]
+    gz = all(str(f).endswith(".gz") for f in files)
+    dest = dest.with_suffix(".fastq.gz" if gz else ".fastq")
+    with open(dest, "wb") as out:
+        for f in files:
+            with open(f, "rb") as src:
+                shutil.copyfileobj(src, out)
+    return dest
+
+
+# ── Kraken2 report / Bracken ─────────────────────────────────────────────────
+def parse_report(path: Path) -> tuple[dict, dict, int, int]:
+    """Kraken-style report → ({taxid: lineage dict}, {taxid: clade reads at S},
+    unclassified reads, classified reads)."""
+    lineage, species, stack = {}, {}, []
+    uncl = clas = 0
+    for line in open(path):
+        v = line.rstrip("\n").split("\t")
+        if len(v) < 6:
+            continue
+        clade, rank, tid, name = int(v[1]), v[3].strip(), int(v[4]), v[5]
+        depth = (len(name) - len(name.lstrip(" "))) // 2
+        name = name.strip()
+        if rank == "U":
+            uncl = clade
+            continue
+        if rank == "R":
+            clas = clade
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        stack.append((depth, rank, name, tid))
+        if rank == "S":
+            L = {}
+            for _, r, n, _t in stack:
+                col = RANK_CODES.get(r)
+                if col and col not in L:
+                    L[col] = n
+            lineage[tid] = L
+            species[tid] = clade
+    return lineage, species, uncl, clas
+
+
+def kmer_lengths(db: Path) -> list[int]:
+    return sorted(int(m.group(1)) for f in db.glob("database*mers.kmer_distrib")
+                  if (m := re.match(r"database(\d+)mers", f.name)))
+
+
+def pick_read_len(avail: list[int], mean_len: float) -> int | None:
+    if not avail:
+        return None
+    below = [a for a in avail if a <= mean_len]
+    return max(below) if below else min(avail)
+
+
+def parse_bracken(path: Path) -> dict:
+    out = {}
+    with open(path) as fh:
+        for r in csv.DictReader(fh, delimiter="\t"):
+            try:
+                out[int(r["taxonomy_id"])] = (r["name"], float(r["new_est_reads"]))
+            except (KeyError, ValueError):
+                pass
+    return out
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--input_dir", required=True)
+    ap.add_argument("--output_dir", required=True)
+    ap.add_argument("--platform", choices=["illumina", "ont"], default="illumina")
+    ap.add_argument("--kraken_db", required=True)
+    ap.add_argument("--host", default="none", help="none | human | mouse | path to a host FASTA")
+    ap.add_argument("--threads", type=int, default=8)
+    ap.add_argument("--confidence", type=float, default=0.1)
+    ap.add_argument("--bracken_level", default="S", choices=["S", "G"])
+    ap.add_argument("--bracken_threshold", type=int, default=10)
+    ap.add_argument("--min_len", type=int, default=500, help="ONT: minimum read length")
+    ap.add_argument("--min_q", type=float, default=10, help="ONT: minimum mean read quality")
+    ap.add_argument("--memory_mapping", action="store_true",
+                    help="Kraken2 reads the index from disk instead of RAM (slower, less memory)")
+    a = ap.parse_args(argv)
+
+    inp, out = Path(a.input_dir), Path(a.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    work = out / "shotgun"
+    work.mkdir(exist_ok=True)
+    logs = out / "logs"
+    logs.mkdir(exist_ok=True)
+    db = Path(a.kraken_db)
+
+    log("=" * 70)
+    log(f"NextGen-Amplicon shotgun metagenome pipeline (beta) — {a.platform}")
+    log("=" * 70)
+    k2, br = tool("kraken2"), tool("bracken")
+    fastp, chopper, seqkit, hostile = tool("fastp"), tool("chopper"), tool("seqkit"), tool("hostile")
+    if not k2:
+        log("[ERROR] kraken2 not found — run: bash ~/r16s-app/setup_shotgun.sh")
+        return 2
+    if not (db / "hash.k2d").exists():
+        log(f"[ERROR] {db} is not a Kraken2 index (no hash.k2d) — run: bash ~/r16s-app/setup_shotgun.sh")
+        return 2
+    vers = {}
+    vflag = {"bracken": ["-v"], "seqkit": ["version"]}
+    for n, t in (("kraken2", k2), ("bracken", br), ("fastp", fastp), ("chopper", chopper),
+                 ("seqkit", seqkit), ("hostile", hostile)):
+        if t:
+            p = subprocess.run([t[0]] + vflag.get(n, ["--version"]), capture_output=True, text=True,
+                               env=t[1])
+            m = re.search(r"(?:version|v|\s)\s*(\d+\.\d+(?:\.\d+)?)", " " + p.stdout + p.stderr)
+            vers[n] = m.group(1) if m else "?"
+    log("tools: " + ", ".join(f"{k} {v}" for k, v in vers.items()))
+    if a.host != "none" and not hostile:
+        log("[warn] hostile not installed — host reads are NOT removed before classification; "
+            "Kraken2 still counts them as host and they are kept out of the table")
+
+    samples = find_samples(inp, a.platform)
+    if not samples:
+        log("[ERROR] no FASTQ files found")
+        return 2
+    log(f"{len(samples)} sample(s): " + ", ".join(samples))
+    avail = kmer_lengths(db)
+    if not br or not avail:
+        log("[warn] Bracken " + ("not installed" if not br else "k-mer distributions missing in the index")
+            + " — species reads are Kraken2's own clade counts (less accurate for close species)")
+
+    track, per_sample, lineages, used_len = [], {}, {}, {}
+    n = len(samples)
+    for i, (s, fs) in enumerate(samples.items()):
+        sd = work / s
+        sd.mkdir(exist_ok=True)
+        base = 5 + int(85 * i / n)
+        step = max(1, int(85 / n))
+        r1 = concat(fs["r1"], sd / "merged_R1")
+        r2 = concat(fs["r2"], sd / "merged_R2") if fs["r2"] else None
+        paired = a.platform == "illumina" and r2 is not None
+        row = {"sample": s, "input": 0}
+
+        # 1. QC
+        progress(base, f"[{s}] Read QC")
+        mean_len = 150.0
+        if a.platform == "illumina" and fastp:
+            q1 = sd / "qc_R1.fastq.gz"
+            q2 = sd / "qc_R2.fastq.gz"
+            args = ["-i", r1, "-o", q1, "-w", min(16, a.threads), "-l", 50,
+                    "-j", sd / "fastp.json", "-h", sd / "fastp.html"]
+            if paired:
+                args += ["-I", r2, "-O", q2, "--detect_adapter_for_pe"]
+            if run(fastp, args, logs / "fastp.log") != 0:
+                log(f"[ERROR] [{s}] fastp failed — see logs/fastp.log")
+                return 1
+            fj = json.loads((sd / "fastp.json").read_text())
+            row["input"] = fj["summary"]["before_filtering"]["total_reads"] // (2 if paired else 1)
+            row["after_qc"] = fj["summary"]["after_filtering"]["total_reads"] // (2 if paired else 1)
+            mean_len = float(fj["summary"]["after_filtering"].get("read1_mean_length") or 150)
+            r1, r2 = q1, (q2 if paired else None)
+        elif a.platform == "ont":
+            row["input"] = count_reads(r1, seqkit)
+            q1 = sd / "qc.fastq.gz"
+            if chopper:
+                import gzip
+                op = gzip.open if str(r1).endswith(".gz") else open
+                with op(r1, "rb") as src, gzip.open(q1, "wb", compresslevel=3) as dst:
+                    p = subprocess.Popen([chopper[0], "-q", str(a.min_q), "-l", str(a.min_len),
+                                          "-t", str(min(8, a.threads))],
+                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=open(logs / "chopper.log", "a"), env=chopper[1])
+                    import threading
+                    th = threading.Thread(target=lambda: (shutil.copyfileobj(src, p.stdin), p.stdin.close()))
+                    th.start()
+                    shutil.copyfileobj(p.stdout, dst)
+                    th.join()
+                    p.wait()
+            elif seqkit:
+                run(seqkit, ["seq", "-m", a.min_len, "-Q", a.min_q, "-o", q1, r1], logs / "seqkit.log")
+            else:
+                q1 = r1
+            r1 = q1
+            row["after_qc"] = count_reads(r1, seqkit)
+            if seqkit:
+                p = subprocess.run([seqkit[0], "stats", "-T", str(r1)], capture_output=True, text=True,
+                                   env=seqkit[1])
+                try:
+                    mean_len = float(p.stdout.splitlines()[1].split("\t")[6].replace(",", ""))
+                except Exception:
+                    mean_len = 3000.0
+            else:
+                mean_len = 3000.0
+        else:
+            row["input"] = row["after_qc"] = count_reads(r1, seqkit)
+
+        # 2. host removal
+        if a.host != "none" and hostile:
+            progress(base + step // 4, f"[{s}] Removing host reads ({a.host})")
+            idx = {"human": "human-t2t-hla", "mouse": "mouse-mm39"}.get(a.host, a.host)
+            hd = sd / "host_removed"
+            hd.mkdir(exist_ok=True)
+            args = ["clean", "--fastq1", r1] + (["--fastq2", r2] if paired else []) + \
+                   ["--index", idx, "--output", hd, "--threads", a.threads, "--force"]
+            custom = a.host not in ("human", "mouse")
+            if a.platform == "illumina":
+                # standard indexes ship for Bowtie2; a host given as a FASTA file is
+                # indexed on the fly by minimap2 (hostile builds no Bowtie2 index)
+                args += ["--aligner", "minimap2" if custom else "bowtie2"]
+            js = sd / "hostile.json"
+            if run(hostile, args, logs / "hostile.log", stdout_to=js) == 0:
+                cl = sorted(hd.glob("*.clean*.fastq.gz"))
+                c1 = [f for f in cl if "clean_2" not in f.name]
+                c2 = [f for f in cl if "clean_2" in f.name]
+                if c1:
+                    r1 = c1[0]
+                    r2 = c2[0] if (paired and c2) else r2
+                try:
+                    h = json.loads(js.read_text())
+                    h = h[0] if isinstance(h, list) else h
+                    row["host_removed"] = int(h.get("reads_removed", 0)) // (2 if paired else 1)
+                except Exception:
+                    pass
+            else:
+                log(f"[warn] [{s}] hostile failed — see logs/hostile.log; continuing without host removal")
+
+        # 3. Kraken2
+        progress(base + step // 2, f"[{s}] Kraken2 classification")
+        rep = sd / "kraken2.report"
+        args = ["--db", db, "--threads", a.threads, "--confidence", a.confidence,
+                "--report", rep, "--output", "-"]
+        if a.memory_mapping:
+            args.append("--memory-mapping")
+        args += (["--paired", r1, r2] if paired else [r1])
+        if run(k2, args, logs / "kraken2.log", stdout_to=Path(os.devnull)) != 0 or not rep.exists():
+            log(f"[ERROR] [{s}] Kraken2 failed — see logs/kraken2.log")
+            return 1
+        lin, kspecies, uncl, clas = parse_report(rep)
+        lineages.update(lin)
+        row["classified"] = clas
+        row["unclassified"] = uncl
+
+        # 4. Bracken
+        est = None
+        rl = pick_read_len(avail, mean_len) if br else None
+        if rl:
+            progress(base + 3 * step // 4, f"[{s}] Bracken abundance (read length {rl})")
+            bo, bw = sd / "bracken_species.tsv", sd / "bracken_species.report"
+            if run(br, ["-d", db, "-i", rep, "-o", bo, "-w", bw, "-r", rl, "-l", a.bracken_level,
+                        "-t", a.bracken_threshold], logs / "bracken.log") == 0 and bo.exists():
+                est = parse_bracken(bo)
+                used_len[s] = rl
+                if bw.exists():
+                    lineages.update(parse_report(bw)[0])
+            else:
+                log(f"[warn] [{s}] Bracken failed — using Kraken2 clade counts")
+        if est is None:
+            est = {t: ("", float(c)) for t, c in kspecies.items()}
+        host = {t: v for t, v in est.items() if t in HOST_TAXA}
+        row["host_classified"] = int(round(sum(v[1] for v in host.values())))
+        per_sample[s] = {t: v[1] for t, v in est.items() if t not in HOST_TAXA and v[1] > 0}
+        row["final"] = int(round(sum(per_sample[s].values())))
+        track.append(row)
+        log(f"[{s}] {row.get('input', 0):,} reads → {row.get('after_qc', 0):,} after QC → "
+            f"{clas:,} classified ({row['final']:,} to species, {row['host_classified']:,} host)")
+
+    # ── tables in the amplicon layout ──────────────────────────────────────────
+    progress(92, "Writing tables")
+    names = list(samples)
+    taxa = sorted({t for d in per_sample.values() for t in d},
+                  key=lambda t: -sum(per_sample[s].get(t, 0) for s in names))
+    with open(out / "asv_table.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["tax_id"] + names)
+        for t in taxa:
+            w.writerow([t] + [int(round(per_sample[s].get(t, 0))) for s in names])
+    with open(out / "taxonomy.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["tax_id"] + RANK_ORDER)
+        for t in taxa:
+            L = lineages.get(t, {})
+            w.writerow([t] + [L.get(r, "") for r in RANK_ORDER])
+    cols = ["sample", "input", "after_qc", "host_removed", "classified", "unclassified",
+            "host_classified", "final"]
+    with open(out / "read_tracking.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for r in track:
+            w.writerow(r)
+    dom = defaultdict(float)
+    for s in names:
+        for t, v in per_sample[s].items():
+            dom[lineages.get(t, {}).get("Kingdom", "Unknown")] += v
+    meta = {}
+    for f in ("inspect.txt", "library_report.tsv"):
+        if (db / f).exists():
+            meta["index_file"] = f
+    (out / "summary.json").write_text(json.dumps({
+        "pipeline": "shotgun", "platform": a.platform, "beta": True,
+        "kraken_db": str(db), "kraken_db_name": db.name, "confidence": a.confidence,
+        "bracken_level": a.bracken_level, "bracken_read_length": used_len,
+        "bracken_threshold": a.bracken_threshold, "host": a.host, "tools": vers,
+        "emu_counts": "estimated_reads", "n_samples": len(names), "n_taxa": len(taxa),
+        "domains": {k: round(v) for k, v in sorted(dom.items(), key=lambda kv: -kv[1])}},
+        indent=1))
+    progress(100, "Done")
+    log(f"{len(taxa)} species across {len(names)} sample(s) — asv_table.csv / taxonomy.csv written")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

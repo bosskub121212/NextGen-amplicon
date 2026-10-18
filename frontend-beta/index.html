@@ -627,6 +627,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       {key:"ONT-16S",  label:"ONT 16S",        marker:"ONT-16S",
        desc:"Full-length 16S from Oxford Nanopore reads, quantified with Emu against its own database."}
     ]},
+    {grp:"Metagenome", items:[
+      {key:"Shotgun",  label:"Shotgun metagenome", marker:"Shotgun", beta:true,
+       desc:"Beta. Whole-community DNA from Illumina pairs or Oxford Nanopore reads — read QC, optional host removal (human, mouse or your own genome), Kraken 2 classification and Bracken species abundance, then the same composition, diversity, Controls and MaAsLin 3 report as the amplicon pipelines."}
+    ]},
     {grp:"Whole genome", items:[
       {key:"ONT-WGS",  label:"ONT WGS isolate", marker:"ONT-WGS",
        desc:"Complete genomes of bacterial isolates from Oxford Nanopore Native Barcoding / Ligation runs — chunk merging, Flye + Medaka, species by ANI, all 16S copies, MLST, AMR, virulence, plasmids and Bakta annotation."}
@@ -771,6 +775,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         var open = !!STATE.unlocked[it.key];
         html += '<button class="pipe' + (open ? "" : " locked") + '" data-key="' + esc(it.key) + '">'
              +  '<span class="dot"></span>' + esc(it.label)
+             +  (it.beta ? ' <span class="beta" style="margin-left:4px">beta</span>' : "")
              +  (open ? "" : LOCK_SVG) + '</button>';
       });
     });
@@ -1772,6 +1777,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(p.wgs_sample_names && Object.keys(p.wgs_sample_names).length)
         row("Samples", Object.keys(p.wgs_sample_names).map(function(k){ return p.wgs_sample_names[k]; }).join(", "));
       row("CPU threads",         p.nThreads);
+    } else if(String(p.marker || "").toUpperCase() === "SHOTGUN"){
+      row("Platform",            p.sequencerType === "ont" ? "Oxford Nanopore" : "Illumina paired-end");
+      row("Kraken 2 index",      p.sg_kraken_db || "db_paths.json kraken2_db");
+      row("Confidence",          p.sg_confidence);
+      row("Bracken",             (p.sg_bracken_level === "G" ? "genus" : "species") + " · ≥ "
+                                 + p.sg_bracken_threshold + " reads");
+      row("Host removal",        p.sg_host || "none");
+      if(p.sequencerType === "ont") row("Read filter", "≥ " + p.sg_min_len + " bp, mean Q ≥ " + p.sg_min_q);
+      row("CPU threads",         p.nThreads);
+      row("Metadata supplied",   (p.metadata || (p.metadataRows && p.metadataRows.length)) ? "yes" : "no");
     } else if(p.marker === "ONT-16S" || p.marker === "ONT16S" || p.marker === "ONT"){
     /* Emu runs: only what emu_pipeline.py actually takes — the DADA2 fields
        (truncLen, maxEE, pooling, bootstrap…) carry defaults but are never used */
@@ -5874,6 +5889,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      take a paired-end truncLen — showing one anyway would be inviting a setting
      that the run cannot use. */
   function stepSpec(key){
+    if(key === "Shotgun") return shotgunSpec();
     var dada2   = ["16S", "12S", "18S-nema"].indexOf(key) !== -1;
     var isONT   = key === "ONT-16S";
     var isPB    = key === "PacBio";
@@ -6048,6 +6064,54 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     return steps;
   }
 
+  /* Shotgun metagenome (beta): its own steps — no primers, no amplicon
+     reference. Field keys are RunParams sg_* names; the Kraken2 index defaults
+     to the one setup_shotgun.sh registered in db_paths.json. */
+  function shotgunSpec(){
+    var k2 = ((STATE.databases || {}).databases || {}).kraken2_db || "";
+    return [
+      {n:1, title:"Read QC",
+       why:"Illumina pairs go through fastp (adapters, quality, length ≥ 50 bp); Nanopore reads are filtered by length and mean quality.",
+       fields:[
+        ["sg_min_len", "Nanopore: minimum read length", "int", "500", "bp — ignored for Illumina"],
+        ["sg_min_q",   "Nanopore: minimum mean quality", "num", "10", "Q — ignored for Illumina"]]},
+      {n:2, title:"Host removal",
+       why:"Host DNA can be most of a clinical or tissue sample; removing it first saves time and keeps it out of every table.",
+       fields:[
+        ["sg_host", "Remove reads of", "select", "none", [
+          ["none",   "nothing (environmental, food, culture samples)"],
+          ["human",  "human — T2T-CHM13 + HLA (Hostile)"],
+          ["mouse",  "mouse — GRCm39 (Hostile)"],
+          ["custom", "another host — genome FASTA below"]]],
+        ["_sg_host_path", "Host genome FASTA", "path", "", "only for 'another host': full path to the genome (.fa / .fa.gz)"]]},
+      {n:3, title:"Kraken 2 + Bracken",
+       why:"Kraken 2 names every read from its k-mers; Bracken then re-estimates reads per species, which is what the tables and figures use.",
+       fields:[
+        ["sg_kraken_db", "Kraken 2 index", "path", k2, k2 ? "folder with hash.k2d — set by setup_shotgun.sh"
+                                                        : "not installed yet: bash ~/r16s-app/setup_shotgun.sh"],
+        ["sg_confidence", "Confidence threshold", "num", "0.1", "0 = Kraken 2 default; higher = fewer, surer calls"],
+        ["sg_bracken_level", "Abundance level", "select", "S", [["S", "species"], ["G", "genus"]]],
+        ["sg_bracken_threshold", "Minimum reads per taxon", "int", "10", "Bracken -t"],
+        ["nThreads", "CPU threads", "int", "8", ""],
+        ["sg_memory_mapping", "Index from disk", "bool", "false",
+         "on when the machine has less RAM than the index (slower)"]]},
+      {n:4, title:"Controls and differential abundance",
+       why:"Controls can also be marked in the metadata: a column control / sample_type / type with negative, blank, NTC or mock.",
+       fields:[
+        ["_controls", "Negative controls", "controls", "", "sample IDs, comma separated"],
+        ["_mocks", "Mock community", "mocks", "", "sample IDs of mock / positive controls, comma separated"],
+        ["mockStandard", "Mock standard", "select", "zymo_d6300", [
+          ["zymo_d6300", "ZymoBIOMICS D6300 / D6305 / D6306 (8 bacteria)"],
+          ["zymo_d6331", "ZymoBIOMICS Gut D6331 (listed, no expected %)"]]],
+        ["run_maaslin3", "MaAsLin 3", "bool", "true", "multivariable abundance + prevalence model"],
+        ["maaslin_fixed", "MaAsLin fixed effects", "text", "", "metadata columns, comma separated — blank = every usable column"],
+        ["maaslin_random", "MaAsLin random effects", "text", "", "e.g. subject"],
+        ["maaslin_reference", "MaAsLin reference levels", "text", "", "column,level; column,level"],
+        ["maaslin_rank", "MaAsLin rank", "select", "Species", [
+          ["Phylum","Phylum"],["Family","Family"],["Genus","Genus"],["Species","Species"]]]]}
+    ];
+  }
+
   function field(f, dbOpts, marker){
     var key = f[0], label = f[1], kind = f[2], def = f[3], extra = f[4];
     var id = "f_" + key;
@@ -6198,7 +6262,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       lastError: "",
       merge: false        /* ONT: several chunk files per sample, merged at run time */
     };
-    var canMerge = it.key === "ONT-16S";
+    var canMerge = it.key === "ONT-16S" || it.key === "Shotgun";
+    var isSG = it.key === "Shotgun";
 
     work.innerHTML =
         '<div class="crumb">New job · ' + esc(it.label) + '</div>'
@@ -6272,9 +6337,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + '<select id="seq">'
               + '<option value="illumina">Illumina (paired-end)</option>'
               + '<option value="ont">ONT R10.4+ (single-end)</option>'
-              + '<option value="qiime2_vsearch">VSEARCH OTUs (paired- or single-end)</option>'
+              + (isSG ? "" : '<option value="qiime2_vsearch">VSEARCH OTUs (paired- or single-end)</option>')
             + '</select>'
-            + '<span class="note">Single-end changes how the files are paired and how samples are named. VSEARCH merges Illumina pairs itself when every file has a mate.</span></div>'
+            + '<span class="note">' + (isSG
+                ? "Illumina: R1/R2 pairs per sample. Nanopore: one file per sample, or MinKNOW folders merged per barcode above."
+                : "Single-end changes how the files are paired and how samples are named. VSEARCH merges Illumina pairs itself when every file has a mate.")
+            + '</span></div>'
           + '<div class="f" id="otuBox" hidden><label for="f_otuSimilarity">OTU identity</label>'
             + '<input type="text" id="f_otuSimilarity" data-k="otuSimilarity" data-kind="num" value="0.97">'
             + '<span class="note">VSEARCH clustering identity — 0.97 is the usual 97% OTU</span></div>'
@@ -6465,6 +6533,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       }
     }
     if(dbSel){ dbSel.addEventListener("change", dbSync); dbSync(); }
+    var k2in = document.getElementById("f_sg_kraken_db");
+    if(k2in) k2in.addEventListener("input", function(){ preflight(dbOpts, dbCount); });
 
     var ab = document.getElementById("advBtn"), abody = document.getElementById("advBody");
     ab.addEventListener("click", function(){
@@ -6851,6 +6921,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   function runQC(){
     var box = document.getElementById("qcBox");
     if(!box || !FORM.jobId) return;
+    if(FORM.marker === "Shotgun") return;      /* amplicon truncLen advice does not apply */
     var pf = (document.getElementById("f_primer_f") || {}).value || "";
     var pr = (document.getElementById("f_primer_r") || {}).value || "";
     var jid = FORM.jobId;
@@ -7004,7 +7075,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }));
     var dbSel = document.getElementById("f_dbPath");
     var dbTxt = document.getElementById("f_dbPathCustom");
-    var dbOk  = !!(dbSel && (dbSel.value === "__custom__"
+    var isSG  = FORM.marker === "Shotgun";
+    var k2el  = document.getElementById("f_sg_kraken_db");
+    var dbOk  = isSG ? !!(k2el && k2el.value.trim())
+              : !!(dbSel && (dbSel.value === "__custom__"
                      ? (dbTxt && dbTxt.value.trim())
                      : dbSel.value));
 
@@ -7021,9 +7095,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
            "Metadata: " + FORM.meta.length + " rows matched",
            "Metadata does not match the samples",
            "No metadata (optional)")
-      + pf(dbOk, "Database selected",
+      + (isSG ? pf(dbOk, "Kraken 2 index set", "No Kraken 2 index — run setup_shotgun.sh or give its folder")
+      : pf(dbOk, "Database selected",
            dbOpts.length ? "No database selected"
-                         : "No reference file found in the databases folder");
+                         : "No reference file found in the databases folder"));
 
     var run = document.getElementById("runBtn");
     var msg = document.getElementById("runMsg");
@@ -7032,7 +7107,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var why = !FORM.jobId          ? "Upload the reads first."
             : n === 0              ? "No sample could be resolved from the uploaded filenames."
             : hardProblems.length  ? "Fix the pairing problems above — a run started like this produces a table that looks fine and is not."
-            : !dbOk                ? "Choose a taxonomy database."
+            : !dbOk                ? (isSG ? "Give the Kraken 2 index folder (step 3)." : "Choose a taxonomy database.")
             : !metaOk              ? "The metadata does not cover every sample. Remove it or fix the names."
             : "";
     run.disabled = !!why || FORM.busy;
@@ -7083,6 +7158,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     p.controlSamples = ctl
       ? ctl.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean)
       : [];
+    if(p.sg_host === "custom"){
+      var hp = document.getElementById("f__sg_host_path");
+      p.sg_host = hp ? hp.value.trim() : "";
+      if(!p.sg_host) p.sg_host = "none";
+    }
     var mk = document.getElementById("f_mocks");
     p.mockSamples = mk
       ? mk.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean)
@@ -7172,7 +7252,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       /* An assignSpecies file here is what produced WRONG KIND OF REFERENCE
          FILE. The pipeline finds the matching species file by itself from the
          trainset, so offering it as the main reference can only be a mistake. */
-      if(/assignspecies|wspecies/i.test(base) || (!isEmu && /species_taxid/i.test(base))) return;
+      if(/assignspecies|wspecies|multicopy_v\d+_species/i.test(base) || (!isEmu && /species_taxid/i.test(base))) return;
       var rel = f.rel_path || base;
       var dir = rel.indexOf("/") === -1 ? "" : rel.slice(0, rel.lastIndexOf("/"));
       var o = {
@@ -7182,8 +7262,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                + (f.md5_ok === false ? "   ⚠ checksum differs from the published file" : ""),
         name:  base
       };
-      var ok = isEmu ? (/^emu/i.test(dir) && /^(species_taxid|sequences)\.fasta$/i.test(base))
-                     : marker.test(rel) && !/^emu/i.test(dir);   /* Emu folders are not DADA2 references */
+      /* 16S_typestrain_multicopy/emu (build_16s_typestrain_db.py) is an Emu folder too */
+      var emuDir = /^emu/i.test(dir) || /(^|\/)emu$/i.test(dir);
+      var ok = isEmu ? (emuDir && /^(species_taxid|sequences)\.fasta$/i.test(base))
+                     : marker.test(rel) && !emuDir;   /* Emu folders are not DADA2 references */
       (ok ? hit : other).push(o);
     });
 

@@ -18,7 +18,7 @@ Payload bytes:
 Pipeline bit positions:
   bit 0 = 16S      bit 1 = 12S      bit 2 = ITS1     bit 3 = ITS2
   bit 4 = COX1     bit 5 = 18S-nema bit 6 = PacBio   bit 7 = ONT-16S
-  bit 8 = ONT-WGS
+  bit 8 = ONT-WGS  bit 9 = Shotgun
 
 DEV BYPASS:  Place ".dev_bypass" in the app root — always fully licensed.
 """
@@ -65,6 +65,7 @@ PIPELINES: list = [
     ("PacBio",    6),
     ("ONT-16S",   7),
     ("ONT-WGS",   8),
+    ("Shotgun",   9),     # shotgun metagenome (beta)
 ]
 ALL_MASK = (1 << len(PIPELINES)) - 1
 
