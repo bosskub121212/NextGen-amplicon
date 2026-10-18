@@ -7179,14 +7179,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + '</div>'
           + '<div class="drop" id="wgDrop">'
             + '<div class="t">Or upload</div>'
-            + '<div class="s">A .zip of the delivery folder keeps the sample folder names; '
-            + 'loose FASTQ files are grouped by barcode.</div>'
+            + '<div class="s">Pick the delivery folder itself (the one holding Sample_… / barcode… '
+            + 'sub-folders) to take every sample at once, or sample folders one by one — each pick is added. '
+            + 'A .zip of the folder works too; loose FASTQ files are grouped by barcode. '
+            + 'fastq_fail files are left out.</div>'
             + '<div class="row">'
               + '<input type="file" id="wgIn" multiple accept=".fastq,.fq,.gz,.zip" hidden>'
+              + '<input type="file" id="wgDirIn" webkitdirectory directory multiple hidden>'
+              + '<button class="btn pri" id="wgDir">Choose folder…</button>'
               + '<button class="btn" id="wgPick">Choose files</button>'
               + '<button class="btn" id="wgUp" disabled>Upload</button>'
-              + '<span class="s" id="wgUpState">Nothing chosen yet</span>'
+              + '<button class="btn" id="wgClear" hidden>Clear</button>'
             + '</div>'
+            + '<div class="s" id="wgUpState">Nothing chosen yet</div>'
           + '</div>'
         + '</div>'
         + '<div class="pre" id="wgPre"></div>'
@@ -7223,7 +7228,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     var inp = document.getElementById("wgIn");
     document.getElementById("wgPick").addEventListener("click", function(){ inp.click(); });
-    inp.addEventListener("change", function(){ wgChoose(inp.files); });
+    inp.addEventListener("change", function(){ wgChoose(inp.files); inp.value = ""; });
+    var dirIn = document.getElementById("wgDirIn");
+    document.getElementById("wgDir").addEventListener("click", function(){ dirIn.click(); });
+    dirIn.addEventListener("change", function(){
+      wgChoose(dirIn.files, true);
+      dirIn.value = "";                 /* the same folder can be picked again after Clear */
+    });
+    document.getElementById("wgClear").addEventListener("click", function(){
+      WG.files = []; WG.jobId = null; WG.groups = []; WG.err = "";
+      document.getElementById("wgUpState").textContent = "Nothing chosen yet";
+      document.getElementById("wgUp").disabled = true;
+      this.hidden = true;
+      wgPaintSamples(); wgPreflight();
+    });
     var dz = document.getElementById("wgDrop");
     ["dragenter","dragover"].forEach(function(e){
       dz.addEventListener(e, function(ev){ ev.preventDefault(); dz.style.borderColor = "var(--accent)"; });
@@ -7245,12 +7263,43 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     wgPreflight();
   }
 
-  function wgChoose(fileList){
-    WG.files = Array.prototype.slice.call(fileList);
+  function wgChoose(fileList, fromFolder){
+    var incoming = Array.prototype.slice.call(fileList);
+    var FAILRX = /(^|[_\-.\/])fastq_fail(\/|$)|(^|[_\-.])fail([_\-.]|$)/i;
+    var skipped = 0;
+    if(fromFolder){
+      /* a folder pick brings everything in it: keep the reads, drop fastq_fail */
+      incoming = incoming.filter(function(f){
+        var rel = f.webkitRelativePath || f.name;
+        var ok = EXT.test(f.name) && !rel.split("/").some(function(q){ return FAILRX.test(q); });
+        if(!ok) skipped++;
+        return ok;
+      });
+      /* folder picks add up: Sample_L21, then Sample_PGU… keeps both */
+      var keyOf = function(f){ return (f.webkitRelativePath || f.name) + "|" + f.size; };
+      var seen = {}, keep = WG.files.filter(function(f){ return !!f.webkitRelativePath; });
+      keep.forEach(function(f){ seen[keyOf(f)] = 1; });
+      incoming.forEach(function(f){ if(!seen[keyOf(f)]){ seen[keyOf(f)] = 1; keep.push(f); } });
+      WG.files = keep;
+    } else {
+      WG.files = incoming;
+    }
+    WG.jobId = null; WG.groups = []; WG.err = "";     /* a new selection replaces the old upload */
     var bytes = WG.files.reduce(function(n, f){ return n + f.size; }, 0);
-    document.getElementById("wgUpState").textContent = WG.files.length + " file"
-      + (WG.files.length === 1 ? "" : "s") + " · " + (bytes / 1048576).toFixed(1) + " MB — not uploaded yet";
+    var folders = {};
+    WG.files.forEach(function(f){
+      var rel = f.webkitRelativePath || "";
+      if(rel) folders[rel.split("/").slice(0, -1).join("/")] = 1;
+    });
+    var nf = Object.keys(folders).length;
+    document.getElementById("wgUpState").textContent = WG.files.length + " FASTQ file"
+      + (WG.files.length === 1 ? "" : "s") + (nf ? " in " + nf + " folder" + (nf === 1 ? "" : "s") : "")
+      + " · " + (bytes / 1048576).toFixed(1) + " MB — not uploaded yet"
+      + (skipped ? " · " + skipped + " other / fastq_fail file" + (skipped === 1 ? "" : "s") + " left out" : "")
+      + (bytes > 5 * 1073741824 ? " · large: \u201cUse this folder\u201d on the left links instead of copying" : "");
     document.getElementById("wgUp").disabled = !WG.files.length || WG.busy;
+    document.getElementById("wgClear").hidden = !WG.files.length;
+    wgPaintSamples(); wgPreflight();
   }
 
   function wgAccept(j, how){
