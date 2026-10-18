@@ -841,6 +841,111 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(view.name === "charts")   return renderCharts(view.id);
   }
 
+  /* ═══ offline type-strain genomes (ONT-WGS) ═════════════════════════════
+     GET /wgs/typestrains → age of the local NCBI type-strain genome set. The app
+     reminds at 90 days, insists at 180, and Update downloads only what is new. */
+  function tsAgeText(T){
+    if(!T || !T.built) return "not downloaded";
+    return "updated " + T.built.slice(0, 10) + " (" + T.age_days + " day" + (T.age_days === 1 ? "" : "s") + " ago)";
+  }
+  function tsFmtBytes(b){ return !b ? "—" : b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB"; }
+  function refreshTs(){
+    return api("/wgs/typestrains").then(function(T){ STATE.ts = T; paintTsReminder(); return T; })
+      .catch(function(){ STATE.ts = null; return null; });
+  }
+  /* dot on Settings + a dismissible banner on the home screen when a refresh is due */
+  function paintTsReminder(){
+    var T = STATE.ts, sb = document.getElementById("setBtn");
+    var due = !!(T && T.due && !T.running);
+    var snoozed = false;
+    try{ snoozed = Number(localStorage.getItem("nga-ts-snooze") || 0) > Date.now(); }catch(e){}
+    if(sb){
+      var dot = sb.querySelector(".tsdot");
+      if(due && !dot){ dot = document.createElement("span"); dot.className = "tsdot";
+        dot.title = "Type-strain genomes need an update";
+        dot.style.cssText = "margin-left:auto;width:8px;height:8px;border-radius:50%;background:"
+          + (T.overdue ? "var(--bad)" : "var(--warn)");
+        sb.appendChild(dot); }
+      if(!due && dot) dot.remove();
+    }
+    var hb = document.getElementById("tsBanner");
+    if(!hb) return;
+    hb.innerHTML = (due && !snoozed)
+      ? '<div class="note ' + (T.overdue ? "bad" : "hold") + '" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">'
+        + '<span><b>Type-strain genomes are ' + T.age_days + ' days old</b> — '
+        + (T.overdue ? "past the 6-month refresh. " : "a refresh is due (every 3–6 months). ")
+        + 'Species described since then are missing from offline ONT-WGS comparisons.</span>'
+        + '<span style="flex:1"></span>'
+        + '<button class="btn pri" id="tsBanUpd">Update now</button>'
+        + '<button class="btn" id="tsBanLater">Remind me in 2 weeks</button></div>'
+      : "";
+    var u = document.getElementById("tsBanUpd");
+    if(u) u.addEventListener("click", function(){ go({name:"settings"}); setTimeout(startTsUpdate, 50); });
+    var l = document.getElementById("tsBanLater");
+    if(l) l.addEventListener("click", function(){
+      try{ localStorage.setItem("nga-ts-snooze", String(Date.now() + 14 * 86400000)); }catch(e){}
+      paintTsReminder();
+    });
+  }
+  function startTsUpdate(){
+    var m = document.getElementById("stTsMsg");
+    var T = STATE.ts || {};
+    var first = !T.built;
+    if(!confirm(first
+        ? "Download every NCBI type-strain genome (about 22,700 genomes, ~31 GB)? It runs in the background for several hours; analyses can keep running."
+        : "Update the type-strain genomes? Only new genomes are downloaded; analyses can keep running.")) return;
+    if(m) m.textContent = "Starting…";
+    fetch("/wgs/typestrains/update", {method:"POST"})
+      .then(function(r){ return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.error || ("HTTP " + r.status)); return j; }); })
+      .then(function(){ if(m) m.textContent = "Started."; return refreshTs(); })
+      .then(paintTsPanel)
+      .catch(function(e){
+        var msg = String(e.message || e);
+        refreshTs().then(paintTsPanel).then(function(){
+          var mm = document.getElementById("stTsMsg");
+          if(mm){ mm.textContent = msg; mm.style.color = "var(--bad)"; }
+        });
+      });
+  }
+  function paintTsPanel(){
+    var box = document.getElementById("stTs");
+    if(!box) return;
+    var T = STATE.ts;
+    if(!T){ box.innerHTML = '<div style="padding:12px 14px">Status not available from the backend.</div>'; return; }
+    var P = T.progress || {};
+    var pct = P.total ? Math.min(100, Math.round(100 * (P.done || 0) / P.total)) : 0;
+    var state = T.running
+      ? '<b>Downloading…</b> ' + (P.phase === "downloading"
+          ? (P.done || 0).toLocaleString() + " / " + (P.total || 0).toLocaleString() + " genomes"
+            + (P.eta_min != null ? " · about " + P.eta_min + " min left" : "")
+          : (P.phase || "listing NCBI") + "…")
+        + '<div style="height:6px;background:var(--surface-2);border-radius:3px;margin-top:8px;overflow:hidden">'
+        + '<div style="height:100%;width:' + pct + '%;background:var(--accent)"></div></div>'
+      : !T.built && T.genomes_on_disk
+        ? '<b>' + T.genomes_on_disk.toLocaleString() + ' genomes</b> for selected genera only ('
+          + esc([].concat(T.scope || []).join(", ")) + '). Other genera still download from NCBI during the run.'
+      : !T.built
+        ? '<b>Not downloaded.</b> The type-strain comparison downloads genomes from NCBI during each run, '
+          + 'so it needs an internet connection.'
+        : '<b>' + (T.genomes_on_disk || 0).toLocaleString() + ' genomes</b> from '
+          + (T.genera || 0).toLocaleString() + ' genera · ' + tsFmtBytes(T.bytes) + ' · ' + esc(tsAgeText(T))
+          + (T.failed ? ' · <span style="color:var(--warn)">' + T.failed + ' failed — Update retries them</span>' : "")
+          + (T.overdue ? '<br><span style="color:var(--bad)">Past the 6-month refresh.</span>'
+             : T.due ? '<br><span style="color:var(--warn)">A refresh is due (every 3–6 months).</span>' : "");
+    box.innerHTML = '<div style="padding:12px 14px">' + state + '</div>'
+      + (T.log_tail && T.log_tail.length && T.running
+          ? '<pre class="mono s" style="margin:0 14px 10px;white-space:pre-wrap;max-height:110px;overflow:auto">'
+            + esc(T.log_tail.join("\n")) + '</pre>' : "")
+      + '<div style="padding:0 14px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+      + '<button class="btn pri" id="stTsUpd"' + (T.running ? " disabled" : "") + '>'
+      + (T.built ? "Update now" : "Download (~31 GB)") + '</button>'
+      + '<span class="s" id="stTsMsg"></span>'
+      + '<span class="s" style="margin-left:auto">' + (T.free_gb != null ? T.free_gb + " GB free" : "") + '</span></div>';
+    var b = document.getElementById("stTsUpd");
+    if(b) b.addEventListener("click", startTsUpdate);
+  }
+
   /* ═══ settings: licence, updates, workers, housekeeping ═════════════════
      The admin tools of the classic console, against the same endpoints. Every
      destructive action asks first and then reports what the backend says it
@@ -877,6 +982,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<div class="s" style="padding:0 14px 12px">Each run already uses several CPU threads; two at once is '
         + 'usually the most a workstation handles. Running jobs are not interrupted. Resets to the default '
         + 'when the backend restarts.</div></div>'
+
+      + '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Type-strain genomes</h3>'
+        + '<span class="hint">offline ONT-WGS species comparison · refresh every 3–6 months</span></div>'
+        + '<div id="stTs"><div style="padding:12px 14px">Reading…</div></div>'
+        + '<div class="s" style="padding:0 14px 12px">NCBI “assembly from type material”, one genome per species, '
+        + 'kept in <span class="mono">~/.ngamp_wgs_refs</span>. With it, ANIb / ANIm / TETRA, the genome tree and '
+        + 'reference mapping run without an internet connection. Update downloads only what is new.</div></div>'
 
       + '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Housekeeping</h3>'
         + '<span class="hint">permanent — there is no trash</span></div>'
@@ -992,6 +1104,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     });
 
     loadLic(); loadUpd();
+    refreshTs().then(paintTsPanel);
+    timer = setInterval(function(){
+      if(STATE.view.name !== "settings"){ stopTimer(); return; }
+      var was = !!(STATE.ts && STATE.ts.running);
+      refreshTs().then(function(T){ if(T && (T.running || was)) paintTsPanel(); });
+    }, 5000);
   }
 
   /* ═══ home: project history ════════════════════════════════════════════ */
@@ -1013,7 +1131,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   function renderHistory(){
-    work.innerHTML = '<div class="crumb">Project history</div>'
+    work.innerHTML = '<div id="tsBanner"></div><div class="crumb">Project history</div>'
       + '<h2 class="ttl">Jobs on this machine</h2>'
       + '<p class="sub">Open any job for its step timeline, the log exactly as the pipeline wrote it, '
       + 'and the settings it actually ran with.</p>'
@@ -1022,6 +1140,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + '<div id="histNote"></div>';
 
     paintHistory();
+    paintTsReminder();
     refreshJobs().then(paintHistory);
     timer = setInterval(function(){
       if(STATE.view.name !== "history"){ stopTimer(); return; }
@@ -7398,12 +7517,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       ];
       var missing = items.filter(function(x){ return !have[x[0]]; });
       if(!box) return;
+      var T = STATE.ts;
+      var tsLine = pf(T && T.built ? true : null,
+                      "Type strains offline · " + (T && T.built ? (T.genomes_on_disk || 0).toLocaleString() + " genomes, " + tsAgeText(T) : ""),
+                      "", T ? "Type strains: downloaded per run (needs internet)" : "Type strains: status unknown");
       box.innerHTML = '<div class="panel" style="margin-top:12px">'
         + '<div class="sechdr"><h3>Databases on this machine</h3><span class="hint">'
         + (missing.length ? "missing ones are skipped and named in the report" : "all installed") + '</span></div>'
         + '<div class="pre">' + items.map(function(x){
             return pf(!!have[x[0]], x[1] + " installed", x[1] + " not installed");
-          }).join("") + '</div>'
+          }).join("") + tsLine + '</div>'
         + (missing.length ? '<div class="note hold" style="margin:0 14px 14px">'
             + missing.map(function(x){ return "<b>" + esc(x[1]) + "</b> — " + esc(x[2]); }).join("<br>")
             + '<br>Install with <span class="mono">bash ~/r16s-app/setup_wgs.sh</span>; a finished run can then be '
@@ -7746,6 +7869,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   });
 
   api("/databases").then(function(d){ STATE.databases = d; }).catch(function(){});
+  refreshTs();
+  setInterval(refreshTs, 6 * 3600 * 1000);       /* the console may stay open for days */
   /* The authoritative list of what is actually installed. */
   api("/databases/browse").then(function(d){ STATE.browse = d; }).catch(function(){});
 

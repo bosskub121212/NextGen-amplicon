@@ -26,6 +26,7 @@ import argparse
 import gzip
 import io
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -42,6 +43,7 @@ import wgs_taxonomy as WT          # noqa: E402
 API = "https://api.ncbi.nlm.nih.gov/datasets/v2"
 UA = {"User-Agent": "NextGen-Amplicon (type-strain offline cache)"}
 DOMAINS = {"Bacteria": 2, "Archaea": 2157}
+DUE_DAYS, OVERDUE_DAYS = 90, 180      # the app reminds at 3 months, insists at 6
 
 
 def human(b: float) -> str:
@@ -143,9 +145,37 @@ def download_batch(accs: list[str], cache: Path) -> tuple[int, list[str]]:
     return len(got), [a for a in accs if a not in got]
 
 
+def progress(cache: Path, **kw):
+    p = cache / "build_progress.json"
+    try:
+        cur = json.loads(p.read_text()) if p.exists() else {}
+    except Exception:
+        cur = {}
+    cur.update(kw, updated=time.strftime("%Y-%m-%d %H:%M:%S"))
+    p.write_text(json.dumps(cur))
+
+
 def build(a):
     cache = Path(a.cache).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
+    if a.dry_run:
+        return _build(a, cache)
+    pidf = cache / "build.pid"
+    pidf.write_text(str(os.getpid()))
+    (cache / "build_progress.json").unlink(missing_ok=True)
+    progress(cache, phase="listing", done=0, total=0, started=time.strftime("%Y-%m-%d %H:%M"))
+    try:
+        rc = _build(a, cache)
+        progress(cache, phase="finished" if rc == 0 else "finished with errors", rc=rc)
+        return rc
+    except BaseException as e:
+        progress(cache, phase="stopped", error=str(e)[:300])
+        raise
+    finally:
+        pidf.unlink(missing_ok=True)
+
+
+def _build(a, cache: Path):
     wanted = [g.strip() for g in (a.genera or "").split(",") if g.strip()]
 
     say("1. Listing NCBI 'assembly from type material'")
@@ -173,6 +203,8 @@ def build(a):
             by_genus[r["_genus"]].append(r)
 
     say(f"2. Choosing one genome per species in {len(by_genus):,} genera")
+    if not a.dry_run:
+        progress(cache, phase="choosing")
     known = {}
     gf = cache / "genus_taxids.json"
     if gf.exists():
@@ -202,12 +234,17 @@ def build(a):
     est = total_len * 0.30                   # gzip of bacterial DNA ≈ 30 % of its length
     say(f"   {n_genomes:,} type-strain genomes in {len(by_genus):,} genera; "
         f"{len(todo):,} still to download (≈ {human(est)} compressed)")
-    if a.dry_run or not todo:
+    if a.dry_run:
+        return 0
+    if not todo:
+        write_meta(cache, wanted, len(by_genus), n_genomes, [])
+        say("   nothing new to download — lists refreshed")
         return 0
 
     say(f"3. Downloading {len(todo):,} genomes, {a.batch} per request, {a.jobs} at a time")
     batches = [todo[i:i + a.batch] for i in range(0, len(todo), a.batch)]
     done, failed, t0 = 0, [], time.time()
+    progress(cache, phase="downloading", done=0, total=len(todo))
     with ThreadPoolExecutor(max_workers=a.jobs) as ex:
         futs = [ex.submit(download_batch, b, cache) for b in batches]
         for k, fu in enumerate(as_completed(futs), 1):
@@ -216,19 +253,78 @@ def build(a):
             failed += miss
             rate = done / max(1.0, time.time() - t0)
             eta = (len(todo) - done - len(failed)) / rate / 60 if rate else 0
+            progress(cache, phase="downloading", done=done, failed=len(failed), total=len(todo),
+                     eta_min=round(eta))
             say(f"   {done:,} / {len(todo):,} genomes"
                 + (f", {len(failed)} failed" if failed else "")
                 + f" · ~{eta:.0f} min left")
-    (cache / "offline_db.json").write_text(json.dumps({
-        "built": time.strftime("%Y-%m-%d %H:%M"), "genera": len(by_genus),
-        "genomes": n_genomes, "scope": wanted or "all bacteria + archaea",
-        "failed": failed[:200]}, indent=1))
+    write_meta(cache, wanted, len(by_genus), n_genomes, failed)
     if failed:
         say(f"  ! {len(failed)} genome(s) could not be downloaded — run the same command again "
             "to retry only those")
         return 1
     say("   done — the type-strain comparison now runs without an internet connection")
     return 0
+
+
+def write_meta(cache: Path, wanted, n_genera, n_genomes, failed):
+    files = list(cache.glob("*.fna.gz"))
+    meta = cache / "offline_db.json"
+    old = {}
+    try:
+        old = json.loads(meta.read_text()) if meta.exists() else {}
+    except Exception:
+        pass
+    # a --genera run adds to an existing full build; it does not make the whole
+    # cache "fresh", so the date of the last FULL build is kept for reminders
+    full = not wanted
+    meta.write_text(json.dumps({
+        "built": time.strftime("%Y-%m-%d %H:%M") if full else old.get("built"),
+        "built_epoch": time.time() if full else old.get("built_epoch"),
+        "last_partial": None if full else time.strftime("%Y-%m-%d %H:%M"),
+        "genera": n_genera if full else old.get("genera", n_genera),
+        "genomes": n_genomes if full else old.get("genomes", n_genomes),
+        "scope": "all bacteria + archaea" if full else (old.get("scope") or wanted),
+        "genomes_on_disk": len(files),
+        "bytes": sum(f.stat().st_size for f in files),
+        "failed": failed[:200]}, indent=1))
+
+
+def summary(cache: Path | str | None = None) -> dict:
+    """Cheap status for the app (no directory walk): what the last build recorded,
+    whether one is running now, and whether a refresh is due."""
+    cache = Path(cache or Path.home() / ".ngamp_wgs_refs").expanduser()
+    out = {"cache": str(cache), "built": None, "age_days": None, "due": False,
+           "overdue": False, "running": False, "progress": None}
+    try:
+        m = json.loads((cache / "offline_db.json").read_text())
+        out.update({k: m.get(k) for k in ("built", "genera", "genomes", "genomes_on_disk",
+                                          "bytes", "scope", "last_partial")})
+        out["failed"] = len(m.get("failed") or [])
+        ep = m.get("built_epoch")
+        if not ep and m.get("built"):          # written by v2.18.1 before this field existed
+            try:
+                ep = time.mktime(time.strptime(m["built"], "%Y-%m-%d %H:%M"))
+            except Exception:
+                ep = None
+        if ep:
+            age = (time.time() - float(ep)) / 86400
+            out["age_days"] = int(age)
+            out["due"] = age >= DUE_DAYS
+            out["overdue"] = age >= OVERDUE_DAYS
+    except Exception:
+        pass
+    try:
+        pid = int((cache / "build.pid").read_text().strip())
+        os.kill(pid, 0)
+        out["running"] = True
+    except Exception:
+        pass
+    try:
+        out["progress"] = json.loads((cache / "build_progress.json").read_text())
+    except Exception:
+        pass
+    return out
 
 
 def status(a):

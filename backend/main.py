@@ -2370,6 +2370,66 @@ def browse_databases():
         "files":  files,
     }
 
+# -- 9c0. Offline type-strain genomes (ONT-WGS) ------------------------------
+# wgs_typestrain_db.py fills ~/.ngamp_wgs_refs with every NCBI type-strain genome
+# so the type-strain comparison runs offline. The app shows its age, reminds at
+# 3 months (6 = overdue) and can start a refresh, which only downloads what is new.
+_TS_CACHE = Path.home() / ".ngamp_wgs_refs"
+
+
+def _ts_build_running() -> bool:
+    try:
+        import wgs_typestrain_db as _tsdb
+        if _tsdb.summary(_TS_CACHE).get("running"):
+            return True
+    except Exception:
+        pass
+    try:   # a build started from a terminal by an older script writes no pid file
+        return subprocess.run(["pgrep", "-f", "wgs_typestrain_db.py build"],
+                              capture_output=True).returncode == 0
+    except Exception:
+        return False
+
+
+@app.get("/wgs/typestrains")
+def typestrain_db_status():
+    try:
+        import wgs_typestrain_db as _tsdb
+        st = _tsdb.summary(_TS_CACHE)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"status unavailable: {e}"})
+    st["running"] = st.get("running") or _ts_build_running()
+    st["free_gb"] = round(shutil.disk_usage(_TS_CACHE if _TS_CACHE.exists() else Path.home()).free / 1e9, 1)
+    try:
+        lines = (_TS_CACHE / "build.log").read_text(errors="replace").splitlines()
+        st["log_tail"] = lines[-6:]
+    except Exception:
+        st["log_tail"] = []
+    return st
+
+
+@app.post("/wgs/typestrains/update")
+def typestrain_db_update():
+    if _ts_build_running():
+        return JSONResponse(status_code=409, content={"error": "A download is already running."})
+    _TS_CACHE.mkdir(parents=True, exist_ok=True)
+    first = not (_TS_CACHE / "offline_db.json").exists()
+    need = 40 if first else 5
+    free = shutil.disk_usage(_TS_CACHE).free / 1e9
+    if free < need:
+        return JSONResponse(status_code=400, content={
+            "error": f"Only {free:.0f} GB free in {_TS_CACHE}; about {need} GB is needed."})
+    tool = BASE_DIR / "wgs_typestrain_db.py"
+    log = open(_TS_CACHE / "build.log", "a")
+    log.write(f"\n=== update started from the app {time.strftime('%Y-%m-%d %H:%M')} ===\n")
+    log.flush()
+    # own session: the download carries on if the backend is restarted
+    subprocess.Popen([sys.executable, str(tool), "build", "--cache", str(_TS_CACHE)],
+                     stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                     cwd=str(BASE_DIR), start_new_session=True)
+    return {"started": True, "first_build": first}
+
+
 # -- 9c. Worker config --------------------------------------------------------
 @app.get("/config")
 def get_config():

@@ -206,7 +206,8 @@ def main():
     print("Console")
     page = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
     for k in ("mockSamples", "maaslin_fixed", "ont_parallel", "run_fastqc", "/qc/", "renderSettings",
-              "/license/activate", "/update/check", "/results/cleanup", "orientation-check", "mpAdd"):
+              "/license/activate", "/update/check", "/results/cleanup", "orientation-check", "mpAdd",
+              "/wgs/typestrains", "tsBanner", "wgDirIn"):
         check(f"console offers {k}", k in page)
     main_src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
     check("console served at /, old UI at /classic", '@app.get("/classic"' in main_src
