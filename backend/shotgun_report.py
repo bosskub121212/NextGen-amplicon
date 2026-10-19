@@ -99,8 +99,12 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
                + (f"; k-mer distribution for {', '.join(sorted({str(x) for x in blen.values()}))}-bp reads"
                   if blen else "") + "), which redistributes reads that Kraken 2 could only place at "
                "genus or family level. Reads still classified as host (human / mouse) were counted and "
-               "left out of the community tables. Diversity, composition and the statistics below use "
-               "the Bracken species table.</p>")
+               "left out of the community tables"
+               + (f"; species below {sm.get('min_abundance_pct')}% of the reads in every sample "
+                  f"({sm.get('species_below_min_abundance', 0)} here) were left out as well — mostly reads "
+                  "Bracken spreads onto close relatives of abundant species"
+                  if sm.get("min_abundance_pct") else "")
+               + ". Diversity, composition and the statistics below use the Bracken species table.</p>")
     if platform == "ont" and blen and max(int(x) for x in blen.values()) < 1000:
         out.append("<p class=\"dim\">Bracken's k-mer distributions are built for a fixed read length; for "
                    "Nanopore reads the longest available one was used, which is shorter than the reads. "
@@ -165,8 +169,24 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
     out += RB._controls_section(run, an, T)
     out += RB._maaslin_section(run, T)
 
+    # Close relatives around a dominant species: shared k-mers, not extra organisms
+    spill = []
+    pct = an.rank_pct("Species") if "Species" in run.rank_cols else {}
+    for smp in S:
+        ranked = sorted(((t, v[smp]) for t, v in pct.items() if t != "Unclassified"), key=lambda x: -x[1])
+        if ranked and ranked[0][1] >= 50:
+            top, share = ranked[0]
+            g = top.split()[0]
+            rel = [t for t, v in ranked[1:] if t.split()[0] == g and 0 < v < 1]
+            if len(rel) >= 5:
+                spill.append(f"{esc(smp)}: <i>{esc(top)}</i> {share:.1f}% with {len(rel)} other <i>{esc(g)}</i> "
+                             "species below 1%")
     out.append('<h2 class="pbreak">Notes on reading this report</h2>')
-    out.append("<ul>" + "".join(f"<li>{n}</li>" for n in [
+    extra = ([f"<b>Close relatives of a dominant species.</b> {'; '.join(spill)}. Reads of one organism "
+              "that match its relatives' genomes as well are spread over them by Kraken 2 and Bracken; such "
+              "small same-genus entries are expected even from a pure culture and are not evidence of "
+              "additional organisms. Raise the minimum abundance (pipeline step 3) to hide them."] if spill else [])
+    out.append("<ul>" + "".join(f"<li>{n}</li>" for n in extra + [
         "Shotgun read counts reflect DNA, not cells: larger genomes contribute more reads per cell, so "
         "relative abundance is biased towards organisms with big genomes.",
         "Kraken 2 can only name organisms whose genomes, or close relatives, are in the index. Species "

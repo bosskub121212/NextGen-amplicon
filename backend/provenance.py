@@ -52,6 +52,7 @@ R_PKGS = {
     "emu":    ["phyloseq", "vegan"],
     "qiime2_vsearch": ["phyloseq", "vegan"],
     "shotgun": [],
+    "ont_wgs": [],
 }
 CLI_TOOLS = {
     "dada2":  ["cutadapt"],

@@ -254,6 +254,9 @@ def main(argv=None):
     ap.add_argument("--bracken_threshold", type=int, default=10)
     ap.add_argument("--min_len", type=int, default=500, help="ONT: minimum read length")
     ap.add_argument("--min_q", type=float, default=10, help="ONT: minimum mean read quality")
+    ap.add_argument("--min_abundance", type=float, default=0.01,
+                    help="%% — species below this share in every sample are left out of the "
+                         "tables (k-mer spill-over onto close relatives); 0 keeps everything")
     ap.add_argument("--memory_mapping", action="store_true",
                     help="Kraken2 reads the index from disk instead of RAM (slower, less memory)")
     a = ap.parse_args(argv)
@@ -455,6 +458,25 @@ def main(argv=None):
     names = list(samples)
     taxa = sorted({t for d in per_sample.values() for t in d},
                   key=lambda t: -sum(per_sample[s].get(t, 0) for s in names))
+    # Bracken hands a few reads to dozens of close relatives of every abundant
+    # species (shared k-mers): a pure B. subtilis culture came out as 90 species.
+    # Keep a species when it reaches min_abundance % in at least one sample.
+    dropped, dropped_reads = 0, {s: 0.0 for s in names}
+    if a.min_abundance > 0:
+        tot = {s: sum(per_sample[s].values()) or 1.0 for s in names}
+        keep = [t for t in taxa if any(100 * per_sample[s].get(t, 0) / tot[s] >= a.min_abundance
+                                       for s in names)]
+        dropped = len(taxa) - len(keep)
+        for t in set(taxa) - set(keep):
+            for s in names:
+                dropped_reads[s] += per_sample[s].get(t, 0)
+        taxa = keep
+        for r in track:
+            r["below_min_abundance"] = int(round(dropped_reads[r["sample"]]))
+            r["final"] = int(round(r["final"] - dropped_reads[r["sample"]]))
+        if dropped:
+            log(f"{dropped} species below {a.min_abundance}% in every sample left out "
+                f"({', '.join(f'{s}: {int(dropped_reads[s]):,} reads' for s in names)})")
     with open(out / "asv_table.csv", "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["tax_id"] + names)
@@ -467,7 +489,7 @@ def main(argv=None):
             L = lineages.get(t, {})
             w.writerow([t] + [L.get(r, "") for r in RANK_ORDER])
     cols = ["sample", "input", "after_qc", "host_removed", "classified", "unclassified",
-            "host_classified", "final"]
+            "host_classified", "below_min_abundance", "final"]
     with open(out / "read_tracking.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -475,8 +497,8 @@ def main(argv=None):
             w.writerow(r)
     dom = defaultdict(float)
     for s in names:
-        for t, v in per_sample[s].items():
-            dom[lineages.get(t, {}).get("Kingdom", "Unknown")] += v
+        for t in taxa:
+            dom[lineages.get(t, {}).get("Kingdom", "Unknown")] += per_sample[s].get(t, 0)
     meta = {}
     for f in ("inspect.txt", "library_report.tsv"):
         if (db / f).exists():
@@ -486,6 +508,7 @@ def main(argv=None):
         "kraken_db": str(db), "kraken_db_name": db.name, "confidence": a.confidence,
         "bracken_level": a.bracken_level, "bracken_read_length": used_len,
         "bracken_threshold": a.bracken_threshold, "host": a.host, "tools": vers,
+        "min_abundance_pct": a.min_abundance, "species_below_min_abundance": dropped,
         "emu_counts": "estimated_reads", "n_samples": len(names), "n_taxa": len(taxa),
         "domains": {k: round(v) for k, v in sorted(dom.items(), key=lambda kv: -kv[1])}},
         indent=1))

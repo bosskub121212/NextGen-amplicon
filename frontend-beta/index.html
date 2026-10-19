@@ -1784,6 +1784,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       row("Bracken",             (p.sg_bracken_level === "G" ? "genus" : "species") + " · ≥ "
                                  + p.sg_bracken_threshold + " reads");
       row("Host removal",        p.sg_host || "none");
+      if(p.sg_min_abundance !== undefined) row("Minimum abundance", p.sg_min_abundance + " %");
       if(p.sequencerType === "ont") row("Read filter", "≥ " + p.sg_min_len + " bp, mean Q ≥ " + p.sg_min_q);
       row("CPU threads",         p.nThreads);
       row("Metadata supplied",   (p.metadata || (p.metadataRows && p.metadataRows.length)) ? "yes" : "no");
@@ -6092,6 +6093,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["sg_confidence", "Confidence threshold", "num", "0", "keep 0 (Kraken 2 default): 0.05–0.1 dropped whole species in the mock test with the 16 GB index and with Nanopore reads"],
         ["sg_bracken_level", "Abundance level", "select", "S", [["S", "species"], ["G", "genus"]]],
         ["sg_bracken_threshold", "Minimum reads per taxon", "int", "10", "Bracken -t"],
+        ["sg_min_abundance", "Minimum abundance", "num", "0.01",
+         "% of a sample's reads — lower species are left out (spill-over onto close relatives); 0 = keep all"],
         ["nThreads", "CPU threads", "int", "8", ""],
         ["sg_memory_mapping", "Index from disk", "bool", "false",
          "on when the machine has less RAM than the index (slower)"]]},

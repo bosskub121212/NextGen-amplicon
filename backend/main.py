@@ -263,6 +263,7 @@ class RunParams(BaseModel):
     sg_min_len:         int   = 500       # ONT read filter
     sg_min_q:           float = 10.0
     sg_memory_mapping:  bool  = False     # Kraken2 index read from disk instead of RAM
+    sg_min_abundance:   float = 0.01      # % — species below this in every sample are left out of the tables
 
 class WorkerConfig(BaseModel):
     max_workers: int = 2
@@ -1059,6 +1060,9 @@ def run_r_pipeline(job_id: str, params: RunParams):
         # upload side so the results folder — and its download zip — stays
         # the deliverable only.
         wgs_script = R_SCRIPTS_DIR.parent / "ont_wgs_pipeline.py"
+        # not "dada2" (the default above): the post-run steps for amplicon tables —
+        # MaAsLin 3, DADA2 provenance — must not run on a genome result
+        _pipe_kind = "ont_wgs"
         try:
             _appv = json.loads((BASE_DIR.parent / "version.json").read_text())["version"]
         except Exception:
@@ -1137,6 +1141,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
         ]
         if params.sg_memory_mapping:
             cmd += ["--memory_mapping"]
+        cmd += ["--min_abundance", str(max(0.0, float(params.sg_min_abundance or 0)))]
         _pipe_kind = "shotgun"
         _pipe_dbs = [("kraken2", _k2)]
 
@@ -1698,6 +1703,7 @@ def run_r_pipeline(job_id: str, params: RunParams):
           _ma_script = R_SCRIPTS_DIR / "maaslin3_run.R"
           if (proc.returncode == 0 and params.run_maaslin3 and _ma_script.exists()
                   and metadata_path and Path(metadata_path).exists()
+                  and (Path(output_dir) / "asv_table.csv").exists()
                   and _pipe_kind in ("dada2", "its", "cox1", "pacbio", "emu", "qiime2_vsearch", "shotgun")):
               try:
                   with jobs_lock:
