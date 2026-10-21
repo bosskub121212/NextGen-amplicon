@@ -16,6 +16,11 @@ Per sample:
   4. abundance          Bracken re-estimates species read counts from the
                         Kraken2 report, using the k-mer distribution for the
                         read length nearest the sample's
+  5. resistome          (on by default) reads aligned with minimap2 to the
+                        AMRFinderPlus gene catalogue; the organism carrying
+                        each gene from Kraken2's per-read calls (shotgun_amr.py)
+  6. MAGs               (opt-in) assembly, binning, CheckM2, taxonomy and AMR
+                        per genome bin (shotgun_mags.py)
 Output — the layout the report, diversity, MaAsLin 3 and Controls already read:
   asv_table.csv   one row per species (id = NCBI taxid), estimated reads per sample
   taxonomy.csv    id, Kingdom … Species (from the Kraken2 report lineage)
@@ -40,6 +45,8 @@ from collections import OrderedDict, defaultdict
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import shotgun_amr as AMR                         # noqa: E402
 FQ_RE = re.compile(r"\.(fastq|fq)(\.gz)?$", re.I)
 PAIR_RE = re.compile(r"^(?P<name>.+?)[._-](?:R)?(?P<mate>[12])(?:_001)?\.(?:fastq|fq)(?:\.gz)?$", re.I)
 HOST_TAXA = {9606: "Homo sapiens", 10090: "Mus musculus"}
@@ -259,6 +266,14 @@ def main(argv=None):
                          "tables (k-mer spill-over onto close relatives); 0 keeps everything")
     ap.add_argument("--memory_mapping", action="store_true",
                     help="Kraken2 reads the index from disk instead of RAM (slower, less memory)")
+    ap.add_argument("--db_paths", default=str(HERE / "databases" / "db_paths.json"))
+    ap.add_argument("--no_amr", action="store_true", help="skip the read-based resistome")
+    ap.add_argument("--amr_min_identity", type=float, default=0,
+                    help="%% identity of a read to an AMR gene (default 90 Illumina, 85 Nanopore)")
+    ap.add_argument("--amr_min_breadth", type=float, default=60,
+                    help="%% of a gene's length the reads must cover for it to be called present")
+    ap.add_argument("--mags", action="store_true", help="assemble and bin genomes (slow, opt-in)")
+    ap.add_argument("--mag_min_contig", type=int, default=1500)
     a = ap.parse_args(argv)
 
     inp, out = Path(a.input_dir), Path(a.output_dir)
@@ -289,7 +304,31 @@ def main(argv=None):
                                env=t[1])
             m = re.search(r"(?:version|v|\s)\s*(\d+\.\d+(?:\.\d+)?)", " " + p.stdout + p.stderr)
             vers[n] = m.group(1) if m else "?"
+    dbp = {}
+    if a.db_paths and Path(a.db_paths).exists():
+        try:
+            dbp = json.loads(Path(a.db_paths).read_text())
+        except Exception as e:
+            log(f"[warn] db_paths.json unreadable: {e}")
+    mm2 = tool("minimap2")
+    amr_db = amr_cat = None
+    if not a.no_amr:
+        amrf = tool("amrfinder")
+        amr_db = AMR.find_db(dbp, conda_bases(), amrf[0] if amrf else None)
+        if not mm2 or not amr_db:
+            log("[warn] resistome skipped — " + ("minimap2 not found" if not mm2 else
+                "AMRFinderPlus database not found (installed by setup_wgs.sh; or set "
+                "db_paths.json key amrfinder_db)"))
+        else:
+            amr_cat = AMR.load_catalog(amr_db)
+            p = subprocess.run([mm2[0], "--version"], capture_output=True, text=True, env=mm2[1])
+            vers["minimap2"] = p.stdout.strip() or "?"
+    if not a.amr_min_identity:
+        a.amr_min_identity = 90.0 if a.platform == "illumina" else 85.0
     log("tools: " + ", ".join(f"{k} {v}" for k, v in vers.items()))
+    if amr_cat:
+        log(f"resistome: AMRFinderPlus catalogue {AMR.db_version(amr_db)} ({len(amr_cat):,} genes), "
+            f"identity >= {a.amr_min_identity:g}%, gene breadth >= {a.amr_min_breadth:g}%")
     if a.host != "none" and not hostile:
         log("[warn] hostile not installed — host reads are NOT removed before classification; "
             "Kraken2 still counts them as host and they are kept out of the table")
@@ -319,6 +358,7 @@ def main(argv=None):
             + " — species reads are Kraken2's own clade counts (less accurate for close species)")
 
     track, per_sample, lineages, used_len = [], {}, {}, {}
+    amr_rows, qc_reads = {}, {}
     n = len(samples)
     for i, (s, fs) in enumerate(samples.items()):
         sd = work / s
@@ -413,6 +453,27 @@ def main(argv=None):
             else:
                 log(f"[warn] [{s}] hostile failed — see logs/hostile.log; continuing without host removal")
 
+        qc_reads[s] = {"r1": r1, "r2": r2 if paired else None}
+
+        # 3a. resistome: reads against the AMR gene catalogue (before Kraken 2, so
+        #     that Kraken 2's per-read output can be kept for just these reads)
+        gene_reads = {}
+        if amr_cat:
+            progress(base + step // 3, f"[{s}] AMR genes in reads")
+            paf = sd / "amr.paf"
+            if AMR.align(mm2, AMR._cds_file(amr_db), [x for x in (r1, r2) if x], a.platform,
+                         a.threads, paf, logs / "minimap2_amr.log", run):
+                # reads (a pair counts once, as in the gene counts)
+                n_reads = max(1, row.get("after_qc", 0) - row.get("host_removed", 0))
+                amr_rows[s], gene_reads = AMR.summarise(paf, amr_cat, a.platform, n_reads,
+                                                        a.amr_min_identity / 100, a.amr_min_breadth)
+                n_amr = sum(1 for x in amr_rows[s] if x["type"] == "AMR")
+                log(f"[{s}] resistome: {n_amr} AMR gene famil{'y' if n_amr == 1 else 'ies'}"
+                    f" ({len(amr_rows[s]) - n_amr} stress / virulence)")
+            else:
+                log(f"[warn] [{s}] minimap2 against the AMR catalogue failed — see logs/minimap2_amr.log")
+        wanted = set().union(*gene_reads.values()) if gene_reads else set()
+
         # 3. Kraken2
         progress(base + step // 2, f"[{s}] Kraken2 classification")
         rep = sd / "kraken2.report"
@@ -421,9 +482,26 @@ def main(argv=None):
         if a.memory_mapping:
             args.append("--memory-mapping")
         args += (["--paired", r1, r2] if paired else [r1])
-        if run(k2, args, logs / "kraken2.log", stdout_to=Path(os.devnull)) != 0 or not rep.exists():
+        read_tax = {}
+        if wanted:
+            # "--output -" suppresses Kraken 2's per-read lines; stdout keeps them
+            args[args.index("--output") + 1] = "/dev/stdout"
+            cmd = [k2[0]] + [str(x) for x in args]
+            log("  $ kraken2 " + " ".join(str(x) for x in args)[:500])
+            with open(logs / "kraken2.log", "a") as lf:
+                lf.write(f"\n### {' '.join(cmd)}\n")
+                lf.flush()
+                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=lf, env=k2[1], text=True,
+                                     bufsize=1 << 20)
+                read_tax = AMR.kraken_keep(p.stdout, wanted)
+                k2rc = p.wait()
+        else:
+            k2rc = run(k2, args, logs / "kraken2.log", stdout_to=Path(os.devnull))
+        if k2rc != 0 or not rep.exists():
             log(f"[ERROR] [{s}] Kraken2 failed — see logs/kraken2.log")
             return 1
+        if amr_rows.get(s):
+            AMR.assign_hosts(amr_rows[s], gene_reads, read_tax, AMR.report_tree(rep))
         lin, kspecies, uncl, clas = parse_report(rep)
         lineages.update(lin)
         row["classified"] = clas
@@ -503,6 +581,31 @@ def main(argv=None):
     for f in ("inspect.txt", "library_report.tsv"):
         if (db / f).exists():
             meta["index_file"] = f
+    amr_info = {}
+    if amr_cat:
+        n_fam = AMR.write_tables(out, {s: amr_rows.get(s, []) for s in names})
+        amr_info = {"db": str(amr_db), "db_version": AMR.db_version(amr_db),
+                    "min_identity": a.amr_min_identity, "min_breadth": a.amr_min_breadth,
+                    "gene_families": n_fam,
+                    "amr_families": len({r["gene"] for v in amr_rows.values() for r in v
+                                         if r["type"] == "AMR"})}
+        log(f"resistome: {amr_info['amr_families']} AMR gene famil"
+            f"{'y' if amr_info['amr_families'] == 1 else 'ies'} across {len(names)} sample(s) — "
+            "amr_genes.csv / amr_rpkm.csv written")
+    mag_info = {}
+    if a.mags:
+        import shotgun_mags as MAG
+        progress(94, "MAGs: assembly and binning")
+        try:
+            mag_info = MAG.run_all(samples=names, qc=qc_reads, platform=a.platform, out=out,
+                                   threads=a.threads, dbp=dbp, kraken=(k2, db, a.memory_mapping),
+                                   amr_db=amr_db, min_contig=a.mag_min_contig, tool=tool, run=run,
+                                   log=log, progress=progress, conda_bases=conda_bases())
+        except Exception as e:                     # MAGs are an extra: never fail the profile
+            import traceback
+            log(f"[warn] MAG step failed: {e}")
+            (logs / "mags_traceback.txt").write_text(traceback.format_exc())
+            mag_info = {"error": str(e)}
     (out / "summary.json").write_text(json.dumps({
         "pipeline": "shotgun", "platform": a.platform, "beta": True,
         "kraken_db": str(db), "kraken_db_name": db.name, "confidence": a.confidence,
@@ -510,7 +613,8 @@ def main(argv=None):
         "bracken_threshold": a.bracken_threshold, "host": a.host, "tools": vers,
         "min_abundance_pct": a.min_abundance, "species_below_min_abundance": dropped,
         "emu_counts": "estimated_reads", "n_samples": len(names), "n_taxa": len(taxa),
-        "domains": {k: round(v) for k, v in sorted(dom.items(), key=lambda kv: -kv[1])}},
+        "domains": {k: round(v) for k, v in sorted(dom.items(), key=lambda kv: -kv[1])},
+        "amr": amr_info, "mags": mag_info},
         indent=1))
     progress(100, "Done")
     log(f"{len(taxa)} species across {len(names)} sample(s) — asv_table.csv / taxonomy.csv written")

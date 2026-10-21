@@ -61,7 +61,7 @@ CLI_TOOLS = {
     "pacbio": ["cutadapt"],
     "emu":    ["emu", "minimap2", "chopper", "cutadapt", "vsearch"],
     "qiime2_vsearch": ["vsearch", "cutadapt", "chopper"],
-    "shotgun": ["kraken2", "bracken", "fastp", "hostile", "chopper", "seqkit"],
+    "shotgun": ["kraken2", "bracken", "fastp", "hostile", "chopper", "seqkit", "minimap2"],
 }
 
 

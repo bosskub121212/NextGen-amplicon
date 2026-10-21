@@ -237,6 +237,38 @@ def main():
         html = rb.build_profile_html(run)
         check("shotgun: read as shotgun, own report", run.kind == "shotgun"
               and "Shotgun Metagenome Sequencing Report" in html and "Bracken" in html)
+        # resistome: catalogue headers, family pooling, breadth, host from the read's taxid
+        import shotgun_amr as SA
+        adb = Path(td) / "amrdb"
+        adb.mkdir()
+        (adb / "fam.tab").write_text(
+            "#node_id\tparent_node_id\tgene_symbol\thmm_id\ta\tb\tc\td\te\tf\tg\th\treportable\ttype"
+            "\tsubtype\tclass\tsubclass\tfamily_name\n"
+            "blaTEM\tbla-A\tblaTEM\t-\t0\t0\t0\t0\t0\t0\t0\t0\t2\tAMR\tAMR\tBETA-LACTAM\tBETA-LACTAM"
+            "\tTEM family class A beta-lactamase\n")
+        (adb / "AMR_CDS").write_text(">1|WP_1|NG_1|1|1|blaTEM-1|blaTEM|TEM-1 NG_1:1-1000\n" + "A" * 1000 + "\n"
+                                     ">2|WP_2|NG_2|1|1|blaTEM-116|blaTEM|TEM-116 NG_2:1-1000\n" + "A" * 1000 + "\n")
+        cat = SA.load_catalog(adb)
+        paf = Path(td) / "a.paf"
+        t1, t2 = "1|WP_1|NG_1|1|1|blaTEM-1|blaTEM|TEM-1", "2|WP_2|NG_2|1|1|blaTEM-116|blaTEM|TEM-116"
+        paf.write_text("".join(f"r{i}/1\t150\t0\t150\t+\t{t1 if i % 3 else t2}\t1000\t{i * 100}\t{i * 100 + 150}"
+                               f"\t149\t150\t60\tde:f:0.005\n" for i in range(8))
+                       + "x/1\t150\t0\t150\t+\t" + t1 + "\t1000\t0\t150\t120\t150\t60\tde:f:0.2\n")
+        rows, reads = SA.summarise(paf, cat, "illumina", 1_000_000, 0.9, 60)
+        tree = SA.report_tree(rp)
+        SA.assign_hosts(rows, reads, {f"r{i}": 1423 for i in range(8)}, tree)
+        check("shotgun resistome: alleles pooled per family, low identity dropped, host named",
+              cat[t1]["class"] == "BETA-LACTAM" and len(rows) == 1 and rows[0]["gene"] == "blaTEM"
+              and rows[0]["reads"] == 8 and rows[0]["breadth"] == 85.0
+              and rows[0]["host_taxon"] == "Bacillus subtilis", rows)
+        SA.write_tables(d, {"s1": rows, "s2": [], "s3": rows})
+        sj = json.loads((d / "summary.json").read_text())
+        sj["amr"] = {"db_version": "test", "min_identity": 90, "min_breadth": 60, "gene_families": 1,
+                     "amr_families": 1}
+        (d / "summary.json").write_text(json.dumps(sj))
+        html = rb.build_profile_html(rb.Run(d, set()))
+        check("shotgun report: resistome section", "resistome" in html and "blaTEM" in html
+              and "AMRFinderPlus" in html, "")
     import build_16s_typestrain_db as B16
     check("16S multicopy: alignment-defined gene ends", B16.merge([(1, 5), (100, 200), (150, 300)], 10)
           == [(1, 5), (100, 300)])
@@ -245,7 +277,7 @@ def main():
     page = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
     for k in ("mockSamples", "maaslin_fixed", "ont_parallel", "run_fastqc", "/qc/", "renderSettings",
               "/license/activate", "/update/check", "/results/cleanup", "orientation-check", "mpAdd",
-              "/wgs/typestrains", "tsBanner", "wgDirIn", "shotgunSpec", "sg_kraken_db"):
+              "/wgs/typestrains", "tsBanner", "wgDirIn", "shotgunSpec", "sg_kraken_db", "sg_amr", "sg_mags"):
         check(f"console offers {k}", k in page)
     main_src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
     check("console served at /, old UI at /classic", '@app.get("/classic"' in main_src

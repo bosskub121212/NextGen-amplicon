@@ -264,6 +264,8 @@ class RunParams(BaseModel):
     sg_min_q:           float = 10.0
     sg_memory_mapping:  bool  = False     # Kraken2 index read from disk instead of RAM
     sg_min_abundance:   float = 0.01      # % — species below this in every sample are left out of the tables
+    sg_amr:             bool  = True      # resistome: reads vs the AMRFinderPlus gene catalogue
+    sg_mags:            bool  = False     # assembly + binning (MEGAHIT / metaFlye, MetaBAT 2, CheckM2) — slow
 
 class WorkerConfig(BaseModel):
     max_workers: int = 2
@@ -1142,6 +1144,11 @@ def run_r_pipeline(job_id: str, params: RunParams):
         if params.sg_memory_mapping:
             cmd += ["--memory_mapping"]
         cmd += ["--min_abundance", str(max(0.0, float(params.sg_min_abundance or 0)))]
+        cmd += ["--db_paths", str(db_paths_json)]
+        if not params.sg_amr:
+            cmd += ["--no_amr"]
+        if params.sg_mags:
+            cmd += ["--mags"]
         _pipe_kind = "shotgun"
         _pipe_dbs = [("kraken2", _k2)]
 

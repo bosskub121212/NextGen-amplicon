@@ -6,10 +6,14 @@
 #    bash ~/r16s-app/setup_shotgun.sh --tools-only
 #    bash ~/r16s-app/setup_shotgun.sh --index standard_16   # or standard_08, pluspf_16, pluspf_08, standard
 #    bash ~/r16s-app/setup_shotgun.sh --no-host        # skip the human index for host removal
+#    bash ~/r16s-app/setup_shotgun.sh --mags           # only the MAG tools (env ngamp-mags)
 #    bash ~/r16s-app/setup_shotgun.sh --status
 #
 #  Everything goes into places of its own, nothing existing is touched:
 #    conda env  ngamp-meta   python 3.11, kraken2, bracken, fastp, hostile >= 2, chopper, seqkit
+#    conda env  ngamp-mags   megahit, metabat2, samtools, minimap2   (--mags; genome bins)
+#  Resistome and MAGs also use AMRFinderPlus, Flye, CheckM2 and the GTDB sketch
+#  that setup_wgs.sh installs for the WGS pipeline (env ngamp-wgs / checkm2).
 #    index      backend/databases/kraken2/<name>/   (db_paths.json key: kraken2_db)
 #    host index hostile's cache (~/.local/share/hostile), human T2T-CHM13 + HLA
 #
@@ -30,12 +34,13 @@ G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[1m'; N='\033[0m'
 ok(){ echo -e "  ${G}✓${N} $*"; }; warn(){ echo -e "  ${Y}!${N} $*"; }; bad(){ echo -e "  ${R}✗${N} $*"; }
 step(){ echo -e "\n${B}══ $* ══${N}"; }
 
-TOOLS=1; INDEX=1; HOST=1; KIND="standard_16"; STATUS=0
+TOOLS=1; INDEX=1; HOST=1; KIND="standard_16"; STATUS=0; MAGS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tools-only) INDEX=0; HOST=0 ;;
     --index) KIND="$2"; shift ;;
     --no-host) HOST=0 ;;
+    --mags) MAGS=1; TOOLS=0; INDEX=0; HOST=0 ;;
     --status) STATUS=1 ;;
     -h|--help) sed -n 2,25p "$0"; exit 0 ;;
     *) warn "unknown option $1" ;;
@@ -66,9 +71,16 @@ fi
 EBIN="$BASE/envs/$ENV/bin"
 
 if [[ $STATUS == 1 ]]; then
-  for t in kraken2 bracken fastp hostile chopper seqkit; do
+  for t in kraken2 bracken fastp hostile chopper seqkit minimap2; do
     [[ -x "$EBIN/$t" ]] && ok "$t" || bad "$t missing"
   done
+  for t in megahit metabat2 jgi_summarize_bam_contig_depths; do
+    [[ -x "$BASE/envs/ngamp-mags/bin/$t" ]] && ok "$t (MAGs)" || warn "$t missing — MAGs: setup_shotgun.sh --mags"
+  done
+  W="$BASE/envs/ngamp-wgs/bin"
+  [[ -x "$W/amrfinder" ]] && ok "amrfinder (resistome, from setup_wgs.sh)" || warn "amrfinder missing — resistome needs setup_wgs.sh"
+  [[ -x "$W/flye" ]] && ok "flye (Nanopore MAGs)" || warn "flye missing — Nanopore MAGs need setup_wgs.sh"
+  [[ -x "$BASE/envs/checkm2/bin/checkm2" || -x "$W/checkm2" ]] && ok "checkm2 (MAG quality)" || warn "checkm2 missing — bins are not graded"
   python3 - "$DBP" <<'PY'
 import json, sys, pathlib
 d = json.loads(pathlib.Path(sys.argv[1]).read_text()) if pathlib.Path(sys.argv[1]).exists() else {}
@@ -157,6 +169,20 @@ if [[ $HOST == 1 ]]; then
     || warn "Bowtie2 index not fetched — it downloads on the first run that needs it"
   "$EBIN/hostile" index fetch --name human-t2t-hla --minimap2 && ok "Minimap2 index (Nanopore)" \
     || warn "Minimap2 index not fetched — it downloads on the first run that needs it"
+fi
+if [[ $MAGS == 1 ]]; then
+  step "MAG tools (env ngamp-mags)"
+  MB="$BASE/envs/ngamp-mags/bin"
+  if [[ -x "$MB/megahit" && -x "$MB/metabat2" ]]; then
+    ok "already installed"
+  else
+    $CONDA create -y -n ngamp-mags -c conda-forge -c bioconda megahit metabat2 samtools minimap2 \
+      || { bad "conda env ngamp-mags failed"; exit 1; }
+    ok "env ngamp-mags created"
+  fi
+  "$MB/megahit" --version 2>&1 | head -1
+  [[ -x "$MB/jgi_summarize_bam_contig_depths" ]] && ok "metabat2 + jgi_summarize_bam_contig_depths" \
+    || bad "jgi_summarize_bam_contig_depths missing"
 fi
 echo ""
 ok "Done. No backend restart needed for tools or indexes."

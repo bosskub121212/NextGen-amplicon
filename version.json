@@ -1,10 +1,10 @@
 {
-  "version": "2.19.2",
-  "release_date": "2026-10-19",
-  "changelog": "ONT WGS: the amplicon post-run steps (MaAsLin 3, DADA2 provenance) no longer run on genome results — the 'maaslin3 ERROR: asv_table.csv' at the end of a WGS log; the WGS results themselves were never affected. Shotgun (beta): species below a minimum abundance (default 0.01 % of a sample's reads, set in step 3) are left out of the tables and counted in read_tracking — a pure B. subtilis culture listed 90 species, almost all close relatives sharing k-mers; the report explains that pattern when it sees it. setup_shotgun.sh: the human host index now downloads (hostile needed the env on PATH). Backend restart required.",
+  "version": "2.20.0",
+  "release_date": "2026-10-20",
+  "changelog": "Shotgun (beta) — resistome and genome bins. AMR genes in reads (on by default, step 4): reads are aligned with minimap2 to the AMRFinderPlus gene catalogue that the WGS tools already installed, alleles are pooled per gene family (blaTEM-1/-116 → blaTEM), a gene is called when reads cover >= 60 % of it at >= 90 % identity (85 % Nanopore), with RPKM and the organism carrying it from Kraken 2's per-read calls; new report section, amr_genes.csv and amr_rpkm.csv. On a simulated Zymo mock all 25 acquired/intrinsic AMR genes of the eight genomes were found from Illumina reads (23/25 Nanopore, the two misses in the 4 % B. subtilis), host genus correct for every one. Genome bins / MAGs (opt-in, step 4): MEGAHIT (Illumina) or Flye --meta (Nanopore), MetaBAT 2, CheckM2 grading, Kraken 2 and GTDB naming, AMRFinderPlus per bin; mags_summary.csv, mags_amr.csv and genomes in mags/. Needs: bash ~/r16s-app/setup_shotgun.sh --mags. Backend restart required.",
   "previous": {
-    "version": "2.19.1",
-    "release_date": "2026-10-18",
-    "changelog": "Shotgun (beta): Kraken 2 confidence now defaults to 0 (Kraken 2's own default). With 0.1 the mock test failed on nextapp — whole species lost on Illumina and almost every Nanopore read unclassified with the 16 GB index; with 0 the same mock passes on the real Standard-08 index (genus Bray-Curtis 0.039 Illumina, 0.019 Nanopore). The index is read from disk automatically when it does not fit in free memory. setup_shotgun.sh found no tools on machines whose `mamba info --base` prints a label before the path (mamba 2); fixed. Backend restart required."
+    "version": "2.19.2",
+    "release_date": "2026-10-19",
+    "changelog": "ONT WGS: the amplicon post-run steps (MaAsLin 3, DADA2 provenance) no longer run on genome results — the 'maaslin3 ERROR: asv_table.csv' at the end of a WGS log; the WGS results themselves were never affected. Shotgun (beta): species below a minimum abundance (default 0.01 % of a sample's reads, set in step 3) are left out of the tables and counted in read_tracking — a pure B. subtilis culture listed 90 species, almost all close relatives sharing k-mers; the report explains that pattern when it sees it. setup_shotgun.sh: the human host index now downloads (hostile needed the env on PATH). Backend restart required."
   }
 }

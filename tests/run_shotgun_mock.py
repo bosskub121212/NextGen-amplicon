@@ -144,7 +144,22 @@ def main(argv=None):
         except Exception as e:
             rep_ok = False
             print(f"  report failed: {e!r}")
-        ok = bc <= 0.15 and not missing and extra < 0.05 and rep_ok
+        # resistome (when the AMRFinderPlus database is installed): AMR genes with a likely
+        # host should sit in one of the mock genera (stress / virulence operons such as
+        # sil / pco are shared across Enterobacteriaceae, so they are only counted)
+        amr_ok = True
+        sm = json.loads((out / "summary.json").read_text())
+        if sm.get("amr"):
+            ar = list(csv.DictReader(open(out / "amr_genes.csv")))
+            hosted = [r for r in ar if r.get("host_taxon") and r["type"] == "AMR"]
+            inside = [r for r in hosted if r["host_taxon"].split()[0] in tg]
+            print(f"  resistome: {sum(1 for r in ar if r['type'] == 'AMR')} AMR + "
+                  f"{sum(1 for r in ar if r['type'] != 'AMR')} other gene families; "
+                  f"{len(inside)}/{len(hosted)} AMR genes with a host inside the mock")
+            amr_ok = len(inside) >= 0.8 * len(hosted)
+        else:
+            print("  resistome: not run (AMRFinderPlus database not found — setup_wgs.sh)")
+        ok = bc <= 0.15 and not missing and extra < 0.05 and rep_ok and amr_ok
         print(f"  {'PASS' if ok else 'FAIL'} in {took:.0f}s")
         results.append((plat, "PASS" if ok else "FAIL", f"BC {bc:.3f}, outside {100 * extra:.1f}%"))
     print("\n=== Summary")

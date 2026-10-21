@@ -1785,6 +1785,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                                  + p.sg_bracken_threshold + " reads");
       row("Host removal",        p.sg_host || "none");
       if(p.sg_min_abundance !== undefined) row("Minimum abundance", p.sg_min_abundance + " %");
+      if(p.sg_amr !== undefined || p.sg_mags !== undefined)
+        row("Resistome · MAGs", (p.sg_amr === false ? "off" : "on") + " · " + (p.sg_mags ? "on" : "off"));
       if(p.sequencerType === "ont") row("Read filter", "≥ " + p.sg_min_len + " bp, mean Q ≥ " + p.sg_min_q);
       row("CPU threads",         p.nThreads);
       row("Metadata supplied",   (p.metadata || (p.metadataRows && p.metadataRows.length)) ? "yes" : "no");
@@ -6098,7 +6100,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["nThreads", "CPU threads", "int", "8", ""],
         ["sg_memory_mapping", "Index from disk", "bool", "false",
          "on when the machine has less RAM than the index (slower)"]]},
-      {n:4, title:"Controls and differential abundance",
+      {n:4, title:"Resistome and genomes",
+       why:"AMR genes are found directly in the reads (fast). Genome bins (MAGs) need an assembly: hours and most of the RAM for a large sample, so they are off unless asked for.",
+       fields:[
+        ["sg_amr", "AMR genes in reads", "bool", "true",
+         "reads vs the AMRFinderPlus gene catalogue (installed with the WGS tools), with the organism carrying each gene"],
+        ["sg_mags", "Genome bins (MAGs)", "bool", "false",
+         "MEGAHIT (Illumina) or metaFlye (Nanopore) + MetaBAT 2 + CheckM2; needs setup_shotgun.sh --mags. Slow"]]},
+      {n:5, title:"Controls and differential abundance",
        why:"Controls can also be marked in the metadata: a column control / sample_type / type with negative, blank, NTC or mock.",
        fields:[
         ["_controls", "Negative controls", "controls", "", "sample IDs, comma separated"],

@@ -8,6 +8,9 @@ primers, amplicons or ASVs, and abundances are reads per species.
 """
 from __future__ import annotations
 
+import csv
+from pathlib import Path
+
 import report_builder as RB
 from report_builder import esc, fmt, Analysis, _tbl, _fig
 
@@ -23,6 +26,234 @@ REFS = [
     ("De Coster W, Rademakers R. (2023).", "NanoPack2: population-scale evaluation of long-read "
      "sequencing data.", "Bioinformatics 39:btad311."),
 ]
+REFS_AMR = [
+    ("Li H. (2018).", "Minimap2: pairwise alignment for nucleotide sequences.", "Bioinformatics 34:3094–3100."),
+    ("Feldgarden M, Brover V, Gonzalez-Escalona N, et al. (2021).", "AMRFinderPlus and the Reference Gene "
+     "Catalog facilitate examination of the genomic links among antimicrobial resistance, stress response, "
+     "and virulence.", "Scientific Reports 11:12728."),
+]
+REFS_MAG = {
+    "megahit": ("Li D, Liu CM, Luo R, Sadakane K, Lam TW. (2015).", "MEGAHIT: an ultra-fast single-node "
+                "solution for large and complex metagenomics assembly via succinct de Bruijn graph.",
+                "Bioinformatics 31:1674–1676."),
+    "flye": ("Kolmogorov M, Bickhart DM, Behsaz B, et al. (2020).", "metaFlye: scalable long-read "
+             "metagenome assembly using repeat graphs.", "Nature Methods 17:1103–1110."),
+    "metabat2": ("Kang DD, Li F, Kirton E, et al. (2019).", "MetaBAT 2: an adaptive binning algorithm for "
+                 "robust and efficient genome reconstruction from metagenome assemblies.", "PeerJ 7:e7359."),
+    "checkm2": ("Chklovski A, Parks DH, Woodcroft BJ, Tyson GW. (2023).", "CheckM2: a rapid, scalable and "
+                "accurate tool for assessing microbial genome quality using machine learning.",
+                "Nature Methods 20:1203–1212."),
+    "mimag": ("Bowers RM, Kyrpides NC, Stepanauskas R, et al. (2017).", "Minimum information about a single "
+              "amplified genome (MISAG) and a metagenome-assembled genome (MIMAG) of bacteria and archaea.",
+              "Nature Biotechnology 35:725–731."),
+    "gtdb": ("Parks DH, Chuvochina M, Rinke C, et al. (2022).", "GTDB: an ongoing census of bacterial and "
+             "archaeal diversity through a phylogenetically consistent, rank normalized and complete "
+             "genome-based taxonomy.", "Nucleic Acids Research 50:D785–D794."),
+}
+
+
+def _csv(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    with open(path, newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def _f(v, d=1, dash="—"):
+    try:
+        return f"{float(v):.{d}f}"
+    except (TypeError, ValueError):
+        return dash
+
+
+def _short(name: str) -> str:
+    """Escherichia coli -> E. coli (genus alone stays whole)."""
+    p = (name or "").split()
+    return f"{p[0][0]}. {' '.join(p[1:])}" if len(p) >= 2 and p[0][:1].isupper() else name or ""
+
+
+def _shade(v: float, vmax: float) -> str:
+    """Cell background for a gene x sample RPKM matrix (log-ish ramp)."""
+    if v <= 0 or vmax <= 0:
+        return ""
+    import math
+    t = min(1.0, math.log10(1 + v) / math.log10(1 + vmax))
+    a = 0.10 + 0.55 * t
+    return f' style="background:rgba(196,84,52,{a:.2f})"'
+
+
+def _resistome(run, sm, S, T, F) -> tuple[list[str], list[str]]:
+    """(method sentences, result HTML) for the read-based resistome."""
+    info = sm.get("amr") or {}
+    rows = _csv(run.path / "amr_genes.csv")
+    if not info:
+        return [], []
+    tools = sm.get("tools") or {}
+    mm = f" {tools['minimap2']}" if tools.get("minimap2") else ""
+    meth = [f"Antimicrobial resistance (AMR) genes were detected directly in the reads: reads were aligned "
+            f"with minimap2{mm} to the nucleotide sequences of the NCBI AMRFinderPlus Reference Gene "
+            f"Catalog (database {RB.esc(info.get('db_version', ''))}); alignments of at least "
+            f"{_f(info.get('min_identity'), 0)}% identity were kept, reads were pooled per gene family "
+            f"(alleles such as blaTEM-1 and blaTEM-116 count as blaTEM) and a family was called present "
+            f"when its reads covered at least {_f(info.get('min_breadth'), 0)}% of the gene. Abundance is "
+            "RPKM, reads per kilobase of gene per million reads. The organism carrying each gene is the "
+            "Kraken 2 call shared by most of the reads that carry it."]
+    out = ['<h3 class="pbreak">Antimicrobial resistance genes (resistome)</h3>']
+    amr = [r for r in rows if r.get("type") == "AMR"]
+    other = [r for r in rows if r.get("type") != "AMR"]
+    if not amr:
+        out.append("<p>No acquired AMR gene reached the identity and coverage thresholds in any sample.</p>")
+    else:
+        per = {smp: [r for r in amr if r["sample"] == smp] for smp in S}
+        out.append(T(["Sample", "AMR gene families", "Drug classes"],
+                     [[RB.esc(smp), str(len(v)),
+                       RB.esc(", ".join(sorted({(r.get("class") or "—").title() for r in v})) or "—")]
+                      for smp, v in per.items()],
+                     "AMR gene families found in the reads of each sample."))
+        if len(S) > 1:
+            genes, label = {}, {}
+            for r in amr:
+                k = r.get("family_id") or r["gene"]
+                genes.setdefault(k, r.get("class", ""))
+                label.setdefault(k, r["gene"])
+            order = sorted(genes, key=lambda g: (genes[g], label[g]))[:60]
+            val = {(r["sample"], r.get("family_id") or r["gene"]): float(r.get("rpkm") or 0) for r in amr}
+            vmax = max(val.values()) if val else 0
+            body = []
+            for g in order:
+                cells = []
+                for smp in S:
+                    v = val.get((smp, g), 0)
+                    cells.append(f'<td{_shade(v, vmax)}>{_f(v, 1) if v else ""}</td>')
+                body.append(f"<tr><td><i>{RB.esc(label[g])}</i></td><td>{RB.esc(genes[g].title())}</td>"
+                            + "".join(cells) + "</tr>")
+            head = "".join(f"<th>{RB.esc(smp)}</th>" for smp in S)
+            out.append(f'<p class="tcap"><b>Table {T.n()}.</b> AMR genes by sample, RPKM (darker = more). '
+                       "Empty cells: not found." + (" First 60 gene families by drug class; all in "
+                                                    "amr_rpkm.csv." if len(genes) > 60 else "") + "</p>"
+                       f"<table><thead><tr><th>Gene</th><th>Class</th>{head}</tr></thead>"
+                       f"<tbody>{''.join(body)}</tbody></table>")
+        det = sorted(amr, key=lambda r: (S.index(r["sample"]) if r["sample"] in S else 0,
+                                         -float(r.get("rpkm") or 0)))
+        lim = 80
+        out.append(T(["Sample", "Gene", "Class", "Reads", "Gene covered", "Identity", "RPKM", "Likely host"],
+                     [[RB.esc(r["sample"]), f"<i>{RB.esc(r['gene'])}</i>"
+                       + (f' <span class="dim">({RB.esc(r["allele"])})</span>'
+                          if r.get("allele") and r["allele"] != r["gene"] else ""),
+                       RB.esc((r.get("subclass") or r.get("class") or "").title()),
+                       RB.fmt(r.get("reads")), f"{_f(r.get('breadth'), 0)}%", f"{_f(r.get('identity'), 1)}%",
+                       _f(r.get("rpkm"), 1),
+                       (f"<i>{RB.esc(_short(r['host_taxon']))}</i> {_f(r.get('host_share'), 0)}%"
+                        if r.get("host_taxon") else '<span class="dim">unresolved</span>')]
+                      for r in det[:lim]],
+                     "AMR genes in the reads (allele in brackets when one matched best). <i>Gene "
+                     "covered</i>: share of the gene's length covered by reads; <i>likely host</i>: the "
+                     "organism Kraken 2 assigns to most of the reads carrying the gene, with the share of "
+                     "those reads." + (f" First {lim} rows; all in amr_genes.csv."
+                                                           if len(det) > lim else "")))
+    if other:
+        lim = 40
+        o = sorted(other, key=lambda r: (S.index(r["sample"]) if r["sample"] in S else 0,
+                                         r.get("type", ""), -float(r.get("rpkm") or 0)))
+        out.append(T(["Sample", "Gene", "Type", "Product", "Reads", "RPKM", "Likely host"],
+                     [[RB.esc(r["sample"]), f"<i>{RB.esc(r['gene'])}</i>", RB.esc(r.get("type", "").title()),
+                       f'<span class="dim">{RB.esc(r.get("product", ""))}</span>', RB.fmt(r.get("reads")),
+                       _f(r.get("rpkm"), 1),
+                       f"<i>{RB.esc(_short(r['host_taxon']))}</i>" if r.get("host_taxon") else
+                       '<span class="dim">unresolved</span>'] for r in o[:lim]],
+                     "Stress-response and virulence genes from the same catalogue (AMRFinderPlus "
+                     "&ldquo;plus&rdquo; genes)." + (f" First {lim} rows; all in amr_genes.csv."
+                                                    if len(o) > lim else "")))
+    out.append('<div class="note acc"><p style="margin:0"><b>Reading the resistome.</b> Genes are found from '
+               "reads, without assembly: a gene is reported when its reads cover enough of it, so genes of "
+               "rare organisms can be missed, and resistance caused by point mutations (for example "
+               "<i>gyrA</i>, <i>parC</i>, 23S rRNA) is not detected. Several genes are intrinsic to their "
+               "species and expected whenever it is present (for example <i>blaEC</i> in <i>E. coli</i>, "
+               "<i>mexAB</i>/<i>mexEF</i> efflux pumps in <i>P. aeruginosa</i>, <i>fosX</i> in "
+               "<i>Listeria</i>, <i>lsa(A)</i> in <i>E. faecalis</i>). The likely host is reliable for "
+               "Nanopore reads, which carry kilobases of flanking DNA; for short reads and for mobile genes "
+               "shared by many species it is tentative. Gene presence is not a phenotype: confirm "
+               "resistance by culture and susceptibility testing.</p></div>")
+    return meth, out
+
+
+def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
+    """(method sentences, result HTML, reference keys) for MAGs."""
+    info = sm.get("mags") or {}
+    if not info:
+        return [], [], []
+    if info.get("error"):
+        return [], ['<h3 class="pbreak">Metagenome-assembled genomes</h3>',
+                    f"<p>The MAG step did not finish ({RB.esc(info['error'])}); the profile above is "
+                    "unaffected. See logs/mags_traceback.txt.</p>"], []
+    tv = info.get("tools") or {}
+    v = lambda k: f" {tv[k]}" if tv.get(k) else ""
+    ill = info.get("assembler", "").startswith("MEGAHIT")
+    refs = ["megahit" if ill else "flye"]
+    asm = (f"MEGAHIT{v('megahit')}" if ill else f"Flye{v('flye')} in metagenome mode (--meta)")
+    meth = [f"Metagenome-assembled genomes (MAGs) were built per sample: the QC-passed reads were assembled "
+            f"with {asm}, mapped back to the contigs with minimap2 to measure contig depth, and contigs of at "
+            f"least {info.get('min_contig', 1500):,} bp were binned with MetaBAT 2"
+            + (f" ({tv['metabat2']})" if tv.get("metabat2") else "") + "."]
+    if info.get("binner"):
+        refs.append("metabat2")
+    if info.get("checkm2"):
+        meth.append(f"Bin completeness and contamination were estimated with CheckM2{v('checkm2')}; bins "
+                    "are graded after MIMAG: high quality &gt;90% complete and &lt;5% contaminated, medium "
+                    "&ge;50% and &lt;10%, otherwise low.")
+        refs += ["checkm2", "mimag"]
+    meth.append("Each bin was named by Kraken 2 on its contigs (the taxon holding most of the bin's length)"
+                + (", and matched to GTDB species representatives with sourmash" if info.get("gtdb") else "")
+                + "; AMR genes in the contigs were called with AMRFinderPlus and tied to their bin.")
+    if info.get("gtdb"):
+        refs.append("gtdb")
+    out = ['<h3 class="pbreak">Metagenome-assembled genomes</h3>']
+    rows = []
+    for smp in S:
+        a = (info.get("samples") or {}).get(smp)
+        if not a:
+            continue
+        x = a.get("assembly") or {}
+        rows.append([RB.esc(smp), RB.fmt(x.get("contigs")), _f((x.get("bp") or 0) / 1e6, 1) if x else "—",
+                     RB.fmt(x.get("n50")), RB.fmt(x.get("longest")), str(a.get("bins", 0)),
+                     RB.esc("; ".join(a.get("notes") or [])) or ""])
+    if rows:
+        out.append(T(["Sample", "Contigs", "Assembly (Mb)", "N50 (bp)", "Longest (bp)", "Bins", "Notes"],
+                     rows, "Assembly per sample."))
+    bins = _csv(run.path / "mags_summary.csv")
+    if bins:
+        out.append(T(["Bin", "Quality", "Complete", "Contam.", "Size (Mb)", "Contigs", "N50", "Depth",
+                      "Taxon (Kraken 2)"] + (["GTDB (ANI)"] if info.get("gtdb") else []) + ["AMR"],
+                     [[RB.esc(b["bin"]), RB.esc(b.get("quality", "")),
+                       f"{_f(b.get('completeness'))}%" if b.get("completeness") not in ("", None) else "—",
+                       f"{_f(b.get('contamination'))}%" if b.get("contamination") not in ("", None) else "—",
+                       _f(float(b.get("size_bp") or 0) / 1e6, 2), RB.fmt(b.get("contigs")), RB.fmt(b.get("n50")),
+                       f"{_f(b.get('mean_depth'))}×", f"<i>{RB.esc(b.get('kraken2_taxon') or '—')}</i>"]
+                      + ([f"<i>{RB.esc(b.get('gtdb_species') or '—')}</i>"
+                          + (f" ({_f(b.get('gtdb_ani'))}%)" if b.get("gtdb_ani") not in ("", None, "0.0") else "")]
+                         if info.get("gtdb") else [])
+                      + [str(len([g for g in (b.get("amr_genes") or "").split(";") if g])) or "0"]
+                      for b in bins[:80]],
+                     "Genome bins, best first. <i>Depth</i>: mean read depth of the bin's contigs. Genomes in "
+                     "mags/&lt;sample&gt;/, all columns in mags_summary.csv, AMR genes per contig in "
+                     "mags_amr.csv. <i>AMR</i>: number of AMR genes in the bin." + (" First 80 bins."
+                                                                                   if len(bins) > 80 else "")))
+        withamr = [b for b in bins if b.get("amr_genes")]
+        if withamr:
+            out.append(T(["Bin", "Taxon", "AMR genes"],
+                         [[RB.esc(b["bin"]), f"<i>{RB.esc(b.get('kraken2_taxon') or '—')}</i>",
+                           "<i>" + RB.esc(", ".join(b["amr_genes"].split(";"))) + "</i>"] for b in withamr[:80]],
+                         "AMR genes found by AMRFinderPlus in the contigs of each bin."))
+    elif rows:
+        out.append("<p>No bins were formed. Binning needs depth: roughly 10× or more of an organism's genome; "
+                   "low-depth or very diverse samples often assemble into short contigs only.</p>")
+    out.append('<div class="note acc"><p style="margin:0"><b>Reading MAGs.</b> A bin is a draft genome '
+               "pieced together from a mixture; high-quality MAGs are reliable for species identity and gene "
+               "content, low-quality ones are fragments. Plasmids and other mobile elements often stay "
+               "unbinned, so AMR genes on them appear in mags_amr.csv without a bin."
+               + ("" if ill else " Nanopore assemblies here are not polished: expect small indels in genes.")
+               + "</p></div>")
+    return meth, out, refs
 
 
 def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) -> str:
@@ -46,6 +277,11 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
     def T(head, rows, cap):
         tab[0] += 1
         return f'<p class="tcap"><b>Table {tab[0]}.</b> {cap}</p>' + _tbl(head, rows)
+
+    def _tn():
+        tab[0] += 1
+        return tab[0]
+    T.n = _tn
 
     tr = run.tracking or []
     num = lambda r, k: float(r.get(k) or 0)
@@ -109,6 +345,15 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
         out.append("<p class=\"dim\">Bracken's k-mer distributions are built for a fixed read length; for "
                    "Nanopore reads the longest available one was used, which is shorter than the reads. "
                    "Species estimates remain usable; genus-level figures are the more robust ones.</p>")
+    # method text now; the result tables later, so that table numbers follow page order
+    def _noT(*a, **k):
+        return ""
+    _noT.n = lambda: 0
+    amr_meth, _ = _resistome(run, sm, S, _noT, F)
+    mag_meth, _, mag_refs = _mags(run, sm, S, _noT)
+    for m in (amr_meth, mag_meth):
+        if m:
+            out.append("<p>" + " ".join(m) + "</p>")
     prov = RB._provenance_rows(run)
     if prov:
         out.append(T(["Software / reference", "Version", "Checksum (MD5)"], prov,
@@ -166,6 +411,8 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
                              f"{an.pcoa_pct[1]:.1f}%)."))
         out.append(F(RB.svg_bc_heat(an), "Bray–Curtis dissimilarity between samples."))
 
+    out += _resistome(run, sm, S, T, F)[1]
+    out += _mags(run, sm, S, T)[1]
     out += RB._controls_section(run, an, T)
     out += RB._maaslin_section(run, T)
 
@@ -193,11 +440,17 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
         "near the detection limit (a few hundred reads) should be confirmed before being reported.",
         "Full tables: asv_table.csv (species × sample, estimated reads; first column = NCBI taxid), "
         "taxonomy.csv (lineage per taxid), read_tracking.csv, and per-sample Kraken 2 / Bracken reports in "
-        "shotgun/&lt;sample&gt;/.",
+        "shotgun/&lt;sample&gt;/."
+        + (" Resistome: amr_genes.csv (one row per gene and sample) and amr_rpkm.csv (gene × sample)."
+           if amr_meth else "")
+        + (" MAGs: mags_summary.csv, mags_amr.csv and the genomes in mags/." if mag_meth else ""),
     ]) + "</ul>")
     out.append("<h2>References</h2>")
     refs = REFS[:2] + ([REFS[2]] if platform == "illumina" else [REFS[4]]) + \
         ([REFS[3]] if host != "none" else [])
+    if amr_meth:
+        refs += REFS_AMR
+    refs += [REFS_MAG[k] for k in mag_refs]
     if (run.path / "r_tables" / "maaslin3_results.csv").exists():
         refs.append(RB.REFERENCES[25])
     out.append('<ul class="refs">' + "".join(f"<li>{esc(a)} <i>{esc(t)}</i> {esc(j)}</li>"
