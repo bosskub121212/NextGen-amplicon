@@ -269,6 +269,15 @@ def main():
         html = rb.build_profile_html(rb.Run(d, set()))
         check("shotgun report: resistome section", "resistome" in html and "blaTEM" in html
               and "AMRFinderPlus" in html, "")
+    import shotgun_mags as SM
+    lens = {f"c{i}": 200_000 for i in range(8)}
+    ctax = {**{f"c{i}": ("Salmonella", "") for i in range(3)}, **{f"c{i}": ("Escherichia", "") for i in (3, 4, 5)},
+            "c6": ("Shigella", "")}
+    parts = SM.split_by_genus(list(lens), lens, ctax)
+    check("shotgun MAGs: mixed bin split by contig genus, small / unnamed contigs join the largest part",
+          [(g, sorted(c)) for g, c in parts] == [("Salmonella", ["c0", "c1", "c2", "c6", "c7"]),
+                                                 ("Escherichia", ["c3", "c4", "c5"])]
+          and SM.split_by_genus(["c0", "c1"], lens, ctax) == [], parts)
     import build_16s_typestrain_db as B16
     check("16S multicopy: alignment-defined gene ends", B16.merge([(1, 5), (100, 200), (150, 300)], 10)
           == [(1, 5), (100, 300)])

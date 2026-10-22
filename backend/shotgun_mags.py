@@ -7,11 +7,13 @@ Called by shotgun_pipeline.py after profiling when the run asks for MAGs:
   2. depth           reads mapped back with minimap2 → samtools →
                      jgi_summarize_bam_contig_depths
   3. binning         MetaBAT 2 (contigs >= 1.5 kb)
-  4. quality         CheckM2 completeness / contamination → MIMAG-style tier
-  5. taxonomy        Kraken 2 on the binned contigs (NCBI names, the same as
-                     the read profile; majority by length); GTDB via sourmash
-                     when the WGS GTDB database is installed
-  6. AMR per genome  AMRFinderPlus on the contigs, each hit tied to its bin
+  4. taxonomy        Kraken 2 on the binned contigs (NCBI names, the same as
+                     the read profile; majority by length)
+  5. quality         CheckM2 completeness / contamination → MIMAG-style tier
+  6. refinement      bins > 10 % contaminated are split by contig genus when
+                     CheckM2 scores the parts better
+  7. GTDB            sourmash, when the WGS GTDB database is installed
+  8. AMR per genome  AMRFinderPlus on the contigs, each hit tied to its bin
 
 Tools come from their own conda envs: ngamp-mags (megahit, metabat2 —
 setup_shotgun.sh --mags), ngamp-wgs (flye, sourmash, amrfinder), checkm2.
@@ -130,6 +132,42 @@ def mean_q(seqkit, fq: Path) -> float:
 
 
 # ── one sample ───────────────────────────────────────────────────────────────
+def checkm2(t, in_dir: Path, out_dir: Path, threads, db, s: str, run, logs: Path) -> dict:
+    """{sample.bin: (completeness, contamination)} for the .fa files in in_dir."""
+    q = out_dir / "quality_report.tsv"
+    if not q.exists():
+        run(t, ["predict", "--input", in_dir, "--output-directory", out_dir, "-x", "fa",
+                "--threads", threads, "--database_path", db, "--force"], logs / "checkm2.log")
+    out = {}
+    if q.exists():
+        with open(q) as fh:
+            for r in csv.DictReader(fh, delimiter="\t"):
+                try:
+                    out[f"{s}.{r['Name']}"] = (float(r["Completeness"]), float(r["Contamination"]))
+                except (KeyError, ValueError):
+                    pass
+    return out
+
+
+def split_by_genus(contigs: list[str], lens: dict, ctax: dict, min_bp: int = 300_000,
+                   min_share: float = 0.15) -> list[tuple[str, list[str]]]:
+    """[(genus, contigs)] when a bin's contigs fall into two or more genera that each hold
+    >= min_bp and >= min_share of the bin; contigs of no / other genera join the largest."""
+    tot = sum(lens.get(c, 0) for c in contigs) or 1
+    gbp = defaultdict(int)
+    for c in contigs:
+        if c in ctax:
+            gbp[ctax[c][0]] += lens.get(c, 0)
+    big = [g for g, v in sorted(gbp.items(), key=lambda x: -x[1]) if v >= min_bp and v / tot >= min_share]
+    if len(big) < 2:
+        return []
+    parts = {g: [] for g in big}
+    for c in contigs:
+        g = ctax.get(c, ("",))[0]
+        parts[g if g in parts else big[0]].append(c)
+    return [(g, parts[g]) for g in big]
+
+
 def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: Path,
                threads: int, T: dict, dbs: dict, kraken, amr_db, min_contig: int,
                run, log, step=lambda label: None) -> dict:
@@ -251,31 +289,10 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
                 tail = ""
             res["notes"].append("MetaBAT 2 formed no bins" + (f" ({tail[:160]})" if tail else ""))
 
-    # 4. CheckM2
-    ck = {}
-    if bins and T.get("checkm2") and dbs.get("checkm2_db"):
-        cd = wd / "checkm2"
-        q = cd / "quality_report.tsv"
-        if not q.exists():
-            step(f"CheckM2 on {len(bins)} bins")
-            run(T["checkm2"], ["predict", "--input", bins_dir, "--output-directory", cd, "-x", "fa",
-                               "--threads", threads, "--database_path", dbs["checkm2_db"], "--force"],
-                logs / "checkm2.log")
-        if q.exists():
-            with open(q) as fh:
-                for r in csv.DictReader(fh, delimiter="\t"):
-                    try:
-                        ck[f"{s}.{r['Name']}"] = (float(r["Completeness"]), float(r["Contamination"]))
-                    except (KeyError, ValueError):
-                        pass
-    elif bins:
-        res["notes"].append("CheckM2 " + ("not installed" if not T.get("checkm2") else
-                                          "database not configured (checkm2_db)") +
-                            " — bin quality not assessed")
-
-    # 5a. Kraken 2 on the binned contigs
-    ktax = {}
+    # 4. Kraken 2 on the binned contigs: each contig's genus / species, used to name
+    #    the bins and to split bins that mix two organisms (step 6)
     k2, kdb, mmap = kraken
+    ctax = {}                                      # contig -> (genus, species)
     if bins and k2:
         step("naming bins with Kraken 2")
         allb = wd / "binned_contigs.fa"
@@ -289,37 +306,109 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             args.append("--memory-mapping")
         if run(k2, args + [allb], logs / "kraken2_bins.log") == 0 and rep.exists():
             tree = AMR.report_tree(rep)
-            votes = defaultdict(lambda: defaultdict(float))
-            svotes = defaultdict(lambda: defaultdict(float))
             for line in open(kout):
                 v = line.split("\t")
                 if len(v) < 4 or v[0] != "C":
                     continue
-                b = contig_bin.get(v[1])
-                if not b:
-                    continue
-                L = lens.get(v[1], 0)
                 g = AMR._up_to(tree, int(v[2]), "G")
                 if g:
-                    votes[b][g] += L
-                    sp = AMR._up_to(tree, int(v[2]), "S")
-                    if sp:
-                        svotes[b][sp] += L
-            for b in bins:
-                tot = sum(lens.get(c, 0) for c in bins[b]) or 1
-                if votes[b]:
-                    g, gl = max(votes[b].items(), key=lambda x: x[1])
-                    name = g
-                    sp = [(k, v) for k, v in svotes[b].items() if k.split()[0] == g]
-                    if sp:
-                        k, v = max(sp, key=lambda x: x[1])
-                        if v >= 0.6 * gl:
-                            name = k
-                    ktax[b] = (name, round(100 * gl / tot, 1))
+                    ctax[v[1]] = (g, AMR._up_to(tree, int(v[2]), "S") or "")
         allb.unlink(missing_ok=True)
         kout.unlink(missing_ok=True)
 
-    # 5b. GTDB (sourmash multigather), when the WGS database is installed
+    # 5. CheckM2
+    ck = {}
+    can_ck = bool(bins and T.get("checkm2") and dbs.get("checkm2_db"))
+    if can_ck:
+        step(f"CheckM2 on {len(bins)} bins")
+        ck = checkm2(T["checkm2"], bins_dir, wd / "checkm2", threads, dbs["checkm2_db"], s, run, logs)
+    elif bins:
+        res["notes"].append("CheckM2 " + ("not installed" if not T.get("checkm2") else
+                                          "database not configured (checkm2_db)") +
+                            " — bin quality not assessed")
+
+    # 6. Split bins that hold two organisms. With one sample MetaBAT 2 has only
+    #    composition and depth to go on, so organisms of similar GC at similar depth
+    #    end up together (Zymo even mock: Salmonella + E. coli, Listeria + E. faecalis,
+    #    each 75-83 % "contaminated"). A bin CheckM2 calls > 10 % contaminated is cut
+    #    by the Kraken 2 genus of its contigs; the cut is kept only when CheckM2 scores
+    #    the parts better (completeness - 5 x contamination, summed).
+    refined = {}
+    if can_ck and ctax and not (wd / "bins_unsplit").exists():
+        cands = {}
+        for b, cs in bins.items():
+            comp, cont = ck.get(b, (None, None))
+            if cont is None or cont <= 10:
+                continue
+            parts = split_by_genus(cs, lens, ctax)
+            if len(parts) >= 2:
+                cands[b] = parts
+        if cands:
+            step(f"splitting {len(cands)} mixed bin(s) by contig taxonomy")
+            sd_ = wd / "split_try"
+            shutil.rmtree(sd_, ignore_errors=True)
+            sd_.mkdir()
+            seqs = {}
+            for b in cands:
+                seqs.update(dict(read_fasta(bins_dir / (b[len(s) + 1:] + ".fa"))))
+            for b, parts in cands.items():
+                stem = b[len(s) + 1:]
+                for i, (g, cs) in enumerate(parts):
+                    with open(sd_ / f"{stem}{chr(97 + i)}.fa", "w") as fh:
+                        for c in cs:
+                            fh.write(f">{c}\n{seqs[c]}\n")
+            ck2 = checkm2(T["checkm2"], sd_, wd / "checkm2_split", threads, dbs["checkm2_db"], s, run, logs)
+            score = lambda cc: max(0.0, cc[0] - 5 * cc[1]) if cc else 0.0
+            keep = []
+            for b, parts in cands.items():
+                stem = b[len(s) + 1:]
+                names = [f"{s}.{stem}{chr(97 + i)}" for i in range(len(parts))]
+                if all(n in ck2 for n in names) and sum(score(ck2[n]) for n in names) > score(ck[b]):
+                    keep.append((b, stem, names, parts))
+            if keep:
+                (wd / "bins_unsplit").mkdir(exist_ok=True)
+            for b, stem, names, parts in keep:
+                shutil.move(str(bins_dir / f"{stem}.fa"), str(wd / "bins_unsplit" / f"{stem}.fa"))
+                del bins[b]
+                ck.pop(b, None)
+                for n, (g, cs) in zip(names, parts):
+                    shutil.move(str(sd_ / f"{n[len(s) + 1:]}.fa"), str(bins_dir / f"{n[len(s) + 1:]}.fa"))
+                    bins[n] = cs
+                    ck[n] = ck2[n]
+                    refined[n] = stem
+                log(f"[{s}] MAGs: {stem} held {len(parts)} organisms "
+                    f"({', '.join(g for g, _ in parts)}) — split by contig taxonomy")
+            shutil.rmtree(sd_, ignore_errors=True)
+    elif (wd / "bins_unsplit").exists():           # split in an earlier run of this folder
+        for f in bins_dir.glob("bin.*[a-z].fa"):
+            refined[f"{s}.{f.stem}"] = re.sub(r"[a-z]$", "", f.stem)
+        if can_ck:
+            ck.update(checkm2(T["checkm2"], wd / "split_try", wd / "checkm2_split", threads,
+                              dbs["checkm2_db"], s, run, logs))
+    contig_bin = {c: b for b, cs in bins.items() for c in cs}
+
+    # bin names from the contig taxonomy (majority of the bin's length)
+    ktax = {}
+    for b, cs in bins.items():
+        tot = sum(lens.get(c, 0) for c in cs) or 1
+        gv, sv = defaultdict(float), defaultdict(float)
+        for c in cs:
+            if c in ctax:
+                g, sp = ctax[c]
+                gv[g] += lens.get(c, 0)
+                if sp:
+                    sv[sp] += lens.get(c, 0)
+        if gv:
+            g, gl = max(gv.items(), key=lambda x: x[1])
+            name = g
+            sp = [(k, v) for k, v in sv.items() if k.split()[0] == g]
+            if sp:
+                k, v = max(sp, key=lambda x: x[1])
+                if v >= 0.6 * gl:
+                    name = k
+            ktax[b] = (name, round(100 * gl / tot, 1))
+
+    # 7. GTDB (sourmash multigather), when the WGS database is installed
     gtdb = {}
     sm = T.get("sourmash")
     if bins and sm and dbs.get("gtdb_sourmash"):
@@ -384,7 +473,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
                        "gtdb_accession": acc, "gtdb_ani": round(ani, 2),
                        "gtdb_call": W.species_call(ani)}
 
-    # 6. AMRFinderPlus on the contigs
+    # 8. AMRFinderPlus on the contigs
     amrf = T.get("amrfinder")
     if amrf and amr_db:
         at = wd / "amrfinder.tsv"
@@ -434,6 +523,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             "kraken2_taxon": kt[0], "kraken2_bp_share": kt[1],
             "gtdb_species": gt.get("gtdb_species", ""), "gtdb_ani": gt.get("gtdb_ani", ""),
             "gtdb_call": gt.get("gtdb_call", ""),
+            "split_from": refined.get(b, ""),
             "amr_genes": ";".join(sorted({a["gene"] for a in res["amr"]
                                           if a["bin"] == b and a["type"] == "AMR"}))})
     res["bins"].sort(key=lambda r: ({"High": 0, "Medium": 1, "Low": 2}.get(r["quality"], 3),
@@ -446,7 +536,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
 
 BIN_COLS = ["sample", "bin", "quality", "completeness", "contamination", "size_bp", "contigs", "n50",
             "gc", "mean_depth", "share_of_assembly_coverage", "kraken2_taxon", "kraken2_bp_share",
-            "gtdb_species", "gtdb_ani", "gtdb_call", "amr_genes"]
+            "gtdb_species", "gtdb_ani", "gtdb_call", "amr_genes", "split_from"]
 AMR_COLS = ["sample", "bin", "contig", "gene", "type", "subtype", "class", "subclass", "name",
             "method", "identity", "coverage"]
 
@@ -507,7 +597,8 @@ def run_all(samples, qc, platform, out: Path, threads, dbp, kraken, amr_db, min_
                         for r in results},
             "n_bins": len(bins),
             "n_high": sum(1 for b in bins if b["quality"] == "High"),
-            "n_medium": sum(1 for b in bins if b["quality"] == "Medium")}
+            "n_medium": sum(1 for b in bins if b["quality"] == "Medium"),
+            "n_split": len({b["split_from"] for b in bins if b.get("split_from")})}
     for r in results:
         for n in r["notes"]:
             log(f"[warn] [{r['sample']}] MAGs: {n}")

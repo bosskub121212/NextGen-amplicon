@@ -1,10 +1,10 @@
 {
-  "version": "2.20.2",
+  "version": "2.20.3",
   "release_date": "2026-10-22",
-  "changelog": "Shotgun MAGs: GTDB naming of the bins was the slow step (sourmash multigather read the whole GTDB database once per bin — about half an hour for the 8 Zymo bins on nextapp). The bins are now merged for one prefetch pass over GTDB, and the per-bin gather runs on the genomes that pass keeps; same names, about 4x faster in the test, more with more bins. The job page now names each MAG step (assembling, depth, binning, CheckM2, Kraken 2 naming, GTDB, AMRFinderPlus) instead of 'assembly and binning' throughout. Includes 2.20.1 (Nanopore bins).",
+  "changelog": "Shotgun MAGs: bins holding two organisms are now split. On the Zymo even mock (Illumina, 2 M pairs) MetaBAT 2 put Salmonella with E. coli and Listeria with E. faecalis — similar GC at the same depth, which one sample cannot tell apart — and CheckM2 called them 83 % and 76 % contaminated. A bin over 10 % contamination is now cut by the Kraken 2 genus of its contigs (each part >= 300 kb and >= 15 % of the bin; unnamed contigs join the largest part), CheckM2 re-scores the parts, and the split is kept only when the parts score better (completeness - 5 x contamination, summed). Split bins are marked in the report (dagger) and in mags_summary.csv (split_from). Includes 2.20.1-2.20.2.",
   "previous": {
-    "version": "2.20.1",
+    "version": "2.20.2",
     "release_date": "2026-10-22",
-    "changelog": "Shotgun MAGs, Nanopore: no bins were formed although Flye assembled the Zymo mock into 173 contigs (N50 668 kb). jgi_summarize_bam_contig_depths counts only reads >= 97 % identical to a contig by default, which drops most Nanopore reads (about 93 % here), so contig depth was ~0 and MetaBAT 2 had no target contigs. Nanopore runs now count reads >= 80 % identical (Illumina unchanged, 97 %). When no bins form, the report says why. Backend restart not required (pipeline file only)."
+    "changelog": "Shotgun MAGs: GTDB naming of the bins was the slow step (sourmash multigather read the whole GTDB database once per bin — about half an hour for the 8 Zymo bins on nextapp). The bins are now merged for one prefetch pass over GTDB, and the per-bin gather runs on the genomes that pass keeps; same names, about 4x faster in the test, more with more bins. The job page now names each MAG step (assembling, depth, binning, CheckM2, Kraken 2 naming, GTDB, AMRFinderPlus) instead of 'assembly and binning' throughout. Includes 2.20.1 (Nanopore bins)."
   }
 }

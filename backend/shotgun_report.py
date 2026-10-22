@@ -202,6 +202,11 @@ def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
                     "are graded after MIMAG: high quality &gt;90% complete and &lt;5% contaminated, medium "
                     "&ge;50% and &lt;10%, otherwise low.")
         refs += ["checkm2", "mimag"]
+    if info.get("n_split"):
+        meth.append("Bins CheckM2 judged more than 10% contaminated were split by the Kraken 2 genus of their "
+                    "contigs, and the split was kept only when CheckM2 scored the parts better (completeness "
+                    "&minus; 5 &times; contamination); with a single sample MetaBAT 2 cannot separate organisms "
+                    "of similar GC content at similar depth.")
     meth.append("Each bin was named by Kraken 2 on its contigs (the taxon holding most of the bin's length)"
                 + (", and matched to GTDB species representatives with sourmash" if info.get("gtdb") else "")
                 + "; AMR genes in the contigs were called with AMRFinderPlus and tied to their bin.")
@@ -224,7 +229,8 @@ def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
     if bins:
         out.append(T(["Bin", "Quality", "Complete", "Contam.", "Size (Mb)", "Contigs", "N50", "Depth",
                       "Taxon (Kraken 2)"] + (["GTDB (ANI)"] if info.get("gtdb") else []) + ["AMR"],
-                     [[RB.esc(b["bin"]), RB.esc(b.get("quality", "")),
+                     [[RB.esc(b["bin"]) + ("&dagger;" if b.get("split_from") else ""),
+                       RB.esc(b.get("quality", "")),
                        f"{_f(b.get('completeness'))}%" if b.get("completeness") not in ("", None) else "—",
                        f"{_f(b.get('contamination'))}%" if b.get("contamination") not in ("", None) else "—",
                        _f(float(b.get("size_bp") or 0) / 1e6, 2), RB.fmt(b.get("contigs")), RB.fmt(b.get("n50")),
@@ -236,7 +242,9 @@ def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
                       for b in bins[:80]],
                      "Genome bins, best first. <i>Depth</i>: mean read depth of the bin's contigs. Genomes in "
                      "mags/&lt;sample&gt;/, all columns in mags_summary.csv, AMR genes per contig in "
-                     "mags_amr.csv. <i>AMR</i>: number of AMR genes in the bin." + (" First 80 bins."
+                     "mags_amr.csv. <i>AMR</i>: number of AMR genes in the bin."
+                     + (" &dagger; split from a mixed MetaBAT 2 bin by contig taxonomy."
+                        if any(b.get("split_from") for b in bins) else "") + (" First 80 bins."
                                                                                    if len(bins) > 80 else "")))
         withamr = [b for b in bins if b.get("amr_genes")]
         if withamr:
