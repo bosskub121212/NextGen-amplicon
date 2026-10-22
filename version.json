@@ -1,10 +1,10 @@
 {
-  "version": "2.20.0",
-  "release_date": "2026-10-20",
-  "changelog": "Shotgun (beta) — resistome and genome bins. AMR genes in reads (on by default, step 4): reads are aligned with minimap2 to the AMRFinderPlus gene catalogue that the WGS tools already installed, alleles are pooled per gene family (blaTEM-1/-116 → blaTEM), a gene is called when reads cover >= 60 % of it at >= 90 % identity (85 % Nanopore), with RPKM and the organism carrying it from Kraken 2's per-read calls; new report section, amr_genes.csv and amr_rpkm.csv. On a simulated Zymo mock all 25 acquired/intrinsic AMR genes of the eight genomes were found from Illumina reads (23/25 Nanopore, the two misses in the 4 % B. subtilis), host genus correct for every one. Genome bins / MAGs (opt-in, step 4): MEGAHIT (Illumina) or Flye --meta (Nanopore), MetaBAT 2, CheckM2 grading, Kraken 2 and GTDB naming, AMRFinderPlus per bin; mags_summary.csv, mags_amr.csv and genomes in mags/. Needs: bash ~/r16s-app/setup_shotgun.sh --mags. Backend restart required.",
+  "version": "2.20.1",
+  "release_date": "2026-10-22",
+  "changelog": "Shotgun MAGs, Nanopore: no bins were formed although Flye assembled the Zymo mock into 173 contigs (N50 668 kb). jgi_summarize_bam_contig_depths counts only reads >= 97 % identical to a contig by default, which drops most Nanopore reads (about 93 % here), so contig depth was ~0 and MetaBAT 2 had no target contigs. Nanopore runs now count reads >= 80 % identical (Illumina unchanged, 97 %). When no bins form, the report says why. Backend restart not required (pipeline file only).",
   "previous": {
-    "version": "2.19.2",
-    "release_date": "2026-10-19",
-    "changelog": "ONT WGS: the amplicon post-run steps (MaAsLin 3, DADA2 provenance) no longer run on genome results — the 'maaslin3 ERROR: asv_table.csv' at the end of a WGS log; the WGS results themselves were never affected. Shotgun (beta): species below a minimum abundance (default 0.01 % of a sample's reads, set in step 3) are left out of the tables and counted in read_tracking — a pure B. subtilis culture listed 90 species, almost all close relatives sharing k-mers; the report explains that pattern when it sees it. setup_shotgun.sh: the human host index now downloads (hostile needed the env on PATH). Backend restart required."
+    "version": "2.20.0",
+    "release_date": "2026-10-20",
+    "changelog": "Shotgun (beta) — resistome and genome bins. AMR genes in reads (on by default, step 4): reads are aligned with minimap2 to the AMRFinderPlus gene catalogue that the WGS tools already installed, alleles are pooled per gene family (blaTEM-1/-116 → blaTEM), a gene is called when reads cover >= 60 % of it at >= 90 % identity (85 % Nanopore), with RPKM and the organism carrying it from Kraken 2's per-read calls; new report section, amr_genes.csv and amr_rpkm.csv. On a simulated Zymo mock all 25 acquired/intrinsic AMR genes of the eight genomes were found from Illumina reads (23/25 Nanopore, the two misses in the 4 % B. subtilis), host genus correct for every one. Genome bins / MAGs (opt-in, step 4): MEGAHIT (Illumina) or Flye --meta (Nanopore), MetaBAT 2, CheckM2 grading, Kraken 2 and GTDB naming, AMRFinderPlus per bin; mags_summary.csv, mags_amr.csv and genomes in mags/. Needs: bash ~/r16s-app/setup_shotgun.sh --mags. Backend restart required."
   }
 }

@@ -207,7 +207,11 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             p2.wait()
             p1.wait()
         if p1.returncode == 0 and p2.returncode == 0:
-            run(jgi, ["--outputDepth", depth_txt, bam], logs / "depth.log")
+            # jgi counts only reads >= 97 % identical to the contig by default: right for
+            # Illumina, but it drops nearly every Nanopore read (90–95 %) and leaves all
+            # depths at zero, so MetaBAT 2 forms no bins
+            pid = ["--percentIdentity", 97 if platform == "illumina" else 80]
+            run(jgi, pid + ["--outputDepth", depth_txt, bam], logs / "depth.log")
         bam.unlink(missing_ok=True)
     if depth_txt.exists():
         with open(depth_txt) as fh:
@@ -233,6 +237,15 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
                                             else "skipped: read depth could not be computed"))
     contig_bin = {c: b for b, cs in bins.items() for c in cs}
     log(f"[{s}] MAGs: {len(bins)} bin(s)")
+    if not bins and depth_txt.exists():
+        if depth and not any(v > 0 for v in depth.values()):
+            res["notes"].append("no bins: every contig has read depth 0 (see logs/depth.log)")
+        else:
+            try:
+                tail = (logs / "metabat2.log").read_text(errors="replace").strip().splitlines()[-1]
+            except Exception:
+                tail = ""
+            res["notes"].append("MetaBAT 2 formed no bins" + (f" ({tail[:160]})" if tail else ""))
 
     # 4. CheckM2
     ck = {}
