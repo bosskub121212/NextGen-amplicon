@@ -132,7 +132,7 @@ def mean_q(seqkit, fq: Path) -> float:
 # ── one sample ───────────────────────────────────────────────────────────────
 def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: Path,
                threads: int, T: dict, dbs: dict, kraken, amr_db, min_contig: int,
-               run, log) -> dict:
+               run, log, step=lambda label: None) -> dict:
     res = {"sample": s, "bins": [], "amr": [], "notes": []}
     # work left by an earlier run is reused only for the very same reads and settings
     sig = json.dumps([platform, min_contig] + [[str(x), x.stat().st_size] for x in (r1, r2) if x])
@@ -149,6 +149,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
     if contigs.exists() and contigs.stat().st_size > 0:
         log(f"[{s}] MAGs: reusing the assembly from the last run")
     elif platform == "illumina":
+        step("assembling with MEGAHIT")
         if not T.get("megahit"):
             res["notes"].append("MEGAHIT not installed (setup_shotgun.sh --mags)")
             return res
@@ -168,6 +169,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             return res
         q = mean_q(T.get("seqkit"), r1)
         mode = "nano-hq" if q >= 15 else "nano-raw"
+        step(f"assembling with Flye --meta --{mode}")
         res["flye_mode"] = mode
         ad = wd / "flye"
         shutil.rmtree(ad, ignore_errors=True)
@@ -194,6 +196,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
     jgi = T.get("jgi_summarize_bam_contig_depths")
     depth = {}
     if not depth_txt.exists() and mm2 and sam and jgi:
+        step("mapping reads back for contig depth")
         bam = wd / "reads.bam"
         preset = "sr" if platform == "illumina" else "map-ont"
         cmd1 = [mm2[0], "-ax", preset, "-t", str(threads), str(contigs), str(r1)] + \
@@ -226,6 +229,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
     bins = {}
     if T.get("metabat2") and depth_txt.exists():
         if not any(bins_dir.glob("*.fa")):
+            step("binning with MetaBAT 2")
             bins_dir.mkdir(exist_ok=True)
             run(T["metabat2"], ["-i", contigs, "-a", depth_txt, "-o", bins_dir / "bin",
                                 "-m", max(1500, min_contig), "-t", threads, "--seed", 1],
@@ -253,6 +257,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
         cd = wd / "checkm2"
         q = cd / "quality_report.tsv"
         if not q.exists():
+            step(f"CheckM2 on {len(bins)} bins")
             run(T["checkm2"], ["predict", "--input", bins_dir, "--output-directory", cd, "-x", "fa",
                                "--threads", threads, "--database_path", dbs["checkm2_db"], "--force"],
                 logs / "checkm2.log")
@@ -272,6 +277,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
     ktax = {}
     k2, kdb, mmap = kraken
     if bins and k2:
+        step("naming bins with Kraken 2")
         allb = wd / "binned_contigs.fa"
         with open(allb, "w") as fh:
             for f in bins_dir.glob("bin.*.fa"):
@@ -328,7 +334,18 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             if sig.exists():
                 sigs.append(sig)
         if sigs and not any(sd.glob("*.csv")):
-            run(sm, ["multigather", "--query"] + sigs + ["--db", dbs["gtdb_sourmash"], "-k", 31,
+            step("GTDB naming (sourmash)")
+            # multigather reads the whole GTDB database once per bin (half an hour for
+            # 8 bins on nextapp). One prefetch pass with all bins merged keeps just the
+            # genomes that share k-mers with any bin; the per-bin gather then runs on those.
+            gdb = dbs["gtdb_sourmash"]
+            merged, matches = sd / "all_bins.sig.zip", sd / "gtdb_matches.zip"
+            if run(sm, ["sig", "merge"] + sigs + ["-k", 31, "-o", merged], logs / "sourmash.log") == 0 \
+                    and run(sm, ["prefetch", merged, gdb, "-k", 31, "--threshold-bp", 50000,
+                                 "--save-matches", matches], logs / "sourmash.log") == 0 \
+                    and matches.exists() and matches.stat().st_size > 0:
+                gdb = matches
+            run(sm, ["multigather", "--query"] + sigs + ["--db", gdb, "-k", 31,
                      "--threshold-bp", 50000, "--output-dir", sd], logs / "sourmash.log")
         rows = []
         for f in sd.glob("*.csv"):
@@ -372,6 +389,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
     if amrf and amr_db:
         at = wd / "amrfinder.tsv"
         if not at.exists():
+            step("AMRFinderPlus on the contigs")
             big = wd / "contigs_1kb.fasta"
             with open(big, "w") as fh:
                 for n, q in read_fasta(contigs):
@@ -462,9 +480,11 @@ def run_all(samples, qc, platform, out: Path, threads, dbp, kraken, amr_db, min_
             continue
         wd = out / "shotgun" / s / "mags_work"
         wd.mkdir(parents=True, exist_ok=True)
+        pct = 94 + int(5 * i / max(1, len(samples)))
         results.append(one_sample(s, Path(q["r1"]), Path(q["r2"]) if q.get("r2") else None, platform,
                                   wd, mags_root / s, threads, T, dbs, kraken, amr_db, min_contig,
-                                  run, log))
+                                  run, log, step=lambda label, s=s, pct=pct:
+                                  progress(pct, f"[{s}] MAGs: {label}")))
     bins = [b for r in results for b in r["bins"]]
     with open(out / "mags_summary.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=BIN_COLS, extrasaction="ignore")

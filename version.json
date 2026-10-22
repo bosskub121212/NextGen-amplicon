@@ -1,10 +1,10 @@
 {
-  "version": "2.20.1",
+  "version": "2.20.2",
   "release_date": "2026-10-22",
-  "changelog": "Shotgun MAGs, Nanopore: no bins were formed although Flye assembled the Zymo mock into 173 contigs (N50 668 kb). jgi_summarize_bam_contig_depths counts only reads >= 97 % identical to a contig by default, which drops most Nanopore reads (about 93 % here), so contig depth was ~0 and MetaBAT 2 had no target contigs. Nanopore runs now count reads >= 80 % identical (Illumina unchanged, 97 %). When no bins form, the report says why. Backend restart not required (pipeline file only).",
+  "changelog": "Shotgun MAGs: GTDB naming of the bins was the slow step (sourmash multigather read the whole GTDB database once per bin — about half an hour for the 8 Zymo bins on nextapp). The bins are now merged for one prefetch pass over GTDB, and the per-bin gather runs on the genomes that pass keeps; same names, about 4x faster in the test, more with more bins. The job page now names each MAG step (assembling, depth, binning, CheckM2, Kraken 2 naming, GTDB, AMRFinderPlus) instead of 'assembly and binning' throughout. Includes 2.20.1 (Nanopore bins).",
   "previous": {
-    "version": "2.20.0",
-    "release_date": "2026-10-20",
-    "changelog": "Shotgun (beta) — resistome and genome bins. AMR genes in reads (on by default, step 4): reads are aligned with minimap2 to the AMRFinderPlus gene catalogue that the WGS tools already installed, alleles are pooled per gene family (blaTEM-1/-116 → blaTEM), a gene is called when reads cover >= 60 % of it at >= 90 % identity (85 % Nanopore), with RPKM and the organism carrying it from Kraken 2's per-read calls; new report section, amr_genes.csv and amr_rpkm.csv. On a simulated Zymo mock all 25 acquired/intrinsic AMR genes of the eight genomes were found from Illumina reads (23/25 Nanopore, the two misses in the 4 % B. subtilis), host genus correct for every one. Genome bins / MAGs (opt-in, step 4): MEGAHIT (Illumina) or Flye --meta (Nanopore), MetaBAT 2, CheckM2 grading, Kraken 2 and GTDB naming, AMRFinderPlus per bin; mags_summary.csv, mags_amr.csv and genomes in mags/. Needs: bash ~/r16s-app/setup_shotgun.sh --mags. Backend restart required."
+    "version": "2.20.1",
+    "release_date": "2026-10-22",
+    "changelog": "Shotgun MAGs, Nanopore: no bins were formed although Flye assembled the Zymo mock into 173 contigs (N50 668 kb). jgi_summarize_bam_contig_depths counts only reads >= 97 % identical to a contig by default, which drops most Nanopore reads (about 93 % here), so contig depth was ~0 and MetaBAT 2 had no target contigs. Nanopore runs now count reads >= 80 % identical (Illumina unchanged, 97 %). When no bins form, the report says why. Backend restart not required (pipeline file only)."
   }
 }
