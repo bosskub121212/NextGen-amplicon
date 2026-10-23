@@ -1,10 +1,10 @@
 {
-  "version": "2.20.5",
+  "version": "2.20.6",
   "release_date": "2026-10-23",
-  "changelog": "Shotgun MAGs: 2.20.4 stopped at the end of the MAG step (\"'PosixPath' object has no attribute 'get'\") whenever the GTDB database was installed — the GTDB step reused the name of the joined-bins table. Fixed, and the whole MAG step (split, join, GTDB, AMRFinderPlus, bin table) is now run end to end with stand-in tools before release. The profile and resistome were never affected.",
+  "changelog": "Shotgun MAGs, Nanopore: Medaka polishing is now an option in step 4 (off by default) and runs at 4 threads. At 8 threads, polishing the Zymo Nanopore assembly took the whole WSL down on nextapp (28 GB) and the running job with it. For R10 / SUP reads Flye's own consensus is usually enough; turn it on for older R9 data, where unpolished contigs make CheckM2 understate completeness.",
   "previous": {
-    "version": "2.20.4",
+    "version": "2.20.5",
     "release_date": "2026-10-23",
-    "changelog": "Shotgun MAGs, from the Zymo Nanopore run: (1) Nanopore contigs are polished with Medaka (the WGS tool, bacterial model when the reads allow) before binning — unpolished contigs carry indels that break genes, and CheckM2 called near-whole genomes 40-70 % complete (B. subtilis 3.9 Mb in 2 contigs: 58 %). (2) Pieces of one genome are joined: bins of the same Kraken 2 species at similar depth (within 1.5x) are merged when CheckM2 finds the result >= 10 points more complete and still < 10 % contaminated (E. faecalis came out as 45 % + 39 %, L. fermentum as 46 % + 19 %). Joined bins are marked in the report (double dagger) and mags_summary.csv (merged_from). Includes 2.20.3 (mixed bins split by contig taxonomy)."
+    "changelog": "Shotgun MAGs: 2.20.4 stopped at the end of the MAG step (\"'PosixPath' object has no attribute 'get'\") whenever the GTDB database was installed — the GTDB step reused the name of the joined-bins table. Fixed, and the whole MAG step (split, join, GTDB, AMRFinderPlus, bin table) is now run end to end with stand-in tools before release. The profile and resistome were never affected."
   }
 }

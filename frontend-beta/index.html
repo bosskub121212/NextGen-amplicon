@@ -1786,7 +1786,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       row("Host removal",        p.sg_host || "none");
       if(p.sg_min_abundance !== undefined) row("Minimum abundance", p.sg_min_abundance + " %");
       if(p.sg_amr !== undefined || p.sg_mags !== undefined)
-        row("Resistome · MAGs", (p.sg_amr === false ? "off" : "on") + " · " + (p.sg_mags ? "on" : "off"));
+        row("Resistome · MAGs", (p.sg_amr === false ? "off" : "on") + " · " + (p.sg_mags ? "on" : "off")
+            + (p.sg_mags && p.sequencerType === "ont" ? (p.sg_mag_polish ? " (Medaka polish)" : " (unpolished)") : ""));
       if(p.sequencerType === "ont") row("Read filter", "≥ " + p.sg_min_len + " bp, mean Q ≥ " + p.sg_min_q);
       row("CPU threads",         p.nThreads);
       row("Metadata supplied",   (p.metadata || (p.metadataRows && p.metadataRows.length)) ? "yes" : "no");
@@ -6105,6 +6106,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
        fields:[
         ["sg_amr", "AMR genes in reads", "bool", "true",
          "reads vs the AMRFinderPlus gene catalogue (installed with the WGS tools), with the organism carrying each gene"],
+        ["sg_mag_polish", "Nanopore: polish contigs (Medaka)", "bool", "false",
+         "better gene calls and CheckM2 scores for older (R9) data; slow and needs a lot of memory — leave off for R10 / SUP reads"],
         ["sg_mags", "Genome bins (MAGs)", "bool", "false",
          "MEGAHIT (Illumina) or metaFlye (Nanopore) + MetaBAT 2 + CheckM2; needs setup_shotgun.sh --mags. Slow"]]},
       {n:5, title:"Controls and differential abundance",

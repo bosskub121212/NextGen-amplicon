@@ -3,7 +3,7 @@
 
 Called by shotgun_pipeline.py after profiling when the run asks for MAGs:
 
-  1. assembly        Illumina: MEGAHIT · Nanopore: Flye --meta, then Medaka
+  1. assembly        Illumina: MEGAHIT · Nanopore: Flye --meta (+ Medaka, opt-in)
   2. depth           reads mapped back with minimap2 → samtools →
                      jgi_summarize_bam_contig_depths
   3. binning         MetaBAT 2 (contigs >= 1.5 kb)
@@ -185,10 +185,11 @@ def split_by_genus(contigs: list[str], lens: dict, ctax: dict, min_bp: int = 300
 
 def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: Path,
                threads: int, T: dict, dbs: dict, kraken, amr_db, min_contig: int,
-               run, log, step=lambda label: None) -> dict:
+               run, log, step=lambda label: None, polish: bool = False) -> dict:
     res = {"sample": s, "bins": [], "amr": [], "notes": []}
     # work left by an earlier run is reused only for the very same reads and settings
-    sig = json.dumps([platform, min_contig] + [[str(x), x.stat().st_size] for x in (r1, r2) if x])
+    sig = json.dumps([platform, min_contig] + [[str(x), x.stat().st_size] for x in (r1, r2) if x]
+                     + (["medaka"] if platform == "ont" and polish else []))
     sigf = wd / "inputs.sig"
     if wd.exists() and (not sigf.exists() or sigf.read_text() != sig):
         shutil.rmtree(wd, ignore_errors=True)
@@ -240,7 +241,9 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
     # 1b. Nanopore: Medaka. Unpolished Nanopore contigs carry small indels that break
     #     genes, and CheckM2 (a protein-based estimate) then reads near-complete genomes
     #     as 40-70 % complete (Zymo mock: B. subtilis 3.9 Mb in 2 contigs at 58 %).
-    if platform == "ont":
+    #     Opt-in: at 8 threads Medaka took the whole WSL down on nextapp (28 GB), so it
+    #     runs at 4 threads and only when asked for.
+    if platform == "ont" and polish:
         pol = wd / "polish.txt"
         if pol.exists():
             res["polish"] = pol.read_text().strip()
@@ -248,7 +251,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             import ont_wgs_pipeline as W
             if W.find_tool("medaka_consensus"):
                 step("polishing the contigs with Medaka")
-                cons, label = W.run_medaka(r1, contigs, wd / "medaka", threads, "auto", True,
+                cons, label = W.run_medaka(r1, contigs, wd / "medaka", min(4, threads), "auto", True,
                                            logs / "medaka.log")
                 if cons:
                     shutil.move(str(contigs), str(wd / "contigs_flye.fasta"))
@@ -652,7 +655,7 @@ AMR_COLS = ["sample", "bin", "contig", "gene", "type", "subtype", "class", "subc
 
 
 def run_all(samples, qc, platform, out: Path, threads, dbp, kraken, amr_db, min_contig, tool, run,
-            log, progress, conda_bases) -> dict:
+            log, progress, conda_bases, polish: bool = False) -> dict:
     bases = list(conda_bases)
     T = {n: find(n, bases) for n in ENV_PREF}
     T["minimap2"] = T["minimap2"] or tool("minimap2")
@@ -684,7 +687,7 @@ def run_all(samples, qc, platform, out: Path, threads, dbp, kraken, amr_db, min_
         results.append(one_sample(s, Path(q["r1"]), Path(q["r2"]) if q.get("r2") else None, platform,
                                   wd, mags_root / s, threads, T, dbs, kraken, amr_db, min_contig,
                                   run, log, step=lambda label, s=s, pct=pct:
-                                  progress(pct, f"[{s}] MAGs: {label}")))
+                                  progress(pct, f"[{s}] MAGs: {label}"), polish=polish))
     bins = [b for r in results for b in r["bins"]]
     with open(out / "mags_summary.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=BIN_COLS, extrasaction="ignore")

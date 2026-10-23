@@ -274,6 +274,8 @@ def main(argv=None):
                     help="%% of a gene's length the reads must cover for it to be called present")
     ap.add_argument("--mags", action="store_true", help="assemble and bin genomes (slow, opt-in)")
     ap.add_argument("--mag_min_contig", type=int, default=1500)
+    ap.add_argument("--mag_polish", action="store_true",
+                    help="Nanopore MAGs: polish the contigs with Medaka before binning (slow, memory-hungry)")
     a = ap.parse_args(argv)
 
     inp, out = Path(a.input_dir), Path(a.output_dir)
@@ -599,7 +601,7 @@ def main(argv=None):
         try:
             mag_info = MAG.run_all(samples=names, qc=qc_reads, platform=a.platform, out=out,
                                    threads=a.threads, dbp=dbp, kraken=(k2, db, a.memory_mapping),
-                                   amr_db=amr_db, min_contig=a.mag_min_contig, tool=tool, run=run,
+                                   amr_db=amr_db, min_contig=a.mag_min_contig, polish=a.mag_polish, tool=tool, run=run,
                                    log=log, progress=progress, conda_bases=conda_bases())
         except Exception as e:                     # MAGs are an extra: never fail the profile
             import traceback
