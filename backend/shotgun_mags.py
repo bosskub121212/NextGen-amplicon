@@ -3,15 +3,16 @@
 
 Called by shotgun_pipeline.py after profiling when the run asks for MAGs:
 
-  1. assembly        Illumina: MEGAHIT · Nanopore: Flye --meta
+  1. assembly        Illumina: MEGAHIT · Nanopore: Flye --meta, then Medaka
   2. depth           reads mapped back with minimap2 → samtools →
                      jgi_summarize_bam_contig_depths
   3. binning         MetaBAT 2 (contigs >= 1.5 kb)
   4. taxonomy        Kraken 2 on the binned contigs (NCBI names, the same as
                      the read profile; majority by length)
   5. quality         CheckM2 completeness / contamination → MIMAG-style tier
-  6. refinement      bins > 10 % contaminated are split by contig genus when
-                     CheckM2 scores the parts better
+  6. refinement      bins > 10 % contaminated are split by contig genus, and
+                     pieces of one species at similar depth are joined — each
+                     kept only when CheckM2 scores the result better
   7. GTDB            sourmash, when the WGS GTDB database is installed
   8. AMR per genome  AMRFinderPlus on the contigs, each hit tied to its bin
 
@@ -149,6 +150,20 @@ def checkm2(t, in_dir: Path, out_dir: Path, threads, db, s: str, run, logs: Path
     return out
 
 
+def bin_species(contigs: list[str], lens: dict, ctax: dict) -> str:
+    """The Kraken 2 species holding most of a bin's classified length (>= 50 %), else ''."""
+    sv, tot = defaultdict(int), 0
+    for c in contigs:
+        if c in ctax:
+            tot += lens.get(c, 0)
+            if ctax[c][1]:
+                sv[ctax[c][1]] += lens.get(c, 0)
+    if not sv:
+        return ""
+    sp, v = max(sv.items(), key=lambda x: x[1])
+    return sp if v >= 0.5 * tot else ""
+
+
 def split_by_genus(contigs: list[str], lens: dict, ctax: dict, min_bp: int = 300_000,
                    min_share: float = 0.15) -> list[tuple[str, list[str]]]:
     """[(genus, contigs)] when a bin's contigs fall into two or more genera that each hold
@@ -221,6 +236,38 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             shutil.copy(info, wd / "assembly_info.txt")
         shutil.rmtree(ad, ignore_errors=True)
     res.setdefault("assembler", "MEGAHIT" if platform == "illumina" else "Flye --meta")
+
+    # 1b. Nanopore: Medaka. Unpolished Nanopore contigs carry small indels that break
+    #     genes, and CheckM2 (a protein-based estimate) then reads near-complete genomes
+    #     as 40-70 % complete (Zymo mock: B. subtilis 3.9 Mb in 2 contigs at 58 %).
+    if platform == "ont":
+        pol = wd / "polish.txt"
+        if pol.exists():
+            res["polish"] = pol.read_text().strip()
+        else:
+            import ont_wgs_pipeline as W
+            if W.find_tool("medaka_consensus"):
+                step("polishing the contigs with Medaka")
+                cons, label = W.run_medaka(r1, contigs, wd / "medaka", threads, "auto", True,
+                                           logs / "medaka.log")
+                if cons:
+                    shutil.move(str(contigs), str(wd / "contigs_flye.fasta"))
+                    shutil.move(str(cons), str(contigs))
+                    res["polish"] = f"Medaka ({label})"
+                    # anything computed on the unpolished contigs is stale now
+                    for x in ("depth.txt", "amrfinder.tsv"):
+                        (wd / x).unlink(missing_ok=True)
+                    for x in ("bins", "bins_unsplit", "bins_merged", "checkm2", "checkm2_split",
+                              "checkm2_merge", "sourmash"):
+                        shutil.rmtree(wd / x, ignore_errors=True)
+                    (wd / "merged.json").unlink(missing_ok=True)
+                else:
+                    res["polish"] = f"none (Medaka {label})"
+                shutil.rmtree(wd / "medaka", ignore_errors=True)
+            else:
+                res["polish"] = "none (Medaka not installed)"
+                res["notes"].append("Medaka not installed — Nanopore contigs not polished (setup_wgs.sh)")
+            pol.write_text(res["polish"])
     lens = {n: len(q) for n, q in read_fasta(contigs)}
     res["assembly"] = {"contigs": len(lens), "bp": sum(lens.values()), "n50": n50(list(lens.values())),
                        "longest": max(lens.values()) if lens else 0,
@@ -381,9 +428,71 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             shutil.rmtree(sd_, ignore_errors=True)
     elif (wd / "bins_unsplit").exists():           # split in an earlier run of this folder
         for f in bins_dir.glob("bin.*[a-z].fa"):
-            refined[f"{s}.{f.stem}"] = re.sub(r"[a-z]$", "", f.stem)
+            if not f.stem.endswith("m"):
+                refined[f"{s}.{f.stem}"] = re.sub(r"[a-z]$", "", f.stem)
         if can_ck:
             ck.update(checkm2(T["checkm2"], wd / "split_try", wd / "checkm2_split", threads,
+                              dbs["checkm2_db"], s, run, logs))
+
+    # 6b. ... and join bins that are pieces of one genome: same Kraken 2 species, similar
+    #     depth (within 1.5x, so two strains at different abundance stay apart), kept
+    #     only when CheckM2 finds the joined bin >= 10 points more complete and still
+    #     < 10 % contaminated (Zymo Nanopore: E. faecalis came out as 45 % + 39 %).
+    merged = {}
+    mj = wd / "merged.json"
+    if can_ck and ctax and not mj.exists():
+        groups = defaultdict(list)
+        for b, cs in bins.items():
+            sp = bin_species(cs, lens, ctax)
+            if sp:
+                groups[sp].append(b)
+        dep = {b: sum(depth.get(c, 0) * lens.get(c, 0) for c in cs) / max(1, sum(lens.get(c, 0) for c in cs))
+               for b, cs in bins.items()}
+        cands = {}
+        for sp, bs in groups.items():
+            if len(bs) < 2:
+                continue
+            bs.sort(key=lambda b: -sum(lens.get(c, 0) for c in bins[b]))
+            ref = dep[bs[0]] or 1e-9
+            take = [b for b in bs if dep[b] and max(dep[b], ref) / min(dep[b], ref) <= 1.5]
+            if len(take) >= 2:
+                cands[f"{s}.{take[0][len(s) + 1:]}m"] = (sp, take)
+        if cands:
+            step(f"joining fragments of {len(cands)} genome(s)")
+            md_ = wd / "merge_try"
+            shutil.rmtree(md_, ignore_errors=True)
+            md_.mkdir()
+            for n, (sp, take) in cands.items():
+                with open(md_ / f"{n[len(s) + 1:]}.fa", "w") as fh:
+                    for b in take:
+                        for c, q in read_fasta(bins_dir / f"{b[len(s) + 1:]}.fa"):
+                            fh.write(f">{c}\n{q}\n")
+            ck3 = checkm2(T["checkm2"], md_, wd / "checkm2_merge", threads, dbs["checkm2_db"], s, run, logs)
+            for n, (sp, take) in cands.items():
+                if n not in ck3 or any(b not in ck for b in take):
+                    continue
+                comp, cont = ck3[n]
+                if comp >= max(ck[b][0] for b in take) + 10 and cont < 10 \
+                        and cont <= max(ck[b][1] for b in take) + 5:
+                    (wd / "bins_merged").mkdir(exist_ok=True)
+                    for b in take:
+                        shutil.move(str(bins_dir / f"{b[len(s) + 1:]}.fa"),
+                                    str(wd / "bins_merged" / f"{b[len(s) + 1:]}.fa"))
+                        bins.pop(b, None)
+                        ck.pop(b, None)
+                        refined.pop(b, None)
+                    shutil.move(str(md_ / f"{n[len(s) + 1:]}.fa"), str(bins_dir / f"{n[len(s) + 1:]}.fa"))
+                    bins[n] = [c for c, _ in read_fasta(bins_dir / f"{n[len(s) + 1:]}.fa")]
+                    ck[n] = ck3[n]
+                    merged[n] = " + ".join(b[len(s) + 1:] for b in take)
+                    log(f"[{s}] MAGs: {merged[n]} are one {sp} genome — joined as {n[len(s) + 1:]} "
+                        f"({comp:.0f}% complete, {cont:.1f}% contamination)")
+            shutil.rmtree(md_, ignore_errors=True)
+        mj.write_text(json.dumps(merged))
+    elif mj.exists():
+        merged = json.loads(mj.read_text())
+        if can_ck and merged:
+            ck.update(checkm2(T["checkm2"], wd / "merge_try", wd / "checkm2_merge", threads,
                               dbs["checkm2_db"], s, run, logs))
     contig_bin = {c: b for b, cs in bins.items() for c in cs}
 
@@ -524,6 +633,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             "gtdb_species": gt.get("gtdb_species", ""), "gtdb_ani": gt.get("gtdb_ani", ""),
             "gtdb_call": gt.get("gtdb_call", ""),
             "split_from": refined.get(b, ""),
+            "merged_from": merged.get(b, ""),
             "amr_genes": ";".join(sorted({a["gene"] for a in res["amr"]
                                           if a["bin"] == b and a["type"] == "AMR"}))})
     res["bins"].sort(key=lambda r: ({"High": 0, "Medium": 1, "Low": 2}.get(r["quality"], 3),
@@ -536,7 +646,7 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
 
 BIN_COLS = ["sample", "bin", "quality", "completeness", "contamination", "size_bp", "contigs", "n50",
             "gc", "mean_depth", "share_of_assembly_coverage", "kraken2_taxon", "kraken2_bp_share",
-            "gtdb_species", "gtdb_ani", "gtdb_call", "amr_genes", "split_from"]
+            "gtdb_species", "gtdb_ani", "gtdb_call", "amr_genes", "split_from", "merged_from"]
 AMR_COLS = ["sample", "bin", "contig", "gene", "type", "subtype", "class", "subclass", "name",
             "method", "identity", "coverage"]
 
@@ -593,12 +703,14 @@ def run_all(samples, qc, platform, out: Path, threads, dbp, kraken, amr_db, min_
             "gtdb": bool(T.get("sourmash") and dbs.get("gtdb_sourmash")),
             "min_contig": min_contig,
             "samples": {r["sample"]: {"assembly": r.get("assembly", {}), "notes": r["notes"],
+                                      "polish": r.get("polish", ""),
                                       "flye_mode": r.get("flye_mode", ""), "bins": len(r["bins"])}
                         for r in results},
             "n_bins": len(bins),
             "n_high": sum(1 for b in bins if b["quality"] == "High"),
             "n_medium": sum(1 for b in bins if b["quality"] == "Medium"),
-            "n_split": len({b["split_from"] for b in bins if b.get("split_from")})}
+            "n_split": len({b["split_from"] for b in bins if b.get("split_from")}),
+            "n_merged": sum(1 for b in bins if b.get("merged_from"))}
     for r in results:
         for n in r["notes"]:
             log(f"[warn] [{r['sample']}] MAGs: {n}")

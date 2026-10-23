@@ -195,6 +195,10 @@ def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
             f"with {asm}, mapped back to the contigs with minimap2 to measure contig depth, and contigs of at "
             f"least {info.get('min_contig', 1500):,} bp were binned with MetaBAT 2"
             + (f" ({tv['metabat2']})" if tv.get("metabat2") else "") + "."]
+    pol = sorted({(a.get("polish") or "") for a in (info.get("samples") or {}).values()} - {""})
+    if not ill and pol:
+        meth.append("The Nanopore contigs were polished with Medaka before binning ("
+                    + RB.esc("; ".join(pol)) + ").")
     if info.get("binner"):
         refs.append("metabat2")
     if info.get("checkm2"):
@@ -207,6 +211,10 @@ def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
                     "contigs, and the split was kept only when CheckM2 scored the parts better (completeness "
                     "&minus; 5 &times; contamination); with a single sample MetaBAT 2 cannot separate organisms "
                     "of similar GC content at similar depth.")
+    if info.get("n_merged"):
+        meth.append("Bins of the same Kraken 2 species at similar depth (within 1.5&times;) were joined when "
+                    "CheckM2 found the joined bin at least 10 points more complete and still under 10% "
+                    "contaminated.")
     meth.append("Each bin was named by Kraken 2 on its contigs (the taxon holding most of the bin's length)"
                 + (", and matched to GTDB species representatives with sourmash" if info.get("gtdb") else "")
                 + "; AMR genes in the contigs were called with AMRFinderPlus and tied to their bin.")
@@ -229,7 +237,8 @@ def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
     if bins:
         out.append(T(["Bin", "Quality", "Complete", "Contam.", "Size (Mb)", "Contigs", "N50", "Depth",
                       "Taxon (Kraken 2)"] + (["GTDB (ANI)"] if info.get("gtdb") else []) + ["AMR"],
-                     [[RB.esc(b["bin"]) + ("&dagger;" if b.get("split_from") else ""),
+                     [[RB.esc(b["bin"]) + ("&dagger;" if b.get("split_from") else "")
+                       + ("&Dagger;" if b.get("merged_from") else ""),
                        RB.esc(b.get("quality", "")),
                        f"{_f(b.get('completeness'))}%" if b.get("completeness") not in ("", None) else "—",
                        f"{_f(b.get('contamination'))}%" if b.get("contamination") not in ("", None) else "—",
@@ -244,7 +253,10 @@ def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
                      "mags/&lt;sample&gt;/, all columns in mags_summary.csv, AMR genes per contig in "
                      "mags_amr.csv. <i>AMR</i>: number of AMR genes in the bin."
                      + (" &dagger; split from a mixed MetaBAT 2 bin by contig taxonomy."
-                        if any(b.get("split_from") for b in bins) else "") + (" First 80 bins."
+                        if any(b.get("split_from") for b in bins) else "")
+                     + (" &Dagger; pieces of one genome joined ("
+                        + RB.esc("; ".join(f"{b['bin']} = {b['merged_from']}" for b in bins if b.get("merged_from")))
+                        + ")." if any(b.get("merged_from") for b in bins) else "") + (" First 80 bins."
                                                                                    if len(bins) > 80 else "")))
         withamr = [b for b in bins if b.get("amr_genes")]
         if withamr:
@@ -259,7 +271,9 @@ def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
                "pieced together from a mixture; high-quality MAGs are reliable for species identity and gene "
                "content, low-quality ones are fragments. Plasmids and other mobile elements often stay "
                "unbinned, so AMR genes on them appear in mags_amr.csv without a bin."
-               + ("" if ill else " Nanopore assemblies here are not polished: expect small indels in genes.")
+               + ("" if ill or any(x.startswith("Medaka") for x in pol) else
+                  " These Nanopore contigs are not polished: expect small indels in genes, and CheckM2 "
+                  "completeness that understates the genome.")
                + "</p></div>")
     return meth, out, refs
 

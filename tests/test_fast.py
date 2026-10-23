@@ -278,6 +278,12 @@ def main():
           [(g, sorted(c)) for g, c in parts] == [("Salmonella", ["c0", "c1", "c2", "c6", "c7"]),
                                                  ("Escherichia", ["c3", "c4", "c5"])]
           and SM.split_by_genus(["c0", "c1"], lens, ctax) == [], parts)
+    check("shotgun MAGs: species of a bin for joining fragments",
+          SM.bin_species(["c0", "c1"], lens, {"c0": ("Escherichia", "Escherichia coli"),
+                                              "c1": ("Escherichia", "Escherichia coli")}) == "Escherichia coli"
+          and SM.bin_species(["c0", "c1", "c2"], lens, {"c0": ("Escherichia", "Escherichia coli"),
+                                                        "c1": ("Salmonella", "Salmonella enterica"),
+                                                        "c2": ("Klebsiella", "")}) == "")
     import build_16s_typestrain_db as B16
     check("16S multicopy: alignment-defined gene ends", B16.merge([(1, 5), (100, 200), (150, 300)], 10)
           == [(1, 5), (100, 300)])

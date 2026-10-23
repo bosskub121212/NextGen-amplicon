@@ -1,10 +1,10 @@
 {
-  "version": "2.20.3",
-  "release_date": "2026-10-22",
-  "changelog": "Shotgun MAGs: bins holding two organisms are now split. On the Zymo even mock (Illumina, 2 M pairs) MetaBAT 2 put Salmonella with E. coli and Listeria with E. faecalis — similar GC at the same depth, which one sample cannot tell apart — and CheckM2 called them 83 % and 76 % contaminated. A bin over 10 % contamination is now cut by the Kraken 2 genus of its contigs (each part >= 300 kb and >= 15 % of the bin; unnamed contigs join the largest part), CheckM2 re-scores the parts, and the split is kept only when the parts score better (completeness - 5 x contamination, summed). Split bins are marked in the report (dagger) and in mags_summary.csv (split_from). Includes 2.20.1-2.20.2.",
+  "version": "2.20.4",
+  "release_date": "2026-10-23",
+  "changelog": "Shotgun MAGs, from the Zymo Nanopore run: (1) Nanopore contigs are polished with Medaka (the WGS tool, bacterial model when the reads allow) before binning — unpolished contigs carry indels that break genes, and CheckM2 called near-whole genomes 40-70 % complete (B. subtilis 3.9 Mb in 2 contigs: 58 %). (2) Pieces of one genome are joined: bins of the same Kraken 2 species at similar depth (within 1.5x) are merged when CheckM2 finds the result >= 10 points more complete and still < 10 % contaminated (E. faecalis came out as 45 % + 39 %, L. fermentum as 46 % + 19 %). Joined bins are marked in the report (double dagger) and mags_summary.csv (merged_from). Includes 2.20.3 (mixed bins split by contig taxonomy).",
   "previous": {
-    "version": "2.20.2",
+    "version": "2.20.3",
     "release_date": "2026-10-22",
-    "changelog": "Shotgun MAGs: GTDB naming of the bins was the slow step (sourmash multigather read the whole GTDB database once per bin — about half an hour for the 8 Zymo bins on nextapp). The bins are now merged for one prefetch pass over GTDB, and the per-bin gather runs on the genomes that pass keeps; same names, about 4x faster in the test, more with more bins. The job page now names each MAG step (assembling, depth, binning, CheckM2, Kraken 2 naming, GTDB, AMRFinderPlus) instead of 'assembly and binning' throughout. Includes 2.20.1 (Nanopore bins)."
+    "changelog": "Shotgun MAGs: bins holding two organisms are now split. On the Zymo even mock (Illumina, 2 M pairs) MetaBAT 2 put Salmonella with E. coli and Listeria with E. faecalis — similar GC at the same depth, which one sample cannot tell apart — and CheckM2 called them 83 % and 76 % contaminated. A bin over 10 % contamination is now cut by the Kraken 2 genus of its contigs (each part >= 300 kb and >= 15 % of the bin; unnamed contigs join the largest part), CheckM2 re-scores the parts, and the split is kept only when the parts score better (completeness - 5 x contamination, summed). Split bins are marked in the report (dagger) and in mags_summary.csv (split_from). Includes 2.20.1-2.20.2."
   }
 }
