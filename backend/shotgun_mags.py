@@ -537,9 +537,9 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             # 8 bins on nextapp). One prefetch pass with all bins merged keeps just the
             # genomes that share k-mers with any bin; the per-bin gather then runs on those.
             gdb = dbs["gtdb_sourmash"]
-            merged, matches = sd / "all_bins.sig.zip", sd / "gtdb_matches.zip"
-            if run(sm, ["sig", "merge"] + sigs + ["-k", 31, "-o", merged], logs / "sourmash.log") == 0 \
-                    and run(sm, ["prefetch", merged, gdb, "-k", 31, "--threshold-bp", 50000,
+            allsig, matches = sd / "all_bins.sig.zip", sd / "gtdb_matches.zip"
+            if run(sm, ["sig", "merge"] + sigs + ["-k", 31, "-o", allsig], logs / "sourmash.log") == 0 \
+                    and run(sm, ["prefetch", allsig, gdb, "-k", 31, "--threshold-bp", 50000,
                                  "--save-matches", matches], logs / "sourmash.log") == 0 \
                     and matches.exists() and matches.stat().st_size > 0:
                 gdb = matches
