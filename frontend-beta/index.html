@@ -6189,12 +6189,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var known = ix.some(function(o){ return o.path === def; });
       var lab = function(o){
         var what = { Standard: "bacteria, archaea, viruses, human",
-                     PlusPF: "+ protozoa and fungi", PlusPFP: "+ protozoa, fungi and plants",
+                     PlusPF: "Standard + fungi and protozoa", PlusPFP: "Standard + fungi, protozoa and plants",
                      Viral: "viruses only" }[o.kind] || "";
-        return o.kind + (o.cap_gb ? "-" + o.cap_gb + " GB" : "") + (o.date ? " · " + o.date : "")
-          + (what ? " — " + what : "") + (o.default ? " (default)" : "")
-          + (o.bracken ? "" : " — no Bracken files");
+        return o.kind + (o.cap_gb ? "-" + o.cap_gb : "") + (what ? " — " + what : "")
+          + (o.date ? " · built " + o.date : "") + (o.default ? " · default" : "")
+          + (o.bracken ? "" : " · no Bracken files");
       };
+      /* default first, then Standard before the bigger variants */
+      ix = ix.slice().sort(function(a, b){
+        return (b.default - a.default) || ((a.kind !== "Standard") - (b.kind !== "Standard"))
+          || a.name.localeCompare(b.name); });
       ctl = '<select id="f_sg_k2sel">'
         + (ix.length ? ix.map(function(o){
             return '<option value="' + esc(o.path) + '"' + (o.path === def ? " selected" : "") + '>'

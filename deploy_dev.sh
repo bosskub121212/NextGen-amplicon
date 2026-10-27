@@ -130,7 +130,8 @@ else
   ok "Files copied"
 fi
 
-APP_VER=$(grep -oP '"version"\s*:\s*"\K[^"]+' "$APP_DIR/version.json" 2>/dev/null || echo "?")
+APP_VER=$(grep -oP '"version"\s*:\s*"\K[^"]+' "$APP_DIR/version.json" 2>/dev/null | head -1 || true)  # first = current; "previous" holds another
+APP_VER=${APP_VER:-?}
 info "Runtime version: $APP_VER"
 
 # The beta console is one file and it is served straight off disk, so "did it
