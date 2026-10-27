@@ -1,10 +1,10 @@
 {
-  "version": "2.20.8",
+  "version": "2.20.9",
   "release_date": "2026-10-27",
-  "changelog": "Shotgun: clearer names in the Kraken 2 index list (\"PlusPF-16 — Standard + fungi and protozoa · built 2026-06-26 · default\"), the default index listed first, then Standard. Checked in the running console: picking an index, Custom path… and back post the right folder. deploy_dev.sh printed the runtime version twice (it also read the 'previous' entry). No backend restart needed.",
+  "changelog": "Shotgun resistome and MAG AMR can use AMRFinderPlus 4.2 with the current database (2026-08-07.1, 9,786 genes, was 8,342 in 2024-07-22.1). It goes into its own env: bash ~/r16s-app/setup_shotgun.sh --amr (env ngamp-amr); the WGS pipeline keeps AMRFinderPlus 3.12 and its database unchanged. The 4.x database files are read (fam.tsv, AMR_CDS.fa, shorter sequence headers) as well as the old ones, and the amrfinder that goes with the chosen database is the one used. Reads are now pooled per gene symbol, so point-mutation variants the 4.x catalogue lists separately (mecA-ceftar) count as their gene instead of a second row. Tested with AMRFinderPlus 4.2.7 and the 2026-08-07.1 database on simulated Illumina and Nanopore reads. No backend restart needed.",
   "previous": {
-    "version": "2.20.7",
+    "version": "2.20.8",
     "release_date": "2026-10-27",
-    "changelog": "Shotgun: the Kraken 2 index is now picked from a list (step 3), like the reference database of the amplicon pipelines — every index setup_shotgun.sh installed under databases/kraken2/ (Standard-16, PlusPF-16 with fungi and protozoa, …) with its build date, plus a custom path. The registered default is preselected. Backend restart required."
+    "changelog": "Shotgun: clearer names in the Kraken 2 index list (\"PlusPF-16 — Standard + fungi and protozoa · built 2026-06-26 · default\"), the default index listed first, then Standard. Checked in the running console: picking an index, Custom path… and back post the right folder. deploy_dev.sh printed the runtime version twice (it also read the 'previous' entry). No backend restart needed."
   }
 }

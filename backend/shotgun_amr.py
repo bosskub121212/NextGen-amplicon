@@ -38,28 +38,59 @@ def _cds_file(d: Path) -> Path | None:
     return None
 
 
-def find_db(dbp: dict, conda_bases: list[Path], amrfinder_bin: str | None = None) -> Path | None:
-    """The AMRFinderPlus data folder holding AMR_CDS and fam.tab."""
-    cands = []
+# AMRFinderPlus 4.x (env ngamp-amr, setup_shotgun.sh --amr) first: its database is current.
+# The WGS env (3.12, database frozen at 2024-07-22.1 for that software) is the fallback.
+AMR_ENVS = ("ngamp-amr", "ngamp-wgs", "wgs", "amrfinder", "amrfinderplus")
+
+
+def _fam_file(d: Path) -> Path | None:
+    for n in ("fam.tsv", "fam.tab"):          # 4.x database: fam.tsv; 3.x: fam.tab
+        if (d / n).is_file():
+            return d / n
+    return None
+
+
+def _resolve(c: Path) -> Path | None:
+    for d in (c, c / "latest"):
+        if d.is_dir() and _cds_file(d) and _fam_file(d):
+            return d
+    if c.is_dir():   # data/<version>/ folders without a "latest" link
+        vs = sorted((x for x in c.iterdir() if x.is_dir() and _cds_file(x) and _fam_file(x)), reverse=True)
+        if vs:
+            return vs[0]
+    return None
+
+
+def _bin_for(d: Path) -> str | None:
+    """The amrfinder of the env that holds this database (the two must match: 3.x
+    cannot read a 4.x database)."""
+    for p in d.resolve().parents:
+        b = p / "bin" / "amrfinder"
+        if b.exists() and os.access(b, os.X_OK):
+            return str(b)
+    return None
+
+
+def find_install(dbp: dict, conda_bases: list[Path]) -> tuple[Path | None, str | None]:
+    """(database folder holding AMR_CDS and fam.tsv/fam.tab, the amrfinder that goes with it)."""
+    cands = [b / "envs" / "ngamp-amr" / "share" / "amrfinderplus" / "data" for b in conda_bases]
     if dbp.get("amrfinder_db"):
         cands.append(Path(dbp["amrfinder_db"]))
-    if amrfinder_bin:
-        cands.append(Path(amrfinder_bin).resolve().parent.parent / "share" / "amrfinderplus" / "data")
     for b in conda_bases:
-        for env in ("ngamp-wgs", "wgs", "amrfinder", "amrfinderplus"):
+        for env in AMR_ENVS[1:]:
             cands.append(b / "envs" / env / "share" / "amrfinderplus" / "data")
         envs = b / "envs"
         if envs.is_dir():
             cands += sorted(envs.glob("*/share/amrfinderplus/data"))
     for c in cands:
-        for d in (c, c / "latest"):
-            if d.is_dir() and _cds_file(d) and (d / "fam.tab").exists():
-                return d
-        if c.is_dir():   # data/<version>/ folders without a "latest" link
-            vs = sorted((x for x in c.iterdir() if x.is_dir() and _cds_file(x)), reverse=True)
-            if vs and (vs[0] / "fam.tab").exists():
-                return vs[0]
-    return None
+        d = _resolve(c)
+        if d:
+            return d, _bin_for(d)
+    return None, None
+
+
+def find_db(dbp: dict, conda_bases: list[Path], amrfinder_bin: str | None = None) -> Path | None:
+    return find_install(dbp, conda_bases)[0]
 
 
 def db_version(d: Path) -> str:
@@ -70,7 +101,7 @@ def db_version(d: Path) -> str:
 def load_catalog(d: Path) -> dict:
     """{sequence id: {allele, family, type, subtype, class, subclass, product, length}}."""
     fam = {}
-    with open(d / "fam.tab") as fh:
+    with open(_fam_file(d)) as fh:
         for line in fh:
             if line.startswith("#"):
                 continue
@@ -86,10 +117,12 @@ def load_catalog(d: Path) -> dict:
                     cat[cur]["length"] = n
                 hdr = line[1:].strip()
                 sid = hdr.split()[0]
+                # 3.x: gi|protein|nucleotide|1|1|allele|node|product
+                # 4.x:    protein|nucleotide|1|1|allele|node|product   — count from the end
                 f = sid.split("|")
-                allele = f[5] if len(f) > 6 else sid
-                node = f[6] if len(f) > 6 else allele
-                product = (f[7] if len(f) > 7 else "").replace("_", " ")
+                allele = f[-3] if len(f) >= 7 else sid
+                node = f[-2] if len(f) >= 7 else allele
+                product = (f[-1] if len(f) >= 7 else "").replace("_", " ")
                 # the family's own row; a few alleles point at a node without type —
                 # walk up until one has it
                 info, k, hops = fam.get(node, {}), node, 0
@@ -157,7 +190,9 @@ def summarise(paf: Path, cat: dict, platform: str, total_reads: int,
                 continue
         elif span < min(200, 0.5 * tlen):
             continue
-        hits[cat[tid]["family"]].append((tid, ts, te, ident, _PAIR_SUFFIX.sub("", qname)))
+        # pooled by gene symbol: a 4.x database also lists point-mutation variants of an
+        # acquired gene as their own node (mecA-ceftar), which reads cannot tell apart
+        hits[cat[tid]["symbol"]].append((tid, ts, te, ident, _PAIR_SUFFIX.sub("", qname)))
 
     rows, reads = [], {}
     for famname, hs in hits.items():
@@ -176,7 +211,7 @@ def summarise(paf: Path, cat: dict, platform: str, total_reads: int,
         names = {h[4] for h in hs}
         n = len(names)
         c = cat[rep]
-        rows.append({"gene": c["symbol"], "family_id": famname,
+        rows.append({"gene": famname, "family_id": famname,
                      "allele": re.sub(r"_gen$", "", c["allele"]), "type": c["type"],
                      "subtype": c["subtype"], "class": c["class"], "subclass": c["subclass"],
                      "product": c["product"], "length": rlen, "reads": n,

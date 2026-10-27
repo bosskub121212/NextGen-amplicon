@@ -261,6 +261,27 @@ def main():
               cat[t1]["class"] == "BETA-LACTAM" and len(rows) == 1 and rows[0]["gene"] == "blaTEM"
               and rows[0]["reads"] == 8 and rows[0]["breadth"] == 85.0
               and rows[0]["host_taxon"] == "Bacillus subtilis", rows)
+        # AMRFinderPlus 4.x database: fam.tsv, AMR_CDS.fa, headers without the leading gi
+        base = Path(td) / "conda"
+        for env, new in (("ngamp-wgs", False), ("ngamp-amr", True)):
+            dd = base / "envs" / env / "share" / "amrfinderplus" / "data" / "latest"
+            dd.mkdir(parents=True)
+            (dd / ("fam.tsv" if new else "fam.tab")).write_text((adb / "fam.tab").read_text())
+            cds = (adb / "AMR_CDS").read_text()
+            if new:
+                cds = cds.replace(">1|WP_1|", ">WP_1|").replace(">2|WP_2|", ">WP_2|")
+            (dd / ("AMR_CDS.fa" if new else "AMR_CDS")).write_text(cds)
+            bb = base / "envs" / env / "bin"
+            bb.mkdir(parents=True)
+            (bb / "amrfinder").write_text("#!/bin/sh\n")
+            (bb / "amrfinder").chmod(0o755)
+        idb, ibin = SA.find_install({}, [base])
+        cat4 = SA.load_catalog(idb)
+        r4 = cat4.get("WP_1|NG_1|1|1|blaTEM-1|blaTEM|TEM-1", {})
+        check("shotgun resistome: AMRFinderPlus 4.x env preferred, its database format read",
+              "ngamp-amr" in str(idb) and ibin.endswith("ngamp-amr/bin/amrfinder")
+              and r4.get("allele") == "blaTEM-1" and r4.get("family") == "blaTEM"
+              and r4.get("class") == "BETA-LACTAM" and r4.get("length") == 1000, (idb, ibin, r4))
         SA.write_tables(d, {"s1": rows, "s2": [], "s3": rows})
         sj = json.loads((d / "summary.json").read_text())
         sj["amr"] = {"db_version": "test", "min_identity": 90, "min_breadth": 60, "gene_families": 1,

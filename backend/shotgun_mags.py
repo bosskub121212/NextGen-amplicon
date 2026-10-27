@@ -41,7 +41,7 @@ ENV_PREF = {
     "flye": ["ngamp-wgs", "wgs", "flye"],
     "checkm2": ["checkm2", "ngamp-wgs", "wgs"],
     "sourmash": ["ngamp-wgs", "wgs", "sourmash"],
-    "amrfinder": ["ngamp-wgs", "wgs", "amrfinder"],
+    "amrfinder": ["ngamp-amr", "ngamp-wgs", "wgs", "amrfinder"],
     "minimap2": ["ngamp-meta", "ngamp-mags", "ngamp-wgs", "ngamp-phylo"],
     "samtools": ["ngamp-mags", "ngamp-meta", "ngamp-wgs", "ngamp-phylo"],
     "seqkit": ["ngamp-meta", "ngamp-wgs"],
@@ -655,12 +655,16 @@ AMR_COLS = ["sample", "bin", "contig", "gene", "type", "subtype", "class", "subc
 
 
 def run_all(samples, qc, platform, out: Path, threads, dbp, kraken, amr_db, min_contig, tool, run,
-            log, progress, conda_bases, polish: bool = False) -> dict:
+            log, progress, conda_bases, polish: bool = False, amr_bin: str | None = None) -> dict:
     bases = list(conda_bases)
     T = {n: find(n, bases) for n in ENV_PREF}
     T["minimap2"] = T["minimap2"] or tool("minimap2")
     T["samtools"] = T["samtools"] or tool("samtools")
     T["seqkit"] = T["seqkit"] or tool("seqkit")
+    if amr_bin:                                    # the amrfinder that matches amr_db's format
+        env = os.environ.copy()
+        env["PATH"] = f"{Path(amr_bin).parent}{os.pathsep}{env.get('PATH', '')}"
+        T["amrfinder"] = (amr_bin, env)
     dbs = find_dbs(dbp)
     vers = {}
     used = ["megahit" if platform == "illumina" else "flye", "metabat2"] + \

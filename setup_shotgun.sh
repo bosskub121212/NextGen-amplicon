@@ -7,11 +7,14 @@
 #    bash ~/r16s-app/setup_shotgun.sh --index standard_16   # or standard_08, pluspf_16, pluspf_08, standard
 #    bash ~/r16s-app/setup_shotgun.sh --no-host        # skip the human index for host removal
 #    bash ~/r16s-app/setup_shotgun.sh --mags           # only the MAG tools (env ngamp-mags)
+#    bash ~/r16s-app/setup_shotgun.sh --amr            # AMRFinderPlus 4.x + current database (env ngamp-amr)
 #    bash ~/r16s-app/setup_shotgun.sh --status
 #
 #  Everything goes into places of its own, nothing existing is touched:
 #    conda env  ngamp-meta   python 3.11, kraken2, bracken, fastp, hostile >= 2, chopper, seqkit
 #    conda env  ngamp-mags   megahit, metabat2, samtools, minimap2   (--mags; genome bins)
+#    conda env  ngamp-amr    AMRFinderPlus >= 4.2 and its database   (--amr; shotgun resistome
+#                            and MAG AMR use it when present; the WGS pipeline keeps its own)
 #  Resistome and MAGs also use AMRFinderPlus, Flye, CheckM2 and the GTDB sketch
 #  that setup_wgs.sh installs for the WGS pipeline (env ngamp-wgs / checkm2).
 #    index      backend/databases/kraken2/<name>/   (db_paths.json key: kraken2_db)
@@ -34,13 +37,14 @@ G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[1m'; N='\033[0m'
 ok(){ echo -e "  ${G}✓${N} $*"; }; warn(){ echo -e "  ${Y}!${N} $*"; }; bad(){ echo -e "  ${R}✗${N} $*"; }
 step(){ echo -e "\n${B}══ $* ══${N}"; }
 
-TOOLS=1; INDEX=1; HOST=1; KIND="standard_16"; STATUS=0; MAGS=0
+TOOLS=1; INDEX=1; HOST=1; KIND="standard_16"; STATUS=0; MAGS=0; AMR=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tools-only) INDEX=0; HOST=0 ;;
     --index) KIND="$2"; shift ;;
     --no-host) HOST=0 ;;
     --mags) MAGS=1; TOOLS=0; INDEX=0; HOST=0 ;;
+    --amr) AMR=1; TOOLS=0; INDEX=0; HOST=0 ;;
     --status) STATUS=1 ;;
     -h|--help) sed -n 2,25p "$0"; exit 0 ;;
     *) warn "unknown option $1" ;;
@@ -78,7 +82,14 @@ if [[ $STATUS == 1 ]]; then
     [[ -x "$BASE/envs/ngamp-mags/bin/$t" ]] && ok "$t (MAGs)" || warn "$t missing — MAGs: setup_shotgun.sh --mags"
   done
   W="$BASE/envs/ngamp-wgs/bin"
-  [[ -x "$W/amrfinder" ]] && ok "amrfinder (resistome, from setup_wgs.sh)" || warn "amrfinder missing — resistome needs setup_wgs.sh"
+  A="$BASE/envs/ngamp-amr/bin"
+  if [[ -x "$A/amrfinder" ]]; then
+    ok "amrfinder $("$A/amrfinder" --version 2>/dev/null | tail -1) (resistome, env ngamp-amr) — database $(cat "$BASE"/envs/ngamp-amr/share/amrfinderplus/data/latest/version.txt 2>/dev/null || echo 'not downloaded: setup_shotgun.sh --amr')"
+  elif [[ -x "$W/amrfinder" ]]; then
+    ok "amrfinder (resistome, from setup_wgs.sh — older database; setup_shotgun.sh --amr for the current one)"
+  else
+    warn "amrfinder missing — resistome needs setup_shotgun.sh --amr (or setup_wgs.sh)"
+  fi
   [[ -x "$W/flye" ]] && ok "flye (Nanopore MAGs)" || warn "flye missing — Nanopore MAGs need setup_wgs.sh"
   [[ -x "$BASE/envs/checkm2/bin/checkm2" || -x "$W/checkm2" ]] && ok "checkm2 (MAG quality)" || warn "checkm2 missing — bins are not graded"
   python3 - "$DBP" <<'PY'
@@ -183,6 +194,20 @@ if [[ $MAGS == 1 ]]; then
   "$MB/megahit" --version 2>&1 | head -1
   [[ -x "$MB/jgi_summarize_bam_contig_depths" ]] && ok "metabat2 + jgi_summarize_bam_contig_depths" \
     || bad "jgi_summarize_bam_contig_depths missing"
+fi
+if [[ $AMR == 1 ]]; then
+  step "AMRFinderPlus 4.x (env ngamp-amr)"
+  AB="$BASE/envs/ngamp-amr/bin"
+  if [[ -x "$AB/amrfinder" ]]; then
+    ok "already installed ($("$AB/amrfinder" --version 2>/dev/null | tail -1))"
+  else
+    # its own env: the WGS pipeline's ngamp-wgs (AMRFinderPlus 3.12) is left as it is
+    $CONDA create -y -n ngamp-amr -c conda-forge -c bioconda "ncbi-amrfinderplus>=4.2" \
+      || { bad "conda env ngamp-amr failed"; exit 1; }
+    ok "env ngamp-amr created"
+  fi
+  PATH="$AB:$PATH" "$AB/amrfinder" -u || { bad "database download failed — re-run: setup_shotgun.sh --amr"; exit 1; }
+  ok "database $(cat "$BASE"/envs/ngamp-amr/share/amrfinderplus/data/latest/version.txt 2>/dev/null)"
 fi
 echo ""
 ok "Done. No backend restart needed for tools or indexes."

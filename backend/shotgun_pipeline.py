@@ -313,10 +313,12 @@ def main(argv=None):
         except Exception as e:
             log(f"[warn] db_paths.json unreadable: {e}")
     mm2 = tool("minimap2")
-    amr_db = amr_cat = None
+    amr_db = amr_cat = amr_bin = None
     if not a.no_amr:
-        amrf = tool("amrfinder")
-        amr_db = AMR.find_db(dbp, conda_bases(), amrf[0] if amrf else None)
+        amr_db, amr_bin = AMR.find_install(dbp, conda_bases())
+        if amr_bin:
+            p = subprocess.run([amr_bin, "--version"], capture_output=True, text=True)
+            vers["amrfinder"] = (p.stdout or p.stderr).strip().splitlines()[-1] if (p.stdout or p.stderr) else "?"
         if not mm2 or not amr_db:
             log("[warn] resistome skipped — " + ("minimap2 not found" if not mm2 else
                 "AMRFinderPlus database not found (installed by setup_wgs.sh; or set "
@@ -601,7 +603,8 @@ def main(argv=None):
         try:
             mag_info = MAG.run_all(samples=names, qc=qc_reads, platform=a.platform, out=out,
                                    threads=a.threads, dbp=dbp, kraken=(k2, db, a.memory_mapping),
-                                   amr_db=amr_db, min_contig=a.mag_min_contig, polish=a.mag_polish, tool=tool, run=run,
+                                   amr_db=amr_db, amr_bin=amr_bin, min_contig=a.mag_min_contig, polish=a.mag_polish,
+                                   tool=tool, run=run,
                                    log=log, progress=progress, conda_bases=conda_bases())
         except Exception as e:                     # MAGs are an extra: never fail the profile
             import traceback
