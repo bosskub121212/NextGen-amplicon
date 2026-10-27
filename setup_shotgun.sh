@@ -206,7 +206,12 @@ if [[ $AMR == 1 ]]; then
       || { bad "conda env ngamp-amr failed"; exit 1; }
     ok "env ngamp-amr created"
   fi
-  PATH="$AB:$PATH" "$AB/amrfinder" -u || { bad "database download failed — re-run: setup_shotgun.sh --amr"; exit 1; }
+  # into the env's own share folder: `amrfinder -u` would follow $CONDA_PREFIX, which is the
+  # base env when this runs from (base), and put the database outside ngamp-amr
+  ADB="$BASE/envs/ngamp-amr/share/amrfinderplus/data"
+  mkdir -p "$ADB"
+  PATH="$AB:$PATH" CONDA_PREFIX="$BASE/envs/ngamp-amr" "$AB/amrfinder_update" -d "$ADB" \
+    || { bad "database download failed — re-run: setup_shotgun.sh --amr"; exit 1; }
   ok "database $(cat "$BASE"/envs/ngamp-amr/share/amrfinderplus/data/latest/version.txt 2>/dev/null)"
 fi
 echo ""

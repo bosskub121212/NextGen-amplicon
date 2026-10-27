@@ -316,6 +316,8 @@ def main():
               "/wgs/typestrains", "tsBanner", "wgDirIn", "shotgunSpec", "sg_kraken_db", "sg_amr", "sg_mags", "f_sg_k2sel"):
         check(f"console offers {k}", k in page)
     main_src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+    check("viz_pipeline.R runs after shotgun runs (chart editor tables)",
+          '"pacbio", "shotgun")) \\' in main_src, "")
     check("GET /databases lists the Kraken 2 indexes for the shotgun picker",
           "def _kraken2_indexes" in main_src and '"kraken2_indexes"' in main_src)
     check("console served at /, old UI at /classic", '@app.get("/classic"' in main_src

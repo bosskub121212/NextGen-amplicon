@@ -1675,8 +1675,11 @@ def run_r_pipeline(job_id: str, params: RunParams):
           _viz_script = R_SCRIPTS_DIR / "viz_pipeline.R"
           # ITS, COX1 and PacBio write the same table layout as DADA2 from
           # v2.17, so they get the same statistics and chart tables (they used
-          # to stop at alpha diversity).
-          if proc.returncode == 0 and (_ran_dada2 or _pipe_kind in ("its", "cox1", "pacbio")) \
+          # to stop at alpha diversity). Shotgun writes Emu's layout (asv_table.csv
+          # keyed by taxid + taxonomy.csv), which viz_pipeline.R reads in its Emu
+          # mode; without this the chart editor of a shotgun run had read
+          # tracking and nothing else. (Emu runs it inside emu_pipeline.py.)
+          if proc.returncode == 0 and (_ran_dada2 or _pipe_kind in ("its", "cox1", "pacbio", "shotgun")) \
                   and _viz_script.exists():
               try:
                   with jobs_lock:

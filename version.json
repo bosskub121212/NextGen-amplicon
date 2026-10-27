@@ -1,10 +1,10 @@
 {
-  "version": "2.20.9",
+  "version": "2.20.11",
   "release_date": "2026-10-27",
-  "changelog": "Shotgun resistome and MAG AMR can use AMRFinderPlus 4.2 with the current database (2026-08-07.1, 9,786 genes, was 8,342 in 2024-07-22.1). It goes into its own env: bash ~/r16s-app/setup_shotgun.sh --amr (env ngamp-amr); the WGS pipeline keeps AMRFinderPlus 3.12 and its database unchanged. The 4.x database files are read (fam.tsv, AMR_CDS.fa, shorter sequence headers) as well as the old ones, and the amrfinder that goes with the chosen database is the one used. Reads are now pooled per gene symbol, so point-mutation variants the 4.x catalogue lists separately (mecA-ceftar) count as their gene instead of a second row. Tested with AMRFinderPlus 4.2.7 and the 2026-08-07.1 database on simulated Illumina and Nanopore reads. No backend restart needed.",
+  "changelog": "Shotgun: the chart editor showed only read tracking, because the chart tables (r_tables/: taxonomy per rank, heatmaps, alpha diversity, rarefaction…) were never built for shotgun runs — viz_pipeline.R ran after DADA2, ITS, COX1 and PacBio only (Emu runs it itself). Shotgun results are in Emu's layout, which the script already reads; it now runs after every shotgun run. Checked on a real run on nextapp before release. Older shotgun runs: re-analyse, or run viz_pipeline.R on the folder once. Backend restart required.",
   "previous": {
-    "version": "2.20.8",
+    "version": "2.20.10",
     "release_date": "2026-10-27",
-    "changelog": "Shotgun: clearer names in the Kraken 2 index list (\"PlusPF-16 — Standard + fungi and protozoa · built 2026-06-26 · default\"), the default index listed first, then Standard. Checked in the running console: picking an index, Custom path… and back post the right folder. deploy_dev.sh printed the runtime version twice (it also read the 'previous' entry). No backend restart needed."
+    "changelog": "setup_shotgun.sh --amr put the AMRFinderPlus 4.2 database in the base conda env's share folder (amrfinder -u follows $CONDA_PREFIX, which is base when the script runs from (base)), so the shotgun pipeline did not find it and kept using the 2024 database. The database now goes into envs/ngamp-amr. No backend restart needed."
   }
 }
