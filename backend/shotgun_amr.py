@@ -107,8 +107,8 @@ def load_catalog(d: Path) -> dict:
                 continue
             v = line.rstrip("\n").split("\t")
             if len(v) >= 18:
-                fam[v[0]] = {"parent": v[1], "symbol": v[2], "type": v[13], "subtype": v[14], "class": v[15],
-                             "subclass": v[16], "family_name": v[17]}
+                fam[v[0]] = {"parent": v[1], "symbol": v[2], "reportable": v[12], "type": v[13],
+                             "subtype": v[14], "class": v[15], "subclass": v[16], "family_name": v[17]}
     cat, cur, n = {}, None, 0
     with open(_cds_file(d)) as fh:
         for line in fh:
@@ -129,6 +129,9 @@ def load_catalog(d: Path) -> dict:
                 while info and not info.get("type") and hops < 5:
                     k = info.get("parent", "")
                     info, hops = fam.get(k, {}), hops + 1
+                if fam.get(node, {}).get("reportable") == "0":
+                    cur = None    # NCBI: not to be reported (e.g. aac(6')-Iaa of Salmonella)
+                    continue
                 sym = fam.get(node, {}).get("symbol") or node
                 cat[sid] = {"allele": allele, "family": node, "symbol": re.sub(r"_gen$", "", sym),
                             "type": info.get("type", ""),
@@ -276,20 +279,25 @@ def assign_hosts(rows: list[dict], reads: dict, read_tax: dict, tree: dict) -> N
     for r in rows:
         ids = reads.get(r.get("family_id", r["gene"]), set())
         gen, spc = Counter(), Counter()
+        n_cls = 0                         # reads Kraken 2 classified at any rank
         for rid in ids:
             t = read_tax.get(rid, 0)
             if not t:
                 continue
+            n_cls += 1
             g = _up_to(tree, t, "G")
             if g:
                 gen[g] += 1
                 s = _up_to(tree, t, "S")
                 if s:
                     spc[s] += 1
-        n = sum(gen.values())
+        # the share is of every classified read, not only of those named to genus:
+        # reads of a mobile gene that Kraken 2 can only place at family level or
+        # above are evidence that the gene is shared, and used to vanish from it
+        n = n_cls
         r["host_reads"] = n
-        if not n:
-            r["host_taxon"], r["host_share"] = "", ""
+        if not sum(gen.values()):
+            r["host_taxon"], r["host_share"], r["host_status"] = "", "", ""
             continue
         g, gc = gen.most_common(1)[0]
         name = g
@@ -300,10 +308,12 @@ def assign_hosts(rows: list[dict], reads: dict, read_tax: dict, tree: dict) -> N
                 name = s
         r["host_taxon"] = name
         r["host_share"] = round(100 * gc / n, 1)
+        r["host_status"] = "clear" if gc >= 0.6 * n else "mixed"
 
 
 COLS = ["sample", "gene", "family_id", "allele", "type", "subtype", "class", "subclass", "product", "length",
-        "reads", "breadth", "depth", "rpkm", "identity", "host_taxon", "host_share", "host_reads"]
+        "reads", "breadth", "depth", "rpkm", "identity", "host_taxon", "host_share", "host_reads",
+        "host_status"]
 
 
 def write_tables(out: Path, per_sample: dict[str, list[dict]]) -> int:

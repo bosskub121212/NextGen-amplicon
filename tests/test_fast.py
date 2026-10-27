@@ -282,6 +282,17 @@ def main():
               "ngamp-amr" in str(idb) and ibin.endswith("ngamp-amr/bin/amrfinder")
               and r4.get("allele") == "blaTEM-1" and r4.get("family") == "blaTEM"
               and r4.get("class") == "BETA-LACTAM" and r4.get("length") == 1000, (idb, ibin, r4))
+        mixed = [dict(rows[0])]
+        SA.assign_hosts(mixed, reads, {**{f"r{i}": 1423 for i in range(4)}, **{f"r{i}": 2 for i in range(4, 8)}}, tree)
+        check("shotgun resistome: host share counts reads placed above genus; < 60 % = mixed",
+              mixed[0]["host_share"] == 50.0 and mixed[0]["host_status"] == "mixed"
+              and rows[0]["host_status"] == "clear", (mixed, rows))
+        rdb = Path(td) / "amrdb_rep"
+        rdb.mkdir()
+        (rdb / "fam.tsv").write_text((adb / "fam.tab").read_text().replace("\t2\tAMR\tAMR", "\t0\tAMR\tAMR"))
+        (rdb / "AMR_CDS.fa").write_text((adb / "AMR_CDS").read_text())
+        check("shotgun resistome: genes NCBI marks not reportable are left out",
+              SA.load_catalog(rdb) == {} and len(SA.load_catalog(adb)) == 2)
         SA.write_tables(d, {"s1": rows, "s2": [], "s3": rows})
         sj = json.loads((d / "summary.json").read_text())
         sj["amr"] = {"db_version": "test", "min_identity": 90, "min_breadth": 60, "gene_families": 1,
@@ -299,6 +310,9 @@ def main():
           [(g, sorted(c)) for g, c in parts] == [("Salmonella", ["c0", "c1", "c2", "c6", "c7"]),
                                                  ("Escherichia", ["c3", "c4", "c5"])]
           and SM.split_by_genus(["c0", "c1"], lens, ctax) == [], parts)
+    check("shotgun MAGs: split variant that leaves unnamed contigs out",
+          [(g, sorted(c)) for g, c in SM.split_by_genus(list(lens), lens, ctax, orphans="drop")]
+          == [("Salmonella", ["c0", "c1", "c2"]), ("Escherichia", ["c3", "c4", "c5"])])
     check("shotgun MAGs: species of a bin for joining fragments",
           SM.bin_species(["c0", "c1"], lens, {"c0": ("Escherichia", "Escherichia coli"),
                                               "c1": ("Escherichia", "Escherichia coli")}) == "Escherichia coli"

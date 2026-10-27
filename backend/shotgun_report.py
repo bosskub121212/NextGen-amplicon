@@ -72,6 +72,18 @@ def _short(name: str) -> str:
     return f"{p[0][0]}. {' '.join(p[1:])}" if len(p) >= 2 and p[0][:1].isupper() else name or ""
 
 
+def _host(r: dict, share: bool = True) -> str:
+    """Likely-host cell: the organism, or 'mixed' when under 60 % of the gene's
+    classified reads agree (mobile genes shared by several species)."""
+    if not r.get("host_taxon"):
+        return '<span class="dim">unresolved</span>'
+    name = f"<i>{RB.esc(_short(r['host_taxon']))}</i>"
+    pct = f" {_f(r.get('host_share'), 0)}%" if share and r.get("host_share") not in ("", None) else ""
+    if r.get("host_status") == "mixed":
+        return f'<span class="dim">mixed (top: {name}{pct})</span>'
+    return name + pct
+
+
 def _shade(v: float, vmax: float) -> str:
     """Cell background for a gene x sample RPKM matrix (log-ish ramp)."""
     if v <= 0 or vmax <= 0:
@@ -143,13 +155,13 @@ def _resistome(run, sm, S, T, F) -> tuple[list[str], list[str]]:
                        RB.esc((r.get("subclass") or r.get("class") or "").title()),
                        RB.fmt(r.get("reads")), f"{_f(r.get('breadth'), 0)}%", f"{_f(r.get('identity'), 1)}%",
                        _f(r.get("rpkm"), 1),
-                       (f"<i>{RB.esc(_short(r['host_taxon']))}</i> {_f(r.get('host_share'), 0)}%"
-                        if r.get("host_taxon") else '<span class="dim">unresolved</span>')]
+                       _host(r)]
                       for r in det[:lim]],
                      "AMR genes in the reads (allele in brackets when one matched best). <i>Gene "
                      "covered</i>: share of the gene's length covered by reads; <i>likely host</i>: the "
                      "organism Kraken 2 assigns to most of the reads carrying the gene, with the share of "
-                     "those reads." + (f" First {lim} rows; all in amr_genes.csv."
+                     "those reads; <i>mixed</i> when fewer than 60% agree, typical of mobile genes."
+                     + (f" First {lim} rows; all in amr_genes.csv."
                                                            if len(det) > lim else "")))
     if other:
         lim = 40
@@ -159,8 +171,7 @@ def _resistome(run, sm, S, T, F) -> tuple[list[str], list[str]]:
                      [[RB.esc(r["sample"]), f"<i>{RB.esc(r['gene'])}</i>", RB.esc(r.get("type", "").title()),
                        f'<span class="dim">{RB.esc(r.get("product", ""))}</span>', RB.fmt(r.get("reads")),
                        _f(r.get("rpkm"), 1),
-                       f"<i>{RB.esc(_short(r['host_taxon']))}</i>" if r.get("host_taxon") else
-                       '<span class="dim">unresolved</span>'] for r in o[:lim]],
+                       _host(r, share=False)] for r in o[:lim]],
                      "Stress-response and virulence genes from the same catalogue (AMRFinderPlus "
                      "&ldquo;plus&rdquo; genes)." + (f" First {lim} rows; all in amr_genes.csv."
                                                     if len(o) > lim else "")))

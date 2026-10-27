@@ -165,9 +165,10 @@ def bin_species(contigs: list[str], lens: dict, ctax: dict) -> str:
 
 
 def split_by_genus(contigs: list[str], lens: dict, ctax: dict, min_bp: int = 300_000,
-                   min_share: float = 0.15) -> list[tuple[str, list[str]]]:
+                   min_share: float = 0.15, orphans: str = "largest") -> list[tuple[str, list[str]]]:
     """[(genus, contigs)] when a bin's contigs fall into two or more genera that each hold
-    >= min_bp and >= min_share of the bin; contigs of no / other genera join the largest."""
+    >= min_bp and >= min_share of the bin. Contigs of no / other genera join the largest
+    part (orphans="largest") or are left out of every part (orphans="drop")."""
     tot = sum(lens.get(c, 0) for c in contigs) or 1
     gbp = defaultdict(int)
     for c in contigs:
@@ -179,7 +180,10 @@ def split_by_genus(contigs: list[str], lens: dict, ctax: dict, min_bp: int = 300
     parts = {g: [] for g in big}
     for c in contigs:
         g = ctax.get(c, ("",))[0]
-        parts[g if g in parts else big[0]].append(c)
+        if g in parts:
+            parts[g].append(c)
+        elif orphans == "largest":
+            parts[big[0]].append(c)
     return [(g, parts[g]) for g in big]
 
 
@@ -390,9 +394,13 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             comp, cont = ck.get(b, (None, None))
             if cont is None or cont <= 10:
                 continue
-            parts = split_by_genus(cs, lens, ctax)
-            if len(parts) >= 2:
-                cands[b] = parts
+            # two ways to place the contigs Kraken 2 could not name to a genus: with
+            # the largest part, or nowhere (Zymo: Salmonella kept 20 % E. coli from
+            # Enterobacteriaceae contigs it was handed). CheckM2 picks.
+            v1 = split_by_genus(cs, lens, ctax)
+            if len(v1) >= 2:
+                v2 = split_by_genus(cs, lens, ctax, orphans="drop")
+                cands[b] = {"": v1} if v2 == v1 else {"": v1, "_d": v2}
         if cands:
             step(f"splitting {len(cands)} mixed bin(s) by contig taxonomy")
             sd_ = wd / "split_try"
@@ -401,41 +409,54 @@ def one_sample(s: str, r1: Path, r2: Path | None, platform: str, wd: Path, md: P
             seqs = {}
             for b in cands:
                 seqs.update(dict(read_fasta(bins_dir / (b[len(s) + 1:] + ".fa"))))
-            for b, parts in cands.items():
+            for b, variants in cands.items():
                 stem = b[len(s) + 1:]
-                for i, (g, cs) in enumerate(parts):
-                    with open(sd_ / f"{stem}{chr(97 + i)}.fa", "w") as fh:
-                        for c in cs:
-                            fh.write(f">{c}\n{seqs[c]}\n")
+                for suf, parts in variants.items():
+                    for i, (g, cs) in enumerate(parts):
+                        with open(sd_ / f"{stem}{chr(97 + i)}{suf}.fa", "w") as fh:
+                            for c in cs:
+                                fh.write(f">{c}\n{seqs[c]}\n")
             ck2 = checkm2(T["checkm2"], sd_, wd / "checkm2_split", threads, dbs["checkm2_db"], s, run, logs)
             score = lambda cc: max(0.0, cc[0] - 5 * cc[1]) if cc else 0.0
             keep = []
-            for b, parts in cands.items():
+            for b, variants in cands.items():
                 stem = b[len(s) + 1:]
-                names = [f"{s}.{stem}{chr(97 + i)}" for i in range(len(parts))]
-                if all(n in ck2 for n in names) and sum(score(ck2[n]) for n in names) > score(ck[b]):
-                    keep.append((b, stem, names, parts))
+                best = None
+                for suf, parts in variants.items():
+                    names = [f"{s}.{stem}{chr(97 + i)}{suf}" for i in range(len(parts))]
+                    if not all(n in ck2 for n in names):
+                        continue
+                    sc = sum(score(ck2[n]) for n in names)
+                    if sc > score(ck[b]) and (best is None or sc > best[0]):
+                        best = (sc, suf, names, parts)
+                if best:
+                    keep.append((b, stem) + best[1:])
             if keep:
                 (wd / "bins_unsplit").mkdir(exist_ok=True)
-            for b, stem, names, parts in keep:
+            split_ck = {}
+            for b, stem, suf, names, parts in keep:
                 shutil.move(str(bins_dir / f"{stem}.fa"), str(wd / "bins_unsplit" / f"{stem}.fa"))
                 del bins[b]
                 ck.pop(b, None)
-                for n, (g, cs) in zip(names, parts):
-                    shutil.move(str(sd_ / f"{n[len(s) + 1:]}.fa"), str(bins_dir / f"{n[len(s) + 1:]}.fa"))
-                    bins[n] = cs
-                    ck[n] = ck2[n]
-                    refined[n] = stem
+                for i, (n, (g, cs)) in enumerate(zip(names, parts)):
+                    final = f"{s}.{stem}{chr(97 + i)}"
+                    shutil.move(str(sd_ / f"{n[len(s) + 1:]}.fa"), str(bins_dir / f"{final[len(s) + 1:]}.fa"))
+                    bins[final] = cs
+                    ck[final] = split_ck[final] = ck2[n]
+                    refined[final] = stem
                 log(f"[{s}] MAGs: {stem} held {len(parts)} organisms "
-                    f"({', '.join(g for g, _ in parts)}) — split by contig taxonomy")
+                    f"({', '.join(g for g, _ in parts)}) — split by contig taxonomy"
+                    + (", contigs of no genus left unbinned" if suf else ""))
+            (wd / "split.json").write_text(json.dumps(split_ck))
             shutil.rmtree(sd_, ignore_errors=True)
     elif (wd / "bins_unsplit").exists():           # split in an earlier run of this folder
         for f in bins_dir.glob("bin.*[a-z].fa"):
             if not f.stem.endswith("m"):
                 refined[f"{s}.{f.stem}"] = re.sub(r"[a-z]$", "", f.stem)
-        if can_ck:
-            ck.update(checkm2(T["checkm2"], wd / "split_try", wd / "checkm2_split", threads,
-                              dbs["checkm2_db"], s, run, logs))
+        try:
+            ck.update({k: tuple(v) for k, v in json.loads((wd / "split.json").read_text()).items()})
+        except Exception:
+            pass
 
     # 6b. ... and join bins that are pieces of one genome: same Kraken 2 species, similar
     #     depth (within 1.5x, so two strains at different abundance stay apart), kept

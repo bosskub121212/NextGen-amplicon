@@ -1,10 +1,10 @@
 {
-  "version": "2.20.11",
+  "version": "2.21.0",
   "release_date": "2026-10-27",
-  "changelog": "Shotgun: the chart editor showed only read tracking, because the chart tables (r_tables/: taxonomy per rank, heatmaps, alpha diversity, rarefaction…) were never built for shotgun runs — viz_pipeline.R ran after DADA2, ITS, COX1 and PacBio only (Emu runs it itself). Shotgun results are in Emu's layout, which the script already reads; it now runs after every shotgun run. Checked on a real run on nextapp before release. Older shotgun runs: re-analyse, or run viz_pipeline.R on the folder once. Backend restart required.",
+  "changelog": "Shotgun. (1) Medaka polishing of Nanopore MAG contigs is now on by default — measured on nextapp: 2 minutes, 4 GB of RAM, 169 of 170 Zymo contigs polished; B. subtilis 55 → 68 % and P. aeruginosa 30 → 54 % complete. (2) MAG split: contigs Kraken 2 cannot name to a genus can now also be left out of both parts; CheckM2 picks whichever placement scores better (for the Zymo Salmonella / E. coli bin that left 20 % contamination). (3) Resistome likely host: the share is now of every classified read carrying the gene, and the report says 'mixed' when fewer than 60 % agree — mobile genes no longer show a confident '100 %' from the few reads Kraken 2 could name. (4) Genes the AMRFinderPlus catalogue marks not reportable are left out. Backend restart required.",
   "previous": {
-    "version": "2.20.10",
+    "version": "2.20.11",
     "release_date": "2026-10-27",
-    "changelog": "setup_shotgun.sh --amr put the AMRFinderPlus 4.2 database in the base conda env's share folder (amrfinder -u follows $CONDA_PREFIX, which is base when the script runs from (base)), so the shotgun pipeline did not find it and kept using the 2024 database. The database now goes into envs/ngamp-amr. No backend restart needed."
+    "changelog": "Shotgun: the chart editor showed only read tracking, because the chart tables (r_tables/: taxonomy per rank, heatmaps, alpha diversity, rarefaction…) were never built for shotgun runs — viz_pipeline.R ran after DADA2, ITS, COX1 and PacBio only (Emu runs it itself). Shotgun results are in Emu's layout, which the script already reads; it now runs after every shotgun run. Checked on a real run on nextapp before release. Older shotgun runs: re-analyse, or run viz_pipeline.R on the folder once. Backend restart required."
   }
 }

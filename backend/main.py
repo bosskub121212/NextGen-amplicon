@@ -266,7 +266,7 @@ class RunParams(BaseModel):
     sg_min_abundance:   float = 0.01      # % — species below this in every sample are left out of the tables
     sg_amr:             bool  = True      # resistome: reads vs the AMRFinderPlus gene catalogue
     sg_mags:            bool  = False     # assembly + binning (MEGAHIT / metaFlye, MetaBAT 2, CheckM2) — slow
-    sg_mag_polish:      bool  = False     # Nanopore MAGs: Medaka on the contigs (took WSL down at 8 threads)
+    sg_mag_polish:      bool  = True      # Nanopore MAGs: Medaka on the contigs (4 threads, ~4 GB; tested on nextapp)
 
 class WorkerConfig(BaseModel):
     max_workers: int = 2

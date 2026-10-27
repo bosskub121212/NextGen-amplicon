@@ -6106,8 +6106,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
        fields:[
         ["sg_amr", "AMR genes in reads", "bool", "true",
          "reads vs the AMRFinderPlus gene catalogue (installed with the WGS tools), with the organism carrying each gene"],
-        ["sg_mag_polish", "Nanopore: polish contigs (Medaka)", "bool", "false",
-         "better gene calls and CheckM2 scores for older (R9) data; slow and needs a lot of memory — leave off for R10 / SUP reads"],
+        ["sg_mag_polish", "Nanopore: polish contigs (Medaka)", "bool", "true",
+         "fixes small indels in the contigs before binning: better gene calls and CheckM2 scores (Zymo R9: B. subtilis 55 → 68 % complete); a few minutes, about 4 GB of RAM. Ignored for Illumina"],
         ["sg_mags", "Genome bins (MAGs)", "bool", "false",
          "MEGAHIT (Illumina) or metaFlye (Nanopore) + MetaBAT 2 + CheckM2; needs setup_shotgun.sh --mags. Slow"]]},
       {n:5, title:"Controls and differential abundance",
