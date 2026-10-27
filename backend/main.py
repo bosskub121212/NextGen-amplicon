@@ -2394,7 +2394,38 @@ def get_databases():
             result["available"] = [k for k, v in db_paths.items() if v and Path(v).exists()]
         except Exception as e:
             result["error"] = str(e)
+    result["kraken2_indexes"] = _kraken2_indexes(db_dir, (result.get("databases") or {}).get("kraken2_db", ""))
     return result
+
+
+def _kraken2_indexes(db_dir: Path, default: str) -> list:
+    """Kraken 2 indexes for the shotgun form's picker: every folder with a hash.k2d
+    under databases/kraken2/, plus the registered default if it lives elsewhere."""
+    import re as _re
+    folders = sorted({p.parent for p in (db_dir / "kraken2").glob("*/hash.k2d")}, key=lambda p: p.name)
+    if default and (Path(default) / "hash.k2d").exists() and Path(default) not in folders:
+        folders.append(Path(default))
+    kinds = {"standard": "Standard", "pluspfp": "PlusPFP", "pluspf": "PlusPF", "viral": "Viral",
+             "minusb": "MinusB", "eupathdb": "EuPathDB", "gtdb": "GTDB", "nt": "nt"}
+    out = []
+    for f in folders:
+        n = f.name.lower()
+        kind = next((v for k, v in kinds.items() if n.startswith("k2_" + k) or n.startswith(k)), f.name)
+        cap = _re.search(r"_(\d+)_?gb", n)
+        date = _re.search(r"(20\d{6})", n)
+        try:
+            gb = (f / "hash.k2d").stat().st_size / 1e9
+        except OSError:
+            gb = 0
+        out.append({
+            "path": str(f), "name": f.name, "kind": kind,
+            "cap_gb": int(cap.group(1)) if cap else None,
+            "date": f"{date.group(1)[:4]}-{date.group(1)[4:6]}-{date.group(1)[6:]}" if date else "",
+            "hash_gb": round(gb, 1),
+            "bracken": len(list(f.glob("database*mers.kmer_distrib"))),
+            "default": str(f) == default,
+        })
+    return out
 
 # -- 9b2. Database file browser -----------------------------------------------
 @app.get("/databases/browse")

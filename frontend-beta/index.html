@@ -6091,7 +6091,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       {n:3, title:"Kraken 2 + Bracken",
        why:"Kraken 2 names every read from its k-mers; Bracken then re-estimates reads per species, which is what the tables and figures use.",
        fields:[
-        ["sg_kraken_db", "Kraken 2 index", "path", k2, k2 ? "folder with hash.k2d — set by setup_shotgun.sh"
+        ["sg_kraken_db", "Kraken 2 index", "k2", k2, k2 ? "folder with hash.k2d — set by setup_shotgun.sh"
                                                         : "not installed yet: bash ~/r16s-app/setup_shotgun.sh"],
         ["sg_confidence", "Confidence threshold", "num", "0", "keep 0 (Kraken 2 default): 0.05–0.1 dropped whole species in the mock test with the 16 GB index and with Nanopore reads"],
         ["sg_bracken_level", "Abundance level", "select", "S", [["S", "species"], ["G", "genus"]]],
@@ -6180,6 +6180,31 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + 'placeholder="full path, e.g. /home/you/r16s-app/backend/databases/SILVA/silva_nr99_v144_toGenus_trainset.fa.gz"></div>'
         + '<div class="dbnote" id="dbNote"></div>';
       hint = "";
+    } else if(kind === "k2"){
+      /* Kraken 2 index picker: the indexes GET /databases found under
+         databases/kraken2/ (setup_shotgun.sh puts them there), then a custom
+         path. The text box below is what gets posted; the dropdown fills it. */
+      wide = true;
+      var ix = (STATE.databases || {}).kraken2_indexes || [];
+      var known = ix.some(function(o){ return o.path === def; });
+      var lab = function(o){
+        var what = { Standard: "bacteria, archaea, viruses, human",
+                     PlusPF: "+ protozoa and fungi", PlusPFP: "+ protozoa, fungi and plants",
+                     Viral: "viruses only" }[o.kind] || "";
+        return o.kind + (o.cap_gb ? "-" + o.cap_gb + " GB" : "") + (o.date ? " · " + o.date : "")
+          + (what ? " — " + what : "") + (o.default ? " (default)" : "")
+          + (o.bracken ? "" : " — no Bracken files");
+      };
+      ctl = '<select id="f_sg_k2sel">'
+        + (ix.length ? ix.map(function(o){
+            return '<option value="' + esc(o.path) + '"' + (o.path === def ? " selected" : "") + '>'
+              + esc(lab(o)) + '</option>'; }).join("")
+          : '<option value="">— no Kraken 2 index found: bash ~/r16s-app/setup_shotgun.sh —</option>')
+        + '<option value="__custom__"' + (def && !known ? " selected" : "") + '>Custom path…</option></select>'
+        + '<div class="pathrow" id="k2CustomRow"' + (def && !known ? "" : " hidden") + ' style="margin-top:6px">'
+        + '<input type="text" class="mono" id="' + id + '" data-k="' + esc(key) + '" value="' + esc(def) + '" '
+        + 'placeholder="folder with hash.k2d, e.g. /home/you/r16s-app/backend/databases/kraken2/k2_pluspf_16_GB_20260626"></div>';
+      hint = "Standard-16 is the 16 GB Standard index; PlusPF adds fungi and protozoa (yeasts, moulds). Both need about 16 GB of RAM.";
     } else if(kind === "path"){
       wide = true;
       ctl = '<input type="text" class="mono" id="' + id + '" data-k="' + esc(key) + '" '
@@ -6550,6 +6575,18 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(dbSel){ dbSel.addEventListener("change", dbSync); dbSync(); }
     var k2in = document.getElementById("f_sg_kraken_db");
     if(k2in) k2in.addEventListener("input", function(){ preflight(dbOpts, dbCount); });
+    var k2sel = document.getElementById("f_sg_k2sel");
+    if(k2sel && k2in){
+      var k2sync = function(){
+        var custom = k2sel.value === "__custom__";
+        document.getElementById("k2CustomRow").hidden = !custom;
+        if(!custom) k2in.value = k2sel.value;
+        else if(!k2in.value) k2in.focus();
+        preflight(dbOpts, dbCount);
+      };
+      k2sel.addEventListener("change", k2sync);
+      if(k2sel.value !== "__custom__") k2in.value = k2sel.value;
+    }
 
     var ab = document.getElementById("advBtn"), abody = document.getElementById("advBody");
     ab.addEventListener("click", function(){

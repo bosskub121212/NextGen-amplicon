@@ -1,10 +1,10 @@
 {
-  "version": "2.20.6",
-  "release_date": "2026-10-23",
-  "changelog": "Shotgun MAGs, Nanopore: Medaka polishing is now an option in step 4 (off by default) and runs at 4 threads. At 8 threads, polishing the Zymo Nanopore assembly took the whole WSL down on nextapp (28 GB) and the running job with it. For R10 / SUP reads Flye's own consensus is usually enough; turn it on for older R9 data, where unpolished contigs make CheckM2 understate completeness.",
+  "version": "2.20.7",
+  "release_date": "2026-10-27",
+  "changelog": "Shotgun: the Kraken 2 index is now picked from a list (step 3), like the reference database of the amplicon pipelines — every index setup_shotgun.sh installed under databases/kraken2/ (Standard-16, PlusPF-16 with fungi and protozoa, …) with its build date, plus a custom path. The registered default is preselected. Backend restart required.",
   "previous": {
-    "version": "2.20.5",
+    "version": "2.20.6",
     "release_date": "2026-10-23",
-    "changelog": "Shotgun MAGs: 2.20.4 stopped at the end of the MAG step (\"'PosixPath' object has no attribute 'get'\") whenever the GTDB database was installed — the GTDB step reused the name of the joined-bins table. Fixed, and the whole MAG step (split, join, GTDB, AMRFinderPlus, bin table) is now run end to end with stand-in tools before release. The profile and resistome were never affected."
+    "changelog": "Shotgun MAGs, Nanopore: Medaka polishing is now an option in step 4 (off by default) and runs at 4 threads. At 8 threads, polishing the Zymo Nanopore assembly took the whole WSL down on nextapp (28 GB) and the running job with it. For R10 / SUP reads Flye's own consensus is usually enough; turn it on for older R9 data, where unpolished contigs make CheckM2 understate completeness."
   }
 }
