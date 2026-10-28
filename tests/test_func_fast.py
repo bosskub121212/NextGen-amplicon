@@ -88,6 +88,10 @@ def t_find_install_missing(tmp: Path):
 
 def t_setup_script():
     s = (ROOT / "setup_shotgun.sh").read_text()
+    check("setup_shotgun.sh: python pinned to the build bioconda ships for humann 3.9 (py312)",
+          "python=3.12 humann=3.9" in s and "python=3.10 humann" not in s)
+    check("setup_shotgun.sh: env checked by importing humann, not only by the binary",
+          'import humann, metaphlan' in s)
     for pin in ("humann=3.9", "metaphlan=4.1.1", "mpa_vJun23_CHOCOPhlAnSGB_202307",
                 "uniref90_diamond", "ngamp-func", "--func-db-dir", "humann_db"):
         check(f"setup_shotgun.sh has {pin}", pin in s)

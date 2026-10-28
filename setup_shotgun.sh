@@ -244,13 +244,23 @@ fi
 if [[ $FUNC == 1 ]]; then
   step "HUMAnN 3.9 + MetaPhlAn 4.1.1 (env ngamp-func)"
   FB="$BASE/envs/ngamp-func/bin"
-  if [[ -x "$FB/humann" && -x "$FB/metaphlan" ]]; then
+  # an env whose python cannot import humann is broken, whatever bin/ holds: with python
+  # pinned to 3.10 conda put bioconda's humann 3.9 (built for py312 only) in a site-packages
+  # the env's python never reads — "ModuleNotFoundError: No module named 'humann'"
+  func_ok(){ [[ -x "$FB/humann" && -x "$FB/metaphlan" ]] && "$FB/python" -c "import humann, metaphlan" 2>/dev/null; }
+  if func_ok; then
     ok "already installed"
   else
+    if [[ -d "$BASE/envs/ngamp-func" ]]; then
+      warn "env ngamp-func is broken (python cannot import humann) — creating it again"
+      $CONDA env remove -y -n ngamp-func >/dev/null 2>&1 || rm -rf "$BASE/envs/ngamp-func"
+    fi
     # pinned: HUMAnN 3.9 works only with MetaPhlAn 4.1.1 and the vJun23 database
-    # ("metaphlan=4.1" resolves to 4.1.2, which does not)
-    $CONDA create -y -n ngamp-func -c conda-forge -c bioconda python=3.10 humann=3.9 metaphlan=4.1.1 \
+    # ("metaphlan=4.1" resolves to 4.1.2, which does not); python 3.12 because bioconda
+    # builds humann 3.9 for py312 only
+    $CONDA create -y -n ngamp-func -c conda-forge -c bioconda python=3.12 humann=3.9 metaphlan=4.1.1 \
       || { bad "conda env ngamp-func failed"; exit 1; }
+    func_ok || { bad "env ngamp-func created but python cannot import humann / metaphlan"; exit 1; }
     ok "env ngamp-func created"
   fi
   "$FB/humann" --version 2>&1 | head -1
