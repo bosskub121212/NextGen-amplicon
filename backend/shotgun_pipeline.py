@@ -19,7 +19,11 @@ Per sample:
   5. resistome          (on by default) reads aligned with minimap2 to the
                         AMRFinderPlus gene catalogue; the organism carrying
                         each gene from Kraken2's per-read calls (shotgun_amr.py)
-  6. MAGs               (opt-in) assembly, binning, CheckM2, taxonomy and AMR
+  6. function           (opt-in) MetaPhlAn 4.1.1 + HUMAnN 3.9 against full UniRef90:
+                        MetaCyc pathways, KEGG KO, EC, gene panels and the genera
+                        carrying them (shotgun_func.py); needs ~25 GB RAM, so the
+                        backend runs such a job alone
+  7. MAGs               (opt-in) assembly, binning, CheckM2, taxonomy and AMR
                         per genome bin (shotgun_mags.py)
 Output — the layout the report, diversity, MaAsLin 3 and Controls already read:
   asv_table.csv   one row per species (id = NCBI taxid), estimated reads per sample
@@ -272,6 +276,11 @@ def main(argv=None):
                     help="%% identity of a read to an AMR gene (default 90 Illumina, 85 Nanopore)")
     ap.add_argument("--amr_min_breadth", type=float, default=60,
                     help="%% of a gene's length the reads must cover for it to be called present")
+    ap.add_argument("--func", action="store_true",
+                    help="function profiles with MetaPhlAn + HUMAnN (opt-in, ~25 GB RAM, hours per sample)")
+    ap.add_argument("--func_panels", default="gut,food,environment",
+                    help="gene panels to report (data/function_panels.tsv): any of gut,food,environment")
+    ap.add_argument("--metadata", default="", help="metadata.csv (sample groups for PERMANOVA)")
     ap.add_argument("--mags", action="store_true", help="assemble and bin genomes (slow, opt-in)")
     ap.add_argument("--mag_min_contig", type=int, default=1500)
     ap.add_argument("--mag_polish", action="store_true",
@@ -596,6 +605,25 @@ def main(argv=None):
         log(f"resistome: {amr_info['amr_families']} AMR gene famil"
             f"{'y' if amr_info['amr_families'] == 1 else 'ies'} across {len(names)} sample(s) — "
             "amr_genes.csv / amr_rpkm.csv written")
+    func_info = {}
+    if a.func:
+        import shotgun_func as FN
+        progress(80, "Function: MetaPhlAn + HUMAnN")
+        try:
+            func_info = FN.run_all(samples=names, qc=qc_reads, platform=a.platform, out=out, threads=a.threads,
+                                   dbp=dbp, panels=[x.strip() for x in a.func_panels.split(",") if x.strip()],
+                                   tool=tool, run=run, log=log, progress=progress, conda_bases=conda_bases())
+            for k, v in (func_info.get("versions") or {}).items():
+                vers[k] = v
+            if not func_info.get("skipped"):
+                func_info["stats"] = FN.func_stats(out, a.metadata)
+        except Exception as e:                     # function profiles are an extra: never fail the profile
+            import traceback
+            log(f"[warn] function step failed: {e}")
+            (logs / "func_traceback.txt").write_text(traceback.format_exc())
+            (out / "func").mkdir(exist_ok=True)
+            (out / "func" / "SKIPPED.txt").write_text(f"the function step stopped with an error: {e}\n")
+            func_info = {**func_info, "error": str(e)} if isinstance(func_info, dict) else {"error": str(e)}
     mag_info = {}
     if a.mags:
         import shotgun_mags as MAG
@@ -619,7 +647,7 @@ def main(argv=None):
         "min_abundance_pct": a.min_abundance, "species_below_min_abundance": dropped,
         "emu_counts": "estimated_reads", "n_samples": len(names), "n_taxa": len(taxa),
         "domains": {k: round(v) for k, v in sorted(dom.items(), key=lambda kv: -kv[1])},
-        "amr": amr_info, "mags": mag_info},
+        "amr": amr_info, "func": func_info, "mags": mag_info},
         indent=1))
     progress(100, "Done")
     log(f"{len(taxa)} species across {len(names)} sample(s) — asv_table.csv / taxonomy.csv written")

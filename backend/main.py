@@ -67,6 +67,10 @@ jobs_lock = threading.Lock()
 log_queues: dict = {}
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
 executor    = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+# A shotgun job with HUMAnN (~25 GB RAM) runs alone: it waits for running jobs to end,
+# and later jobs wait for it ("Waiting — HUMAnN job running"). job_gate.py.
+from job_gate import JobGate
+GATE = JobGate()
 
 # ── psutil Process cache (keeps objects alive between polls so cpu_percent works) ──
 _proc_cache: dict[int, "psutil.Process"] = {}  # pid → Process
@@ -267,6 +271,8 @@ class RunParams(BaseModel):
     sg_amr:             bool  = True      # resistome: reads vs the AMRFinderPlus gene catalogue
     sg_mags:            bool  = False     # assembly + binning (MEGAHIT / metaFlye, MetaBAT 2, CheckM2) — slow
     sg_mag_polish:      bool  = True      # Nanopore MAGs: Medaka on the contigs (4 threads, ~4 GB; tested on nextapp)
+    sg_func:            bool  = False     # function profiles: MetaPhlAn + HUMAnN (~25 GB RAM → the job runs alone)
+    sg_func_panels:     str   = "gut,food,environment"   # gene panels (data/function_panels.tsv)
 
 class WorkerConfig(BaseModel):
     max_workers: int = 2
@@ -899,7 +905,40 @@ async def run_analysis(job_id: str, params: RunParams):
     executor.submit(run_r_pipeline, job_id, params)
     return {"job_id": job_id, "status": jobs[job_id]["status"]}
 
+def _is_exclusive(params) -> bool:
+    """Jobs that must run alone: shotgun with function profiles (HUMAnN + DIAMOND) — only
+    when HUMAnN can actually run here; otherwise the step is skipped and needs no RAM."""
+    if (params.marker or "").upper() != "SHOTGUN" or not getattr(params, "sg_func", False):
+        return False
+    try:
+        dbp = json.loads((BASE_DIR / "databases" / "db_paths.json").read_text())
+    except Exception:
+        dbp = {}
+    return bool(_humann_status(dbp).get("installed"))
+
+
 def run_r_pipeline(job_id: str, params: RunParams):
+    def _cancelled():
+        return jobs.get(job_id) is None or jobs[job_id].get("status") == "cancelled"
+
+    def _waiting(label):
+        if any(j.get("status") == "waiting_checkpoint" for j in list(jobs.values())):
+            label += " (the running job is paused at a checkpoint and waits for its user)"
+        with jobs_lock:
+            j = jobs.get(job_id)
+            if j and j.get("status") == "queued" and j.get("step_label") != label:
+                j["step_label"] = label
+                save_jobs()
+
+    if not GATE.enter(job_id, _is_exclusive(params), _cancelled, _waiting):
+        return                          # cancelled while waiting for its turn
+    try:
+        _run_r_pipeline_body(job_id, params)
+    finally:
+        GATE.leave(job_id)
+
+
+def _run_r_pipeline_body(job_id: str, params: RunParams):
     with jobs_lock:
         if jobs.get(job_id, {}).get("status") == "cancelled":
             return                      # cancelled while it was still queued
@@ -1148,6 +1187,10 @@ def run_r_pipeline(job_id: str, params: RunParams):
         cmd += ["--db_paths", str(db_paths_json)]
         if not params.sg_amr:
             cmd += ["--no_amr"]
+        if params.sg_func:
+            cmd += ["--func", "--func_panels", params.sg_func_panels or ""]
+            if metadata_path:
+                cmd += ["--metadata", metadata_path]
         if params.sg_mags:
             cmd += ["--mags"]
             if params.sg_mag_polish:
@@ -1742,6 +1785,33 @@ def run_r_pipeline(job_id: str, params: RunParams):
                           _lf.write("\n[maaslin3 ERROR]\n" + (_ma.stderr or "")[-1500:])
               except Exception as _me:
                   print(f"[maaslin3] WARNING: {_me}")
+
+          # ── MaAsLin 3 on the function tables (shotgun + HUMAnN) ────────────
+          if (proc.returncode == 0 and params.run_maaslin3 and _ma_script.exists() and _pipe_kind == "shotgun"
+                  and getattr(params, "sg_func", False) and metadata_path and Path(metadata_path).exists()
+                  and (Path(output_dir) / "func" / "pathways_unstratified.tsv").exists()):
+              for _tag, _tbl in (("pathways", "func/pathways_unstratified.tsv"), ("ko", "func/ko_unstratified.tsv"),
+                                 ("panels", "r_tables/func_panels.csv")):
+                  try:
+                      with jobs_lock:
+                          jobs[job_id]["step_label"] = f"MaAsLin 3 on function ({_tag})..."
+                      _fc = [shutil.which("Rscript") or "Rscript", str(_ma_script), "--output_dir", output_dir,
+                             "--metadata", metadata_path, "--feature_table", str(Path(output_dir) / _tbl),
+                             "--tag", _tag, "--threads", str(max(1, int(params.nThreads or 1)))]
+                      for _o, _v in (("--fixed", params.maaslin_fixed), ("--random", params.maaslin_random),
+                                     ("--reference", params.maaslin_reference)):
+                          if _v:
+                              _fc += [_o, _v]
+                      _ex = [x for x in list(params.controlSamples or []) + list(params.mockSamples or []) if x]
+                      if _ex:
+                          _fc += ["--exclude", ",".join(_ex)]
+                      _fm = subprocess.run(_fc, capture_output=True, text=True, timeout=3600)
+                      with open(log_file, "a") as _lf:
+                          _lf.write(f"\n--- maaslin3_run.R (function: {_tag}) ---\n" + (_fm.stdout or "")[-3000:])
+                          if _fm.returncode != 0:
+                              _lf.write("\n[maaslin3 ERROR]\n" + (_fm.stderr or "")[-1500:])
+                  except Exception as _me:
+                      print(f"[maaslin3 function] WARNING: {_me}")
 
         except Exception as _pe:
             _msg = f"Post-run step failed after a successful pipeline: {_pe}"
@@ -2398,7 +2468,19 @@ def get_databases():
         except Exception as e:
             result["error"] = str(e)
     result["kraken2_indexes"] = _kraken2_indexes(db_dir, (result.get("databases") or {}).get("kraken2_db", ""))
+    result["humann"] = _humann_status(result.get("databases") or {})
     return result
+
+
+def _humann_status(db_paths: dict) -> dict:
+    """Whether shotgun function profiles (HUMAnN) can run here, and why not."""
+    try:
+        import shotgun_func as _fn
+        import shotgun_pipeline as _sp
+        why = _fn.missing_reason(db_paths, _sp.conda_bases())
+    except Exception as e:
+        why = f"HUMAnN check failed: {e}"
+    return {"installed": not why, "reason": why, "db_dir": db_paths.get("humann_db", "")}
 
 
 def _kraken2_indexes(db_dir: Path, default: str) -> list:

@@ -289,6 +289,401 @@ def _mags(run, sm, S, T) -> tuple[list[str], list[str], list[str]]:
     return meth, out, refs
 
 
+REFS_FUNC = [
+    ("Beghini F, McIver LJ, Blanco-Míguez A, et al. (2021).", "Integrating taxonomic, functional, and "
+     "strain-level profiling of diverse microbial communities with bioBakery 3.", "eLife 10:e65088."),
+    ("Blanco-Míguez A, Beghini F, Cumbo F, et al. (2023).", "Extending and improving metagenomic taxonomic "
+     "profiling with uncharacterized species using MetaPhlAn 4.", "Nature Biotechnology 41:1633–1644."),
+    ("Buchfink B, Reuter K, Drost HG. (2021).", "Sensitive protein alignments at tree-of-life scale using "
+     "DIAMOND.", "Nature Methods 18:366–368."),
+    ("Suzek BE, Wang Y, Huang H, McGarvey PB, Wu CH. (2015).", "UniRef clusters: a comprehensive and "
+     "scalable alternative for improving sequence similarity searches.", "Bioinformatics 31:926–932."),
+    ("Caspi R, Billington R, Keseler IM, et al. (2020).", "The MetaCyc database of metabolic pathways and "
+     "enzymes — a 2019 update.", "Nucleic Acids Research 48:D445–D453."),
+    ("Kanehisa M, Furumichi M, Sato Y, Kawashima M, Ishiguro-Watanabe M. (2023).", "KEGG for taxonomy-based "
+     "analysis of pathways and genomes.", "Nucleic Acids Research 51:D587–D592."),
+    ("Anderson MJ. (2001).", "A new method for non-parametric multivariate analysis of variance.",
+     "Austral Ecology 26:32–46."),
+]
+_FSPECIAL = ("UNMAPPED", "UNINTEGRATED", "UNGROUPED")
+LOW_MAPPED = 50.0          # % of reads matching no known gene above which the report warns
+
+
+def _ftable(path: Path) -> dict:
+    """HUMAnN table → {feature: {sample: value}}, HUMAnN's special rows left out."""
+    if not path.exists():
+        return {}
+    import shotgun_func as FN
+    return {k: v for k, v in FN.read_humann_table(path).items() if k.split(":")[0].strip() not in _FSPECIAL}
+
+
+def _top(tab: dict, S: list[str], n: int = 25) -> list[str]:
+    return sorted(tab, key=lambda f: -sum(tab[f].get(s, 0) for s in S))[:n]
+
+
+def _shaded(rows_lab: list[str], tab: dict, S: list[str], cap: str, T, first="Feature", extra=None) -> str:
+    vmax = max([tab[f].get(s, 0) for f in rows_lab for s in S] or [0])
+    body = []
+    for f in rows_lab:
+        cells = "".join(f'<td{_shade(tab[f].get(s, 0), vmax)}>{_n(tab[f].get(s, 0))}</td>' for s in S)
+        lab = RB.esc(f) + (extra(f) if extra else "")
+        body.append(f"<tr><td>{lab}</td>{cells}</tr>")
+    head = "".join(f"<th>{RB.esc(s)}</th>" for s in S)
+    return (f'<p class="tcap"><b>Table {T.n()}.</b> {cap}</p><table><thead><tr><th>{first}</th>{head}</tr></thead>'
+            f"<tbody>{''.join(body)}</tbody></table>")
+
+
+def _svg_carriers(genes: list[tuple[str, dict]], title: str) -> str:
+    """Horizontal 100 % bars: which genera carry each gene (CPM summed over samples)."""
+    if not genes:
+        return ""
+    tot_g = {}
+    for _, d in genes:
+        for g, v in d.items():
+            tot_g[g] = tot_g.get(g, 0) + v
+    top = [g for g in sorted(tot_g, key=lambda g: -tot_g[g]) if g != "Unclassified"][:6]
+    other = sum(v for g, v in tot_g.items() if g not in top and g != "Unclassified")
+    keys = top + (["Other"] if other > 0 else []) + (["Unclassified"] if tot_g.get("Unclassified") else [])
+    col = {g: RB._pal(i) for i, g in enumerate(top)}
+    col["Other"], col["Unclassified"] = "#B8C6CC", "#E4EBEE"
+    W, lab, barw, bh, gap = 560, 130, 300, 13, 6
+    H = 26 + len(genes) * (bh + gap) + 18 * ((len(keys) + 2) // 3)
+    p = RB._svg_open(W, H)
+    p.append(f'<text x="0" y="12" font-size="9" fill="{RB.MUT}">{RB.esc(title)}</text>')
+    for i, (gene, d) in enumerate(genes):
+        y = 22 + i * (bh + gap)
+        tot = sum(d.values()) or 1
+        part = {g: d.get(g, 0) for g in top}
+        part["Unclassified"] = d.get("Unclassified", 0)
+        part["Other"] = max(0.0, tot - sum(part.values()))
+        p.append(f'<text x="{lab - 6}" y="{y + 10}" font-size="9" text-anchor="end" fill="{RB.INK}">'
+                 f"{RB.esc(gene)}</text>")
+        x = lab
+        for g in keys:
+            w = barw * part.get(g, 0) / tot
+            if w > 0.2:
+                p.append(f'<rect x="{x:.1f}" y="{y}" width="{w:.1f}" height="{bh}" fill="{col[g]}"/>')
+                x += w
+    ly = 26 + len(genes) * (bh + gap)
+    for i, g in enumerate(keys):
+        lx, yy = lab + (i % 3) * 140, ly + (i // 3) * 16
+        name = g if g in ("Other", "Unclassified") else f'<tspan font-style="italic">{RB.esc(g)}</tspan>'
+        p.append(f'<rect x="{lx}" y="{yy}" width="9" height="9" fill="{col[g]}"/>'
+                 f'<text x="{lx + 13}" y="{yy + 8}" font-size="8.5" fill="{RB.INK}">{name}</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def _svg_scatter(rows: list[dict], pct: list) -> str:
+    if len(rows) < 3:
+        return ""
+    xs, ys = [float(r["PC1"]) for r in rows], [float(r["PC2"]) for r in rows]
+    def rng(v):
+        lo, hi = min(v), max(v)
+        pad = (hi - lo) * 0.18 or 0.1
+        return lo - pad, hi + pad
+    (xl, xh), (yl, yh) = rng(xs), rng(ys)
+    W, H, x0, y0, pw, ph = 520, 300, 46, 14, 420, 240
+    p = RB._svg_open(W, H)
+    p.append(f'<rect x="{x0}" y="{y0}" width="{pw}" height="{ph}" fill="none" stroke="{RB.RULE}"/>')
+    for r, x, y in zip(rows, xs, ys):
+        cx, cy = x0 + pw * (x - xl) / (xh - xl), y0 + ph * (1 - (y - yl) / (yh - yl))
+        p.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="4" fill="{RB.ACC}"/>'
+                 f'<text x="{cx + 6:.1f}" y="{cy + 3:.1f}" font-size="8.5" fill="{RB.INK}">{RB.esc(r["Sample"])}</text>')
+    a1, a2 = (pct + [0, 0])[:2]
+    p.append(f'<text x="{x0 + pw / 2}" y="{H - 14}" font-size="9" text-anchor="middle" fill="{RB.MUT}">'
+             f"PCoA 1 ({_f(a1)}%)</text>"
+             f'<text x="12" y="{y0 + ph / 2}" font-size="9" text-anchor="middle" fill="{RB.MUT}" '
+             f'transform="rotate(-90 12 {y0 + ph / 2})">PCoA 2 ({_f(a2)}%)</text></svg>')
+    return "".join(p)
+
+
+def _maaslin_func(run, T) -> list[str]:
+    out = []
+    for tag, label in (("pathways", "MetaCyc pathways"), ("ko", "KEGG KO"), ("panels", "panel genes")):
+        res = _csv(run.path / "r_tables" / f"maaslin3_func_{tag}.csv")
+        sk = run.path / "maaslin3" / f"SKIPPED_{tag}.txt"
+        if not res:
+            if sk.exists():
+                out.append(f"<p>MaAsLin 3 on {label}: not run — {RB.esc(sk.read_text().strip())}.</p>")
+            continue
+        sig = [r for r in res if _num(r.get("qval_individual")) < 0.1]
+        sig.sort(key=lambda r: _num(r.get("qval_individual")))
+        if not sig:
+            out.append(f"<p>MaAsLin 3 on {label}: {len(res)} tests, none with q &lt; 0.1.</p>")
+            continue
+        out.append(T(["Feature", "Variable", "Level", "Model", "Coefficient", "q"],
+                     [[RB.esc(r.get("feature", "")), RB.esc(r.get("metadata", "")), RB.esc(r.get("value", "")),
+                       RB.esc(r.get("model", "")), _f(r.get("coef"), 2), _f(r.get("qval_individual"), 3)]
+                      for r in sig[:15]],
+                     f"MaAsLin 3 on {label}: associations with q &lt; 0.1 ({len(sig)} of {len(res)} tests"
+                     + ("; first 15" if len(sig) > 15 else "") + f"; all in r_tables/maaslin3_func_{tag}.csv)."))
+    return out
+
+
+def _n(v) -> str:
+    """CPM cell: thousands separated, one decimal below 10, empty for 0."""
+    v = float(v or 0)
+    return "" if v <= 0 else (f"{v:,.0f}" if v >= 10 else f"{v:.1f}")
+
+
+def _num(v, d=9.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def _func(run, sm, S, T, F) -> tuple[list[str], list[str], list]:
+    """(method sentences, result HTML, references) for HUMAnN function profiles."""
+    info = sm.get("func") or {}
+    fd = run.path / "func"
+    if not info and not fd.exists():
+        return [], [], []
+    head = '<h3 class="pbreak">Functional profile (HUMAnN)</h3>'
+    sk = (fd / "SKIPPED.txt").read_text().strip() if (fd / "SKIPPED.txt").exists() else ""
+    if not (fd / "pathways_unstratified.tsv").exists():
+        why = sk or info.get("skipped") or info.get("error") or "no result"
+        return [], [head, f"<p>Function profiles were not made: {RB.esc(why)}.</p>"], []
+    tools = sm.get("tools") or {}
+    vers = info.get("versions") or {}
+    hv, mv = vers.get("humann") or tools.get("humann", ""), vers.get("metaphlan") or tools.get("metaphlan", "")
+    platform = sm.get("platform", "illumina")
+    meth = [f"Function was profiled with HUMAnN {RB.esc(hv)} (Beghini et al. 2021): MetaPhlAn {RB.esc(mv)} "
+            f"(database {RB.esc(vers.get('metaphlan_db', ''))}) named the species in each sample; reads were "
+            "mapped to those species' pangenomes (ChocoPhlAn) and the remaining reads searched against the "
+            "full UniRef90 protein database with DIAMOND (translated search). Gene-family abundances were "
+            "normalised to copies per million (CPM) and regrouped to KEGG Orthology (KO) and Enzyme "
+            "Commission (EC) numbers; MetaCyc pathway abundance and coverage come from HUMAnN. "
+            + ("Read pairs were profiled as single reads. " if platform == "illumina" else
+               "Nanopore reads were cut into 300 bp pieces (pieces under 100 bp dropped) because HUMAnN is "
+               "built for short reads. ")
+            + "Genes of interest were counted from the KO table, or from UniRef90 names for genes without a "
+              "KO of their own (data/function_panels.tsv), and attributed to genera from HUMAnN's per-species "
+              "output."]
+    out = [head]
+    err = info.get("error") or (sk if sk and not info.get("samples") else "")
+    if err:
+        out.append(f'<div class="note"><p style="margin:0"><b>The function step stopped early:</b> {RB.esc(err)}. '
+                   "Tables written before that are shown below.</p></div>")
+    if platform == "ont":
+        out.append('<div class="note"><p style="margin:0"><b>Beta for Nanopore.</b> Reads were cut into 300 bp '
+                   "pieces for HUMAnN. Sequencing errors in older Nanopore chemistry (R9) lower the protein "
+                   "search's sensitivity, so gene and pathway abundances are likely underestimated; compare "
+                   "samples run with the same chemistry only.</p></div>")
+    qc = _csv(fd / "func_qc.csv")
+    if qc:
+        out.append(T(["Sample", "Reads profiled", "Pangenome", "Protein search", "No match", "Unintegrated",
+                      "Peak RAM", "Status"],
+                     [[RB.esc(r["sample"]), RB.fmt(r.get("reads_in")) if r.get("reads_in") else "—",
+                       f"{_f(r.get('nucleotide_pct'))}%" if r.get("nucleotide_pct") else "—",
+                       f"{_f(r.get('translated_pct'))}%" if r.get("translated_pct") else "—",
+                       f"{_f(r.get('unmapped_pct'))}%" if r.get("unmapped_pct") else "—",
+                       f"{_f(r.get('unintegrated_pct'))}%" if r.get("unintegrated_pct") else "—",
+                       f"{_f(r.get('max_rss_gb'))} GB" if r.get("max_rss_gb") else "—",
+                       RB.esc(r.get("status", ""))] for r in qc],
+                     "Function QC. <i>Pangenome</i>: reads matched to genes of the species MetaPhlAn found; "
+                     "<i>protein search</i>: further reads matched in UniRef90; <i>no match</i>: reads matching "
+                     "no known gene; <i>unintegrated</i>: share of pathway-level abundance HUMAnN could not "
+                     "place in a complete pathway."))
+        low = [r["sample"] for r in qc if _num(r.get("unmapped_pct"), 0) > LOW_MAPPED]
+        if low:
+            out.append(f"<p><b>Low match:</b> in {RB.esc(', '.join(low))} more than {LOW_MAPPED:.0f}% of the reads "
+                       "matched no known gene — typical of poorly studied environments; function profiles there "
+                       "describe only the known part of the community.</p>")
+        bad = [r["sample"] for r in qc if r.get("status") != "ok"]
+        if bad:
+            out.append(f"<p><b>Not profiled:</b> {RB.esc(', '.join(bad))} (see func/&lt;sample&gt;/run.log).</p>")
+    S2 = [s for s in S if s in (info.get("samples") or S)]
+    mk = _csv(fd / "mpa_vs_kraken.csv")
+    if mk:
+        import json as _json
+        def tops(r):
+            try:
+                t = _json.loads(r.get("top_genera_json") or "[]")[:5]
+            except ValueError:
+                t = []
+            return ", ".join(f"<i>{RB.esc(g)}</i> {_f(k, 0)} / {_f(m, 0)}" for g, k, m in t)
+        out.append(T(["Sample", "Spearman ρ", "Bray–Curtis similarity", "Top genera (Kraken 2 % / MetaPhlAn %)"],
+                     [[RB.esc(r["sample"]), _f(r.get("spearman"), 2), _f(r.get("bray_curtis_similarity"), 2),
+                       tops(r)] for r in mk],
+                     "Two methods, one community: genus profiles from Kraken 2 + Bracken (reads, k-mers) and "
+                     "MetaPhlAn 4 (marker genes) compared per sample. Similarity near 1 means the two agree; "
+                     "differences are expected for genera missing from one of the databases and because "
+                     "Kraken 2 counts reads while MetaPhlAn estimates cells."))
+    pw = _ftable(fd / "pathways_unstratified.tsv")
+    cov = _ftable(fd / "pathcoverage_unstratified.tsv")
+    if pw:
+        def part(f):
+            c = [v for v in (cov.get(f) or {}).values()]
+            return ' <span class="dim">(partial)</span>' if c and max(c) < 0.5 else ""
+        top = _top(pw, S2)
+        out.append(_shaded(top, pw, S2, f"MetaCyc pathways, top {len(top)} by mean abundance (CPM; darker = "
+                           "more). <i>Partial</i>: coverage below 0.5 in every sample — only part of the "
+                           "pathway was found. All pathways in func/pathways.tsv.", T, "Pathway", part))
+    for fn, lab, first in (("ko_unstratified.tsv", "KEGG Orthology (KO) groups", "KO"),
+                           ("ec_unstratified.tsv", "Enzyme Commission (EC) numbers", "EC")):
+        tab = _ftable(fd / fn)
+        if tab:
+            top = _top(tab, S2)
+            out.append(_shaded(top, tab, S2, f"{lab}, top {len(top)} by mean abundance (CPM). All in "
+                               f"func/{fn.replace('_unstratified', '')}.", T, first))
+    # gene panels
+    pr, pt = _csv(fd / "panels.csv"), _csv(fd / "panels_taxa.csv")
+    if pr:
+        import shotgun_func as FN
+        meta = {(p["panel"], p["gene"]): p for p in FN.load_panels(FN.PANELS_FILE, list(FN.PANEL_SETS))}
+        names = {"gut": "Gut", "food": "Food and fermentation", "environment": "Environment"}
+        for panel in [x for x in FN.PANEL_SETS if any(r["panel"] == x for r in pr)]:
+            rows = [r for r in pr if r["panel"] == panel]
+            genes = list(dict.fromkeys(r["gene"] for r in rows))
+            val = {(r["gene"], r["sample"]): _num(r.get("cpm"), 0) for r in rows}
+            grp = {r["gene"]: r.get("group", "") for r in rows}
+            found = [g for g in genes if any(val.get((g, s), 0) > 0 for s in S2)]
+            carriers = {}
+            for t in pt:
+                if t["panel"] == panel:
+                    carriers.setdefault(t["gene"], {})
+                    carriers[t["gene"]][t["taxon"]] = carriers[t["gene"]].get(t["taxon"], 0) + _num(t.get("cpm"), 0)
+            vmax = max([v for v in val.values()] or [0])
+            body = []
+            for g in found:
+                c = carriers.get(g, {})
+                ct = sum(c.values()) or 1
+                main = ", ".join(f"<i>{RB.esc(k)}</i> {100 * v / ct:.0f}%"
+                                 for k, v in sorted(c.items(), key=lambda kv: -kv[1])[:2]) or "—"
+                cells = "".join(f'<td{_shade(val.get((g, s), 0), vmax)}>{_n(val.get((g, s), 0))}</td>' for s in S2)
+                note = (meta.get((panel, g)) or {}).get("note", "")
+                body.append(f'<tr><td>{RB.esc(grp[g])}</td><td><i>{RB.esc(g)}</i> <span class="dim">{RB.esc(note)}</span>'
+                            f"</td>{cells}<td>{main}</td></tr>")
+            h = "".join(f"<th>{RB.esc(s)}</th>" for s in S2)
+            out.append(f"<h4>Genes of interest — {RB.esc(names.get(panel, panel))}</h4>")
+            if body:
+                out.append(f'<p class="tcap"><b>Table {T.n()}.</b> {RB.esc(names.get(panel, panel))} genes found '
+                           "(CPM; darker = more) and the genera carrying most of them.</p>"
+                           f"<table><thead><tr><th>Group</th><th>Gene</th>{h}<th>Main carriers</th></tr></thead>"
+                           f"<tbody>{''.join(body)}</tbody></table>")
+            miss = [g for g in genes if g not in found]
+            if miss:
+                by = {}
+                for g in miss:
+                    by.setdefault(grp[g], []).append(g)
+                out.append('<p class="dim">Not detected: ' + "; ".join(
+                    f"{RB.esc(k)} ({', '.join(f'<i>{RB.esc(x)}</i>' for x in v)})" for k, v in by.items()) + ".</p>")
+            gl = [(g, carriers[g]) for g in sorted(found, key=lambda g: -sum(carriers.get(g, {}).values()))
+                  if carriers.get(g)][:12]
+            if gl:
+                out.append(F(_svg_carriers(gl, "Share of each gene by genus (all samples)"),
+                             f"Genera carrying the {RB.esc(names.get(panel, panel).lower())} genes found "
+                             "(HUMAnN per-species output; <i>unclassified</i>: matched by protein search, "
+                             "species not resolved)."))
+    # functional diversity
+    st = info.get("stats") or {}
+    al = _csv(run.path / "r_tables" / "func_alpha.csv")
+    if al:
+        out.append("<h4>Functional diversity</h4>")
+        out.append(T(["Sample", "Shannon (pathways)", "Pathways detected"],
+                     [[RB.esc(r["Sample"]), _f(r.get("Shannon_pathways"), 2), RB.esc(r.get("Pathways", ""))]
+                      for r in al],
+                     "Functional diversity: Shannon index over MetaCyc pathway abundances."))
+        pc = _csv(run.path / "r_tables" / "func_pcoa_ko.csv")
+        if len(pc) >= 3 and max(st.get("pcoa_pct") or [0]) > 0:
+            out.append(F(_svg_scatter(pc, st.get("pcoa_pct") or []),
+                         "PCoA of Bray–Curtis dissimilarity between samples on KO abundances — samples close "
+                         "together have similar gene content."))
+        pm = st.get("permanova") or {}
+        if pm.get("p") is not None:
+            out.append(f"<p>PERMANOVA (Anderson 2001; Bray–Curtis on KO, {pm.get('perm')} permutations): sample "
+                       f"groups explain R² = {_f(pm.get('R2'), 2)} of the variation in gene content, "
+                       f"p = {_f(pm.get('p'), 3)}.</p>")
+        elif pm.get("skipped"):
+            out.append(f'<p class="dim">PERMANOVA not run: {RB.esc(pm["skipped"])}.</p>')
+    mf = _maaslin_func(run, T)
+    if not mf and not (run.path / "metadata.csv").exists():
+        mf = ['<p class="dim">MaAsLin 3 on function: not run — no sample metadata (groups) for this run.</p>']
+    out += mf
+    out.append('<div class="note acc"><p style="margin:0"><b>Reading function profiles.</b> Genes are counted '
+               "from DNA, so they show what the community <i>can</i> do, not what it is doing (that needs RNA). "
+               "Abundances are relative (copies per million); compare samples, not absolute amounts. A pathway "
+               "counts only when HUMAnN finds enough of its reactions; unknown genes and poorly studied organisms "
+               "stay outside these tables.</p></div>")
+    return meth, out, REFS_FUNC
+
+
+def _key_findings(run, sm, an, S) -> str:
+    """Half a page of what the tables show, for page 1. Nothing that is not in a table.
+    A summary box must never cost the report: any surprise in a table leaves it out."""
+    try:
+        return _key_findings_body(run, sm, an, S)
+    except Exception:
+        return ""
+
+
+def _key_findings_body(run, sm, an, S) -> str:
+    items = []
+    pct = an.rank_pct("Genus") if "Genus" in run.rank_cols else {}
+    n = len(S) or 1
+    tg = sorted((t for t in pct if t != "Unclassified"), key=lambda t: -sum(pct[t].values()) / n)[:3]
+    if tg:
+        items.append("<b>Genus</b> level: the most abundant are " + ", ".join(
+            f"<i>{RB.esc(t)}</i> ({sum(pct[t].values()) / n:.1f}%)" for t in tg)
+            + (" on average across samples." if len(S) > 1 else "."))
+    tr = run.tracking or []
+    hr = sum(_num(r.get("host_removed"), 0) for r in tr)
+    hk = sum(_num(r.get("host_classified"), 0) for r in tr)
+    qc = sum(_num(r.get("after_qc"), 0) for r in tr)
+    if qc and (hr or hk):
+        items.append(f"<b>Host</b>: {100 * (hr + hk) / qc:.1f}% of the QC-passed reads were host DNA "
+                     "(removed, or classified as host) and are not in the community tables.")
+    amr = [r for r in _csv(run.path / "amr_genes.csv") if r.get("type") == "AMR" and r.get("gene")] \
+        if sm.get("amr") else []
+    if amr:
+        best = {}
+        for r in amr:
+            if _num(r.get("rpkm"), 0) >= _num((best.get(r["gene"]) or {}).get("rpkm"), -1):
+                best[r["gene"]] = r
+        top = sorted(best.values(), key=lambda r: -_num(r.get("rpkm"), 0))[:3]
+        items.append(f"<b>AMR</b>: {len(best)} gene famil{'y' if len(best) == 1 else 'ies'} in the reads; most "
+                     "abundant " + ", ".join(f"<i>{RB.esc(r['gene'])}</i> ({_host(r, share=False)})" for r in top)
+                     + ".")
+    mags = _csv(run.path / "mags_summary.csv") if sm.get("mags") else []
+    if mags and "quality" in mags[0]:
+        good = [m for m in mags if m.get("quality") in ("High", "Medium")]
+        hi = sum(1 for m in good if m.get("quality") == "High")
+        names = list(dict.fromkeys(m.get("kraken2_taxon") for m in good if m.get("kraken2_taxon")))[:4]
+        items.append(f"<b>Genomes</b>: {len(good)} genome bin{'s' if len(good) != 1 else ''} of medium or high "
+                     f"quality ({hi} high)" + (": " + ", ".join(f"<i>{RB.esc(n)}</i>" for n in names) if names else "")
+                     + ".")
+    fd = run.path / "func"
+    pw = _ftable(fd / "pathways_unstratified.tsv")
+    if pw:
+        top = _top(pw, S, 3)
+        items.append("<b>Function</b>: most abundant pathways " + "; ".join(
+            RB.esc(f.split(":", 1)[-1].strip()) for f in top) + ".")
+        pt = _csv(fd / "panels_taxa.csv")
+        pr = _csv(fd / "panels.csv")
+        tot = {}
+        for r in pr:
+            tot[(r["panel"], r.get("group", ""), r["gene"])] = tot.get((r["panel"], r.get("group", ""), r["gene"]), 0) \
+                + _num(r.get("cpm"), 0)
+        best = {}
+        for (panel, grp, gene), v in tot.items():
+            if v > 0 and v > best.get(panel, ("", "", 0))[2]:
+                best[panel] = (grp, gene, v)
+        for panel, (grp, gene, _) in best.items():
+            car = {}
+            for t in pt:
+                if t["panel"] == panel and t["gene"] == gene and t["taxon"] != "Unclassified":
+                    car[t["taxon"]] = car.get(t["taxon"], 0) + _num(t.get("cpm"), 0)
+            who = max(car, key=car.get) if car else ""
+            items.append(f"<b>{RB.esc(grp)}</b> ({RB.esc(panel)} panel): <i>{RB.esc(gene)}</i> is the most abundant "
+                         "gene of interest" + (f", carried mainly by <i>{RB.esc(who)}</i>." if who else "."))
+    if not items:
+        return ""
+    return ('<div class="note acc"><p style="margin:0 0 1mm"><b>Key findings</b></p><ul style="margin:0">'
+            + "".join(f"<li>{x}</li>" for x in items) + "</ul></div>")
+
+
 def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) -> str:
     an = Analysis(run)
     S = an.samples
@@ -338,6 +733,9 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
                "new. Results are produced with established tools and settings, but the pipeline has been "
                "validated on simulated and public mock-community data only, not yet on this laboratory's "
                "own samples.</p></div>")
+    kf = _key_findings(run, sm, an, S)
+    if kf:
+        out.append(kf)
     if an.groups or an.desc:
         out.append(_tbl(["Sample", "Group", "Description"],
                         [[esc(s), esc(an.groups.get(s, "—")), f'<span class="dim">{esc(an.desc.get(s, ""))}</span>']
@@ -384,7 +782,8 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
     _noT.n = lambda: 0
     amr_meth, _ = _resistome(run, sm, S, _noT, F)
     mag_meth, _, mag_refs = _mags(run, sm, S, _noT)
-    for m in (amr_meth, mag_meth):
+    func_meth, _, func_refs = _func(run, sm, S, _noT, lambda *a, **k: "")
+    for m in (amr_meth, func_meth, mag_meth):
         if m:
             out.append("<p>" + " ".join(m) + "</p>")
     prov = RB._provenance_rows(run)
@@ -445,6 +844,7 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
         out.append(F(RB.svg_bc_heat(an), "Bray–Curtis dissimilarity between samples."))
 
     out += _resistome(run, sm, S, T, F)[1]
+    out += _func(run, sm, S, T, F)[1]
     out += _mags(run, sm, S, T)[1]
     out += RB._controls_section(run, an, T)
     out += RB._maaslin_section(run, T)
@@ -476,6 +876,9 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
         "shotgun/&lt;sample&gt;/."
         + (" Resistome: amr_genes.csv (one row per gene and sample) and amr_rpkm.csv (gene × sample)."
            if amr_meth else "")
+        + (" Function: func/ (pathways.tsv, ko.tsv, ec.tsv, genefamilies.tsv — each also split into "
+           "_unstratified / _stratified; panels.csv, panels_taxa.csv, func_qc.csv, mpa_vs_kraken.csv)."
+           if func_meth else "")
         + (" MAGs: mags_summary.csv, mags_amr.csv and the genomes in mags/." if mag_meth else ""),
     ]) + "</ul>")
     out.append("<h2>References</h2>")
@@ -483,6 +886,7 @@ def build(run, title=None, app="NextGen-Amplicon", company="", subtitle=None) ->
         ([REFS[3]] if host != "none" else [])
     if amr_meth:
         refs += REFS_AMR
+    refs += func_refs
     refs += [REFS_MAG[k] for k in mag_refs]
     if (run.path / "r_tables" / "maaslin3_results.csv").exists():
         refs.append(RB.REFERENCES[25])

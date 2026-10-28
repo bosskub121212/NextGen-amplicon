@@ -23,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 FAILS = []
 
@@ -337,6 +338,10 @@ def main():
     check("console served at /, old UI at /classic", '@app.get("/classic"' in main_src
           and "frontend-beta" in main_src)
 
+    print()
+    import test_func_fast                    # shotgun function (HUMAnN) checks
+    test_func_fast.main()
+    FAILS.extend(test_func_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

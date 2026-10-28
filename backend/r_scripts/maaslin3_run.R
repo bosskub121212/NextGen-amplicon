@@ -14,6 +14,12 @@
 #
 #  Writes RESULT/maaslin3/ (MaAsLin's own output and figures) and
 #  RESULT/r_tables/maaslin3_results.csv (all tests, read by the report).
+#
+#  Function tables (shotgun + HUMAnN): --feature_table func/pathways_unstratified.tsv
+#  --tag pathways tests that table (features x samples, CPM; HUMAnN's UNMAPPED /
+#  UNINTEGRATED / UNGROUPED rows left out) instead of the taxonomy, into
+#  RESULT/maaslin3/func_<tag>/ and RESULT/r_tables/maaslin3_func_<tag>.csv
+#  (skip reason: RESULT/maaslin3/SKIPPED_<tag>.txt).
 #  Exits 0 with a message (never fails a run) when the design cannot be tested:
 #  no metadata, no variable with replicated levels, or MaAsLin 3 not installed.
 # =============================================================================
@@ -30,14 +36,18 @@ opt <- parse_args(OptionParser(option_list = list(
   make_option("--min_prevalence", type = "double", default = 0.1),
   make_option("--max_significance", type = "double", default = 0.1),
   make_option("--exclude",    type = "character", default = ""),   # control / mock sample IDs
-  make_option("--threads",    type = "integer", default = 1)
+  make_option("--threads",    type = "integer", default = 1),
+  make_option("--feature_table", type = "character", default = ""),  # function table instead of taxa
+  make_option("--tag",        type = "character", default = "")
 )))
 
 `%||%` <- function(a, b) if (is.null(a)) b else a
 say  <- function(...) cat("[maaslin3]", ..., "\n")
 skip <- function(why) { say("skipped:", why)
   dir.create(file.path(opt$output_dir, "maaslin3"), showWarnings = FALSE)
-  writeLines(why, file.path(opt$output_dir, "maaslin3", "SKIPPED.txt")); quit(status = 0) }
+  writeLines(why, file.path(opt$output_dir, "maaslin3",
+                            if (nzchar(opt$tag)) sprintf("SKIPPED_%s.txt", opt$tag) else "SKIPPED.txt"))
+  quit(status = 0) }
 
 if (!requireNamespace("maaslin3", quietly = TRUE))
   skip("MaAsLin 3 is not installed (BiocManager::install('maaslin3'); needs R >= 4.4)")
@@ -47,6 +57,22 @@ md_file <- if (nzchar(opt$metadata)) opt$metadata else file.path(od, "metadata.c
 if (!file.exists(md_file)) skip("no metadata.csv — nothing to test against")
 
 # ── counts: features x samples, whatever the pipeline's layout ───────────────
+if (nzchar(opt$feature_table)) {
+  ft_file <- opt$feature_table
+  if (!file.exists(ft_file)) ft_file <- file.path(od, opt$feature_table)
+  if (!file.exists(ft_file)) skip(paste("no table", opt$feature_table))
+  ft <- if (grepl("\\.csv$", ft_file)) read.csv(ft_file, check.names = FALSE, stringsAsFactors = FALSE) else
+        read.delim(ft_file, check.names = FALSE, stringsAsFactors = FALSE, quote = "", comment.char = "")
+  feats <- as.character(ft[[1]])
+  fm <- as.matrix(ft[, -1, drop = FALSE]); storage.mode(fm) <- "numeric"; fm[is.na(fm)] <- 0
+  colnames(fm) <- sub("(_Abundance(-RPKs|-CPM)?|_Coverage|-RPKs|-CPM)$", "", colnames(fm))
+  keepf <- !(sub(":.*$", "", feats) %in% c("UNMAPPED", "UNINTEGRATED", "UNGROUPED")) & rowSums(fm) > 0
+  if (sum(keepf) < 2) skip("fewer than two features in the function table")
+  rownames(fm) <- make.unique(feats)
+  counts <- as.data.frame(t(fm[keepf, , drop = FALSE]), check.names = FALSE)
+  rank <- opt$tag
+  say(sprintf("%d samples, %d function features (%s)", nrow(counts), ncol(counts), opt$tag))
+} else {
 asv <- read.csv(file.path(od, "asv_table.csv"), check.names = FALSE, stringsAsFactors = FALSE)
 tax_file <- if (file.exists(file.path(od, "taxonomy_table.csv"))) file.path(od, "taxonomy_table.csv") else
             file.path(od, "taxonomy.csv")
@@ -76,6 +102,7 @@ agg <- rowsum(m[keep, , drop = FALSE], lab[keep])                 # rank x sampl
 counts <- as.data.frame(t(agg), check.names = FALSE)              # samples x features
 say(sprintf("%d samples, %d %s-level features (%.1f%% of reads named at %s)",
             nrow(counts), ncol(counts), tolower(rank), 100 * sum(agg) / max(1, sum(m)), tolower(rank)))
+}
 
 # ── metadata ──────────────────────────────────────────────────────────────────
 md <- read.csv(md_file, check.names = FALSE, stringsAsFactors = FALSE)
@@ -130,6 +157,7 @@ for (v in fixed) if (is.factor(md[[v]]) && nlevels(md[[v]]) > 2 &&
 
 out <- file.path(od, "maaslin3")
 dir.create(out, showWarnings = FALSE)
+if (nzchar(opt$tag)) { out <- file.path(out, paste0("func_", opt$tag)); dir.create(out, showWarnings = FALSE) }
 say("fixed effects:", paste(fixed, collapse = ", "),
     if (length(random)) paste("| random:", paste(random, collapse = ", ")) else "")
 fit <- tryCatch(maaslin3::maaslin3(
@@ -147,7 +175,8 @@ if (file.exists(res)) {
   r <- read.delim(res, check.names = FALSE, stringsAsFactors = FALSE)
   r$rank <- rank
   dir.create(file.path(od, "r_tables"), showWarnings = FALSE)
-  write.csv(r, file.path(od, "r_tables", "maaslin3_results.csv"), row.names = FALSE)
+  write.csv(r, file.path(od, "r_tables", if (nzchar(opt$tag)) sprintf("maaslin3_func_%s.csv", opt$tag) else
+                                         "maaslin3_results.csv"), row.names = FALSE)
   qcol <- intersect(c("qval_individual", "qval_joint"), names(r))[1]
   nsig <- if (!is.na(qcol)) sum(r[[qcol]] < opt$max_significance, na.rm = TRUE) else NA
   say(sprintf("%d tests, %s with q < %.2f", nrow(r), nsig, opt$max_significance))

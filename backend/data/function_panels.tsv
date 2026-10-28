@@ -1,0 +1,56 @@
+panel	group	gene	ko	uniref_pattern	note
+gut	Butyrate	but		butyryl-CoA:acetate CoA.?transferase	main butyrate route in gut Firmicutes; no KO of its own (K01034 is atoD), so matched on UniRef90 names
+gut	Butyrate	buk	K00929		butyrate kinase
+gut	Butyrate	ptb	K00634		phosphate butyryltransferase
+gut	Butyrate	bcd	K00248		butyryl-CoA dehydrogenase
+gut	Propionate	scpB/mmcD	K11264		methylmalonyl-CoA decarboxylase (succinate pathway)
+gut	Propionate	pduP	K13922		propionaldehyde dehydrogenase (propanediol pathway)
+gut	Acetate	ackA	K00925		acetate kinase
+gut	Acetate	pta	K00625		phosphate acetyltransferase
+gut	Bile acids	bsh	K01442		bile salt hydrolase (deconjugation)
+gut	Bile acids	baiB	K15868		bile acid-CoA ligase (7alpha-dehydroxylation)
+gut	Bile acids	baiCD	K15870		3-oxocholoyl-CoA 4-desaturase (7alpha-dehydroxylation)
+gut	Bile acids	baiE	K15872		bile-acid 7alpha-dehydratase (7alpha-dehydroxylation)
+gut	TMA	cutC	K20038		choline trimethylamine-lyase
+gut	TMA	cutD	K20037		cutC activating enzyme
+gut	TMA	cntA	K22443		carnitine monooxygenase
+gut	Vitamin B12	cobB/cbiA	K02224		cobyrinic acid a,c-diamide synthase
+gut	Vitamin B12	cobT	K00768		dimethylbenzimidazole phosphoribosyltransferase
+gut	Folate	folP	K00796		dihydropteroate synthase
+gut	Folate	folA	K00287		dihydrofolate reductase
+food	Lactic acid	ldh	K00016		L-lactate dehydrogenase
+food	Lactic acid	ldhA	K03778		D-lactate dehydrogenase
+food	Lactic acid	ackA	K00925		acetate kinase (heterofermentation)
+food	Flavour	alsD	K01575		acetolactate decarboxylase (acetoin / diacetyl)
+food	Bacteriocins	lanA (nisin-type)	K20482		lantibiotic precursor
+food	Bacteriocins	lanB	K20483		class I lanthipeptide synthase
+food	Bacteriocins	blpA	K20344		bacteriocin exporter
+food	Bacteriocins	other bacteriocins		bacteriocin|lantibiotic|lactococcin|pediocin|enterocin	UniRef90 names
+food	Biogenic amines	hdc	K01590		histidine decarboxylase (histamine)
+food	Biogenic amines	tyrDC	K22330		tyrosine decarboxylase (tyramine)
+food	Biogenic amines	speC/speF	K01581		ornithine decarboxylase (putrescine)
+food	Biogenic amines	cadA/ldcC	K01582		lysine decarboxylase (cadaverine)
+food	Biogenic amines	aguA	K10536		agmatine deiminase (putrescine)
+food	Proteolysis	prtP	K01361		cell-envelope proteinase (lactocepin)
+food	Proteolysis	pepN	K01256		aminopeptidase N
+environment	Nitrogen	nifH	K02588		nitrogen fixation
+environment	Nitrogen	amoA/pmoA	K10944		ammonia / methane monooxygenase subunit A (one KEGG group)
+environment	Nitrogen	hao	K10535		hydroxylamine dehydrogenase (nitrification)
+environment	Nitrogen	narG	K00370		nitrate reductase
+environment	Nitrogen	nirK	K00368		nitrite reductase, Cu (denitrification)
+environment	Nitrogen	nirS	K15864		nitrite reductase, cd1 (denitrification)
+environment	Nitrogen	norB	K04561		nitric oxide reductase
+environment	Nitrogen	nosZ	K00376		nitrous oxide reductase
+environment	Nitrogen	nrfA	K03385		nitrite reduction to ammonium (DNRA)
+environment	Sulfur	sat	K00958		sulfate adenylyltransferase
+environment	Sulfur	aprA	K00394		adenylylsulfate reductase
+environment	Sulfur	dsrA	K11180		dissimilatory sulfite reductase alpha
+environment	Sulfur	dsrB	K11181		dissimilatory sulfite reductase beta
+environment	Sulfur	soxB	K17224		thiosulfate oxidation (Sox)
+environment	Methane	mcrA	K00399		methanogenesis
+environment	Methane	mmoX	K16157		soluble methane monooxygenase
+environment	Degradation	catA	K03381		catechol 1,2-dioxygenase
+environment	Degradation	catE	K07104		catechol 2,3-dioxygenase
+environment	Degradation	pcaG	K00448		protocatechuate 3,4-dioxygenase alpha
+environment	Degradation	pcaH	K00449		protocatechuate 3,4-dioxygenase beta
+environment	Degradation	alkB	K00496		alkane monooxygenase

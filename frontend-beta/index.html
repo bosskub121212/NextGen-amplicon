@@ -1402,10 +1402,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             ? " · showing the last " + M.logs.length : "");
     }
 
+    function isGateWait(M){
+      return !!(M.D && typeof M.D.step_label === "string" && M.D.step_label.indexOf("Waiting — HUMAnN") === 0);
+    }
+
     function stepsHtml(M){
       if(!M.rows.length)
         return '<div class="skel">' + (M.live && !M.startedAt
-            ? "Queued — waiting for a free worker slot."
+            ? (isGateWait(M) ? esc(M.D.step_label) : "Queued — waiting for a free worker slot.")
             : "No steps recorded yet." + (M.live ? " The pipeline announces each step as it starts it." : ""))
           + '</div>';
       return M.rows.map(function(r){
@@ -1425,6 +1429,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
        bug report will not contain. */
     function logHtml(M){
       /* submitted but not picked up: every worker slot is busy */
+      if(M.live && !M.startedAt && isGateWait(M))
+        return '<span class="w">' + esc(M.D.step_label) + '.</span>\n\nA shotgun job with function profiles '
+          + '(HUMAnN) needs about 25 GB of RAM, so it runs alone: it waits for running jobs to finish, and '
+          + 'jobs submitted after it wait until it is done. This job starts by itself — Project history '
+          + 'shows what is running. Its log begins then.';
       if(M.live && !M.startedAt)
         return '<span class="w">Waiting to start.</span>\n\nEvery worker slot is busy with another job; '
           + 'this one starts by itself when a slot frees — Project history shows what is running. '
@@ -1785,6 +1794,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                                  + p.sg_bracken_threshold + " reads");
       row("Host removal",        p.sg_host || "none");
       if(p.sg_min_abundance !== undefined) row("Minimum abundance", p.sg_min_abundance + " %");
+      if(p.sg_func !== undefined)
+        row("Function", p.sg_func ? "HUMAnN on · " + (p.sg_func_panels || "no gene sets") : "off");
       if(p.sg_amr !== undefined || p.sg_mags !== undefined)
         row("Resistome · MAGs", (p.sg_amr === false ? "off" : "on") + " · " + (p.sg_mags ? "on" : "off")
             + (p.sg_mags && p.sequencerType === "ont" ? (p.sg_mag_polish ? " (Medaka polish)" : " (unpolished)") : ""));
@@ -2100,9 +2111,15 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     {id:"specacc",  g:"Other", label:"Spec. Accum.", f:"specaccum.csv",      kind:"lines"},
     {id:"rankab",   g:"Other", label:"Rank Abund.",  f:"rank_abundance.csv", kind:"lines"},
     {id:"asvlen",   g:"Other", label:"ASV Lengths",  f:"asv_lengths.csv",    kind:"hist"},
-    {id:"otu",      g:"Other", label:"OTU Dist",     f:"otu_distribution.csv", kind:"box"}
+    {id:"otu",      g:"Other", label:"OTU Dist",     f:"otu_distribution.csv", kind:"box"},
+    /* shotgun + HUMAnN (shotgun_func.func_stats) */
+    {id:"f_path",   g:"Function", label:"Pathways",     f:"func_pathways.csv",  kind:"taxheat"},
+    {id:"f_ko",     g:"Function", label:"KO",           f:"func_ko.csv",        kind:"taxheat"},
+    {id:"f_pan",    g:"Function", label:"Genes of interest", f:"func_panels.csv", kind:"taxheat"},
+    {id:"f_alpha",  g:"Function", label:"Shannon (pathways)", f:"func_alpha.csv", kind:"alpha", metric:"Shannon_pathways"},
+    {id:"f_pcoa",   g:"Function", label:"PCoA (KO)",    f:"func_pcoa_ko.csv",   kind:"scatter"}
   ];
-  var TAB_GROUPS = ["Taxonomy", "Alpha", "Beta", "Other"];
+  var TAB_GROUPS = ["Taxonomy", "Alpha", "Beta", "Function", "Other"];
 
   /* Sequential ramps for the heatmaps — the production console's list, kept so
      a job styled there looks the same here. Viridis is the default because it
@@ -6101,11 +6118,15 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["nThreads", "CPU threads", "int", "8", ""],
         ["sg_memory_mapping", "Index from disk", "bool", "false",
          "on when the machine has less RAM than the index (slower)"]]},
-      {n:4, title:"Resistome and genomes",
-       why:"AMR genes are found directly in the reads (fast). Genome bins (MAGs) need an assembly: hours and most of the RAM for a large sample, so they are off unless asked for.",
+      {n:4, title:"Resistome, function and genomes",
+       why:"AMR genes are found directly in the reads (fast). Function profiles (HUMAnN) and genome bins (MAGs) take hours and much of the RAM, so they are off unless asked for.",
        fields:[
         ["sg_amr", "AMR genes in reads", "bool", "true",
          "reads vs the AMRFinderPlus gene catalogue (installed with the WGS tools), with the organism carrying each gene"],
+        ["sg_func", "Function (HUMAnN)", "func", "false",
+         "pathways, KEGG KO, EC and genes of interest with the genera carrying them. Hours per sample; needs ~25 GB RAM, so the job runs alone and other jobs wait"],
+        ["sg_func_panels", "Genes of interest", "panels", "gut,food,environment",
+         "gene sets in the report (backend/data/function_panels.tsv)"],
         ["sg_mag_polish", "Nanopore: polish contigs (Medaka)", "bool", "true",
          "fixes small indels in the contigs before binning: better gene calls and CheckM2 scores (Zymo R9: B. subtilis 55 → 68 % complete); a few minutes, about 4 GB of RAM. Ignored for Illumina"],
         ["sg_mags", "Genome bins (MAGs)", "bool", "false",
@@ -6170,6 +6191,26 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<option value="true"'  + (def === "true"  ? " selected" : "") + '>on</option>'
         + '<option value="false"' + (def === "false" ? " selected" : "") + '>off</option></select>';
       hint = "";
+    } else if(kind === "func"){
+      /* HUMAnN: offered only when GET /databases found its databases (they can sit
+         on another drive, e.g. /mnt/e, that is not always mounted) */
+      var hm = (STATE.databases || {}).humann || {};
+      var okF = !!hm.installed;
+      ctl = '<select id="' + id + '" data-k="' + esc(key) + '" data-bool="1"' + (okF ? "" : " disabled") + '>'
+        + '<option value="true"'  + (okF && def === "true" ? " selected" : "") + '>on</option>'
+        + '<option value="false"' + (!okF || def !== "true" ? " selected" : "") + '>off</option></select>';
+      if(!okF) hint = hm.reason || "HUMAnN is not installed — bash ~/r16s-app/setup_shotgun.sh --func";
+    } else if(kind === "panels"){
+      wide = true;
+      var onP = String(def || "").split(",");
+      ctl = '<input type="hidden" id="' + id + '" data-k="' + esc(key) + '" value="' + esc(def) + '">'
+        + '<div class="fpanels">' + [["gut", "Gut (SCFA, bile acids, TMA, vitamins)"],
+             ["food", "Food (lactic acid, bacteriocins, biogenic amines)"],
+             ["environment", "Environment (N, S, methane, degradation)"]].map(function(o){
+            return '<label style="display:inline-flex;gap:5px;margin-right:14px;font-weight:400">'
+              + '<input type="checkbox" class="fpanel" value="' + o[0] + '"'
+              + (onP.indexOf(o[0]) !== -1 ? " checked" : "") + '>' + esc(o[1]) + '</label>'; }).join("")
+        + '</div>';
     } else if(kind === "db"){
       /* Options come from the real file listing, plus a custom path. See
          databaseOptions(). */
@@ -6227,7 +6268,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + (kind === "mono" ? ' class="mono"' : "")
         + ' value="' + esc(def) + '">';
     }
-    return '<div class="f' + (wide ? " wide" : "") + '">'
+    return '<div class="f' + (wide ? " wide" : "") + '"' + (key === "sg_func_panels" ? ' id="funcPanelsRow"' : "") + '>'
       + '<label for="' + id + '">' + esc(label) + '</label>' + ctl
       + (hint ? '<span class="note">' + esc(hint) + '</span>' : "") + '</div>';
   }
@@ -6580,6 +6621,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var k2in = document.getElementById("f_sg_kraken_db");
     if(k2in) k2in.addEventListener("input", function(){ preflight(dbOpts, dbCount); });
     var k2sel = document.getElementById("f_sg_k2sel");
+    var fsel = document.getElementById("f_sg_func"), frow = document.getElementById("funcPanelsRow");
+    if(fsel && frow){
+      var fsync = function(){ frow.hidden = fsel.value !== "true"; };
+      fsel.addEventListener("change", fsync);
+      fsync();
+      var fin = document.getElementById("f_sg_func_panels");
+      Array.prototype.forEach.call(frow.querySelectorAll(".fpanel"), function(cb){
+        cb.addEventListener("change", function(){
+          fin.value = Array.prototype.filter.call(frow.querySelectorAll(".fpanel"), function(x){ return x.checked; })
+            .map(function(x){ return x.value; }).join(",");
+        });
+      });
+    }
     if(k2sel && k2in){
       var k2sync = function(){
         var custom = k2sel.value === "__custom__";

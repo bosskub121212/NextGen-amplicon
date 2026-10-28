@@ -8,11 +8,20 @@
 #    bash ~/r16s-app/setup_shotgun.sh --no-host        # skip the human index for host removal
 #    bash ~/r16s-app/setup_shotgun.sh --mags           # only the MAG tools (env ngamp-mags)
 #    bash ~/r16s-app/setup_shotgun.sh --amr            # AMRFinderPlus 4.x + current database (env ngamp-amr)
+#    bash ~/r16s-app/setup_shotgun.sh --func [--func-db-dir DIR]
+#                                       # HUMAnN 3.9 + MetaPhlAn 4.1.1 and their databases (~50 GB;
+#                                       # env ngamp-func; DIR defaults to backend/databases/humann)
 #    bash ~/r16s-app/setup_shotgun.sh --status
 #
 #  Everything goes into places of its own, nothing existing is touched:
 #    conda env  ngamp-meta   python 3.11, kraken2, bracken, fastp, hostile >= 2, chopper, seqkit
 #    conda env  ngamp-mags   megahit, metabat2, samtools, minimap2   (--mags; genome bins)
+#    conda env  ngamp-func   humann=3.9, metaphlan=4.1.1 (--func; functional profiles). Pinned:
+#                            HUMAnN 3.9 reads only the MetaPhlAn vJun23 database, which
+#                            MetaPhlAn 4.1.2 / 4.2 no longer accept.
+#                            Databases in DIR (db_paths.json key humann_db): chocophlan/ (full),
+#                            uniref/ (uniref90_diamond, full UniRef90), utility_mapping/ (full),
+#                            metaphlan/ (mpa_vJun23_CHOCOPhlAnSGB_202307)
 #    conda env  ngamp-amr    AMRFinderPlus >= 4.2 and its database   (--amr; shotgun resistome
 #                            and MAG AMR use it when present; the WGS pipeline keeps its own)
 #  Resistome and MAGs also use AMRFinderPlus, Flye, CheckM2 and the GTDB sketch
@@ -37,7 +46,9 @@ G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[1m'; N='\033[0m'
 ok(){ echo -e "  ${G}✓${N} $*"; }; warn(){ echo -e "  ${Y}!${N} $*"; }; bad(){ echo -e "  ${R}✗${N} $*"; }
 step(){ echo -e "\n${B}══ $* ══${N}"; }
 
-TOOLS=1; INDEX=1; HOST=1; KIND="standard_16"; STATUS=0; MAGS=0; AMR=0
+TOOLS=1; INDEX=1; HOST=1; KIND="standard_16"; STATUS=0; MAGS=0; AMR=0; FUNC=0
+FDIR="$APP/backend/databases/humann"
+MPA_INDEX="mpa_vJun23_CHOCOPhlAnSGB_202307"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tools-only) INDEX=0; HOST=0 ;;
@@ -45,8 +56,10 @@ while [[ $# -gt 0 ]]; do
     --no-host) HOST=0 ;;
     --mags) MAGS=1; TOOLS=0; INDEX=0; HOST=0 ;;
     --amr) AMR=1; TOOLS=0; INDEX=0; HOST=0 ;;
+    --func) FUNC=1; TOOLS=0; INDEX=0; HOST=0 ;;
+    --func-db-dir) FDIR="$2"; shift ;;
     --status) STATUS=1 ;;
-    -h|--help) sed -n 2,25p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,37p "$0"; exit 0 ;;
     *) warn "unknown option $1" ;;
   esac
   shift
@@ -92,6 +105,20 @@ if [[ $STATUS == 1 ]]; then
   fi
   [[ -x "$W/flye" ]] && ok "flye (Nanopore MAGs)" || warn "flye missing — Nanopore MAGs need setup_wgs.sh"
   [[ -x "$BASE/envs/checkm2/bin/checkm2" || -x "$W/checkm2" ]] && ok "checkm2 (MAG quality)" || warn "checkm2 missing — bins are not graded"
+  FB="$BASE/envs/ngamp-func/bin"
+  if [[ -x "$FB/humann" ]]; then
+    ok "humann $("$FB/humann" --version 2>&1 | grep -o '[0-9][0-9.]*' | head -1), metaphlan $("$FB/metaphlan" --version 2>&1 | grep -o '[0-9][0-9.]*' | head -1), diamond $("$FB/diamond" version 2>&1 | grep -o '[0-9][0-9.]*' | head -1) (function, env ngamp-func)"
+    HD=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('humann_db',''))" "$DBP" 2>/dev/null)
+    if [[ -n "$HD" && -d "$HD" ]]; then
+      for part in chocophlan uniref utility_mapping metaphlan; do
+        [[ -f "$HD/$part/.complete" ]] && ok "  $part $(du -sh "$HD/$part" 2>/dev/null | cut -f1)  ($HD)" || bad "  $part missing or incomplete in $HD — setup_shotgun.sh --func"
+      done
+    else
+      warn "HUMAnN databases not found (${HD:-humann_db not set}) — setup_shotgun.sh --func"
+    fi
+  else
+    warn "humann missing — function profiles need setup_shotgun.sh --func"
+  fi
   python3 - "$DBP" <<'PY'
 import json, sys, pathlib
 d = json.loads(pathlib.Path(sys.argv[1]).read_text()) if pathlib.Path(sys.argv[1]).exists() else {}
@@ -213,6 +240,79 @@ if [[ $AMR == 1 ]]; then
   PATH="$AB:$PATH" CONDA_PREFIX="$BASE/envs/ngamp-amr" "$AB/amrfinder_update" -d "$ADB" \
     || { bad "database download failed — re-run: setup_shotgun.sh --amr"; exit 1; }
   ok "database $(cat "$BASE"/envs/ngamp-amr/share/amrfinderplus/data/latest/version.txt 2>/dev/null)"
+fi
+if [[ $FUNC == 1 ]]; then
+  step "HUMAnN 3.9 + MetaPhlAn 4.1.1 (env ngamp-func)"
+  FB="$BASE/envs/ngamp-func/bin"
+  if [[ -x "$FB/humann" && -x "$FB/metaphlan" ]]; then
+    ok "already installed"
+  else
+    # pinned: HUMAnN 3.9 works only with MetaPhlAn 4.1.1 and the vJun23 database
+    # ("metaphlan=4.1" resolves to 4.1.2, which does not)
+    $CONDA create -y -n ngamp-func -c conda-forge -c bioconda python=3.10 humann=3.9 metaphlan=4.1.1 \
+      || { bad "conda env ngamp-func failed"; exit 1; }
+    ok "env ngamp-func created"
+  fi
+  "$FB/humann" --version 2>&1 | head -1
+  "$FB/metaphlan" --version 2>&1 | tail -1
+  mkdir -p "$FDIR" || { bad "cannot create $FDIR"; exit 1; }
+  FDIR="$(cd "$FDIR" && pwd)"
+  # .complete is written only after a part downloaded and unpacked in full: a download
+  # cut short (WSL stopped, disk full) is fetched again instead of looking installed
+  have(){ [[ -f "$FDIR/$1/.complete" ]]; }
+  if ! (have chocophlan && have uniref && have utility_mapping && have metaphlan); then
+    # one download at a time and the archive deleted after unpacking: the peak is the final
+    # size (~50 GB) plus the largest archive (~20 GB)
+    used=$(du -s -BG "$FDIR" 2>/dev/null | cut -f1 | tr -dc 0-9); used=${used:-0}
+    need=$(( 80 - used )); (( need < 10 )) && need=10
+    free=$(df -BG --output=avail "$FDIR" | tail -1 | tr -dc 0-9)
+    if (( free < need )); then
+      bad "only ${free} GB free in $FDIR, need ${need} GB — choose another place: --func-db-dir DIR"
+      exit 1
+    fi
+    ok "${free} GB free in $FDIR"
+  fi
+  tidy(){ find "$FDIR" -maxdepth 2 \( -name '*.tar.gz' -o -name '*.tar' -o -name '*.tar.bz2' \) -size +1M -delete 2>/dev/null; }
+  for spec in "chocophlan full" "uniref uniref90_diamond" "utility_mapping full"; do
+    set -- $spec
+    if have "$1"; then ok "$1 already in $FDIR/$1"; continue; fi
+    step "HUMAnN database: $1 ($2)"
+    [[ -d "$FDIR/$1" ]] && { warn "$FDIR/$1 is incomplete (no .complete) — downloading it again"; rm -rf "$FDIR/$1"; }
+    PATH="$FB:$PATH" "$FB/humann_databases" --download "$1" "$2" "$FDIR" --update-config no \
+      || { bad "$1 download failed — re-run: setup_shotgun.sh --func --func-db-dir $FDIR"; tidy; exit 1; }
+    tidy
+    date +%F > "$FDIR/$1/.complete"
+    ok "$1 $(du -sh "$FDIR/$1" | cut -f1)"
+  done
+  if have metaphlan && ls "$FDIR/metaphlan/$MPA_INDEX"*.bt2l >/dev/null 2>&1; then
+    ok "MetaPhlAn database $MPA_INDEX already in $FDIR/metaphlan"
+  else
+    step "MetaPhlAn database $MPA_INDEX"
+    mkdir -p "$FDIR/metaphlan"
+    PATH="$FB:$PATH" "$FB/metaphlan" --install --index "$MPA_INDEX" --bowtie2db "$FDIR/metaphlan" \
+      --nproc "$(nproc)" || { bad "MetaPhlAn database failed — re-run: setup_shotgun.sh --func --func-db-dir $FDIR"; tidy; exit 1; }
+    tidy
+    ls "$FDIR/metaphlan/$MPA_INDEX"*.bt2l >/dev/null 2>&1 && [[ -f "$FDIR/metaphlan/$MPA_INDEX.pkl" ]] \
+      || { bad "MetaPhlAn database incomplete — re-run: setup_shotgun.sh --func --func-db-dir $FDIR"; exit 1; }
+    date +%F > "$FDIR/metaphlan/.complete"
+    ok "metaphlan $(du -sh "$FDIR/metaphlan" | cut -f1)"
+  fi
+  python3 - "$FDIR" "$DBP" "$MPA_INDEX" "$("$FB/humann" --version 2>&1 | head -1)" "$("$FB/metaphlan" --version 2>&1 | tail -1)" <<'PY'
+import json, sys, time, pathlib
+d, dbp, idx, hv, mv = sys.argv[1:6]
+info = {"db_dir": d, "chocophlan": f"{d}/chocophlan", "uniref": f"{d}/uniref",
+        "utility_mapping": f"{d}/utility_mapping", "metaphlan_db": f"{d}/metaphlan",
+        "metaphlan_index": idx, "humann": hv.strip(), "metaphlan": mv.strip(),
+        "installed": time.strftime("%Y-%m-%d")}
+pathlib.Path(d, "humann_db.json").write_text(json.dumps(info, indent=1))
+p = pathlib.Path(dbp)
+cur = json.loads(p.read_text()) if p.exists() else {}
+cur["humann_db"] = d
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps(cur, indent=2))
+print(f"  db_paths.json: humann_db = {d}")
+PY
+  ok "HUMAnN ready — tick Function (HUMAnN) in the shotgun form, step 4"
 fi
 echo ""
 ok "Done. No backend restart needed for tools or indexes."
