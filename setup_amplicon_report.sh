@@ -39,7 +39,10 @@ status(){
     [[ -x "$AMP/$t" ]] && ok "$t ($AMP)" || warn "$t missing"
   done
   [[ -x "$NANO/NanoPlot" ]] && ok "NanoPlot ($NANO)" || warn "NanoPlot missing (ONT 16S customer report: read statistics without NanoPlot plots)"
-  for p in microbiomeutilities venneuler eulerr; do rpkg "$p" && ok "R $p" || warn "R $p missing"; done
+  rpkg microbiomeutilities && ok "R microbiomeutilities" || warn "R microbiomeutilities missing (heatmap uses pheatmap instead)"
+  if rpkg venneuler; then ok "R venneuler"
+  elif rpkg eulerr; then ok "R eulerr (Venn fallback)"
+  else warn "R venneuler / eulerr missing — venneuler needs Java: sudo apt-get install -y default-jdk && sudo R CMD javareconf"; fi
   "$PY" -c "import openpyxl" 2>/dev/null && ok "openpyxl (backend)" || warn "openpyxl missing in $PY"
 }
 if [[ $STATUS == 1 ]]; then status; exit 0; fi
@@ -69,12 +72,27 @@ lib <- Sys.getenv("R_LIBS_USER"); if (nzchar(lib)) { dir.create(lib, recursive =
 repos <- "https://cloud.r-project.org"
 need <- function(p) !requireNamespace(p, quietly = TRUE)
 if (need("remotes")) install.packages("remotes", repos = repos, quiet = TRUE)
+# microbiomeutilities needs Bioconductor "microbiome" and "gghalves", which left CRAN
+# (GitHub erocoar/gghalves); without them its install stops with "dependency not available".
+if (need("microbiomeutilities")) {
+  if (need("BiocManager")) install.packages("BiocManager", repos = repos, quiet = TRUE)
+  if (need("microbiome"))
+    tryCatch(BiocManager::install("microbiome", update = FALSE, ask = FALSE),
+             error = function(e) cat("  microbiome (Bioconductor) failed:", conditionMessage(e), "\n"))
+  if (need("gghalves")) {
+    try(install.packages("gghalves", repos = repos, quiet = TRUE), silent = TRUE)
+    if (need("gghalves"))
+      tryCatch(remotes::install_github("erocoar/gghalves", upgrade = "never", quiet = TRUE),
+               error = function(e) cat("  gghalves failed:", conditionMessage(e), "\n"))
+  }
+}
 if (need("microbiomeutilities"))
   tryCatch(remotes::install_github("microsud/microbiomeutilities", upgrade = "never", quiet = TRUE),
            error = function(e) cat("  microbiomeutilities failed:", conditionMessage(e), "\n"))
 if (need("venneuler"))
   tryCatch(install.packages("venneuler", repos = repos, quiet = TRUE),
            error = function(e) cat("  venneuler failed (needs Java):", conditionMessage(e), "\n"))
+if (need("venneuler")) cat("  venneuler needs Java: sudo apt-get install -y default-jdk && sudo R CMD javareconf\n")
 if (need("venneuler") && need("eulerr")) install.packages("eulerr", repos = repos, quiet = TRUE)
 for (p in c("microbiomeutilities", "venneuler", "eulerr"))
   cat(sprintf("  %-20s %s\n", p, if (requireNamespace(p, quietly = TRUE)) "installed" else "missing"))

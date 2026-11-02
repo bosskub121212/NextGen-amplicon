@@ -102,11 +102,14 @@ def sentence_fastp(d: dict | None) -> str:
 
 # ── Nanopore reads ─────────────────────────────────────────────────────────────
 def read_stats(files: list[Path]) -> dict | None:
-    """Reads, bases, mean / median / N50 length and mean per-read quality of FASTQ files
-    (plain or gzip), all reads counted. Quality = mean of each read's arithmetic mean
-    Phred score."""
+    """Reads, bases, mean / median / N50 length and mean read quality of FASTQ files
+    (plain or gzip), all reads counted. A read's quality is computed from its mean error
+    rate, -10·log10(mean 10^(-Q/10)), as MinKNOW and NanoPlot do (the mean of the Phred
+    numbers themselves overstates it badly); the mean of those per-read values is given."""
     import gzip
+    import math
     from array import array
+    err = [10 ** (-(c - 33) / 10) if c >= 33 else 1.0 for c in range(256)]
     lens, qsum, n = array("I"), 0.0, 0
     try:
         for f in files:
@@ -121,8 +124,9 @@ def read_stats(files: list[Path]) -> dict | None:
                     q = fh.readline().rstrip(b"\r\n")
                     L = len(seq)
                     lens.append(L)
-                    if L:
-                        qsum += sum(q) / L - 33
+                    if L and q:
+                        e_ = sum(map(err.__getitem__, q)) / len(q)
+                        qsum += -10 * math.log10(max(e_, 1e-10))
                     n += 1
     except (OSError, EOFError, ValueError):            # unreadable or truncated FASTQ: no numbers, no crash
         return None
@@ -145,7 +149,8 @@ def sentence_read_stats(d: dict | None) -> str:
     if not d.get("reads"):
         return "The raw FASTQ held no reads."
     return (f"{d['reads']:,} reads, {d['bases']:,} bases; mean length {d['mean_len']:,.0f} bases (median "
-            f"{d['median_len']:,}, N50 {d['n50']:,}); mean read quality Q{d['mean_q']:.1f}.")
+            f"{d['median_len']:,}, N50 {d['n50']:,}); mean read quality Q{d['mean_q']:.1f} (each read's quality "
+            "from its mean error rate, as MinKNOW reports it).")
 
 
 def nanoplot(files: list[Path], out: Path, tool: str | None, threads: int = 2) -> dict | None:

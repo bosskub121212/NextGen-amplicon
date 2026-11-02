@@ -1243,6 +1243,21 @@ def t_fix24_gate_and_species(tmp: Path):
 TESTS += [t_fix24_name_collision, t_fix24_emu_unassigned, t_fix24_old_summary, t_fix24_gate_and_species]
 
 
+
+def t_fix24_read_quality(tmp: Path):
+    import qc_tools as Q
+    f = tmp / "q.fastq"
+    f.write_text("@a\nACGT\n+\n++??\n@b\nACGT\n+\n++??\n")       # Q10, Q10, Q30, Q30
+    d = Q.read_stats([f])
+    check("read stats: quality from the mean error rate (as MinKNOW / NanoPlot), not the mean Phred",
+          d and abs(d["mean_q"] - 12.97) < 0.05, str(d))
+    check("read stats: sentence says how quality is computed", "mean error rate" in Q.sentence_read_stats(d),
+          Q.sentence_read_stats(d))
+
+
+TESTS += [t_fix24_read_quality]
+
+
 def main() -> int:
     print("fish eDNA amplicons (CytB / 12S)")
     with tempfile.TemporaryDirectory() as td:
