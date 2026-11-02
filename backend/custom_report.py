@@ -632,7 +632,9 @@ def _sample_block(run, i, s, folder, img, qc, plots, alpha_r, job_label) -> list
           '<p class="note">It is not possible to draw a Venn diagram in a single sample.</p>',
           "<h4>2. Bar chart of taxonomic profiles by ggplot2 package</h4>",
           "<p>Relative abundance of the taxa detected in this sample at each taxonomic rank. " + ("Taxa" if emu else "ASVs") + " without a name at a "
-          "rank are shown as '&lt;higher rank&gt; unidentified'.</p>"]
+          "rank are shown as '&lt;higher rank&gt; unidentified'. At a rank with more than 30 taxa the chart colours the "
+          "30 most abundant and sums the rest into one grey 'Others' segment; the outfiles and the Excel file list "
+          "every taxon.</p>"]
     for rank, _, low in RANK_FILES:
         o += [f"<p><u>At {rank} level</u></p>", _fig(img / "Taxonomic profiles" / f"plot_bar_{low}.png", 9),
               _cap(rel(f"Taxonomic profiles/plot_bar_{low}.png"))]

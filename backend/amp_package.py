@@ -49,7 +49,8 @@ p.res { font-weight: bold; font-size: 12pt; margin-top: 4mm; page-break-before: 
 p.cap { text-align: center; font-size: 9pt; color: #444; font-style: italic; }
 p.note { color: #b00000; text-align: center; font-style: italic; }
 p.nofig { text-align: center; color: #777; border: 1px dashed #bbb; padding: 12pt; }
-div.fig { text-align: center; margin: 2mm 0; }
+div.fig { text-align: center; margin: 2mm 0; page-break-inside: avoid; page-break-before: avoid; }
+div.keep { page-break-inside: avoid; } p.cap { page-break-before: avoid; }
 table { border-collapse: collapse; width: 100%; margin: 2mm 0; font-size: 9pt; table-layout: fixed; }
 th, td { border: 1px solid #c8c8c8; padding: 1.5mm 2mm; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
 th { background: #f2f2f2; } table.num { font-size: 7.6pt; } table.num td + td + td { text-align: right; }
@@ -248,12 +249,31 @@ def build_sample(run_dir: Path, upload_dir: Path | None, sample: str, out_dir: P
         except Exception as ex:
             man["docx_error"] = str(ex)
     shutil.rmtree(work, ignore_errors=True)
+    for f in root.rglob("*.log"):           # tool logs (NanoPlot's) carry server paths: not for the customer
+        f.unlink()
     for f in FOLDERS:
         d = root / f
         if not any(d.rglob("*")):
             (d / "NOT_AVAILABLE.txt").write_text("This step was not run for this sample, or its tool was not "
                                                   "installed — see the report.\n")
     return man
+
+
+def nanostats(p: Path) -> dict:
+    """Mean / median read quality from NanoPlot's NanoStats.txt ({} when absent)."""
+    out = {}
+    try:
+        for line in Path(p).read_text(errors="replace").splitlines():
+            k, _, v = line.partition(":")
+            k = k.strip().lower()
+            if k in ("mean read quality", "median read quality"):
+                try:
+                    out["mean" if k.startswith("mean") else "median"] = float(v.strip().replace(",", ""))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return out
 
 
 def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: dict, reads_rel, xlsx: Path) -> str:
@@ -275,6 +295,12 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
             "cutadapt's own read counts were not found, so the count before primer removal cannot be given.</p>"))
     if s in getattr(run, "dropped", []):
         o.append('<p class="note">No reads of this sample were left after filtering: the pipeline dropped it.</p>')
+    ns = nanostats(root / "1.QcReads" / "NanoPlot" / "NanoStats.txt")
+    if ns.get("mean") is not None:
+        o.append("<p>NanoPlot's own summary (1.QcReads/NanoPlot/NanoStats.txt) gives a mean read quality of "
+                 f"Q{ns['mean']:.1f}" + (f" and a median of Q{ns['median']:.1f}" if ns.get("median") is not None else "")
+                 + ": NanoPlot averages the reads' error rates, which weighs low-quality reads more than the mean of "
+                 "the reads' quality values given above. Both describe the same reads.</p>")
     o.append(results("1.QcReads"))
 
     # 2. Taxonomy
@@ -301,15 +327,21 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
     o += ["<h3>Bar charts of taxonomic profiles</h3>",
           f"<p>Relative abundance of the taxa detected in this sample at each rank (phyloseq "
           f"{e(plots.get('phyloseq', ''))}, ggplot2 {e(plots.get('ggplot2', ''))}). "
-          + ("Taxa" if emu else "ASVs") + " without a name at a rank are shown as '&lt;higher rank&gt; unidentified'.</p>"]
-    for rank, _, low in CR.RANK_FILES:
-        o += [f"<p><u>At {rank} level</u></p>", CR._fig(T / "Bar charts" / f"plot_bar_{low}.png", 9)]
+          + ("Taxa" if emu else "ASVs") + " without a name at a rank are shown as '&lt;higher rank&gt; unidentified'. "
+          "At a rank with more than 30 taxa the chart colours the 30 most abundant and sums the rest into one grey "
+          "'Others' segment (its title gives the count); the tables in 2.Taxonomy/outfiles and the Excel file list "
+          "every taxon.</p>"]
+    for rank, _, low in CR.RANK_FILES:              # label and its chart never split over two pages
+        o.append(f'<div class="keep"><p><u>At {rank} level</u></p>'
+                 + CR._fig(T / "Bar charts" / f"plot_bar_{low}.png", 9) + "</div>")
     unit = "taxa" if emu else "ASVs"
     hm = plots.get("heatmap_tool", "pheatmap")
-    o += [f"<h3>Top 50 {unit} heatmap ({e(hm.split(' ')[0])})</h3>", CR._fig(T / "Heatmap" / "Heat_map_top50.png", 13),
-          "<h3>Krona plot</h3>",
+    o += [f'<div class="keep"><h3>Top 50 {unit} heatmap ({e(hm.split(" ")[0])})</h3>'
+          + CR._fig(T / "Heatmap" / "Heat_map_top50.png", 13) + "</div>",
+          '<div class="keep"><h3>Krona plot</h3>'
           "<p>Krona shows the taxonomy as nested rings that can be zoomed in a web browser (the HTML file in "
-          "2.Taxonomy/Krona); the figure is a still of it.</p>", CR._fig(T / "Krona" / "krona_static.png", 12)]
+          "2.Taxonomy/Krona); the figure is a still of it.</p>" + CR._fig(T / "Krona" / "krona_static.png", 12)
+          + "</div>"]
     files = ([] if emu else ["outfiles/expr.asv.fasta"]) + ["outfiles/expr.abundance.all.txt",
                                                             "outfiles/expr.relative_abundance.all.txt",
                                                             "outfiles/expr.biom"]
@@ -347,8 +379,9 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
 
     # 4. Tables
     o += ["<h2>4. Tables</h2>",
-          ("<p>The Excel file holds the read tracking, the taxonomic profiles at every rank"
-           + ("" if emu else " and the sequence of each ASV") + f": 4.Tables/{e(xlsx.name)}.</p>") if xlsx.exists() else
+          ("<p>The Excel file 4.Tables/" + e(xlsx.name) + " holds the read tracking"
+           + (" and the taxonomic profiles at every rank" if emu else
+              ", the taxonomic profiles at every rank and the sequence of each ASV") + ".</p>") if xlsx.exists() else
           '<p class="note">The Excel file was not made on this machine (Python package openpyxl is missing; install '
           "it with: bash setup_amplicon_report.sh).</p>", results("4.Tables")]
 

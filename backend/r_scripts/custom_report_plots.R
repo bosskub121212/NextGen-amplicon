@@ -24,6 +24,30 @@ ver <- function(p) if (has(p)) as.character(utils::packageVersion(p)) else ""
 suppressPackageStartupMessages({ library(ggplot2); library(phyloseq) })
 RANKS <- c("Phylum", "Class", "Order", "Family", "Genus", "Species")
 
+# Bar charts: at most TOP_BAR taxa get their own colour; the rest are summed into one grey
+# "Others (k taxa)" bar segment (figure only — every taxon stays in the tables and Excel).
+TOP_BAR <- 30
+top_bar <- function(sample, tax, ab, top = TOP_BAR) {
+  tax[is.na(tax) | tax == ""] <- "Unassigned"
+  d <- aggregate(list(Abundance = ab), by = list(Sample = sample, tax = tax), FUN = sum)
+  tot <- tapply(d$Abundance, d$tax, sum)
+  ord <- names(sort(tot, decreasing = TRUE))
+  n <- length(ord)
+  if (n > top) {
+    keep <- ord[seq_len(top)]
+    oth <- sprintf("Others (%d taxa)", n - top)
+    d$tax[!d$tax %in% keep] <- oth
+    d <- aggregate(list(Abundance = d$Abundance), by = list(Sample = d$Sample, tax = d$tax), FUN = sum)
+    lev <- c(keep, oth)
+    cols <- c(palette_n(top), "#BDBDBD")
+  } else {
+    lev <- ord
+    cols <- palette_n(n)
+  }
+  d$tax <- factor(d$tax, levels = lev)
+  list(data = d, n = n, colours = setNames(cols, lev))
+}
+
 palette_n <- function(n) {
   base <- c("#7E57C2", "#26A69A", "#EF5350", "#42A5F5", "#FFA726", "#8D6E63", "#EC407A", "#66BB6A",
             "#5C6BC0", "#D4E157", "#26C6DA", "#AB47BC", "#FF7043", "#9CCC65", "#78909C", "#FFCA28",
@@ -69,19 +93,23 @@ for (k in seq_len(nrow(jobs))) {
       gl <- tax_glom(ps, taxrank = r, NArm = FALSE)
       rel <- transform_sample_counts(gl, function(x) x / sum(x))
       m <- psmelt(rel)
-      m[[r]] <- factor(m[[r]], levels = unique(m[[r]][order(-m$Abundance)]))
-      n <- length(unique(m[[r]]))
-      g <- ggplot(m, aes(x = Sample, y = Abundance, fill = .data[[r]])) +
+      bt <- top_bar(m$Sample, as.character(m[[r]]), m$Abundance, TOP_BAR)
+      m <- bt$data
+      n <- bt$n
+      shown <- nlevels(m$tax)
+      g <- ggplot(m, aes(x = Sample, y = Abundance, fill = tax)) +
         geom_col(width = 0.35, colour = NA) +
-        scale_fill_manual(values = palette_n(n)) +
+        scale_fill_manual(values = bt$colours) +
         scale_y_continuous(breaks = seq(0, 1, 0.1), expand = c(0, 0.01)) +
-        labs(title = sprintf("%d Taxa (%s)", n, r), x = NULL, y = "Relative Abundance", fill = r) +
+        labs(title = if (n > TOP_BAR) sprintf("%d Taxa (%s): top %d shown, %d combined as Others", n, r, TOP_BAR,
+                                              n - TOP_BAR) else sprintf("%d Taxa (%s)", n, r),
+             x = NULL, y = "Relative Abundance", fill = r) +
         theme_minimal(base_size = 10) +
         theme(axis.text.x = element_text(angle = 90, vjust = 0.5), legend.key.size = grid::unit(9, "pt"),
-              legend.text = element_text(size = if (n > 30) 6 else 8, face = if (r %in% c("Genus", "Species")) "italic" else "plain"),
+              legend.text = element_text(size = if (shown > 20) 7 else 8, face = if (r %in% c("Genus", "Species")) "italic" else "plain"),
               plot.title = element_text(size = 10)) +
-        guides(fill = guide_legend(ncol = if (n > 30) 2 else 1))
-      ggsave(f, g, width = if (n > 30) 7 else 5.5, height = 6, dpi = 150)
+        guides(fill = guide_legend(ncol = if (shown > 20) 2 else 1))
+      ggsave(f, g, width = if (shown > 20) 7.5 else 5.5, height = 6, dpi = 150)
     }, error = function(e) say("bar", r, "failed:", conditionMessage(e)))
   }
 

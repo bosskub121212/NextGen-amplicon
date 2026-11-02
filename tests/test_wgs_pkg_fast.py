@@ -796,6 +796,37 @@ def t_amp_package_emu(d):
           not (r2 / "1.QcReads" / "filtered_reads").exists() and "filtered_reads" not in h2)
 
 
+def t_amp_package_nanoplot(d):
+    import amp_package as AP
+    import test_amp_fast as TA
+    run = TA.make_emu_run(d / "run")
+    _w(run / "merged_reads" / "L21.fastq.gz", "@r\nACGT\n+\nIIII\n")
+    npx = d / "bin" / "NanoPlot"
+    npx.parent.mkdir(parents=True, exist_ok=True)
+    npx.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then echo NanoPlot 1.48.0; exit 0; fi\n"
+                   "while [ $# -gt 0 ]; do [ \"$1\" = -o ] && o=$2; shift; done\nmkdir -p $o\n"
+                   "printf 'General summary:\\nMean read quality:  17.6\\nMedian read quality:  19.4\\n' > $o/NanoStats.txt\n"
+                   "echo x > $o/NanoPlot-report.html\necho '/home/nextapp/r16s-app/backend/results/x' > $o/NanoPlot_1.log\n")
+    npx.chmod(0o755)
+    tools = _amp_tools(d)
+    tools["NanoPlot"] = str(npx)
+    m = AP.build_sample(run, d / "up", "L21", d / "out", ("html",), tools=tools)
+    root = Path(m["dir"])
+    html = (root / "Report_L21.html").read_text()
+    check("amplicon package: NanoPlot kept, its log (server paths) removed",
+          (root / "1.QcReads" / "NanoPlot" / "NanoStats.txt").exists() and not list(root.rglob("*.log")))
+    check("amplicon report: NanoPlot's own mean / median quality explained beside ours",
+          "Q17.6" in html and "median of Q19.4" in html, "")
+
+
+def t_bar_top30(d):
+    r = (ROOT / "backend" / "r_scripts" / "custom_report_plots.R").read_text()
+    a = (ROOT / "backend" / "amp_package.py").read_text()
+    check("bar charts: top 30 taxa + one grey 'Others', said in the reports", "TOP_BAR <- 30" in r
+          and "top_bar(m$Sample" in r and '"#BDBDBD"' in r and "30 most abundant" in a
+          and "30 most abundant" in (ROOT / "backend" / "custom_report.py").read_text())
+
+
 def t_amp_package_dada2(d):
     import amp_package as AP
     import test_amp_fast as TA
@@ -880,7 +911,7 @@ def t_pkg_name_collisions(d):
           and "Sample: FS 04" not in t[rep[0]], str(rep))
 
 
-TESTS += [t_amp_package_emu, t_amp_package_dada2, t_pkg_wgs, t_pkg_amplicon, t_pkg_name_collisions, t_pkg_wiring]
+TESTS += [t_bar_top30, t_amp_package_emu, t_amp_package_nanoplot, t_amp_package_dada2, t_pkg_wgs, t_pkg_amplicon, t_pkg_name_collisions, t_pkg_wiring]
 
 
 def main() -> int:
