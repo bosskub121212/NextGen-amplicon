@@ -748,11 +748,15 @@ def _build_one(run: AD.RunData, upload_dir: Path | None, out: Path, tools: dict,
         csv.writer(fh, delimiter="\t").writerows(jobs)
     rs = _tool(tools, "Rscript")
     if rs:
+        log = out.parent / f"{out.name}.plots.log"     # beside the package, never inside it
         try:
-            subprocess.run([rs, str(RSCRIPT), "--jobs", str(work / "jobs.tsv")], capture_output=True, text=True,
-                           timeout=3 * 3600)
+            pr = subprocess.run([rs, str(RSCRIPT), "--jobs", str(work / "jobs.tsv")], capture_output=True, text=True,
+                                timeout=3 * 3600)
+            log.write_text((pr.stdout or "") + (pr.stderr or ""))
         except subprocess.TimeoutExpired:
-            pass                                       # missing figures are shown as "Figure not available"
+            log.write_text("custom_report_plots.R stopped after 3 hours\n")  # missing figures: "Figure not available"
+        except OSError as ex:
+            log.write_text(f"custom_report_plots.R could not run: {ex}\n")
     kt = _tool(tools, "ktImportText")
     for wd, img, s, _u in jobs:
         html_out = Path(img) / "Krona plot" / "SampleID-krona.html"

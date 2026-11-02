@@ -97,7 +97,7 @@ for (k in seq_len(nrow(jobs))) {
           taxa_names(pt) <- top$label[match(taxa_names(pt), top$SV)]
           png(f, width = 1600, height = 300 + 42 * nrow(top), res = 150)
           microbiomeutilities::plot_taxa_heatmap(pt, subset.top = 50, VariableA = "Sample_name",
-                                                 transformation = "log10",
+                                                 transformation = "log10", cluster_cols = FALSE,
                                                  heatcolors = grDevices::colorRampPalette(rev(RColorBrewer::brewer.pal(9, "RdYlBu")))(100))
           dev.off(); heat_tool <- paste("microbiomeutilities", ver("microbiomeutilities")); TRUE
         }, error = function(e) { try(dev.off(), silent = TRUE); say("microbiomeutilities heatmap failed:", conditionMessage(e)); FALSE })

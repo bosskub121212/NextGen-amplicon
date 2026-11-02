@@ -1258,6 +1258,29 @@ def t_fix24_read_quality(tmp: Path):
 TESTS += [t_fix24_read_quality]
 
 
+
+def t_fix241_q60_and_plot_log(tmp: Path):
+    import qc_tools as Q
+    f = tmp / "q.fastq"
+    f.write_text("@a\n" + "A" * 100 + "\n+\n" + "+" * 60 + "?" * 40 + "\n")    # 60 x Q10 then 40 x Q30
+    d = Q.read_stats([f])
+    check("read stats: MinKNOW-style quality without the first 60 bases", d and abs(d["mean_q60"] - 30.0) < 0.05, str(d))
+    sen = Q.sentence_read_stats(d)
+    check("read stats: sentence gives both qualities", "without the first 60 bases" in sen and "Q30.0" in sen, sen)
+    run = make_emu_run(tmp / "run")
+    info = _split_report(tmp, run, ["L21"], {})
+    d0 = Path(info["packages"][0]["dir"])
+    log = d0.parent / f"{d0.name}.plots.log"
+    check("R figure log kept beside the package, not inside it", log.exists() and not list(d0.rglob("*.plots.log")),
+          str(sorted(p.name for p in d0.parent.iterdir())))
+    r = (ROOT / "backend" / "r_scripts" / "custom_report_plots.R").read_text()
+    check("heatmap: microbiomeutilities called without column clustering (one sample)", "cluster_cols = FALSE" in
+          r[r.find("plot_taxa_heatmap"):r.find("plot_taxa_heatmap") + 500])
+
+
+TESTS += [t_fix241_q60_and_plot_log]
+
+
 def main() -> int:
     print("fish eDNA amplicons (CytB / 12S)")
     with tempfile.TemporaryDirectory() as td:

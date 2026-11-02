@@ -110,7 +110,7 @@ def read_stats(files: list[Path]) -> dict | None:
     import math
     from array import array
     err = [10 ** (-(c - 33) / 10) if c >= 33 else 1.0 for c in range(256)]
-    lens, qsum, n = array("I"), 0.0, 0
+    lens, qsum, q60sum, n = array("I"), 0.0, 0.0, 0
     try:
         for f in files:
             op = gzip.open if str(f).endswith(".gz") else open
@@ -127,6 +127,9 @@ def read_stats(files: list[Path]) -> dict | None:
                     if L and q:
                         e_ = sum(map(err.__getitem__, q)) / len(q)
                         qsum += -10 * math.log10(max(e_, 1e-10))
+                        t = q[60:] if len(q) > 60 else q      # MinKNOW / dorado leave out the first 60 bases
+                        e60 = sum(map(err.__getitem__, t)) / len(t)
+                        q60sum += -10 * math.log10(max(e60, 1e-10))
                     n += 1
     except (OSError, EOFError, ValueError):            # unreadable or truncated FASTQ: no numbers, no crash
         return None
@@ -140,7 +143,7 @@ def read_stats(files: list[Path]) -> dict | None:
             n50 = L
             break
     return {"reads": n, "bases": tot, "mean_len": tot / n, "median_len": srt[n // 2], "n50": n50,
-            "mean_q": qsum / n}
+            "mean_q": qsum / n, "mean_q60": q60sum / n}
 
 
 def sentence_read_stats(d: dict | None) -> str:
@@ -149,8 +152,10 @@ def sentence_read_stats(d: dict | None) -> str:
     if not d.get("reads"):
         return "The raw FASTQ held no reads."
     return (f"{d['reads']:,} reads, {d['bases']:,} bases; mean length {d['mean_len']:,.0f} bases (median "
-            f"{d['median_len']:,}, N50 {d['n50']:,}); mean read quality Q{d['mean_q']:.1f} (each read's quality "
-            "from its mean error rate, as MinKNOW reports it).")
+            f"{d['median_len']:,}, N50 {d['n50']:,}); mean read quality Q{d['mean_q']:.1f} over whole reads"
+            + (f", Q{d['mean_q60']:.1f} without the first 60 bases (the way MinKNOW scores a read)"
+               if d.get("mean_q60") is not None else "")
+            + " — each read's quality from its mean error rate.")
 
 
 def nanoplot(files: list[Path], out: Path, tool: str | None, threads: int = 2) -> dict | None:
