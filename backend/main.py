@@ -65,12 +65,38 @@ jobs: dict = {}
 jobs_lock = threading.Lock()
 # log_queues for async SSE streaming (used by qiime2_pipeline)
 log_queues: dict = {}
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
-executor    = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-# A shotgun job with HUMAnN (~25 GB RAM) runs alone: it waits for running jobs to end,
-# and later jobs wait for it ("Waiting — HUMAnN job running"). job_gate.py.
+# The queue (job_gate.JobGate) decides who runs and when: "Jobs at once" slots (default 1),
+# a pause between jobs (default 3 min), an order the Queue page can change, and a shotgun
+# job with HUMAnN (~25 GB RAM) that runs alone ("Waiting — HUMAnN job running"). The
+# executor only provides the threads that wait their turn; its size is not a limit.
+QUEUE_CFG = BASE_DIR / "queue_config.json"
+
+
+def _load_queue_cfg() -> dict:
+    cfg = {"max_workers": int(os.getenv("MAX_WORKERS", "1")), "pause_minutes": 3.0}
+    try:
+        saved = json.loads(QUEUE_CFG.read_text())
+        cfg.update({k: saved[k] for k in cfg if k in saved})
+    except Exception:
+        pass
+    cfg["max_workers"] = max(1, min(int(cfg["max_workers"]), 16))
+    cfg["pause_minutes"] = max(0.0, min(float(cfg["pause_minutes"]), 120.0))
+    return cfg
+
+
+def _save_queue_cfg(cfg: dict) -> None:
+    try:
+        QUEUE_CFG.write_text(json.dumps(cfg, indent=1))
+    except Exception as e:
+        print(f"[queue] could not save {QUEUE_CFG}: {e}")
+
+
+_QCFG = _load_queue_cfg()
+MAX_WORKERS = _QCFG["max_workers"]
+QUEUE_THREADS = 64
+executor    = ThreadPoolExecutor(max_workers=QUEUE_THREADS)
 from job_gate import JobGate
-GATE = JobGate()
+GATE = JobGate(slots=MAX_WORKERS, pause=60 * _QCFG["pause_minutes"])
 
 # ── psutil Process cache (keeps objects alive between polls so cpu_percent works) ──
 _proc_cache: dict[int, "psutil.Process"] = {}  # pid → Process
@@ -91,12 +117,15 @@ def load_jobs():
         try:
             with open(JOBS_FILE, "r") as f:
                 loaded = json.load(f)
-            # Mark any jobs that were running/queued when we crashed as error
+            # A job that was running when the server stopped is lost; one still waiting in
+            # the queue goes back in line (_requeue_waiting, at startup).
             for j in loaded.values():
-                if j.get("status") in ("running", "queued"):
+                if j.get("status") == "running":
                     j["status"]     = "error"
                     j["error"]      = "Server restarted while job was running"
                     j["step_label"] = "Interrupted (server restart)"
+                elif j.get("status") == "queued":
+                    j["step_label"] = "Back in the queue after a server restart"
             jobs = loaded
             print(f"[history] Loaded {len(jobs)} jobs from disk.")
         except Exception as e:
@@ -283,7 +312,13 @@ class RunParams(BaseModel):
     sg_func_panels:     str   = "gut,food,environment"   # gene panels (data/function_panels.tsv)
 
 class WorkerConfig(BaseModel):
-    max_workers: int = 2
+    max_workers: int = 1
+    pause_minutes: Optional[float] = None
+
+
+class QueueMove(BaseModel):
+    job_id: str
+    to: int                       # 1 = next to run
 
 # ── License endpoints ─────────────────────────────────────────────────────────
 try:
@@ -916,6 +951,7 @@ async def run_analysis(job_id: str, params: RunParams):
         jobs[job_id]["job_name"]   = params.job_name
         jobs[job_id]["params"]     = params_snapshot
         jobs[job_id]["run_at"]     = time.time()
+        jobs[job_id]["queue_seq"]  = seq = time.time()
         save_jobs()
 
     # Also persist to disk in the results folder — survives jobs.json pruning
@@ -927,7 +963,7 @@ async def run_analysis(job_id: str, params: RunParams):
     except Exception as _pe:
         print(f"[params] WARNING: failed to write run_params.json: {_pe}")
 
-    executor.submit(run_r_pipeline, job_id, params)
+    executor.submit(run_r_pipeline, job_id, params, seq)
     return {"job_id": job_id, "status": jobs[job_id]["status"]}
 
 def _is_exclusive(params) -> bool:
@@ -942,11 +978,15 @@ def _is_exclusive(params) -> bool:
     return bool(_humann_status(dbp).get("installed"))
 
 
-def run_r_pipeline(job_id: str, params: RunParams):
+def run_r_pipeline(job_id: str, params: RunParams, seq: Optional[float] = None):
     def _cancelled():
         return jobs.get(job_id) is None or jobs[job_id].get("status") == "cancelled"
 
     def _waiting(label):
+        if label.startswith("Queued — #1"):
+            names = [str((jobs.get(a) or {}).get("job_name") or a) for a in GATE.snapshot()["active"]]
+            if names:
+                label += " · starts after " + ", ".join(names)
         if any(j.get("status") == "waiting_checkpoint" for j in list(jobs.values())):
             label += " (the running job is paused at a checkpoint and waits for its user)"
         with jobs_lock:
@@ -955,12 +995,41 @@ def run_r_pipeline(job_id: str, params: RunParams):
                 j["step_label"] = label
                 save_jobs()
 
-    if not GATE.enter(job_id, _is_exclusive(params), _cancelled, _waiting):
+    if not GATE.enter(job_id, _is_exclusive(params), _cancelled, _waiting, seq=seq):
         return                          # cancelled while waiting for its turn
     try:
         _run_r_pipeline_body(job_id, params)
     finally:
         GATE.leave(job_id)
+
+
+def _requeue_waiting() -> int:
+    """At startup: jobs that were still waiting when the server stopped go back in the
+    queue in their saved order, after one pause (an interrupted job may still be giving
+    its memory back)."""
+    waiting = sorted((j.get("queue_seq") or j.get("run_at") or 0, jid) for jid, j in list(jobs.items())
+                     if j.get("status") == "queued")
+    n = 0
+    for seq, jid in waiting:
+        try:
+            params = RunParams(**(jobs[jid].get("params") or {}))
+        except Exception as e:
+            with jobs_lock:
+                jobs[jid].update({"status": "error", "step_label": "Could not go back in the queue",
+                                  "error": f"Server restarted; the job could not be requeued: {e}"})
+            continue
+        executor.submit(run_r_pipeline, jid, params, seq)
+        n += 1
+    if n:
+        GATE.pause_now()
+        print(f"[queue] {n} waiting job(s) back in the queue after a restart")
+    save_jobs()
+    return n
+
+
+@app.on_event("startup")
+def _startup_requeue():
+    _requeue_waiting()
 
 
 def _run_r_pipeline_body(job_id: str, params: RunParams):
@@ -2194,18 +2263,87 @@ def _custom_state(job_id: str) -> dict:
     return {"status": "none"}
 
 
-@app.post("/custom_report/{job_id}")
-def start_custom_report(job_id: str):
+# Pipelines the customer report knows how to describe truthfully.
+_CUSTOM_MARKERS = ("12S", "16S", "ONT-16S", "ONT16S", "ONT")
+
+
+class CustomReportRequest(BaseModel):
+    samples: Optional[List[str]] = None   # None = every sample of the run
+    split: bool = True                    # one package per sample (samples of different customers)
+
+
+def _custom_check(job_id: str):
+    """(out_dir, None) or (None, error response)."""
     if not _JOB_ID_RE.fullmatch(job_id):
-        return JSONResponse(status_code=400, content={"error": "bad job id"})
+        return None, JSONResponse(status_code=400, content={"error": "bad job id"})
     out_dir = _custom_out(job_id)
     if not (out_dir / "asv_table.csv").exists():
-        return JSONResponse(status_code=400, content={"error": "this job has no ASV table (not a finished amplicon run)"})
+        return None, JSONResponse(status_code=400, content={
+            "error": "this job has no ASV table (not a finished amplicon run)"})
+    marker, seq = "", ""
+    for f in ("run_params.json", "summary.json"):
+        try:
+            d = json.loads((out_dir / f).read_text())
+            marker = marker or str(d.get("marker") or "")
+            seq = seq or str(d.get("sequencerType") or "")
+        except Exception:
+            pass
+    marker = marker or str((jobs.get(job_id) or {}).get("marker") or "")
+    if marker.upper() not in _CUSTOM_MARKERS:
+        return None, JSONResponse(status_code=400, content={
+            "error": f"the customer report covers 12S / CytB, 16S and ONT 16S runs, not {marker or 'this run'}"})
+    # 16S / 12S text describes paired Illumina reads through DADA2; ONT-through-DADA2 and
+    # VSEARCH OTU runs of those markers would get sentences about steps they never had.
+    if marker.upper() in ("16S", "12S") and (seq or "illumina").lower() != "illumina":
+        return None, JSONResponse(status_code=400, content={
+            "error": f"the customer report covers Illumina DADA2 runs of {marker}; this run used sequencerType={seq}"})
+    return out_dir, None
+
+
+@app.get("/custom_report/{job_id}/samples")
+def custom_report_samples(job_id: str):
+    out_dir, err = _custom_check(job_id)
+    if err:
+        return err
+    try:
+        import importlib
+        ad = importlib.reload(importlib.import_module("amp_data"))
+        run = ad.load_run(out_dir)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"cannot read this run: {e}"})
+    return {"kind": run.kind, "samples": [{"name": s, "reads": run.tracking[s].get("raw_data"),
+                                           "assigned": run.tracking[s].get("Nonchim")} for s in run.samples]}
+
+
+@app.post("/custom_report/{job_id}")
+def start_custom_report(job_id: str, req: Optional[CustomReportRequest] = None):
+    req = req or CustomReportRequest()
+    out_dir, err = _custom_check(job_id)
+    if err:
+        return err
+    if req.samples is not None:
+        if not req.samples:
+            return JSONResponse(status_code=400, content={"error": "pick at least one sample"})
+        try:
+            import importlib
+            known = set(importlib.reload(importlib.import_module("amp_data")).load_run(out_dir).samples)
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"error": f"cannot read this run: {e}"})
+        bad = [x for x in req.samples if x not in known]
+        if bad:
+            return JSONResponse(status_code=400, content={"error": f"not in this run: {', '.join(bad)}"})
     name = _custom_name(job_id)[:-len("_customer_report")]
+    want = {"samples": list(dict.fromkeys(req.samples)) if req.samples else None, "split": bool(req.split)}
     with _CUSTOM_LOCK:
-        if (CUSTOM_REPORTS.get(job_id) or {}).get("status") == "running":
-            return {"status": "running"}
-        CUSTOM_REPORTS[job_id] = {"status": "running", "started": time.time(), "name": name + "_customer_report"}
+        cur = CUSTOM_REPORTS.get(job_id) or {}
+        if cur.get("status") == "running":
+            if cur.get("request") == want:
+                return {"status": "running"}
+            return JSONResponse(status_code=409, content={
+                "error": "another customer report of this run is being built (other samples or mode) — try again "
+                         "when it is done", "running": cur.get("request")})
+        CUSTOM_REPORTS[job_id] = {"status": "running", "started": time.time(), "name": name + "_customer_report",
+                                  "request": want}
 
     def _work():
         import importlib
@@ -2215,7 +2353,8 @@ def start_custom_report(job_id: str):
             import custom_report as _cr
             dest = out_dir / "customer_report"
             shutil.rmtree(dest, ignore_errors=True)
-            res = _cr.build(out_dir, UPLOAD_DIR / job_id, dest, job_label=name)
+            res = _cr.build(out_dir, UPLOAD_DIR / job_id, dest, job_label=name, samples=want["samples"],
+                            split=want["split"])
             CUSTOM_REPORTS[job_id].update({"status": "done", "zip": res.get("zip"),
                                            "warnings": [v for k, v in res.items() if k.endswith("_error")]})
         except Exception as e:
@@ -2722,15 +2861,50 @@ def typestrain_db_update():
 # -- 9c. Worker config --------------------------------------------------------
 @app.get("/config")
 def get_config():
-    return {"max_workers": MAX_WORKERS}
+    return {"max_workers": MAX_WORKERS, "pause_minutes": _QCFG["pause_minutes"]}
 
 @app.post("/config")
 def set_config(cfg: WorkerConfig):
-    global MAX_WORKERS, executor
+    """Jobs at once and the pause between jobs; saved, so a restart keeps them. Running
+    jobs are never stopped; waiting jobs follow the new numbers at once."""
+    global MAX_WORKERS
     MAX_WORKERS = max(1, min(cfg.max_workers, 16))
-    executor.shutdown(wait=False)
-    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-    return {"max_workers": MAX_WORKERS}
+    _QCFG["max_workers"] = MAX_WORKERS
+    if cfg.pause_minutes is not None:
+        _QCFG["pause_minutes"] = max(0.0, min(float(cfg.pause_minutes), 120.0))
+    GATE.configure(slots=MAX_WORKERS, pause=60 * _QCFG["pause_minutes"])
+    _save_queue_cfg(_QCFG)
+    return get_config()
+
+
+def _job_row(jid: str) -> dict:
+    j = jobs.get(jid) or {}
+    return {"job_id": jid, "job_name": j.get("job_name") or jid, "marker": j.get("marker", ""),
+            "status": j.get("status", ""), "step_label": j.get("step_label", ""), "run_at": j.get("run_at"),
+            "started_at": j.get("started_at"), "progress": j.get("progress", 0)}
+
+
+@app.get("/queue")
+def get_queue():
+    """What runs, the pause, and the waiting jobs in the order they will run."""
+    snap = GATE.snapshot()
+    waiting = [dict(_job_row(jid), pos=i, exclusive=jid in snap["exclusive"])
+               for i, jid in enumerate(snap["waiting"], 1)]
+    return {"slots": snap["slots"], "pause_minutes": _QCFG["pause_minutes"], "pause_left": snap["pause_left"],
+            "running": [_job_row(jid) for jid in snap["active"]], "waiting": waiting}
+
+
+@app.post("/queue/move")
+def queue_move(req: QueueMove):
+    """Change a waiting job's place (1 = next to run); the order is saved for a restart."""
+    if not GATE.move(req.job_id, req.to):
+        return JSONResponse(status_code=400, content={"error": "this job is not waiting in the queue"})
+    with jobs_lock:
+        for jid, sq in GATE.seqs().items():
+            if jid in jobs:
+                jobs[jid]["queue_seq"] = sq
+        save_jobs()
+    return get_queue()
 
 # -- 10. Download ZIP ---------------------------------------------------------
 @app.get("/download/{job_id}")

@@ -2,7 +2,9 @@
 #  custom_report_plots.R — the figures of the per-sample customer report
 #
 #    Rscript custom_report_plots.R --jobs jobs.tsv
-#  jobs.tsv: work_dir <TAB> Images_and_Outfiles dir <TAB> sample name, one line per sample.
+#  jobs.tsv: work_dir <TAB> Images_and_Outfiles dir <TAB> sample name [<TAB> unit], one line per sample.
+#  unit: ASV (DADA2 runs), taxon (ONT 16S / Emu, estimated reads) or ppm (Emu without counts:
+#  no rarefaction). Quality profiles (dada2) are drawn for ASV runs only.
 #  work_dir holds what custom_report.py prepared: asv.tsv (SV, label, ranks, count),
 #  track.tsv (step, count), krona.tsv, reads.json (raw / filtered FASTQ paths).
 #
@@ -33,6 +35,7 @@ jobs <- read.delim(opt$jobs, header = FALSE, stringsAsFactors = FALSE, quote = "
 heat_tool <- "pheatmap"
 for (k in seq_len(nrow(jobs))) {
   wd <- jobs[k, 1]; img <- jobs[k, 2]; s <- jobs[k, 3]
+  unit <- if (ncol(jobs) >= 4 && !is.na(jobs[k, 4]) && nzchar(jobs[k, 4])) jobs[k, 4] else "ASV"
   say("sample", s)
   asv <- read.delim(file.path(wd, "asv.tsv"), stringsAsFactors = FALSE, check.names = FALSE, quote = "")
   trk <- read.delim(file.path(wd, "track.tsv"), stringsAsFactors = FALSE)
@@ -47,6 +50,9 @@ for (k in seq_len(nrow(jobs))) {
   }, error = function(e) say("box plot failed:", conditionMessage(e)))
 
   have_reads <- nrow(asv) > 0 && sum(asv$count) > 0
+  # rows that are not a taxon (Emu's "unassigned"): in the profiles, not in richness / rarefaction
+  ina <- if ("in_alpha" %in% names(asv)) asv$in_alpha == 1 else rep(TRUE, nrow(asv))
+  asv_a <- asv[ina, , drop = FALSE]
   ps <- NULL
   if (have_reads) {
     otu <- matrix(asv$count, ncol = 1, dimnames = list(asv$SV, s))
@@ -138,18 +144,20 @@ for (k in seq_len(nrow(jobs))) {
   tryCatch({
     f <- file.path(img, "Rarefaction curves", "Rarefaction_curves.png")
     png(f, width = 1400, height = 900, res = 150)
-    if (have_reads && sum(asv$count) > 1) {
-      m <- matrix(asv$count, nrow = 1, dimnames = list(s, asv$SV))
-      vegan::rarecurve(m, step = max(1, floor(sum(asv$count) / 200)), label = TRUE, col = "#1E6E8C",
-                       xlab = "Sample size (reads)", ylab = "ASVs")
+    if (unit == "ppm") { plot.new(); text(.5, .5, "Counts are ppm, not reads: no rarefaction") } else
+    if (nrow(asv_a) > 0 && sum(asv_a$count) > 1) {
+      m <- matrix(asv_a$count, nrow = 1, dimnames = list(s, asv_a$SV))
+      vegan::rarecurve(m, step = max(1, floor(sum(asv_a$count) / 200)), label = TRUE, col = "#1E6E8C",
+                       xlab = "Sample size (reads)", ylab = if (unit == "ASV") "ASVs" else "Taxa")
     } else { plot.new(); text(.5, .5, "No reads") }
     dev.off()
   }, error = function(e) { try(dev.off(), silent = TRUE); say("rarefaction failed:", conditionMessage(e)) })
 
   # ── Alpha diversity (phyloseq::estimate_richness) ─────────────────────────
   tryCatch({
-    if (!is.null(ps)) {
-      er <- estimate_richness(ps, measures = c("Observed", "Chao1", "Shannon", "Simpson"))
+    if (!is.null(ps) && nrow(asv_a) > 0 && sum(asv_a$count) > 0) {
+      ps_a <- prune_taxa(asv_a$SV, ps)
+      er <- estimate_richness(ps_a, measures = c("Observed", "Chao1", "Shannon", "Simpson"))
       out <- data.frame(Sample_ID = s, Sample_name = s, Observed = er$Observed, Chao1 = er$Chao1,
                         se.chao1 = er$se.chao1, Shannon = er$Shannon, Simpson = er$Simpson, check.names = FALSE)
       write.table(out, file.path(wd, "alpha.tsv"), sep = "\t", row.names = FALSE, quote = FALSE)
@@ -157,7 +165,7 @@ for (k in seq_len(nrow(jobs))) {
   }, error = function(e) say("alpha failed:", conditionMessage(e)))
 
   # ── Quality profiles (dada2) ──────────────────────────────────────────────
-  if (has("dada2")) {
+  if (has("dada2") && unit == "ASV") {
     for (pair in list(list("raw", "plotQualityProfile.pdf"), list("filtered", "plotQualityProfile_filtered.pdf"))) {
       fs <- reads[[pair[[1]]]]
       fs <- fs[file.exists(fs)]

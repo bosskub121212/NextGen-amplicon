@@ -702,6 +702,18 @@ def write_summary(out_dir: Path, sample_names: list, n_taxa: int,
         "emu_min_abundance": args.min_abundance,
         "emu_counts":     COUNT_KIND["kind"],
         "emu_chimera_filter": bool(getattr(args, "chimera", False) and not args.skip_chimera),
+        # what the customer report states as the run's settings
+        "qc_min_qual":    args.qc_min_qual,
+        "qc_min_len":     args.qc_min_len,
+        "qc_max_len":     args.qc_max_len,
+        "qc_skipped":     bool(args.skip_qc or not find_tool("chopper")),
+        "cutadapt_error_rate": args.cutadapt_error_rate,
+        "cutadapt_overlap":    args.cutadapt_overlap,
+        "trim_skipped":   bool(not (args.primer_f or args.primer_r)
+                               or not (shutil.which("cutadapt")
+                                       or shutil.which(str(Path.home() / ".local" / "bin" / "cutadapt")))),
+        "trim_min_len":   REGION_LENGTH_BOUNDS.get(region, DEFAULT_TRIM_BOUNDS)[0],
+        "trim_max_len":   REGION_LENGTH_BOUNDS.get(region, DEFAULT_TRIM_BOUNDS)[1],
     }
     path = out_dir / "summary.json"
     with open(path, "w") as f:

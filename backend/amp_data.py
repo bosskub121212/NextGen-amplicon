@@ -1,9 +1,14 @@
-"""amp_data.py — one finished 12S / CytB amplicon run, read once for the customer
-report and the Excel files.
+"""amp_data.py — one finished amplicon run, read once for the customer report and the
+Excel files.
 
-Reads the pipeline's own files: asv_table.csv, taxonomy_table.csv, read_tracking.csv,
+kind "dada2" (16S, 12S / CytB): asv_table.csv, taxonomy_table.csv, read_tracking.csv,
 cutadapt/<sample>.cutadapt.json (raw / trimmed counts, primer hits), blast/
 taxonomy_blast.csv + blast_info.json (BLAST names, NCBI check), run_params.json.
+kind "emu" (ONT 16S): asv_table.csv (tax_id rows), taxonomy.csv, read_tracking.csv
+(input, qc_filtered, primer_trimmed, final), summary.json.
+
+only(sample) / subset(samples) give a view of the run holding nothing of the other
+samples — the basis of the one-package-per-sample customer report.
 """
 from __future__ import annotations
 
@@ -15,6 +20,10 @@ from pathlib import Path
 RANKS = ["Phylum", "Class", "Order", "Family", "Genus", "Species"]
 NA = {"", "NA", "nan", "None"}
 TRACK_COLS = ["raw_data", "trimmed", "filtered", "denoisedF", "denoisedR", "merged", "Nonchim", "perc"]
+EMU_TRACK_COLS = ["raw_data", "qc_filtered", "primer_trimmed", "final", "assigned", "perc"]
+# Emu rows that are not a taxon: shown as "Unassigned" in the profiles, never counted as
+# assigned reads or as a taxon in richness.
+EMU_NOT_TAXA = {"unassigned", "unmapped", "mapped_unclassified"}
 
 
 def _v(x) -> str:
@@ -53,10 +62,140 @@ class RunData:
         self.params = self._json("run_params.json")
         self.summary = self._json("summary.json")
         self.blast_info = self._json("blast/blast_info.json")
-        self._read_asvs()
+        self.kind = self._kind()
+        self.track_cols = EMU_TRACK_COLS if self.kind == "emu" else TRACK_COLS
+        if self.kind == "emu":
+            self._read_emu()
+        else:
+            self._read_asvs()
         self._add_dropped()
-        self._read_tracking()
-        self.alpha = {s: alpha([a["counts"].get(s, 0) for a in self.asvs]) for s in self.samples}
+        if self.kind == "emu":
+            self._read_emu_tracking()
+        else:
+            self._read_tracking()
+        self.peer_names = list(self.samples)          # every sample of the run (name lookups only)
+        self.alpha = {s: alpha([a["counts"].get(s, 0) for a in self.asvs if not a.get("not_taxon")])
+                      for s in self.samples}
+
+    def _kind(self) -> str:
+        sm = self.summary
+        if sm.get("pipeline") == "emu" or (sm.get("platform") == "ONT" and not (self.dir / "taxonomy_table.csv").exists()):
+            return "emu"
+        try:
+            head = (self.dir / "asv_table.csv").open().readline()
+        except OSError:
+            head = ""
+        if "sequence" not in head and (self.dir / "taxonomy.csv").exists():
+            return "emu"
+        return "dada2"
+
+    @property
+    def counts_are_reads(self) -> bool:
+        if self.kind != "emu":
+            return True
+        kind = self.summary.get("emu_counts")
+        if kind:
+            return kind != "ppm"
+        # summary.json from before emu_counts was recorded: ppm columns sum to one million
+        sums = [sum(a["counts"].get(s, 0) for a in getattr(self, "asvs", [])) for s in self.samples]
+        sums = [x for x in sums if x]
+        return not (sums and all(abs(x - 1_000_000) <= 10_000 for x in sums))
+
+    def _read_emu(self):
+        with open(self.dir / "asv_table.csv", newline="") as fh:
+            rd = csv.reader(fh)
+            head = next(rd)
+            self.samples = [h for h in head[1:]]
+            rows = [r for r in rd if r]
+        tax = {}
+        tp = self.dir / "taxonomy.csv"
+        if tp.exists():
+            with open(tp, newline="") as fh:
+                for r in csv.DictReader(fh):
+                    t = {k: _v(r.get(k, "")) for k in RANKS}
+                    # emu_pipeline writes "Genus sp." when Emu gave no species: not a species name
+                    if t["Species"].endswith(" sp.") or t["Species"] == "sp.":
+                        t["Species"] = ""
+                    tax[r.get("ASV", "")] = t
+        asvs = []
+        for r in rows:
+            tid = r[0]
+            counts = {s: int(round(float(v or 0))) for s, v in zip(self.samples, r[1:])}
+            asvs.append({"id": tid, "sequence": "", "counts": counts, "total": sum(counts.values()),
+                         "not_taxon": tid.strip().lower() in EMU_NOT_TAXA,
+                         "tax": tax.get(tid, {k: "" for k in RANKS}),
+                         **{k: "" for k in ("best_hit", "pident", "qcov", "source", "accession", "rank_reached",
+                                            "target", "ncbi_best", "ncbi_pident", "ncbi_accession", "agreement",
+                                            "check")}})
+        asvs.sort(key=lambda a: -a["total"])
+        for i, a in enumerate(asvs, 1):
+            a["sv"] = f"SV{i:03d}"
+        self.asvs = asvs
+
+    def _read_emu_tracking(self):
+        rows = {}
+        tp = self.dir / "read_tracking.csv"
+        if tp.exists():
+            with open(tp, newline="") as fh:
+                for r in csv.DictReader(fh):
+                    rows[r.get("sample", "")] = r
+        self.tracking = {}
+        for s in self.samples:
+            t = rows.get(s)
+            num = lambda k: int(float(t[k])) if t and t.get(k) not in (None, "") else None
+            placed = sum(a["counts"].get(s, 0) for a in self.asvs if not a.get("not_taxon"))
+            assigned = placed if self.counts_are_reads else None
+            raw = num("input")
+            self.tracking[s] = {"raw_data": raw, "qc_filtered": num("qc_filtered"),
+                                "primer_trimmed": num("primer_trimmed"), "final": num("final"),
+                                "assigned": assigned,
+                                "Nonchim": placed,
+                                "perc": (round(100 * assigned / raw, 2) if raw else 0.0)
+                                if raw is not None and assigned is not None else None,
+                                "primer_hits": 0, "cutadapt_version": ""}
+
+    def subset(self, samples) -> "RunData":
+        """A view holding only these samples (run order kept): their ASVs, SV numbers
+        counted again from their reads, their tracking and alpha, and BLAST / NCBI
+        counts recomputed from their ASVs. The run itself is not changed."""
+        import copy
+        want = list(samples)
+        bad = [x for x in want if x not in self.samples]
+        if bad:
+            raise ValueError(f"not in this run: {', '.join(bad)}")
+        keep = [x for x in self.samples if x in want]
+        r = copy.copy(self)
+        r.samples = keep
+        r.dropped = [x for x in getattr(self, "dropped", []) if x in keep]
+        asvs = []
+        for a in self.asvs:
+            c = {x: a["counts"].get(x, 0) for x in keep}
+            if sum(c.values()) > 0:
+                b = dict(a)
+                b["counts"], b["total"] = c, sum(c.values())
+                asvs.append(b)
+        asvs.sort(key=lambda a: -a["total"])
+        for i, a in enumerate(asvs, 1):
+            a["sv"] = f"SV{i:03d}"
+        r.asvs = asvs
+        r.tracking = {x: self.tracking[x] for x in keep}
+        r.alpha = {x: self.alpha[x] for x in keep}
+        if self.blast_info:
+            bi = {k: v for k, v in self.blast_info.items() if k not in ("ncbi_batches",)}
+            agg = {}
+            for a in asvs:
+                if a.get("agreement"):
+                    agg[a["agreement"]] = agg.get(a["agreement"], 0) + 1
+            bi.update({"agreement": agg, "n_asv": len(asvs),
+                       "n_species": sum(1 for a in asvs if a["tax"].get("Species")),
+                       "n_unassigned": sum(1 for a in asvs if a.get("rank_reached") == "none"),
+                       "n_non_target": sum(1 for a in asvs if a.get("target") == "no"),
+                       "n_check": sum(1 for a in asvs if a.get("check") == "yes")})
+            r.blast_info = bi
+        return r
+
+    def only(self, sample: str) -> "RunData":
+        return self.subset([sample])
 
     def _json(self, rel):
         try:

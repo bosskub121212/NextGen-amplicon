@@ -346,6 +346,10 @@ def main():
     import test_amp_fast                     # fish eDNA: references, BLAST, Excel, customer report
     test_amp_fast.main()
     FAILS.extend(test_amp_fast.FAILS)
+
+    import test_queue_fast                   # job queue: one at a time, pause, order
+    test_queue_fast.main()
+    FAILS.extend(test_queue_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

@@ -891,6 +891,358 @@ def t_fix_no_openpyxl(tmp: Path):
 TESTS += [t_fix_no_openpyxl]
 
 
+
+# ── Per-sample customer reports (v2.24) ───────────────────────────────────────
+def make_emu_run(d: Path, samples=("L21", "PGU-16S-full")):
+    """A finished ONT-16S Emu run folder in emu_pipeline.py's real layout."""
+    d.mkdir(parents=True, exist_ok=True)
+    S = list(samples)
+    taxa = [("1280", ["Bacteria", "Bacillota", "Bacilli", "Bacillales", "Staphylococcaceae", "Staphylococcus",
+                      "Staphylococcus aureus"], [700, 0]),
+            ("562", ["Bacteria", "Pseudomonadota", "Gammaproteobacteria", "Enterobacterales", "Enterobacteriaceae",
+                     "Escherichia", "Escherichia coli"], [200, 4321]),
+            ("1386", ["Bacteria", "Bacillota", "Bacilli", "Bacillales", "Bacillaceae", "Bacillus", "Bacillus sp."],
+             [0, 5557]),
+            ("unassigned", ["", "", "", "", "", "", ""], [33, 21])]
+    with open(d / "asv_table.csv", "w") as fh:
+        fh.write("," + ",".join(S) + "\n")
+        for tid, _, c in taxa:
+            fh.write(tid + "," + ",".join(str(x) for x in c[:len(S)]) + "\n")
+    with open(d / "taxonomy.csv", "w") as fh:
+        fh.write("ASV,Kingdom,Phylum,Class,Order,Family,Genus,Species\n")
+        for tid, t, _ in taxa:
+            fh.write(tid + "," + ",".join(t) + "\n")
+    with open(d / "read_tracking.csv", "w") as fh:
+        fh.write("sample,input,qc_filtered,primer_trimmed,final\n")
+        for i, s_ in enumerate(S):
+            fh.write(f"{s_},{1200 + 4000 * i},{1100 + 4000 * i},{1000 + 4000 * i},{1000 + 4000 * i}\n")
+    (d / "summary.json").write_text(json.dumps({"marker": "ONT-16S", "platform": "ONT", "pipeline": "emu",
+        "region": "V1-V9", "db_path": "/db/emu_db_mar2026", "emu_min_abundance": 0.0001,
+        "emu_counts": "estimated_reads", "emu_chimera_filter": False}))
+    (d / "run_params.json").write_text(json.dumps({"marker": "ONT-16S", "primer_f": "AGRGTTYGATYMTGGCTCAG",
+        "primer_r": "RGYTACCTTGTTACGACTT", "ont_region": "V1-V9", "ont_min_abundance": 0.0001}))
+    return d
+
+
+def t_emu_data(tmp: Path):
+    import amp_data as AD
+    r = AD.load_run(make_emu_run(tmp / "run"))
+    check("Emu run: kind and samples", r.kind == "emu" and r.samples == ["L21", "PGU-16S-full"], f"{r.kind} {r.samples}")
+    t = r.tracking["L21"]
+    check("Emu run: tracking raw/qc/primer/final/assigned", t["raw_data"] == 1200 and t["qc_filtered"] == 1100
+          and t["primer_trimmed"] == 1000 and t["final"] == 1000 and t["assigned"] == 900
+          and abs(t["perc"] - round(100 * 900 / 1200, 2)) < 1e-9, str(t))
+    check("Emu run: track columns", r.track_cols == ["raw_data", "qc_filtered", "primer_trimmed", "final", "assigned",
+                                                    "perc"], str(r.track_cols))
+    lab = {a["id"]: AD.label(a, "Species") for a in r.asvs}
+    check("Emu run: 'Genus sp.' is not a species", lab.get("1386") == "Bacillus unidentified", str(lab))
+    check("Emu run: unassigned row stays Unassigned", lab.get("unassigned") == "Unassigned", str(lab))
+    check("Emu run: no sequences", all(a["sequence"] == "" for a in r.asvs))
+
+
+def t_only_sample(tmp: Path):
+    import amp_data as AD
+    r = AD.load_run(make_amp_run(tmp / "run"))
+    o = r.only("F4 CytB.1")
+    check("only(): one sample", o.samples == ["F4 CytB.1"] and list(o.tracking) == ["F4 CytB.1"]
+          and list(o.alpha) == ["F4 CytB.1"], str(o.samples))
+    check("only(): only that sample's ASVs, renumbered from its own top",
+          [a["sequence"] for a in o.asvs] == [SEQ[1], SEQ[2], SEQ[3]] and o.asvs[0]["sv"] == "SV001"
+          and all(list(a["counts"]) == ["F4 CytB.1"] for a in o.asvs), str([(a["sv"], a["total"]) for a in o.asvs]))
+    check("only(): BLAST agreement counted on its ASVs only",
+          o.blast_info.get("agreement") == {"ncbi_no_hit": 2, "not_checked": 1}, str(o.blast_info.get("agreement")))
+    check("only(): parent run untouched", r.samples == ["S2-12S", "F4 CytB.1"] and len(r.asvs) == 4)
+    try:
+        r.only("nope")
+        check("only(): unknown sample refused", False)
+    except ValueError:
+        check("only(): unknown sample refused", True)
+    e = AD.load_run(make_emu_run(tmp / "emu")).only("L21")
+    check("only(): Emu run", [a["id"] for a in e.asvs] == ["1280", "562", "unassigned"], str([a["id"] for a in e.asvs]))
+    sub = r.subset(["F4 CytB.1", "S2-12S"])
+    check("subset(): run order kept", sub.samples == ["S2-12S", "F4 CytB.1"], str(sub.samples))
+
+
+TESTS += [t_emu_data, t_only_sample]
+
+
+
+def _texts(d: Path) -> dict:
+    """Every readable text in a package folder: html (data URIs stripped), docx / xlsx XML, text files."""
+    import re
+    import zipfile
+    out = {}
+    for f in Path(d).rglob("*"):
+        if not f.is_file():
+            continue
+        try:
+            if f.suffix in (".docx", ".xlsx", ".zip"):
+                with zipfile.ZipFile(f) as z:
+                    out[str(f)] = " ".join(z.read(n).decode("utf-8", "replace") for n in z.namelist()
+                                           if n.endswith((".xml", ".rels", ".html", ".txt", ".tsv", ".json", ".biom",
+                                                          ".fasta", ".csv")))
+            elif f.suffix in (".html", ".txt", ".tsv", ".json", ".biom", ".fasta", ".csv", ".md"):
+                out[str(f)] = re.sub(r"data:[a-z/+]+;base64,[A-Za-z0-9+/=]+", "", f.read_text(errors="replace"))
+        except Exception as ex:
+            out[str(f)] = f"<unreadable {ex}>"
+        out[str(f) + "#name"] = str(f.relative_to(d))
+    return out
+
+
+def _leaks(d: Path, needles: list[str]) -> list[str]:
+    return [f"{k}: {n}" for k, v in _texts(d).items() for n in needles if n in v]
+
+
+def _split_report(tmp: Path, run: Path, samples, ups=None, fmts=("html",)):
+    import custom_report as CR
+    up = tmp / "up"
+    up.mkdir(exist_ok=True)
+    for name, body in (ups or {}).items():
+        (up / name).write_text(body)
+    fq, fp = _fake_qc_tools(tmp / "qc")
+    return CR.build(run, up, tmp / "out", tools={"fastqc": fq, "fastp": fp, "Rscript": _fake_rscript(tmp),
+                                                "ktImportText": None, "NanoPlot": None},
+                    formats=fmts, job_label="TH-JOB", samples=list(samples), split=True)
+
+
+def _docx_fmt():
+    try:
+        import docx  # noqa: F401
+        return ("html", "docx")
+    except ImportError:
+        return ("html",)
+
+
+def t_split_isolation(tmp: Path):
+    import zipfile
+    run = make_amp_run(tmp / "run")
+    ups = {f"{s_}_{m}_001.fastq": "@a\nACGT\n+\nIIII\n" for s_ in ("S2-12S", "F4_CytB.1") for m in ("R1", "R2")}
+    info = _split_report(tmp, run, ["S2-12S", "F4 CytB.1"], ups, _docx_fmt())
+    pk = {p["sample"]: p for p in info.get("packages", [])}
+    check("split: one package per sample", set(pk) == {"S2-12S", "F4 CytB.1"}, str(info))
+    check("split: package zips named by sample", all(Path(p["zip"]).name == f"{n.replace(' ', '_')}_customer_report.zip"
+                                                     for n, p in pk.items()), str([p.get("zip") for p in pk.values()]))
+    outer = Path(info.get("zip", ""))
+    names = zipfile.ZipFile(outer).namelist() if outer.exists() else []
+    check("split: outer zip holds exactly the package zips", sorted(names) == sorted(Path(p["zip"]).name
+                                                                                 for p in pk.values()), str(names))
+    if set(pk) != {"S2-12S", "F4 CytB.1"}:
+        return
+    a, b = Path(pk["S2-12S"]["dir"]), Path(pk["F4 CytB.1"]["dir"])
+    la = _leaks(a, ["F4 CytB.1", "F4_CytB.1", "Homo sapiens", SEQ[2], "TH-JOB"])
+    check("split: S2-12S package holds nothing of F4 CytB.1", not la, str(la[:5]))
+    lb = _leaks(b, ["S2-12S", "Cyprinus carpio", SEQ[0], "TH-JOB"])
+    check("split: F4 CytB.1 package holds nothing of S2-12S", not lb, str(lb[:5]))
+    ha = next(a.glob("*_report.html")).read_text()
+    check("split: one sample block, cover says 1 sample", ha.count("Report Summary:") == 1
+          and "Number of samples in this report</td><td>1<" in ha, "")
+    check("split: run-wide workbook not in a package", not list(a.glob("*all_samples*")) and not list(b.glob("*all_samples*")))
+    check("split: NCBI counts are this sample's own", "1 agreed at species" in ha and "0 had no NCBI hit" not in ha
+          and "1 had no NCBI hit" in ha, "")
+    ob = next(b.rglob("expr.abundance.all.txt")).read_text()
+    check("split: SV numbers restart in each package", "SV001" in ob and "SV003" in ob and "SV004" not in ob, ob)
+
+
+def t_report_subset(tmp: Path):
+    import custom_report as CR
+    run = make_amp_run(tmp / "run")
+    fq, fp = _fake_qc_tools(tmp / "qc")
+    info = CR.build(run, tmp / "noup", tmp / "out", tools={"fastqc": fq, "fastp": fp, "Rscript": _fake_rscript(tmp),
+                                                         "ktImportText": None}, formats=("html",), job_label="J",
+                    samples=["F4 CytB.1"], split=False)
+    html = Path(info["html"]).read_text()
+    check("one report for chosen samples: only those", html.count("Report Summary:") == 1 and "S2-12S" not in html, "")
+    try:
+        CR.build(run, None, tmp / "o2", tools={}, formats=("html",), samples=["nope"], split=True)
+        check("unknown sample refused", False)
+    except ValueError:
+        check("unknown sample refused", True)
+
+
+EMU_HEADINGS = ["Report Summary:", "Clean data", "1. Quality control checks on raw sequence data",
+                "2. Quality and length filtering by Chopper", "3. Remove primer sequences by cutadapt", "Emu pipeline",
+                "1) Chimera removal", "2) Taxonomic abundance estimation by Emu", "Data quality control",
+                "2. Taxonomic assignment", "Explore microbiome profiles using phyloseq package in R", "1. Venn diagram",
+                "2. Bar chart of taxonomic profiles", "At Phylum level", "At Species level", "All File",
+                "3. Top 50 taxa Heatmap", "4. Krona plot", "5. Statistical analysis", "1) Rarefaction analysis",
+                "2) Alpha diversity", "Estimate richness"]
+
+
+def t_emu_report(tmp: Path):
+    run = make_emu_run(tmp / "run")
+    fq = lambda n, L: "".join(f"@r{i}\n{'A' * l}\n+\n{'5' * l}\n" for i, l in zip(range(n), L))
+    ups = {"L21.fastq": fq(3, [1500, 1520, 1480]), "PGU-16S-full.fastq": fq(2, [1550, 1560])}
+    info = _split_report(tmp, run, ["L21", "PGU-16S-full"], ups)
+    pk = {p["sample"]: p for p in info.get("packages", [])}
+    if "L21" not in pk:
+        return check("Emu report: packages made", False, str(info))
+    d = Path(pk["L21"]["dir"])
+    html = next(d.glob("*_report.html")).read_text()
+    ok, miss = _in_order(html, EMU_HEADINGS)
+    check("Emu report: ONT headings in order", ok, f"missing/out of order: {miss}")
+    for k in ("Q10", "2000", "emu_db_mar2026", "0.0001", "27F", "AGRGTTYGATYMTGGCTCAG", "estimated read counts",
+              "3 reads", "mean length 1,500", "not applied"):
+        check(f"Emu report: real setting / result '{k}'", k in html)
+    check("Emu report: no DADA2 / FastQC / fastp claim", "DADA2" not in html and "FastQC" not in html
+          and "fastp" not in html, "")
+    check("Emu report: no ASV sequence file, and says why", "expr.asv.fasta" not in html
+          and "no ASV sequences" in html and not list(d.rglob("expr.asv.fasta")), "")
+    check("Emu report: tracking columns of the ONT pipeline", "qc_filtered" in html and "primer_trimmed" in html)
+    check("Emu report: no non-target paragraph without BLAST", "Non-target" not in html)
+    check("Emu report: cover says taxa, not ASVs, for the heatmap", "Top 50 ASVs" not in html and "TOP 50 ASVs" not in html)
+    lk = _leaks(d, ["PGU-16S-full", "PGU-16S_full", "Bacillus", "Bacillaceae", "4321", "5557"])
+    check("Emu report: L21 package holds nothing of PGU-16S-full", not lk, str(lk[:5]))
+
+
+def t_16s_report(tmp: Path):
+    import custom_report as CR
+    run = make_amp_run(tmp / "run")
+    rp = json.loads((run / "run_params.json").read_text())
+    rp.update({"marker": "16S", "mito_gene": "", "tax_method": "dada2", "dbPath": "/db/silva_nr99_v138.2_toGenus_trainset.fa.gz",
+               "primer_f": "CCTACGGGNGGCWGCAG", "primer_r": "GACTACHVGGGTATCTAATCC"})
+    (run / "run_params.json").write_text(json.dumps(rp))
+    import shutil as _sh
+    _sh.rmtree(run / "blast")
+    fq, fp = _fake_qc_tools(tmp / "qc")
+    info = CR.build(run, tmp / "noup", tmp / "out", tools={"fastqc": fq, "fastp": fp, "Rscript": _fake_rscript(tmp),
+                                                         "ktImportText": None}, formats=("html",), job_label="J",
+                    samples=["S2-12S"], split=True)
+    html = next(Path(info["packages"][0]["dir"]).glob("*_report.html")).read_text()
+    check("16S report: DADA2 classifier and reference named", "DADA2 naive Bayesian classifier" in html
+          and "silva_nr99_v138.2_toGenus_trainset" in html, "")
+    check("16S report: primer names 341F / 805R", "341F" in html and "805R" in html)
+    check("16S report: no BLAST / MitoFish / non-target text", "MitoFish" not in html and "Non-target" not in html
+          and "BLAST naming" not in html, "")
+
+
+TESTS += [t_split_isolation, t_report_subset, t_emu_report, t_16s_report]
+
+
+
+def t_per_sample_wiring(tmp: Path):
+    m = (ROOT / "backend" / "main.py").read_text()
+    for k in ("class CustomReportRequest(BaseModel):", "samples: Optional[List[str]] = None", "split: bool = True",
+              '@app.get("/custom_report/{job_id}/samples")', "_CUSTOM_MARKERS", 'samples=want["samples"]',
+              'split=want["split"]'):
+        check(f"main.py: {k}", k in m)
+    ui = (ROOT / "frontend-beta" / "index.html").read_text()
+    for k in ("function canCustomReport(", 'id="custSplit"', "data-cs=", '"/samples"', "split:", "samples:"):
+        check(f"console: {k}", k in ui)
+    check("console: customer report offered for 16S and ONT-16S", '"16S"' in ui[ui.find("function canCustomReport("):
+                                                                          ui.find("function canCustomReport(") + 400]
+          and '"ONT-16S"' in ui[ui.find("function canCustomReport("):ui.find("function canCustomReport(") + 400])
+    em = (ROOT / "backend" / "emu_pipeline.py").read_text()
+    for k in ('"qc_min_qual":', '"qc_min_len":', '"qc_max_len":', '"cutadapt_error_rate":', '"cutadapt_overlap":',
+              '"qc_skipped":', '"trim_skipped":'):
+        check(f"emu_pipeline summary: {k}", k in em)
+    sh = (ROOT / "setup_amplicon_report.sh").read_text()
+    check("setup_amplicon_report.sh: nanoplot", "nanoplot" in sh.lower())
+
+
+def t_emu_trim_skipped(tmp: Path):
+    run = make_emu_run(tmp / "run")
+    sm = json.loads((run / "summary.json").read_text())
+    sm.update({"trim_skipped": True, "qc_skipped": True})
+    (run / "summary.json").write_text(json.dumps(sm))
+    info = _split_report(tmp, run, ["L21"], {})
+    html = next(Path(info["packages"][0]["dir"]).glob("*_report.html")).read_text()
+    check("Emu report: cutadapt not run is said", "cutadapt was not available" in html and "were removed;" not in html, "")
+    check("Emu report: Chopper not run is said", "Chopper was not available" in html)
+    check("Emu report: raw reads not found is said", "raw reads of this sample were not found" in html)
+
+
+TESTS += [t_per_sample_wiring, t_emu_trim_skipped]
+
+
+
+# ── v2.24 review fixes ─────────────────────────────────────────────────────────
+def t_fix24_name_collision(tmp: Path):
+    import zipfile
+    run = make_amp_run(tmp / "run", samples=("A 1", "A_1"))
+    ups = {"A 1_R1_001.fastq": "@a\nAAAA\n+\nIIII\n", "A 1_R2_001.fastq": "@a\nAAAA\n+\nIIII\n",
+           "A_1_R1_001.fastq": "@b\nCCCC\n+\nIIII\n", "A_1_R2_001.fastq": "@b\nCCCC\n+\nIIII\n"}
+    info = _split_report(tmp, run, ["A 1", "A_1", "A_1"], ups)
+    pk = info.get("packages", [])
+    zips = [Path(p["zip"]).name for p in pk]
+    check("collision: duplicate request entries made once, one package per sample", len(pk) == 2, str(zips))
+    check("collision: package names unique", len(set(zips)) == 2, str(zips))
+    outer = zipfile.ZipFile(info["zip"]).namelist()
+    check("collision: outer zip entries unique", len(outer) == len(set(outer)) == 2, str(outer))
+    import custom_report as CR
+    import amp_data as AD
+    r = AD.load_run(run)
+    up = tmp / "up"
+    a = CR._find_reads(up, "A 1", r.samples)[0]
+    b = CR._find_reads(up, "A_1", r.samples)[0]
+    check("collision: each sample finds its own reads", a is not None and b is not None and a != b
+          and a.name.startswith("A 1") and b.name.startswith("A_1"), f"{a} {b}")
+
+
+def t_fix24_emu_unassigned(tmp: Path):
+    import amp_data as AD
+    r = AD.load_run(make_emu_run(tmp / "run"))
+    t = r.tracking["L21"]
+    check("Emu: unassigned row not counted as assigned", t["assigned"] == 900 and t["Nonchim"] == 900, str(t))
+    check("Emu: unassigned row not a taxon in alpha", r.alpha["L21"]["Observed"] == 2, str(r.alpha["L21"]))
+
+
+def t_fix24_old_summary(tmp: Path):
+    import amp_data as AD
+    import custom_report as CR
+    run = make_emu_run(tmp / "run")
+    sm = json.loads((run / "summary.json").read_text())
+    sm.pop("emu_counts")
+    sm["emu_chimera_filter"] = True
+    (run / "summary.json").write_text(json.dumps(sm))
+    tr = "sample,input,qc_filtered,primer_trimmed,final\nL21,1200,1200,1200,1200\nPGU-16S-full,5200,5100,5000,5000\n"
+    (run / "read_tracking.csv").write_text(tr)
+    r = AD.load_run(run)
+    st = CR.emu_settings(r, "L21")
+    check("old summary: no Chopper output and no read lost -> Chopper not run", st["qc_skipped"] is True, str(st))
+    check("old summary: no cutadapt output and no read lost -> primers not removed", st["trim_skipped"] is True, str(st))
+    check("old summary: chimera filter asked but no evidence -> not claimed", st["chimera_ran"] is False, str(st))
+    st2 = CR.emu_settings(r, "PGU-16S-full")
+    check("old summary: reads lost at each step -> steps ran", not st2["qc_skipped"] and not st2["trim_skipped"], str(st2))
+    info = _split_report(tmp, run, ["L21"], {})
+    html = next(Path(info["packages"][0]["dir"]).glob("*_report.html")).read_text()
+    check("old summary: chimera asked but not applied is said", "requested but not applied" in html
+          and "VSEARCH" not in html and "vsearch --uchime_ref removed" not in html, "")
+    run2 = make_emu_run(tmp / "run2")
+    with open(run2 / "asv_table.csv", "w") as fh:
+        fh.write(",L21,PGU-16S-full\n1280,600000,0\n562,400000,1000000\n")
+    sm2 = json.loads((run2 / "summary.json").read_text())
+    sm2.pop("emu_counts")
+    (run2 / "summary.json").write_text(json.dumps(sm2))
+    check("old summary: columns summing to 1e6 read as ppm", AD.load_run(run2).counts_are_reads is False)
+
+
+def t_fix24_gate_and_species(tmp: Path):
+    m = (ROOT / "backend" / "main.py").read_text()
+    i = m.find("def _custom_check")
+    check("main.py: 16S / 12S customer report only for Illumina DADA2 runs", "sequencerType" in m[i:i + 2500])
+    check("main.py: a different request while building -> 409", "status_code=409" in m[m.find("def start_custom_report"):
+                                                                                     m.find("def start_custom_report") + 3000])
+    import custom_report as CR
+    run = make_amp_run(tmp / "run")
+    rp = json.loads((run / "run_params.json").read_text())
+    rp.update({"marker": "16S", "mito_gene": "", "tax_method": "dada2", "dbPath": "/db/silva_nr99_v138.2_toGenus_trainset.fa.gz"})
+    (run / "run_params.json").write_text(json.dumps(rp))
+    import shutil as _sh
+    _sh.rmtree(run / "blast")
+    (run / "pipeline.log").write_text("  Species added from: silva_v138.2_assignSpecies.fa.gz \n")
+    fq, fp = _fake_qc_tools(tmp / "qc")
+    info = CR.build(run, None, tmp / "out", tools={"fastqc": fq, "fastp": fp, "Rscript": _fake_rscript(tmp),
+                                                 "ktImportText": None}, formats=("html",), samples=["S2-12S"], split=True)
+    html = next(Path(info["packages"][0]["dir"]).glob("*_report.html")).read_text()
+    check("16S: addSpecies and its file stated", "addSpecies" in html and "silva_v138.2_assignSpecies.fa.gz" in html)
+    check("16S: MIDORI2 reference not listed", "MIDORI2" not in html)
+    ui = (ROOT / "frontend-beta" / "index.html").read_text()
+    check("console: sample list can be retried", 'id="custRetry"' in ui)
+
+
+TESTS += [t_fix24_name_collision, t_fix24_emu_unassigned, t_fix24_old_summary, t_fix24_gate_and_species]
+
+
 def main() -> int:
     print("fish eDNA amplicons (CytB / 12S)")
     with tempfile.TemporaryDirectory() as td:

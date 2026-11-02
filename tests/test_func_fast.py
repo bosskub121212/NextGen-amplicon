@@ -538,7 +538,7 @@ def t_gate(tmp: Path):
 
 def t_main_uses_gate(tmp: Path):
     src = (ROOT / "backend" / "main.py").read_text()
-    check("main.py: GATE = JobGate()", "GATE = JobGate()" in src)
+    check("main.py: GATE = JobGate(", "GATE = JobGate(" in src)
     check("main.py: run_r_pipeline goes through the gate",
           "GATE.enter(job_id, _is_exclusive(params)" in src and "GATE.leave(job_id)" in src)
 

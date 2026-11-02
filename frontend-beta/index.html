@@ -563,6 +563,12 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         <span class="count num" id="jobCount">—</span>
       </button>
 
+      <button class="navbtn" id="queueBtn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        Queue
+        <span class="count num" id="queueCount">0</span>
+      </button>
+
       <button class="navbtn" id="setBtn">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>
         Settings
@@ -833,8 +839,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     else histBtn.removeAttribute("aria-current");
     var sb = document.getElementById("setBtn");
     if(sb){ if(view.name === "settings") sb.setAttribute("aria-current","true"); else sb.removeAttribute("aria-current"); }
+    var qb = document.getElementById("queueBtn");
+    if(qb){ if(view.name === "queue") qb.setAttribute("aria-current","true"); else qb.removeAttribute("aria-current"); }
 
     if(view.name === "settings") return renderSettings();
+    if(view.name === "queue")    return renderQueue();
     if(view.name === "history")  return renderHistory();
     if(view.name === "job")      return renderJob(view.id);
     if(view.name === "pipeline") return renderPipeline(view.key);
@@ -983,10 +992,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<span class="hint">how many runs the queue starts in parallel</span></div>'
         + '<div style="padding:12px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
         + '<input type="text" inputmode="numeric" id="stWk" style="width:90px">'
+        + '<span class="s">Pause between jobs (minutes)</span>'
+        + '<input type="text" inputmode="decimal" id="stPause" style="width:70px">'
         + '<button class="btn" id="stWkSave">Save</button><span class="s" id="stWkMsg"></span></div>'
-        + '<div class="s" style="padding:0 14px 12px">Each run already uses several CPU threads; two at once is '
-        + 'usually the most a workstation handles. Running jobs are not interrupted. Resets to the default '
-        + 'when the backend restarts.</div></div>'
+        + '<div class="s" style="padding:0 14px 12px">Each run already uses several CPU threads; one at a time is '
+        + 'the safe setting for this machine. After a job ends (finished, failed or cancelled) the next one waits '
+        + 'the pause, so memory is given back first. Running jobs are not interrupted. Saved: a backend restart '
+        + 'keeps these numbers. The Queue page shows and changes the order.</div></div>'
 
       + '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Type-strain genomes</h3>'
         + '<span class="hint">offline ONT-WGS species comparison · refresh every 3–6 months</span></div>'
@@ -1082,12 +1094,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         .then(function(){ b.disabled = false; });
     });
 
-    api("/config").then(function(c){ document.getElementById("stWk").value = c.max_workers; }).catch(function(){});
+    api("/config").then(function(c){
+      document.getElementById("stWk").value = c.max_workers;
+      document.getElementById("stPause").value = c.pause_minutes === undefined ? "" : c.pause_minutes;
+    }).catch(function(){});
     document.getElementById("stWkSave").addEventListener("click", function(){
       var n = parseInt(document.getElementById("stWk").value, 10);
-      if(!(n >= 1 && n <= 16)){ msg("stWkMsg", "1 to 16.", true); return; }
-      send("POST", "/config", {max_workers:n}).then(function(c){
-        msg("stWkMsg", "Saved — " + c.max_workers + " at once."); document.getElementById("stWk").value = c.max_workers;
+      var pm = parseFloat(document.getElementById("stPause").value);
+      if(!(n >= 1 && n <= 16)){ msg("stWkMsg", "Jobs at once: 1 to 16.", true); return; }
+      if(!(pm >= 0 && pm <= 120)){ msg("stWkMsg", "Pause: 0 to 120 minutes.", true); return; }
+      send("POST", "/config", {max_workers:n, pause_minutes:pm}).then(function(c){
+        msg("stWkMsg", "Saved — " + c.max_workers + " at once, " + c.pause_minutes + " min pause.");
+        document.getElementById("stWk").value = c.max_workers;
+        document.getElementById("stPause").value = c.pause_minutes;
       }).catch(function(e){ msg("stWkMsg", String(e.message || e), true); });
     });
 
@@ -1115,6 +1134,85 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var was = !!(STATE.ts && STATE.ts.running);
       refreshTs().then(function(T){ if(T && (T.running || was)) paintTsPanel(); });
     }, 5000);
+  }
+
+  /* ═══ queue ════════════════════════════════════════════════════════════
+     GET /queue: what runs, the pause, the waiting jobs in run order. ↑ / ↓ / To front
+     call POST /queue/move; the backend saves the order (a restart keeps it). */
+  function renderQueue(){
+    work.innerHTML = '<div class="crumb">Queue</div><h2 class="ttl">Job queue</h2>'
+      + '<p class="sub">Jobs run one after another in this order; an urgent job can be moved up. '
+      + '"Jobs at once" and the pause between jobs are in Settings.</p>'
+      + '<div id="qBox"><div class="skel">Reading the queue…</div></div>';
+    var Q = null, err = "", at = 0;
+    function row(cells){ return "<tr>" + cells.map(function(c){ return "<td>" + c + "</td>"; }).join("") + "</tr>"; }
+    function paint(){
+      var box = document.getElementById("qBox");
+      if(!box) return;
+      if(!Q){ box.innerHTML = err ? '<div class="err">' + esc(err) + '</div>' : '<div class="skel">Reading the queue…</div>'; return; }
+      var left = Math.max(0, (Q.pause_left || 0) - (Date.now() - at) / 1000);
+      var run = Q.running.length
+        ? '<table class="dtab"><thead><tr><th>Job</th><th>Type</th><th>Status</th><th>Running for</th></tr></thead><tbody>'
+          + Q.running.map(function(j){
+              return row(['<a href="#" data-qopen="' + esc(j.job_id) + '">' + esc(j.job_name) + '</a>', esc(j.marker),
+                          esc(j.status === "waiting_checkpoint" ? "paused — waits for your decision" : (j.step_label || j.status)),
+                          j.started_at ? dur(Date.now() / 1000 - j.started_at) : "—"]);
+            }).join("") + '</tbody></table>'
+        : '<div class="what" style="padding:10px 14px">Nothing is running.</div>';
+      var pause = left > 0 && Q.waiting.length
+        ? '<div class="what" style="padding:8px 14px">Pause after the last job: the next job starts in <b>'
+          + Math.floor(left / 60) + ":" + ("0" + Math.floor(left % 60)).slice(-2) + '</b>.</div>' : "";
+      var n = Q.waiting.length;
+      var wait = n
+        ? '<table class="dtab"><thead><tr><th>#</th><th>Job</th><th>Type</th><th>Submitted</th><th></th></tr></thead><tbody>'
+          + Q.waiting.map(function(j){
+              var b = function(to, lab, off){ return '<button class="btn" data-qmove="' + esc(j.job_id) + ":" + to + '"'
+                + (off ? " disabled" : "") + '>' + lab + '</button> '; };
+              return row(["<b>" + j.pos + "</b>", '<a href="#" data-qopen="' + esc(j.job_id) + '">' + esc(j.job_name) + '</a>'
+                          + (j.exclusive ? ' <span class="chip">runs alone (HUMAnN)</span>' : ""),
+                          esc(j.marker), j.run_at ? esc(ago(j.run_at)) : "—",
+                          b(j.pos - 1, "↑", j.pos === 1) + b(j.pos + 1, "↓", j.pos === n) + b(1, "To front", j.pos === 1)
+                          + '<button class="btn" data-qcancel="' + esc(j.job_id) + '">Cancel</button>']);
+            }).join("") + '</tbody></table>'
+        : '<div class="what" style="padding:10px 14px">No job is waiting.</div>';
+      box.innerHTML = '<div class="panel"><div class="sechdr"><h3>Running</h3><span class="hint">'
+        + (Q.slots ? Q.slots + " at once" : "") + (Q.pause_minutes ? " · " + Q.pause_minutes + " min pause between jobs" : "")
+        + '</span></div>' + run + pause + '</div>'
+        + '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Waiting (' + n + ')</h3>'
+        + '<span class="hint">runs top to bottom</span></div>' + wait + '</div>'
+        + (err ? '<div class="err">' + esc(err) + '</div>' : "");
+      Array.prototype.forEach.call(box.querySelectorAll("[data-qmove]"), function(el){
+        el.addEventListener("click", function(){
+          var v = el.dataset.qmove, k = v.lastIndexOf(":");
+          el.disabled = true;
+          fetch("/queue/move", {method:"POST", headers:{"Content-Type":"application/json"},
+                                body: JSON.stringify({job_id: v.slice(0, k), to: parseInt(v.slice(k + 1), 10)})})
+            .then(function(r){ return r.json().then(function(d){ if(!r.ok) throw new Error(d.error || ("HTTP " + r.status)); return d; }); })
+            .then(function(d){ Q = d; at = Date.now(); err = ""; paint(); })
+            .catch(function(e){ err = e.message || String(e); load(); });
+        });
+      });
+      Array.prototype.forEach.call(box.querySelectorAll("[data-qcancel]"), function(el){
+        el.addEventListener("click", function(){
+          el.disabled = true;
+          fetch("/jobs/" + encodeURIComponent(el.dataset.qcancel), {method:"DELETE"}).then(function(){ setTimeout(load, 600); });
+        });
+      });
+      Array.prototype.forEach.call(box.querySelectorAll("[data-qopen]"), function(el){
+        el.addEventListener("click", function(ev){ ev.preventDefault(); go({name:"job", id: el.dataset.qopen}); });
+      });
+    }
+    function load(){
+      return api("/queue").then(function(d){ Q = d; at = Date.now(); err = ""; })
+        .catch(function(e){ err = e.message || String(e); }).then(paint);
+    }
+    load();
+    var tick = 0;
+    timer = setInterval(function(){
+      if(STATE.view.name !== "queue"){ stopTimer(); return; }
+      tick++;
+      if(tick % 3 === 0) load(); else paint();
+    }, 1000);
   }
 
   /* ═══ home: project history ════════════════════════════════════════════ */
@@ -1246,6 +1344,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     return api("/jobs").then(function(d){
       STATE.jobs = Array.isArray(d.jobs) ? d.jobs : [];
       STATE.maxWorkers = d.max_workers;
+      var qc = document.getElementById("queueCount");
+      if(qc) qc.textContent = STATE.jobs.filter(function(j){ return j.status === "queued"; }).length;
       STATE.listErr = null;
     }).catch(function(e){
       STATE.listErr = e.message || String(e);
@@ -1435,8 +1535,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           + 'jobs submitted after it wait until it is done. This job starts by itself — Project history '
           + 'shows what is running. Its log begins then.';
       if(M.live && !M.startedAt)
-        return '<span class="w">Waiting to start.</span>\n\nEvery worker slot is busy with another job; '
-          + 'this one starts by itself when a slot frees — Project history shows what is running. '
+        return '<span class="w">' + esc((M.D && M.D.step_label) || "Waiting to start") + '.</span>\n\nThis job waits '
+          + 'its turn in the queue and starts by itself — the Queue page shows the order and can move it up. '
           + 'Its log begins then.';
       if(M.logs === null)
         return M.logErr
@@ -7917,13 +8017,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                   : (R.fmt === "docx" ? "Build Word" : "Build PDF") + " (" + R.pick.length + " run" + (R.pick.length === 1 ? "" : "s") + ")") + '</button>'
         + '<button class="btn" id="repNo">Close</button>'
         + (R.busy ? '<span class="what">A large comparison takes a minute.</span>' : "") + '</div>'
-        + (isMito(jid)
+        + (canCustomReport(jid)
             ? '<h4 style="margin-top:14px">Customer report</h4>'
-              + '<div class="what">The lab\'s per-sample format (cover left blank for the BI team): Word + PDF + the '
-              + 'SampleN_ folders with every figure, table and Excel file — as one zip. FastQC, fastp and the R figures '
-              + 'run now; a few minutes for many samples.</div>'
-              + '<div class="row"><button class="btn pri" id="custGo">Customer report (Word + PDF + files)</button>'
-              + '<span class="what" id="custMsg"></span></div>'
+              + '<div class="what">The lab\'s format (cover left blank for the BI team): Word + PDF + every figure, '
+              + 'table and Excel file. Read QC and the R figures run now; a few minutes for many samples.</div>'
+              + '<div id="custBox"></div>'
             : "")
         + '</div>';
       var t = document.getElementById("repTitle");
@@ -7944,8 +8042,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       document.getElementById("repNo").addEventListener("click", function(){
         box.innerHTML = ""; box.dataset.open = ""; });
       document.getElementById("repGo").addEventListener("click", build);
-      var cg = document.getElementById("custGo");
-      if(cg) cg.addEventListener("click", function(){ customReport(jid, cg, document.getElementById("custMsg")); });
+      paintCust(jid);
     }
     function build(){
       if(R.busy || !R.pick.length) return;
@@ -7977,15 +8074,68 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
   /* 12S / CytB runs: the per-sample customer report (custom_report.py), built in
      the background on the server; polled until the zip is ready. */
-  function isMito(jid){
+  /* Customer report: 12S / CytB, 16S and ONT 16S runs. The sample picker keeps its state in
+     CUST across repaints of the report panel. "One report per sample" gives one zip per
+     sample holding nothing of the others (samples of different customers). */
+  var CUST = {};
+  function canCustomReport(jid){
     var j = STATE.jobs.filter(function(x){ return x.job_id === jid; })[0] || {};
-    return String(j.marker || "").toUpperCase() === "12S";
+    return ["12S", "16S", "ONT-16S", "ONT16S", "ONT"].indexOf(String(j.marker || "").toUpperCase()) >= 0;
   }
-  function customReport(jid, btn, msg){
-    var enc = encodeURIComponent(jid);
-    btn.disabled = true;
-    var say = function(t){ if(msg) msg.textContent = t; };
-    say("Building… (FastQC, fastp, figures)");
+  function paintCust(jid){
+    var box = document.getElementById("custBox");
+    if(!box) return;
+    var c = CUST[jid] || (CUST[jid] = {list: null, pick: {}, split: true, msg: "", err: "", busy: false});
+    if(c.list === null && !c.loading){
+      c.loading = true;
+      fetch("/custom_report/" + encodeURIComponent(jid) + "/samples").then(function(r){
+        return r.json().then(function(j){ if(!r.ok) throw new Error(j.error || ("HTTP " + r.status)); return j; });
+      }).then(function(j){
+        c.list = j.samples || []; c.list.forEach(function(x){ c.pick[x.name] = true; });
+        c.loading = false; paintCust(jid);
+      }).catch(function(e){ c.list = []; c.err = e.message || String(e); c.loading = false; paintCust(jid); });
+    }
+    var picked = (c.list || []).filter(function(x){ return c.pick[x.name]; });
+    box.innerHTML = '<div class="lab">Samples (' + picked.length + ')</div>'
+      + (c.list === null ? '<div class="what">Reading the samples…</div>'
+         : '<div class="runs">' + c.list.map(function(x, i){
+             var on = !!c.pick[x.name];
+             return '<label class="' + (on ? "on" : "") + '"><input type="checkbox" data-cs="' + i + '"'
+               + (on ? " checked" : "") + '><span class="nm">' + esc(x.name) + '</span><span class="chip mk">'
+               + (x.reads == null ? "reads ?" : Number(x.reads).toLocaleString() + " reads") + '</span></label>';
+           }).join("") + '</div>')
+      + '<div class="lab">Output</div><div class="segs">'
+      + '<button class="btn' + (c.split ? " on" : "") + '" id="custSplit" data-split="1">One report per sample</button>'
+      + '<button class="btn' + (!c.split ? " on" : "") + '" data-split="0">One report for the chosen samples</button></div>'
+      + '<div class="what">' + (c.split
+          ? "Each sample gets its own zip — report, figures, tables, Excel and reads — with nothing of the other samples: for samples of different customers."
+          : "One report holding every chosen sample.") + '</div>'
+      + (c.err ? '<div class="err">' + esc(c.err)
+                 + (c.list && !c.list.length ? ' <button class="btn" id="custRetry">Retry</button>' : "") + '</div>' : "")
+      + '<div class="row"><button class="btn pri" id="custGo"' + (c.busy || !picked.length ? " disabled" : "") + '>'
+      + 'Customer report (Word + PDF + files)</button><span class="what" id="custMsg">' + esc(c.msg) + '</span></div>';
+    Array.prototype.forEach.call(box.querySelectorAll("[data-cs]"), function(cb){
+      cb.addEventListener("change", function(){
+        var x = c.list[parseInt(cb.dataset.cs, 10)];
+        c.pick[x.name] = cb.checked; paintCust(jid);
+      });
+    });
+    Array.prototype.forEach.call(box.querySelectorAll("[data-split]"), function(b){
+      b.addEventListener("click", function(){ c.split = b.dataset.split === "1"; paintCust(jid); });
+    });
+    var go = document.getElementById("custGo");
+    if(go) go.addEventListener("click", function(){ customReport(jid); });
+    var rt = document.getElementById("custRetry");
+    if(rt) rt.addEventListener("click", function(){ c.list = null; c.err = ""; paintCust(jid); });
+  }
+  function customReport(jid){
+    var c = CUST[jid], enc = encodeURIComponent(jid);
+    var say = function(t){ c.msg = t; var m = document.getElementById("custMsg"); if(m) m.textContent = t; };
+    var done = function(){ c.busy = false; paintCust(jid); };
+    var picked = (c.list || []).filter(function(x){ return c.pick[x.name]; }).map(function(x){ return x.name; });
+    c.busy = true; c.err = ""; paintCust(jid);
+    say("Building " + (c.split ? picked.length + " package" + (picked.length === 1 ? "" : "s") : "the report")
+        + "… (read QC, figures)");
     var poll = function(){
       fetch("/custom_report/" + enc).then(function(r){ return r.json(); }).then(function(st){
         if(st.status === "done"){
@@ -7995,16 +8145,17 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             return r.blob(); }).then(function(b){
               saveBlob(b, (st.name || "customer_report") + ".zip");
               say("Done." + (st.warnings && st.warnings.length ? " Note: " + st.warnings.join("; ") : ""));
-              btn.disabled = false; });
+              done(); });
         }
-        if(st.status === "error"){ say("Failed — " + (st.error || "see the server log")); btn.disabled = false; return; }
+        if(st.status === "error"){ say("Failed — " + (st.error || "see the server log")); done(); return; }
         setTimeout(poll, 5000);
-      }).catch(function(e){ say("Failed — " + (e.message || e)); btn.disabled = false; });
+      }).catch(function(e){ say("Failed — " + (e.message || e)); done(); });
     };
-    fetch("/custom_report/" + enc, {method:"POST"}).then(function(r){
+    fetch("/custom_report/" + enc, {method:"POST", headers:{"Content-Type":"application/json"},
+                                     body: JSON.stringify({samples: picked, split: c.split})}).then(function(r){
       if(!r.ok) return r.json().then(function(j){ throw new Error(j.error || ("HTTP " + r.status)); });
       setTimeout(poll, 4000);
-    }).catch(function(e){ say("Failed — " + (e.message || e)); btn.disabled = false; });
+    }).catch(function(e){ say("Failed — " + (e.message || e)); done(); });
   }
 
   function wgsPdf(jid, btn, fmt){
@@ -8089,6 +8240,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     pipes.hidden = open;
   });
   histBtn.addEventListener("click", function(){ go({name:"history"}); });
+  document.getElementById("queueBtn").addEventListener("click", function(){ go({name:"queue"}); });
   document.getElementById("setBtn").addEventListener("click", function(){ go({name:"settings"}); });
   window.addEventListener("hashchange", function(){
     if(location.hash === "#settings") go({name:"settings"});

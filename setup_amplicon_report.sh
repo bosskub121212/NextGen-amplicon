@@ -31,12 +31,14 @@ for c in mamba conda "$HOME/miniconda3/bin/conda"; do
   fi
 done
 AMP="${BASE:-$HOME/miniconda3}/envs/ngamp-amp/bin"
+NANO="${BASE:-$HOME/miniconda3}/envs/ngamp-nano/bin"
 
 rpkg(){ Rscript -e "cat(requireNamespace('$1', quietly=TRUE))" 2>/dev/null | grep -q TRUE; }
 status(){
   for t in fastqc fastp blastn ktImportText; do
     [[ -x "$AMP/$t" ]] && ok "$t ($AMP)" || warn "$t missing"
   done
+  [[ -x "$NANO/NanoPlot" ]] && ok "NanoPlot ($NANO)" || warn "NanoPlot missing (ONT 16S customer report: read statistics without NanoPlot plots)"
   for p in microbiomeutilities venneuler eulerr; do rpkg "$p" && ok "R $p" || warn "R $p missing"; done
   "$PY" -c "import openpyxl" 2>/dev/null && ok "openpyxl (backend)" || warn "openpyxl missing in $PY"
 }
@@ -50,6 +52,15 @@ elif [[ -d "${BASE}/envs/ngamp-amp" ]]; then
 else
   "$CONDA" create -y -n ngamp-amp -c conda-forge -c bioconda python=3.12 fastqc fastp blast krona pandas pyarrow \
     || bad "conda env ngamp-amp failed"
+fi
+
+step "conda env ngamp-nano (NanoPlot, for ONT 16S reads)"
+# Own env: NanoPlot pins its plotting stack, which should not move FastQC / BLAST.
+if [[ -x "$NANO/NanoPlot" ]]; then
+  ok "already installed"
+else
+  "$CONDA" create -y -n ngamp-nano -c conda-forge -c bioconda nanoplot \
+    || warn "NanoPlot not installed — the ONT report still gives read statistics, without NanoPlot plots"
 fi
 
 step "R packages"

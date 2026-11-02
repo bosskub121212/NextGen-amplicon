@@ -13,7 +13,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-ENVS = ("ngamp-amp", "ngamp-meta", "qc", "ngamp-wgs")
+ENVS = ("ngamp-amp", "ngamp-nano", "ngamp-meta", "qc", "ngamp-wgs")
 
 
 def find_tool(name: str) -> str | None:
@@ -98,3 +98,69 @@ def sentence_fastp(d: dict | None) -> str:
         return "No adapter was found in the reads; no read needed adapter trimming."
     pct = 100 * n / tot if tot else 0
     return f"Adapters were found and trimmed in {n:,} reads ({pct:.1f}% of {tot:,})."
+
+
+# ── Nanopore reads ─────────────────────────────────────────────────────────────
+def read_stats(files: list[Path]) -> dict | None:
+    """Reads, bases, mean / median / N50 length and mean per-read quality of FASTQ files
+    (plain or gzip), all reads counted. Quality = mean of each read's arithmetic mean
+    Phred score."""
+    import gzip
+    from array import array
+    lens, qsum, n = array("I"), 0.0, 0
+    try:
+        for f in files:
+            op = gzip.open if str(f).endswith(".gz") else open
+            with op(f, "rb") as fh:
+                while True:
+                    h = fh.readline()
+                    if not h:
+                        break
+                    seq = fh.readline().rstrip(b"\r\n")
+                    fh.readline()
+                    q = fh.readline().rstrip(b"\r\n")
+                    L = len(seq)
+                    lens.append(L)
+                    if L:
+                        qsum += sum(q) / L - 33
+                    n += 1
+    except (OSError, EOFError, ValueError):            # unreadable or truncated FASTQ: no numbers, no crash
+        return None
+    if not n:
+        return {"reads": 0}
+    srt = sorted(lens, reverse=True)
+    tot, acc, n50 = sum(lens), 0, 0
+    for L in srt:
+        acc += L
+        if acc >= tot / 2:
+            n50 = L
+            break
+    return {"reads": n, "bases": tot, "mean_len": tot / n, "median_len": srt[n // 2], "n50": n50,
+            "mean_q": qsum / n}
+
+
+def sentence_read_stats(d: dict | None) -> str:
+    if not d:
+        return "The raw reads could not be read; read statistics were not made."
+    if not d.get("reads"):
+        return "The raw FASTQ held no reads."
+    return (f"{d['reads']:,} reads, {d['bases']:,} bases; mean length {d['mean_len']:,.0f} bases (median "
+            f"{d['median_len']:,}, N50 {d['n50']:,}); mean read quality Q{d['mean_q']:.1f}.")
+
+
+def nanoplot(files: list[Path], out: Path, tool: str | None, threads: int = 2) -> dict | None:
+    """NanoPlot figures of the raw reads in `out`; {"version"} or None when NanoPlot is missing or fails."""
+    if not tool or not files:
+        return None
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run([tool, "--fastq"] + [str(f) for f in files] + ["-o", str(out), "-t", str(threads)],
+                       capture_output=True, text=True, timeout=3600)
+        v = subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if not any(out.glob("*.html")) and not any(out.glob("*.png")):
+        return None
+    ver = (v.stdout or v.stderr).strip().split()[-1] if (v.stdout or v.stderr).strip() else ""
+    return {"version": ver}
