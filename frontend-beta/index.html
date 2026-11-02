@@ -7988,7 +7988,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var box = document.getElementById(boxId);
     if(!box) return;
     var enc = encodeURIComponent(jid), D = null, err = "", poll = null, sel = null, filt = "";
-    var opt = {split: true, reads: false};
+    var opt = {split: true, reads: true};
     function mb(n){ return n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " kB"; }
     function paint(){
       if(!box.isConnected){ if(poll) clearInterval(poll); return; }
@@ -8002,7 +8002,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var L = D.latest;
       box.innerHTML = '<div class="panel" style="margin-top:14px"><div class="sechdr"><h3>Download results</h3>'
         + '<span class="hint">' + (D.kind === "wgs" ? "each sample: folders 1.QcReads … 8.readsMappingToRef + Report (PDF + Word)"
-                                                    : "each sample: customer report (Word + PDF) + figures, tables and per-sample outputs") + '</span></div>'
+                                                    : "each sample: folders 1.QcReads, 2.Taxonomy, 3.Diversity, 4.Tables + Report (PDF + Word)") + '</span></div>'
         + '<div style="padding:10px 14px">'
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">'
         + '<input type="text" id="dlF" placeholder="filter samples" style="width:200px" value="' + esc(filt) + '">'
@@ -8014,7 +8014,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<div style="margin:10px 0;display:flex;gap:16px;flex-wrap:wrap">'
         + '<label><input type="radio" name="dlMode" value="split"' + (opt.split ? " checked" : "") + '> One zip per sample</label>'
         + '<label><input type="radio" name="dlMode" value="one"' + (opt.split ? "" : " checked") + '> One zip with the chosen samples</label>'
-        + (D.kind === "amplicon" ? '<label><input type="checkbox" id="dlReads"' + (opt.reads ? " checked" : "") + '> include the quality-filtered reads (large)</label>' : "")
+        + (D.kind === "amplicon" ? '<label><input type="checkbox" id="dlReads"' + (opt.reads ? " checked" : "") + '> include the quality-filtered reads (1.QcReads/filtered_reads)</label>' : "")
         + '</div>'
         + '<button class="btn pri" id="dlGo"' + (busy || !n ? " disabled" : "") + '>' + (busy ? "Building…" : "Build " + (opt.split ? n + " zip(s)" : "1 zip")) + '</button> '
         + (t ? '<span class="what">' + esc(t.status === "error" ? (t.error || "failed") : (t.step_label || t.status))

@@ -735,36 +735,120 @@ def t_pkg_wgs(d):
           and not any(n.startswith("packages/") for n in nn), str(nn[:5]))
 
 
-def t_pkg_amplicon(d):
-    import packages as PK
+AMP_FOLDERS = ["1.QcReads", "2.Taxonomy", "3.Diversity", "4.Tables"]
+AMP_HEADINGS = ["amplicon sequencing report", "Sample: ", "1. Quality control and clean data", "Results 1.QcReads",
+                "2. Taxonomic profiles", "Results 2.Taxonomy", "3. Diversity", "Results 3.Diversity", "4. Tables",
+                "Results 4.Tables", "References"]
+
+
+def _amp_tools(d):
+    import test_amp_fast as TA
+    fq, fp = TA._fake_qc_tools(d / "qc")
+    return {"fastqc": fq, "fastp": fp, "Rscript": TA._fake_rscript(d), "ktImportText": None, "NanoPlot": None}
+
+
+def _amp_missing(html, heads):
+    pos, miss = 0, []
+    for h in heads:
+        k = html.find(h, pos)
+        if k < 0:
+            miss.append(h)
+        else:
+            pos = k + len(h)
+    return miss
+
+
+def t_amp_package_emu(d):
+    import amp_package as AP
     import test_amp_fast as TA
     run = TA.make_emu_run(d / "run")
     for s_ in ("L21", "PGU-16S-full"):
         _w(run / "emu_output" / s_ / f"{s_}_rel-abundance-threshold-0.0001.tsv", f"tax_id\tabundance\n{s_}\t1\n")
         _w(run / "emu_output" / s_ / "emu.log", "log")
         _w(run / "qc_filtered" / f"{s_}.fastq.gz", "@r\nACGT\n+\nIIII\n")
-    fq, fp = TA._fake_qc_tools(d / "qc")
-    tools = {"fastqc": fq, "fastp": fp, "Rscript": TA._fake_rscript(d), "ktImportText": None, "NanoPlot": None}
+    m = AP.build_sample(run, d / "up", "L21", d / "out", ("html",), tools=_amp_tools(d))
+    root = Path(m["dir"])
+    check("amplicon package: numbered folders + report in the root", all((root / f).is_dir() for f in AMP_FOLDERS)
+          and (root / "Report_L21.html").exists(), str(sorted(p.name for p in root.iterdir())))
+    html = (root / "Report_L21.html").read_text()
+    miss = _amp_missing(html, AMP_HEADINGS)
+    check("amplicon report: WGS-style title, sections in order, each with its Results line", not miss, str(miss))
+    check("amplicon report: no cover / lab summary blocks", "Client Name" not in html and "Report Summary:" not in html
+          and "Images_and_Outfiles" not in html and "16S rRNA amplicon sequencing report" in html)
+    want = ["1.QcReads/read_tracking.tsv", "1.QcReads/Box_plot.png", "1.QcReads/filtered_reads/L21.fastq.gz",
+            "2.Taxonomy/outfiles/expr.abundance.all.txt", "2.Taxonomy/outfiles/expr.biom",
+            "2.Taxonomy/Bar charts/plot_bar_genus.png", "2.Taxonomy/Heatmap/Heat_map_top50.png",
+            "2.Taxonomy/Krona/krona_static.png", "2.Taxonomy/Emu/L21_rel-abundance-threshold-0.0001.tsv",
+            "3.Diversity/Rarefaction_curves.png", "3.Diversity/alpha_diversity.tsv"]
+    gone = [w for w in want if not (root / w).exists()]
+    check("amplicon package: files in their folders", not gone, str(gone))
+    check("amplicon package: no logs / work files inside", not list(root.rglob("*.log"))
+          and not [p for p in root.rglob("*") if any(x.startswith(".") or x == "_work" for x in p.relative_to(root).parts)])
+    texts = {p: p.read_text(errors="replace") for p in root.rglob("*") if p.is_file() and p.suffix in
+             (".html", ".tsv", ".txt", ".biom", ".json")}
+    leak = [str(p.relative_to(root)) for p, v in texts.items() if "PGU" in v or "PGU" in str(p)]
+    check("amplicon package: nothing of the other sample", not leak, str(leak[:5]))
+    m2 = AP.build_sample(run, d / "up", "PGU-16S-full", d / "out2", ("html",), tools=_amp_tools(d),
+                         include_reads=False)
+    r2 = Path(m2["dir"])
+    h2 = (r2 / "Report_PGU-16S-full.html").read_text()
+    check("amplicon package: reads left out on request, the report does not name them",
+          not (r2 / "1.QcReads" / "filtered_reads").exists() and "filtered_reads" not in h2)
+
+
+def t_amp_package_dada2(d):
+    import amp_package as AP
+    import test_amp_fast as TA
+    run = TA.make_amp_run(d / "run")
+    up = d / "up"
+    up.mkdir()
+    for m in ("R1", "R2"):
+        (up / f"S2-12S_{m}_001.fastq").write_text("@a\nACGT\n+\nIIII\n")
+    m = AP.build_sample(run, up, "S2-12S", d / "out", ("html",), tools=_amp_tools(d))
+    root = Path(m["dir"])
+    html = (root / "Report_S2-12S.html").read_text()
+    check("12S package: sections + Results lines", not _amp_missing(html, AMP_HEADINGS), str(_amp_missing(html, AMP_HEADINGS)))
+    check("12S package: FastQC / fastp outputs in 1.QcReads, ASV FASTA in 2.Taxonomy",
+          (root / "1.QcReads" / "FastQC").is_dir() and (root / "1.QcReads" / "fastp" / "fastp.json").exists()
+          and (root / "2.Taxonomy" / "outfiles" / "expr.asv.fasta").exists()
+          and (root / "1.QcReads" / "plotQualityProfile.pdf").exists())
+    check("12S package: BLAST / NCBI check table of this sample's ASVs",
+          (root / "2.Taxonomy" / "BLAST" / "blast_ncbi_check.tsv").exists())
+    leak = [str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and p.suffix in (".html", ".tsv", ".txt",
+            ".fasta", ".biom") and ("F4 CytB.1" in p.read_text(errors="replace") or "F4_CytB" in p.read_text(errors="replace"))]
+    check("12S package: nothing of F4 CytB.1", not leak, str(leak[:5]))
+    m3 = AP.build_sample(run, d / "noup", "F4 CytB.1", d / "out3", ("html",), tools=_amp_tools(d))
+    h3 = Path(m3["html"]).read_text()
+    check("12S package: raw reads missing → said so, folder still there", "were not found" in h3
+          and (Path(m3["dir"]) / "1.QcReads").is_dir())
+
+
+def t_pkg_amplicon(d):
+    import packages as PK
+    import test_amp_fast as TA
+    run = TA.make_emu_run(d / "run")
+    for s_ in ("L21", "PGU-16S-full"):
+        _w(run / "emu_output" / s_ / f"{s_}_rel-abundance-threshold-0.0001.tsv", f"tax_id\tabundance\n{s_}\t1\n")
+        _w(run / "qc_filtered" / f"{s_}.fastq.gz", "@r\nACGT\n+\nIIII\n")
+    tools = _amp_tools(d)
     check("packages: kind of an amplicon run", PK.detect_kind(run) == "amplicon"
           and PK.list_samples(run, "amplicon") == ["L21", "PGU-16S-full"])
     m = PK.build(run, d / "up", "amplicon", ["L21", "PGU-16S-full"], True, d / "pk", job_label="TH-JOB",
-                 include_reads=True, tools=tools, formats=())
+                 include_reads=True, tools=tools, formats=("html",))
     names = sorted(f["name"] for f in m["files"])
-    check("packages: amplicon one zip per sample", names == ["L21_customer_report.zip",
-                                                             "PGU-16S-full_customer_report.zip"], str(names))
-    t = _zip_texts(d / "pk" / "L21_customer_report.zip")
-    check("packages: Emu per-sample table + filtered reads in Raw_outputs",
-          any(n.endswith("Raw_outputs/Emu/L21_rel-abundance-threshold-0.0001.tsv") for n in t)
-          and any(n.endswith("Raw_outputs/Reads/L21.filtered.fastq.gz") for n in t)
-          and not any(n.endswith("emu.log") for n in t), str(sorted(n for n in t if "Raw" in n)))
+    check("packages: amplicon one zip per sample, named by sample", names == ["L21.zip", "PGU-16S-full.zip"], str(names))
+    t = _zip_texts(d / "pk" / "L21.zip")
+    check("packages: amplicon zip = the numbered package", all(any(n.startswith(f"L21/{f}/") for n in t)
+                                                              for f in AMP_FOLDERS) and "L21/Report_L21.html" in t,
+          str(sorted(t)[:10]))
     leak = [n for n, v in t.items() if "PGU" in n or "PGU" in v or "TH-JOB" in v]
     check("packages: L21 zip holds nothing of PGU-16S-full (or the job name)", not leak, str(leak[:5]))
     m2 = PK.build(run, d / "up", "amplicon", ["PGU-16S-full"], False, d / "one", job_label="TH-JOB", tools=tools,
-                  formats=())
+                  formats=("html",))
     t2 = _zip_texts(Path(m2["files"][0]["path"]))
     check("packages: one amplicon zip for a subset holds only it",
           not any("L21" in n or "L21" in v for n, v in t2.items())
-          and any("Raw_outputs/Emu/PGU-16S-full" in n for n in t2), str(sorted(t2)[:8]))
+          and any(n.startswith("TH-JOB_results/PGU-16S-full/2.Taxonomy/") for n in t2), str(sorted(t2)[:8]))
 
 
 def t_pkg_wiring(d):
@@ -796,7 +880,7 @@ def t_pkg_name_collisions(d):
           and "Sample: FS 04" not in t[rep[0]], str(rep))
 
 
-TESTS += [t_pkg_wgs, t_pkg_amplicon, t_pkg_name_collisions, t_pkg_wiring]
+TESTS += [t_amp_package_emu, t_amp_package_dada2, t_pkg_wgs, t_pkg_amplicon, t_pkg_name_collisions, t_pkg_wiring]
 
 
 def main() -> int:

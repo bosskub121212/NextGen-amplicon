@@ -2655,7 +2655,7 @@ def packages_start(job_id: str, req: Optional[PackageRequest] = None):
         label = job_id
 
     def _work(t):
-        for m in ("amp_data", "qc_tools", "amplicon_excel", "custom_report", "wgs_package", "readtax", "tygs",
+        for m in ("amp_data", "qc_tools", "amplicon_excel", "custom_report", "amp_package", "wgs_package", "readtax", "tygs",
                   "wgs_customer_report", "packages"):
             try:
                 importlib.reload(importlib.import_module(m))

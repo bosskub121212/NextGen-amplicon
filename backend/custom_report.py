@@ -432,8 +432,14 @@ def _num(x, fmt="{:,}") -> str:
     return "unknown" if x is None else fmt.format(x)
 
 
-def _xlsx_cap(img: Path, rel, job_label: str, i: int) -> str:
-    """Caption for the sample's Excel file, only when it was really written."""
+def _xlsx_cap(img: Path, rel, job_label: str, i: int, xlsx: tuple | None = None) -> str:
+    """Caption for the sample's Excel file, only when it was really written.
+    xlsx=(folder, caption path) for the numbered package layout (amp_package.py)."""
+    if xlsx:
+        if Path(xlsx[0]).exists():
+            return _cap(xlsx[1])
+        return ('<p class="note">The Excel file was not made on this machine (Python package openpyxl is missing; '
+                "install it with: bash setup_amplicon_report.sh).</p>")
     name = f"{job_label}_sample{i}.xlsx"
     if (Path(img) / name).exists():
         return _cap(rel(name))
@@ -441,11 +447,16 @@ def _xlsx_cap(img: Path, rel, job_label: str, i: int) -> str:
             "install it with: bash setup_amplicon_report.sh).</p>")
 
 
-def _dada2_steps(run, i, s, folder, img, qc, plots, job_label) -> list[str]:
-    """Clean data + DADA2 pipeline + data quality control of a DADA2 run (16S, 12S / CytB)."""
+def _dada2_steps(run, i, s, folder, img, qc, plots, job_label, rel=None, reads_rel="",
+                 xlsx=None) -> list[str]:
+    """Clean data + DADA2 pipeline + data quality control of a DADA2 run (16S, 12S / CytB).
+    rel / reads_rel / xlsx: file paths of the numbered package layout (amp_package.py);
+    reads_rel=None = the filtered reads are not in the package."""
     p = run.params
     t = run.tracking[s]
-    rel = lambda x: f"{folder}/Images_and_Outfiles/{x}"
+    rel = rel or (lambda x: f"{folder}/Images_and_Outfiles/{x}")
+    if reads_rel == "":
+        reads_rel = f"{folder}/filtered_reads"
     f_, r_ = p.get("primer_f", ""), p.get("primer_r", "")
     fn, rn = PRIMER_NAMES.get((f_, r_), ("Forward primer", "Reverse primer"))
     o = ["<h4>1. Quality control checks on raw sequence data by FastQC</h4>",
@@ -490,7 +501,7 @@ def _dada2_steps(run, i, s, folder, img, qc, plots, job_label) -> list[str]:
           '<p class="indent">Output:</p><ul class="files">' + "".join(
               f"<li>- &ldquo;{e(x)}&rdquo;</li>" for x in (rel("plotQualityProfile.pdf"),
                                                             rel("plotQualityProfile_filtered.pdf"),
-                                                            f"{folder}/filtered_reads")) + "</ul>",
+                                                            reads_rel) if x) + "</ul>",
           '<p class="indent">2) Learn the Error Rates -- learnErrors estimates the error model of this sequencing run '
           "from the data, alternating between estimating error rates and inferring the sample composition until they "
           f"converge. The error model was learned from the reads of this run's samples together; {pool_t}.</p>",
@@ -505,15 +516,19 @@ def _dada2_steps(run, i, s, folder, img, qc, plots, job_label) -> list[str]:
                   "Nonchim", "perc"],
                  [[e(s), e(s)] + [_num(t[k]) for k in ("raw_data", "trimmed", "filtered", "denoisedF", "denoisedR",
                                                        "merged", "Nonchim")] + [_num(t["perc"], "{:.2f}")]], "num"),
-          _xlsx_cap(img, rel, job_label, i)]
+          _xlsx_cap(img, rel, job_label, i, xlsx)]
     return o
 
 
-def _emu_steps(run, i, s, folder, img, qc, plots, job_label) -> list[str]:
-    """Clean data + Emu pipeline + data quality control of an ONT 16S run."""
+def _emu_steps(run, i, s, folder, img, qc, plots, job_label, rel=None, reads_rel="",
+               xlsx=None) -> list[str]:
+    """Clean data + Emu pipeline + data quality control of an ONT 16S run (rel / reads_rel /
+    xlsx: as in _dada2_steps)."""
     p, st = run.params, emu_settings(run, s)
     t = run.tracking[s]
-    rel = lambda x: f"{folder}/Images_and_Outfiles/{x}"
+    rel = rel or (lambda x: f"{folder}/Images_and_Outfiles/{x}")
+    if reads_rel == "":
+        reads_rel = f"{folder}/filtered_reads"
     f_, r_ = p.get("primer_f", ""), p.get("primer_r", "")
     fn, rn = PRIMER_NAMES.get((f_, r_), ("Forward primer", "Reverse primer"))
     np_ = qc.get("nanoplot")
@@ -559,15 +574,15 @@ def _emu_steps(run, i, s, folder, img, qc, plots, job_label) -> list[str]:
           '<p class="indent">2) Taxonomic abundance estimation by Emu -- reads were aligned with minimap2 to '
           f"{e(emu_db_name(run))} and species abundances estimated by expectation-maximization; species below "
           f"{st['min_ab']:g} relative abundance were removed.</p>",
-          '<p class="indent">Output:</p><ul class="files">'
-          f"<li>- &ldquo;{e(folder)}/filtered_reads&rdquo;</li></ul>",
+          ('<p class="indent">Output:</p><ul class="files">'
+           f"<li>- &ldquo;{e(reads_rel)}&rdquo;</li></ul>" if reads_rel else ""),
           '<p><span class="ul">Result:</span> <b>Data quality control</b></p>',
           _fig(img / "Box_plot.png", 14), _cap(rel("Box_plot.png")),
           _table(["SampleID", "Sample_name"] + run.track_cols,
                  [[e(s), e(s)] + [_num(t.get(k)) for k in run.track_cols[:-1]]
                   + [_num(t.get("perc"), "{:.2f}")]], "num"),
           '<p class="indent">final = reads given to Emu; assigned = reads Emu placed on a species of the database.</p>',
-          _xlsx_cap(img, rel, job_label, i)]
+          _xlsx_cap(img, rel, job_label, i, xlsx)]
     return o
 
 
