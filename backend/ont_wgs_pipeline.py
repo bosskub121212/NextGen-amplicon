@@ -266,6 +266,10 @@ TOOL_ENVS = {
     **{t: ["ngamp-phylo", "phylo"] for t in (
         "blastn", "makeblastdb", "nucmer", "delta-filter", "mafft", "iqtree", "iqtree2",
         "iqtree3", "fastme")},
+    # read-based taxonomy (setup_wgs.sh --readtax: ngamp-readtax; Kraken2 also from the shotgun env)
+    "kraken2": ["ngamp-readtax", "ngamp-meta"],
+    "bracken": ["ngamp-readtax", "ngamp-meta"],
+    **{t: ["ngamp-readtax"] for t in ("centrifuger", "centrifuger-quant", "centrifuge", "gottcha2")},
     "minimap2": ["ngamp-phylo", "phylo", "ngamp-wgs", "wgs", "medaka"],
     "samtools": ["ngamp-phylo", "phylo", "ngamp-wgs", "wgs", "medaka"],
 }
@@ -1756,6 +1760,16 @@ def process_sample(g: dict, args, dbp: dict, work_root: Path, out_root: Path,
     else:
         res["bakta"] = {}
 
+    # ── 13. read-based taxonomy (Kraken2+Bracken / Centrifuger / GOTTCHA2) ──
+    if not args.skip_readtax:
+        P(0.95, "Read-based taxonomy")
+        try:
+            import readtax
+            readtax.run_sample(filt, sdir / "readtax", dbp, args.threads,
+                               float(res["reads_filtered"].get("mean_len") or 5000), log=log)
+        except Exception as e:                      # never lose the assembly over this step
+            warn(f"[{S}] read-based taxonomy failed: {e}")
+
     # ── cleanup: keep merged reads + final products, drop the bulky middle ──
     if not args.keep_intermediate:
         for p in (flye_dir / "00-assembly", flye_dir / "10-consensus",
@@ -1913,6 +1927,7 @@ def parse_args(argv=None):
                    help="skani only — no ANIb / ANIm / TETRA")
     p.add_argument("--skip_tree", action="store_true")
     p.add_argument("--skip_mapping", action="store_true")
+    p.add_argument("--skip_readtax", action="store_true")
     p.add_argument("--ts_max", type=int, default=10,
                    help="closest type strains compared in detail / shown in trees")
     p.add_argument("--ts_download_max", type=int, default=30,

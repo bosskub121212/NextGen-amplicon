@@ -229,6 +229,7 @@ class RunParams(BaseModel):
     wgs_run_anib:         bool  = True     # ANIb + ANIm + TETRA (else skani only)
     wgs_run_tree:         bool  = True     # genome tree + 16S tree
     wgs_run_mapping:      bool  = True     # reads/assembly vs closest reference
+    wgs_run_readtax:      bool  = True     # Kraken2+Bracken / Centrifuger / GOTTCHA2 on the reads
     wgs_ts_max:           int   = 10       # type strains compared / shown in trees
     wgs_keep_bam:         bool  = False    # deliver the reads-vs-reference BAM
     wgs_sample_names:     dict  = {}       # {group key: sample name} from the UI
@@ -1241,6 +1242,8 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
             cmd += ["--skip_tree"]
         if not params.wgs_run_mapping:
             cmd += ["--skip_mapping"]
+        if not params.wgs_run_readtax:
+            cmd += ["--skip_readtax"]
         if params.wgs_keep_bam:
             cmd += ["--keep_bam"]
         cmd += ["--ts_max", str(max(3, min(25, int(params.wgs_ts_max or 10))))]
@@ -2385,6 +2388,412 @@ def custom_report_download(job_id: str):
     return FileResponse(z, filename=f"{st.get('name', job_id)}.zip", media_type="application/zip")
 
 
+_ZIP_LOCKS: dict = {}
+
+# -- Add-on tasks on a finished job (read-based taxonomy, result packages) ------
+# They wait in the same queue as jobs (GATE), so they never run beside a job when
+# the queue allows one at a time. Kept in memory: after a restart, start them again.
+TASKS: dict = {}
+TASKS_LOCK = threading.Lock()
+
+
+def _job_out(jid: str) -> Path:
+    return Path((jobs.get(jid) or {}).get("output_dir") or str(RESULTS_DIR / jid))
+
+
+def _task_runner(t: dict, work, seq: float):
+    tid = t["task_id"]
+
+    def _cancelled():
+        return t.get("status") == "cancelled"
+
+    def _waiting(label):
+        t["step_label"] = label
+
+    try:
+        if not GATE.enter(tid, False, _cancelled, _waiting, seq=seq):
+            return
+        t.update(status="running", started_at=time.time(), step_label="Starting...")
+        try:
+            work(t)
+            if t["status"] == "running":
+                t.update(status="done", progress=100, step_label="Done", finished_at=time.time())
+        except Exception as e:
+            if t.get("status") != "cancelled":
+                import traceback
+                traceback.print_exc()
+                t.update(status="error", error=str(e), step_label="Failed", finished_at=time.time())
+        finally:
+            GATE.leave(tid)
+    finally:
+        t["in_gate"] = False             # the same task id may be queued again from now on
+
+
+def _submit_task(job_id: str, kind: str, label: str, work, request=None):
+    """Queue an add-on task; the same request while it waits/runs returns the running one,
+    a different one → 409."""
+    tid = f"{job_id}~{kind}"
+    with TASKS_LOCK:
+        cur = TASKS.get(tid)
+        if cur and cur["status"] in ("queued", "running"):
+            if cur.get("request") == request:
+                return cur
+            return JSONResponse(status_code=409, content={
+                "error": f"{cur['job_name']} is already queued or running — try again when it is done"})
+        if cur and cur.get("in_gate"):
+            return JSONResponse(status_code=409, content={
+                "error": "the cancelled run is still stopping — try again in a few seconds"})
+        TASKS[tid] = {"task_id": tid, "job_id": job_id, "kind": kind, "request": request,
+                      "job_name": f"{(jobs.get(job_id) or {}).get('job_name') or job_id} · {label}",
+                      "marker": (jobs.get(job_id) or {}).get("marker", ""), "status": "queued",
+                      "step_label": "Queued", "progress": 0, "run_at": time.time(), "in_gate": True}
+        t = TASKS[tid]
+    executor.submit(_task_runner, t, work, time.time())
+    return t
+
+
+def _task_view(t: dict) -> dict:
+    return {k: v for k, v in t.items() if k not in ("request", "in_gate")}
+
+
+def _run_streaming(t: dict, cmd: list, log_path: Path):
+    """Run a helper script in its own process group; PROGRESS:pct|label lines move the task's
+    bar. Cancel kills the whole group (kraken2 / centrifuger children too) at once, not at
+    the script's next output line."""
+    import signal
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", errors="replace") as lf:
+        lf.write(f"\n### {time.strftime('%Y-%m-%d %H:%M:%S')}  {' '.join(map(str, cmd))}\n")
+        p = subprocess.Popen([str(c) for c in cmd], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, errors="replace", bufsize=1, start_new_session=True)
+        t["pid"] = p.pid
+        stop = threading.Event()
+
+        def _watch():
+            while not stop.wait(2):
+                if t.get("status") == "cancelled" and p.poll() is None:
+                    try:
+                        os.killpg(p.pid, signal.SIGTERM)
+                        time.sleep(10)
+                        if p.poll() is None:
+                            os.killpg(p.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                    return
+        threading.Thread(target=_watch, daemon=True).start()
+        try:
+            for line in p.stdout:
+                lf.write(line)
+                if line.startswith("PROGRESS:"):
+                    pct, _, lab = line[9:].strip().partition("|")
+                    try:
+                        t["progress"] = int(float(pct))
+                    except ValueError:
+                        pass
+                    if lab:
+                        t["step_label"] = lab
+        finally:
+            rc = p.wait()
+            stop.set()
+    t.pop("pid", None)
+    return rc
+
+
+def _wgs_check(job_id: str):
+    if not _JOB_ID_RE.fullmatch(job_id):
+        return None, JSONResponse(status_code=400, content={"error": "bad job id"})
+    out = _job_out(job_id)
+    if not (out / "wgs_results.json").exists():
+        return None, JSONResponse(status_code=404, content={"error": "not a finished ONT-WGS job"})
+    if (jobs.get(job_id) or {}).get("status") in ("queued", "running"):
+        return None, JSONResponse(status_code=409, content={"error": "the job itself is still running"})
+    return out, None
+
+
+class ReadtaxRequest(BaseModel):
+    samples: Optional[List[str]] = None
+
+
+@app.get("/wgs/{job_id}/readtax")
+def wgs_readtax_status(job_id: str):
+    out, err = _wgs_check(job_id)
+    if err:
+        return err
+    t = TASKS.get(f"{job_id}~readtax")
+    work = UPLOAD_DIR / job_id / "_wgs_work"
+    rows = []
+    for sd in sorted((out / "samples").iterdir()) if (out / "samples").is_dir() else []:
+        if not sd.is_dir():
+            continue
+        info = {}
+        try:
+            info = json.loads((sd / "readtax" / "readtax_info.json").read_text())
+        except Exception:
+            pass
+        rows.append({"sample": sd.name, "reads_available": (work / sd.name / "reads.filtered.fastq.gz").exists(),
+                     "done": (sd / "readtax" / "read_taxonomy.tsv").exists(),
+                     "tools": [{k: x.get(k) for k in ("label", "status", "note")} for x in info.get("tools", [])],
+                     "note": info.get("note", "")})
+    return {"task": _task_view(t) if t else None, "samples": rows}
+
+
+@app.post("/wgs/{job_id}/readtax")
+def wgs_readtax_start(job_id: str, req: Optional[ReadtaxRequest] = None):
+    """Add read-based taxonomy to a finished ONT-WGS job (through the queue)."""
+    req = req or ReadtaxRequest()
+    out, err = _wgs_check(job_id)
+    if err:
+        return err
+    if req.samples is not None and not req.samples:
+        return JSONResponse(status_code=400, content={"error": "pick at least one sample"})
+    known = {p.name for p in (out / "samples").iterdir() if p.is_dir()} if (out / "samples").is_dir() else set()
+    want = list(dict.fromkeys(req.samples)) if req.samples else sorted(known)
+    bad = [x for x in want if x not in known]
+    if bad or not want:
+        return JSONResponse(status_code=400, content={"error": f"not in this run: {', '.join(bad)}" if bad
+                                                      else "pick at least one sample"})
+    work = UPLOAD_DIR / job_id / "_wgs_work"
+    gone = [s for s in want if not (work / s / "reads.filtered.fastq.gz").exists()]
+    if len(gone) == len(want):
+        return JSONResponse(status_code=400, content={
+            "error": "the filtered reads of these samples are no longer in the upload folder — run the job again "
+                     "(with read-based taxonomy on) to add it"})
+    p = (jobs.get(job_id) or {}).get("params") or {}
+    dbp = p.get("db_paths_json") or str(Path.home() / "r16s-app" / "backend" / "databases" / "db_paths.json")
+    threads = int(p.get("nThreads") or 8)
+    script = Path(__file__).resolve().parent / "readtax.py"
+
+    def _work(t):
+        cmd = [sys.executable, script, "--results", out, "--work_dir", work, "--db_paths", dbp,
+               "--threads", threads, "--samples", ",".join(s for s in want if s not in gone)]
+        rc = _run_streaming(t, cmd, out / "readtax.log")
+        if rc != 0 and t["status"] == "running":
+            t.update(status="error", step_label="Failed",
+                     error="read-based taxonomy did not run for any sample — see readtax.log in the results "
+                           "(tools/databases: setup_wgs.sh --readtax)")
+    t = _submit_task(job_id, "readtax", "read-based taxonomy", _work, request={"samples": want})
+    if isinstance(t, JSONResponse):
+        return t
+    return {"task": _task_view(t), "skipped_no_reads": gone}
+
+
+# -- "Download results": per-sample / one-zip packages, every pipeline --------
+class PackageRequest(BaseModel):
+    samples: Optional[List[str]] = None      # None = every sample
+    split: bool = True                       # one zip per sample
+    include_reads: bool = False              # amplicon: also the quality-filtered reads
+
+
+def _pkg_check(job_id: str):
+    """(out_dir, kind, None) or (None, None, error)."""
+    if not _JOB_ID_RE.fullmatch(job_id):
+        return None, None, JSONResponse(status_code=400, content={"error": "bad job id"})
+    if (jobs.get(job_id) or {}).get("status") in ("queued", "running"):
+        return None, None, JSONResponse(status_code=409, content={"error": "the job itself is still running"})
+    out = _job_out(job_id)
+    if (out / "wgs_results.json").exists():
+        return out, "wgs", None
+    o2, err = _custom_check(job_id)
+    if err:
+        return None, None, err
+    return o2, "amplicon", None
+
+
+def _pkg_latest(out: Path):
+    builds = sorted((out / "packages").glob("build_*/manifest.json"), key=lambda p: p.stat().st_mtime)
+    if not builds:
+        return None, None
+    try:
+        return builds[-1].parent, json.loads(builds[-1].read_text())
+    except Exception:
+        return None, None
+
+
+@app.get("/packages/{job_id}")
+def packages_status(job_id: str):
+    out, kind, err = _pkg_check(job_id)
+    if err:
+        return err
+    import importlib
+    pk = importlib.reload(importlib.import_module("packages"))
+    try:
+        samples = pk.list_samples(out, kind)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"cannot read this run: {e}"})
+    d, man = _pkg_latest(out)
+    t = TASKS.get(f"{job_id}~package")
+    files = []
+    for f in (man or {}).get("files", []):
+        p = d / f["name"]
+        if p.exists():
+            files.append({"name": f["name"], "size": p.stat().st_size, "samples": f.get("samples", [])})
+    return {"kind": kind, "samples": samples, "task": _task_view(t) if t else None,
+            "latest": {"split": man.get("split"), "samples": man.get("samples"), "files": files,
+                       "warnings": man.get("warnings", []), "built_at": (d / "manifest.json").stat().st_mtime}
+            if man else None}
+
+
+@app.post("/packages/{job_id}")
+def packages_start(job_id: str, req: Optional[PackageRequest] = None):
+    """Build the chosen samples' packages through the job queue (progress n / N)."""
+    req = req or PackageRequest()
+    out, kind, err = _pkg_check(job_id)
+    if err:
+        return err
+    if req.samples is not None and not req.samples:
+        return JSONResponse(status_code=400, content={"error": "pick at least one sample"})
+    import importlib
+    pk = importlib.reload(importlib.import_module("packages"))
+    known = pk.list_samples(out, kind)
+    want = list(dict.fromkeys(req.samples)) if req.samples else list(known)
+    bad = [x for x in want if x not in known]
+    if bad or not want:
+        return JSONResponse(status_code=400, content={"error": f"not in this run: {', '.join(bad)}" if bad
+                                                      else "pick at least one sample"})
+    label = pk.safe((jobs.get(job_id) or {}).get("job_name") or job_id)[:60]
+    if label == "sample":
+        label = job_id
+
+    def _work(t):
+        for m in ("amp_data", "qc_tools", "amplicon_excel", "custom_report", "wgs_package", "readtax", "tygs",
+                  "wgs_customer_report", "packages"):
+            try:
+                importlib.reload(importlib.import_module(m))
+            except Exception:
+                pass
+        P = importlib.import_module("packages")
+        dest = out / "packages" / f"build_{int(time.time())}"
+
+        def prog(i, n, lab):
+            t["progress"] = int(100 * i / max(1, n))
+            t["step_label"] = lab
+            if t.get("status") == "cancelled":
+                raise RuntimeError("cancelled")
+        try:
+            man = P.build(out, UPLOAD_DIR / job_id, kind, want, req.split, dest, job_label=label,
+                          include_reads=req.include_reads, progress=prog)
+        except BaseException:
+            shutil.rmtree(dest, ignore_errors=True)            # no half-written build left on disk
+            raise
+        for old in (out / "packages").glob("build_*"):        # keep only the newest build on disk
+            if old != dest:
+                shutil.rmtree(old, ignore_errors=True)
+        t["files"] = [f["name"] for f in man["files"]]
+        t["warnings"] = man.get("warnings", [])
+    t = _submit_task(job_id, "package", "result packages", _work,
+                     request={"samples": want, "split": req.split, "reads": req.include_reads})
+    if isinstance(t, JSONResponse):
+        return t
+    return {"task": _task_view(t)}
+
+
+@app.get("/packages/{job_id}/file/{name}")
+def packages_file(job_id: str, name: str):
+    out, kind, err = _pkg_check(job_id)
+    if err:
+        return err
+    d, man = _pkg_latest(out)
+    ok = {f["name"] for f in (man or {}).get("files", [])}
+    if name not in ok or not (d / name).exists():
+        return JSONResponse(status_code=404, content={"error": "no such package — build it again"})
+    return FileResponse(d / name, filename=name, media_type="application/zip")
+
+
+# -- TYGS (dDDH) import per sample -------------------------------------------
+def _wgs_sample(job_id: str, sample: str):
+    out, err = _wgs_check(job_id)
+    if err:
+        return None, err
+    names = {p.name for p in (out / "samples").iterdir() if p.is_dir()} if (out / "samples").is_dir() else set()
+    if sample not in names:
+        return None, JSONResponse(status_code=404, content={"error": f"no sample {sample!r} in this run"})
+    return out / "samples" / sample, None
+
+
+@app.get("/wgs/{job_id}/tygs")
+def wgs_tygs_status(job_id: str):
+    out, err = _wgs_check(job_id)
+    if err:
+        return err
+    import importlib
+    ty = importlib.reload(importlib.import_module("tygs"))
+    rows = []
+    for sd in sorted((out / "samples").iterdir()) if (out / "samples").is_dir() else []:
+        if not sd.is_dir():
+            continue
+        t = ty.load(sd / "tygs") or {}
+        rows.append({"sample": sd.name, "has_assembly": (sd / f"{sd.name}_assembly.fasta").exists(),
+                     "state": ty.state(sd / "tygs"), "identification": t.get("identification"),
+                     "result_link": t.get("result_link")})
+    return {"samples": rows, "recheck_minutes": ty.MIN_RECHECK // 60}
+
+
+@app.get("/wgs/{job_id}/tygs_assembly/{sample}")
+def wgs_tygs_assembly(job_id: str, sample: str):
+    """The polished assembly to upload at tygs.dsmz.de (named so the import finds it again)."""
+    sd, err = _wgs_sample(job_id, sample)
+    if err:
+        return err
+    fa = sd / f"{sample}_assembly.fasta"
+    if not fa.exists():
+        return JSONResponse(status_code=404, content={"error": "this sample has no assembly"})
+    import wgs_package as _wp
+    return FileResponse(fa, filename=f"{_wp.safe(sample)}_assembly.fasta", media_type="text/plain")
+
+
+class TygsImport(BaseModel):
+    link: str
+    genome: Optional[str] = None
+
+
+@app.post("/wgs/{job_id}/tygs/{sample}")
+def wgs_tygs_import(job_id: str, sample: str, req: TygsImport):
+    """Read a finished TYGS job (result link or GUID) into this sample. An unfinished job is
+    re-checked at most every 30 min (TYGS asks for no more than one or two checks an hour)."""
+    sd, err = _wgs_sample(job_id, sample)
+    if err:
+        return err
+    import importlib
+    ty = importlib.reload(importlib.import_module("tygs"))
+    try:
+        st = ty.import_result(req.link, sample, sd / "tygs", genome=req.genome or None,
+                              cache=RESULTS_DIR / ".tygs_status")     # one status check per GUID
+    except ty.TygsAmbiguous as e:
+        return JSONResponse(status_code=409, content={"error": str(e), "genomes": e.names})
+    except ty.TygsError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    t = ty.load(sd / "tygs") or {}
+    return {"state": st, "identification": t.get("identification")}
+
+
+@app.post("/wgs/{job_id}/tygs/{sample}/remove")
+def wgs_tygs_remove(job_id: str, sample: str):
+    """Undo an import (wrong job / wrong genome); the report falls back to our own ANI call."""
+    sd, err = _wgs_sample(job_id, sample)
+    if err:
+        return err
+    shutil.rmtree(sd / "tygs", ignore_errors=True)
+    return {"removed": True}
+
+
+@app.get("/tasks/{task_id}")
+def task_status(task_id: str):
+    t = TASKS.get(task_id)
+    if not t:
+        return JSONResponse(status_code=404, content={"error": "no such task (finished tasks are forgotten "
+                                                               "after a restart)"})
+    return _task_view(t)
+
+
+@app.post("/tasks/{task_id}/cancel")
+def task_cancel(task_id: str):
+    t = TASKS.get(task_id)
+    if not t or t["status"] not in ("queued", "running"):
+        return JSONResponse(status_code=400, content={"error": "this task is not waiting or running"})
+    t.update(status="cancelled", step_label="Cancelled")
+    return _task_view(t)
+
+
 @app.post("/report")
 def build_report(req: ReportRequest):
     import importlib, tempfile
@@ -2878,7 +3287,7 @@ def set_config(cfg: WorkerConfig):
 
 
 def _job_row(jid: str) -> dict:
-    j = jobs.get(jid) or {}
+    j = jobs.get(jid) or TASKS.get(jid) or {}
     return {"job_id": jid, "job_name": j.get("job_name") or jid, "marker": j.get("marker", ""),
             "status": j.get("status", ""), "step_label": j.get("step_label", ""), "run_at": j.get("run_at"),
             "started_at": j.get("started_at"), "progress": j.get("progress", 0)}
@@ -2909,24 +3318,33 @@ def queue_move(req: QueueMove):
 # -- 10. Download ZIP ---------------------------------------------------------
 @app.get("/download/{job_id}")
 def download_zip(job_id: str):
+    """Every result file of the job. Written to disk (results/<job>/packages/) and reused while
+    nothing in the results changed — a big job no longer has to fit in memory."""
     if job_id not in jobs:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
-    output_dir = jobs[job_id].get("output_dir", str(RESULTS_DIR / job_id))
-    if not Path(output_dir).exists():
+    output_dir = Path(jobs[job_id].get("output_dir", str(RESULTS_DIR / job_id)))
+    if not output_dir.exists():
         return JSONResponse(status_code=404, content={"error": "Results not found"})
-    import zipfile, io
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for fpath in Path(output_dir).rglob("*"):
-            if fpath.is_file():
-                zf.write(fpath, fpath.relative_to(output_dir))
-    buf.seek(0)
-    from fastapi.responses import StreamingResponse
+    import importlib
+    pk = importlib.reload(importlib.import_module("packages"))
     marker = jobs[job_id].get("marker", "")
-    safe_name = (jobs[job_id].get("job_name") or job_id).replace(" ", "_")
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", jobs[job_id].get("job_name") or job_id)
     filename = f"{safe_name}_{marker}_results.zip"
-    return StreamingResponse(buf, media_type="application/zip",
-                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    z = output_dir / "packages" / "whole_job.zip"
+    with _ZIP_LOCKS.setdefault(job_id, threading.Lock()):     # a double click builds it once
+        newest = 0.0
+        for dp, dns, fns in os.walk(output_dir):
+            dns[:] = [d for d in dns if not d.startswith(".")]
+            if Path(dp) == output_dir:
+                dns[:] = [d for d in dns if d not in pk.WHOLE_JOB_SKIP]
+            for fn in [""] + fns:              # "" = the folder itself: a deleted file changes its mtime
+                try:
+                    newest = max(newest, os.stat(os.path.join(dp, fn)).st_mtime)
+                except OSError:
+                    pass
+        if not z.exists() or z.stat().st_mtime < newest:
+            pk.zip_whole_job(output_dir, z)
+    return FileResponse(z, filename=filename, media_type="application/zip")
 
 # -- 12. Taxonomy for colour picker -------------------------------------------
 @app.get("/taxonomy/{job_id}")

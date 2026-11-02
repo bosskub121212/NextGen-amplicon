@@ -350,6 +350,10 @@ def main():
     import test_queue_fast                   # job queue: one at a time, pause, order
     test_queue_fast.main()
     FAILS.extend(test_queue_fast.FAILS)
+
+    import test_wgs_pkg_fast                 # WGS customer package: folders 1-8, report PDF/Word
+    test_wgs_pkg_fast.main()
+    FAILS.extend(test_wgs_pkg_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

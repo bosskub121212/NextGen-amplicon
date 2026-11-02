@@ -1195,11 +1195,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       Array.prototype.forEach.call(box.querySelectorAll("[data-qcancel]"), function(el){
         el.addEventListener("click", function(){
           el.disabled = true;
-          fetch("/jobs/" + encodeURIComponent(el.dataset.qcancel), {method:"DELETE"}).then(function(){ setTimeout(load, 600); });
+          var id = el.dataset.qcancel;   /* "<job>~<kind>" = an add-on task on a finished job */
+          (id.indexOf("~") > 0 ? fetch("/tasks/" + encodeURIComponent(id) + "/cancel", {method:"POST"})
+                               : fetch("/jobs/" + encodeURIComponent(id), {method:"DELETE"}))
+            .then(function(){ setTimeout(load, 600); });
         });
       });
       Array.prototype.forEach.call(box.querySelectorAll("[data-qopen]"), function(el){
-        el.addEventListener("click", function(ev){ ev.preventDefault(); go({name:"job", id: el.dataset.qopen}); });
+        el.addEventListener("click", function(ev){ ev.preventDefault(); go({name:"job", id: el.dataset.qopen.split("~")[0]}); });
       });
     }
     function load(){
@@ -1628,7 +1631,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                      + '<button class="btn" id="wgDocJob" title="Editable Word file with the same content">Word report</button>' : "")
             + (isWgs ? "" : '<button class="btn" id="ampRe" title="Run the pipeline again on the same input files with the same settings">Run again</button>'
                           + '<button class="btn" id="ampPdf" title="PDF or editable Word file; one run = full report, tick more runs for a comparison">Report (PDF / Word)</button>')
-            + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '">Download (.zip)</a>'
+            + '<button class="btn" id="dlRes" title="Pick samples: one zip per sample (folders + report) or one zip">Download results</button>'
+            + '<a class="btn" href="/download/' + encodeURIComponent(jid) + '" title="Every file of the job, as the pipeline wrote it">Everything (.zip)</a>'
             + '<button class="btn pri" id="resBtn">' + (isWgs ? "View genome report" : "View results") + '</button>'
           : M.live
           ? '<button class="btn" id="cancelBtn" title="The log updates as the pipeline writes it. '
@@ -1643,7 +1647,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + '<button class="btn" id="resBtn">View any results</button>'
             + '<a class="btn" href="/classic?job=' + encodeURIComponent(jid) + '">Open in the classic UI</a>';
       body.innerHTML =
-          (M.live ? "" : '<div id="delBox"></div><div id="repBox"></div>')
+          (M.live ? "" : '<div id="delBox"></div><div id="repBox"></div><div id="dlBox"></div>')
         + '<div class="kpis">' + M.kpis.map(function(x){
               return '<div class="kpi"><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></div>'; }).join("")
         + '</div>'
@@ -1706,6 +1710,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(apd) apd.addEventListener("click", function(){ openReport(jid, "repBox"); });
       var are = document.getElementById("ampRe");
       if(are) are.addEventListener("click", function(){ ampRerun(jid, are); });
+      var dlr = document.getElementById("dlRes");
+      if(dlr) dlr.addEventListener("click", function(){ openDownloadDialog(jid, "dlBox"); });
 
       var cb = document.getElementById("cancelBtn");
       if(cb) cb.addEventListener("click", function(){
@@ -1882,6 +1888,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(p.wgs_run_typestrain !== undefined)
         row("Type strains · ANIb/ANIm/TETRA · trees · mapping",
             [p.wgs_run_typestrain, p.wgs_run_anib, p.wgs_run_tree, p.wgs_run_mapping].map(onoff).join(" · ")
+            + (p.wgs_run_readtax !== undefined ? " · read taxonomy " + onoff(p.wgs_run_readtax) : "")
             + (p.wgs_ts_max ? " · " + p.wgs_ts_max + " type strains" : ""));
       if(p.wgs_sample_names && Object.keys(p.wgs_sample_names).length)
         row("Samples", Object.keys(p.wgs_sample_names).map(function(k){ return p.wgs_sample_names[k]; }).join(", "));
@@ -7562,6 +7569,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
          ["wgs_ts_max",         "Type strains compared", "int", "10", "closest N by ANI; also the genome-tree size"],
          ["wgs_run_tree",       "Genome tree + 16S tree", "bool", "true", "FastME on ANI distances; MAFFT + IQ-TREE for 16S"],
          ["wgs_run_mapping",    "Map reads to the closest genome", "bool", "true", "coverage, absent regions, SNPs, synteny"],
+         ["wgs_run_readtax",    "Read-based taxonomy (Kraken2+Bracken, Centrifuger, GOTTCHA2)", "bool", "true", "the reads, not the assembly — a contamination check; each tool skipped when not installed (setup_wgs.sh --readtax)"],
          ["wgs_keep_bam",       "Deliver the BAM file", "bool", "false", "for IGV — about the size of the reads"]
        ]},
       {n:6, title:"Typing, resistance and annotation", why:"Each step is skipped, with a note in the report, when its tool or database is missing.",
@@ -7973,6 +7981,82 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      One run gives the full report (QC, charts, ASV table, diversity); ticking
      more runs turns it into a comparison with a column per run, in the order
      they were ticked. ONT-WGS runs have their own report and are not listed. */
+  /* "Download results" — every pipeline. GET/POST /packages/{id}: pick samples, one zip per
+     sample (default; samples of different customers never share a zip) or one zip. The build
+     waits in the job queue and writes the zips to disk; they stay until the next build. */
+  function openDownloadDialog(jid, boxId){
+    var box = document.getElementById(boxId);
+    if(!box) return;
+    var enc = encodeURIComponent(jid), D = null, err = "", poll = null, sel = null, filt = "";
+    var opt = {split: true, reads: false};
+    function mb(n){ return n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " kB"; }
+    function paint(){
+      if(!box.isConnected){ if(poll) clearInterval(poll); return; }
+      if(!D){ box.innerHTML = '<div class="panel" style="margin-top:14px"><div style="padding:12px 14px">'
+                + (err ? '<div class="err">' + esc(err) + '</div>' : '<div class="skel">Reading the samples…</div>') + '</div></div>'; return; }
+      if(!sel){ sel = {}; D.samples.forEach(function(s){ sel[s] = true; }); }
+      var t = D.task, busy = t && (t.status === "queued" || t.status === "running");
+      var shown = D.samples.filter(function(s){ return !filt || s.toLowerCase().indexOf(filt.toLowerCase()) >= 0; });
+      /* only samples both ticked AND shown are built: a filter never sends hidden samples */
+      var n = shown.filter(function(s){ return sel[s]; }).length;
+      var L = D.latest;
+      box.innerHTML = '<div class="panel" style="margin-top:14px"><div class="sechdr"><h3>Download results</h3>'
+        + '<span class="hint">' + (D.kind === "wgs" ? "each sample: folders 1.QcReads … 8.readsMappingToRef + Report (PDF + Word)"
+                                                    : "each sample: customer report (Word + PDF) + figures, tables and per-sample outputs") + '</span></div>'
+        + '<div style="padding:10px 14px">'
+        + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">'
+        + '<input type="text" id="dlF" placeholder="filter samples" style="width:200px" value="' + esc(filt) + '">'
+        + '<button class="btn" id="dlAll">Tick shown</button><button class="btn" id="dlNone">Untick shown</button>'
+        + '<span class="hint">' + n + ' of ' + D.samples.length + ' chosen' + (filt ? " (shown and ticked)" : "") + '</span></div>'
+        + '<div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 10px;columns:3 220px">'
+        + shown.map(function(s){ return '<label style="display:block;break-inside:avoid"><input type="checkbox" data-dls="' + esc(s) + '"'
+            + (sel[s] ? " checked" : "") + '> ' + esc(s) + '</label>'; }).join("") + '</div>'
+        + '<div style="margin:10px 0;display:flex;gap:16px;flex-wrap:wrap">'
+        + '<label><input type="radio" name="dlMode" value="split"' + (opt.split ? " checked" : "") + '> One zip per sample</label>'
+        + '<label><input type="radio" name="dlMode" value="one"' + (opt.split ? "" : " checked") + '> One zip with the chosen samples</label>'
+        + (D.kind === "amplicon" ? '<label><input type="checkbox" id="dlReads"' + (opt.reads ? " checked" : "") + '> include the quality-filtered reads (large)</label>' : "")
+        + '</div>'
+        + '<button class="btn pri" id="dlGo"' + (busy || !n ? " disabled" : "") + '>' + (busy ? "Building…" : "Build " + (opt.split ? n + " zip(s)" : "1 zip")) + '</button> '
+        + (t ? '<span class="what">' + esc(t.status === "error" ? (t.error || "failed") : (t.step_label || t.status))
+             + (busy && t.progress ? " · " + t.progress + " %" : "") + '</span>' : "")
+        + (err ? '<div class="err">' + esc(err) + '</div>' : "")
+        + (L && L.files.length ? '<h4 style="margin:14px 0 6px">Ready (' + esc(new Date(L.built_at * 1000).toLocaleString()) + ')</h4>'
+             + '<div class="files">' + L.files.map(function(f){
+                 return '<span class="file"><a href="/packages/' + enc + '/file/' + encodeURIComponent(f.name) + '" download>'
+                   + esc(f.name) + '</a> <span class="hint">' + mb(f.size) + '</span></span>'; }).join("") + '</div>'
+             + (L.warnings && L.warnings.length ? '<div class="hint">' + L.warnings.map(esc).join("<br>") + '</div>' : "") : "")
+        + '</div></div>';
+      var f = document.getElementById("dlF");
+      f.addEventListener("input", function(){ filt = f.value; var p = f.selectionStart; paint();
+        var g = document.getElementById("dlF"); g.focus(); g.setSelectionRange(p, p); });
+      document.getElementById("dlAll").addEventListener("click", function(){ shown.forEach(function(s){ sel[s] = true; }); paint(); });
+      document.getElementById("dlNone").addEventListener("click", function(){ shown.forEach(function(s){ sel[s] = false; }); paint(); });
+      Array.prototype.forEach.call(box.querySelectorAll("[data-dls]"), function(el){
+        el.addEventListener("change", function(){ sel[el.dataset.dls] = el.checked; paint(); });
+      });
+      Array.prototype.forEach.call(box.querySelectorAll('input[name="dlMode"]'), function(el){
+        el.addEventListener("change", function(){ opt.split = el.value === "split"; paint(); });
+      });
+      var rd = document.getElementById("dlReads");
+      if(rd) rd.addEventListener("change", function(){ opt.reads = rd.checked; });
+      document.getElementById("dlGo").addEventListener("click", function(){
+        var pick = D.samples.filter(function(s){ return sel[s] && (!filt || s.toLowerCase().indexOf(filt.toLowerCase()) >= 0); });
+        err = "";
+        fetch("/packages/" + enc, {method:"POST", headers:{"Content-Type":"application/json"},
+              body: JSON.stringify({samples: pick, split: opt.split, include_reads: opt.reads})})
+          .then(function(r){ return r.json().then(function(d){ if(!r.ok) throw new Error(d.error || ("HTTP " + r.status)); return d; }); })
+          .then(function(){ load(); })
+          .catch(function(e){ err = e.message || String(e); paint(); });
+      });
+      if(busy && !poll) poll = setInterval(load, 3000);
+      if(!busy && poll){ clearInterval(poll); poll = null; }
+    }
+    function load(){
+      api("/packages/" + enc).then(function(d){ D = d; }).catch(function(e){ err = e.message || String(e); }).then(paint);
+    }
+    paint(); load();
+  }
+
   function openReport(jid, boxId){
     var box = document.getElementById(boxId);
     if(!box) return;
@@ -8191,14 +8275,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<a class="btn" href="/results/' + enc + '/wgs_report" target="_blank" rel="noopener">Open in new tab</a>'
         + '<button class="btn" id="wgPdf">PDF report</button>'
         + '<button class="btn" id="wgDoc" title="Editable Word file with the same content">Word report</button>'
-        + '<a class="btn pri" href="/download/' + enc + '">Download everything (.zip)</a>'
+        + '<button class="btn pri" id="wgDl">Download results</button>'
+        + '<a class="btn" href="/download/' + enc + '">Everything (.zip)</a>'
       + '</div></div>'
+      + '<div id="wgDlBox"></div>'
       + '<div class="panel" style="padding:0;overflow:hidden">'
         + '<iframe src="/results/' + enc + '/wgs_report" title="Genome report" '
         + 'style="width:100%;height:78vh;border:0;background:#fff;display:block"></iframe>'
       + '</div>'
+      + '<div id="wgTy"></div><div id="wgRt"></div>'
       + '<div id="wgFiles"><div class="panel" style="margin-top:14px"><div class="skel">Listing files…</div></div></div>';
     document.getElementById("backBtn").addEventListener("click", function(){ go({name:"job", id:id}); });
+    document.getElementById("wgDl").addEventListener("click", function(){ openDownloadDialog(id, "wgDlBox"); });
+    wgsTygsPanel(id, document.getElementById("wgTy"));
+    wgsReadtaxPanel(id, document.getElementById("wgRt"));
     var re = document.getElementById("wgRe");
     re.addEventListener("click", function(){ wgsReanalyse(id, re); });
     var pdf = document.getElementById("wgPdf");
@@ -8231,6 +8321,107 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<div class="errbox" style="border-radius:var(--r)"><b>Could not list the result files.</b>\n'
         + esc(e.message || e) + '</div></div>';
     });
+  }
+
+  /* TYGS (dDDH) per sample: the BI downloads the assembly, uploads it at tygs.dsmz.de,
+     then pastes the result link; POST /wgs/{id}/tygs/{sample} reads TYGS's result API.
+     An unfinished TYGS job is re-checked at most every 30 min (TYGS's own request). */
+  function wgsTygsPanel(id, box){
+    var enc = encodeURIComponent(id), msg = {}, pick = {};
+    function rowHtml(r){
+      var s = r.sample, k = esc(s), st = r.state || {}, idn = (r.identification || [])[0];
+      var stat = idn ? '<b>' + esc(idn.conclusion) + '</b>' + (idn.species ? ' — <i>' + esc(idn.species) + '</i>' : "")
+                       + '<div class="hint">' + esc(idn.remark || "") + '</div>'
+               : st.status === "pending" ? 'TYGS still working — next check after '
+                       + esc(new Date((st.next_check || 0) * 1000).toLocaleTimeString()) : "not imported";
+      var g = pick[s] ? '<div class="hint">Genome of this sample in that TYGS job: <select data-tyg="' + k + '">'
+            + pick[s].map(function(n){ return '<option>' + esc(n) + '</option>'; }).join("") + '</select></div>' : "";
+      return '<tr><td>' + k + '</td><td>'
+        + (r.has_assembly ? '<a class="btn" href="/wgs/' + enc + '/tygs_assembly/' + encodeURIComponent(s) + '" download>Assembly for TYGS</a>' : "—")
+        + '</td><td><input type="text" style="min-width:260px" data-tyl="' + k + '" placeholder="TYGS result link or GUID" value="'
+        + esc(st.guid || "") + '">' + g + '</td><td><button class="btn" data-tyi="' + k + '">'
+        + (st.status === "pending" ? "Check again" : "Import") + '</button>'
+        + (st.status ? ' <button class="btn" data-tyr="' + k + '" title="Remove the imported TYGS result of this sample">Remove</button>' : "")
+        + '</td><td>' + stat + (msg[s] ? '<div class="err">' + esc(msg[s]) + '</div>' : "") + '</td></tr>';
+    }
+    function paint(D, err){
+      if(!box.isConnected) return;
+      box.innerHTML = '<div class="panel" style="margin-top:14px"><div class="sechdr"><h3>dDDH from TYGS (DSMZ)</h3>'
+        + '<span class="hint">optional · fills Table 4.1, the dDDH table and the TYGS trees of the customer report</span></div>'
+        + '<div style="padding:10px 14px"><div class="what">1. Download the assembly · 2. upload it yourself at '
+        + '<a href="https://tygs.dsmz.de" target="_blank" rel="noopener">tygs.dsmz.de</a> (one sample per TYGS job is best) · '
+        + '3. when TYGS e-mails the result link, paste it here and Import. '
+        + '<b>Uploading sends the genome to DSMZ (Germany)</b> — only with the customer\'s agreement.</div>'
+        + (D ? '<table class="dtab"><thead><tr><th>Sample</th><th></th><th>TYGS result</th><th></th><th>Status</th></tr></thead><tbody>'
+               + D.samples.map(rowHtml).join("") + '</tbody></table>' : '<div class="skel">Reading…</div>')
+        + (err ? '<div class="err">' + esc(err) + '</div>' : "") + '</div></div>';
+      Array.prototype.forEach.call(box.querySelectorAll("[data-tyi]"), function(el){
+        el.addEventListener("click", function(){
+          var s = el.dataset.tyi, inp = box.querySelector('[data-tyl="' + CSS.escape(s) + '"]'),
+              sel = box.querySelector('[data-tyg="' + CSS.escape(s) + '"]');
+          el.disabled = true; el.textContent = "Reading TYGS…"; msg[s] = "";
+          fetch("/wgs/" + enc + "/tygs/" + encodeURIComponent(s), {method:"POST", headers:{"Content-Type":"application/json"},
+                body: JSON.stringify({link: inp ? inp.value : "", genome: sel ? sel.value : null})})
+            .then(function(r){ return r.json().then(function(d){
+              if(r.status === 409 && d.genomes){ pick[s] = d.genomes; throw new Error(d.error); }
+              if(!r.ok) throw new Error(d.error || ("HTTP " + r.status)); delete pick[s]; return d; }); })
+            .catch(function(e){ msg[s] = e.message || String(e); })
+            .then(load);
+        });
+      });
+      Array.prototype.forEach.call(box.querySelectorAll("[data-tyr]"), function(el){
+        el.addEventListener("click", function(){
+          el.disabled = true;
+          fetch("/wgs/" + enc + "/tygs/" + encodeURIComponent(el.dataset.tyr) + "/remove", {method:"POST"}).then(load);
+        });
+      });
+    }
+    function load(){ api("/wgs/" + enc + "/tygs").then(function(D){ paint(D); })
+                       .catch(function(e){ paint(null, e.message || String(e)); }); }
+    load();
+  }
+
+  /* Read-based taxonomy on a finished ONT-WGS job: GET/POST /wgs/{id}/readtax. The work
+     waits in the job queue like a job (Queue page) and needs the filtered reads that the
+     run left in its upload folder. */
+  function wgsReadtaxPanel(id, box){
+    var enc = encodeURIComponent(id), poll = null;
+    function paint(D, err){
+      if(!box.isConnected){ if(poll) clearInterval(poll); return; }
+      var t = D && D.task, busy = t && (t.status === "queued" || t.status === "running");
+      var rows = (D && D.samples || []).map(function(r){
+        var st = r.done ? "done" : (r.note ? r.note : (r.reads_available ? "not run yet" : "reads no longer available"));
+        var tools = (r.tools || []).map(function(x){
+          return esc(x.label) + ": " + esc(x.status) + (x.note ? ' <span class="hint">(' + esc(x.note) + ')</span>' : "");
+        }).join("<br>");
+        return "<tr><td>" + esc(r.sample) + "</td><td>" + esc(st) + "</td><td>" + (tools || "—") + "</td></tr>";
+      }).join("");
+      var any = (D && D.samples || []).some(function(r){ return r.reads_available; });
+      box.innerHTML = '<div class="panel" style="margin-top:14px"><div class="sechdr"><h3>Read-based taxonomy</h3>'
+        + '<span class="hint">Kraken2+Bracken · Centrifuger · GOTTCHA2 on the filtered reads — shown as a heatmap in the customer report</span></div>'
+        + '<div style="padding:10px 14px">'
+        + (t ? '<div class="what">' + esc(t.status === "error" ? (t.error || "failed") : (t.step_label || t.status))
+             + (busy && t.progress ? " · " + t.progress + " %" : "") + '</div>' : "")
+        + (rows ? '<table class="dtab"><thead><tr><th>Sample</th><th>Status</th><th>Tools</th></tr></thead><tbody>' + rows + '</tbody></table>' : "")
+        + '<button class="btn" id="wgRtGo"' + (busy || !any ? " disabled" : "") + '>'
+        + (busy ? "Queued / running…" : "Add read-based taxonomy (all samples)") + '</button> '
+        + (any ? "" : '<span class="hint">the filtered reads are no longer in the upload folder — run the job again with read-based taxonomy on</span>')
+        + (err ? '<div class="err">' + esc(err) + '</div>' : "")
+        + '</div></div>';
+      var go_ = document.getElementById("wgRtGo");
+      if(go_) go_.addEventListener("click", function(){
+        go_.disabled = true;
+        fetch("/wgs/" + enc + "/readtax", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"})
+          .then(function(r){ return r.json().then(function(d){ if(!r.ok) throw new Error(d.error || ("HTTP " + r.status)); return d; }); })
+          .then(function(){ load(); })
+          .catch(function(e){ paint(D, e.message || String(e)); });
+      });
+      if(busy && !poll) poll = setInterval(load, 4000);
+      if(!busy && poll){ clearInterval(poll); poll = null; }
+    }
+    function load(){ api("/wgs/" + enc + "/readtax").then(function(D){ paint(D); })
+                       .catch(function(e){ paint(null, e.message || String(e)); }); }
+    load();
   }
 
   /* ═══ boot ═════════════════════════════════════════════════════════════ */
