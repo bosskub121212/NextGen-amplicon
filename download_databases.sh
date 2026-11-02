@@ -13,6 +13,11 @@
 #    --silva138  SILVA 138.2 (Nov 2024) — for comparison with published work
 #    --gtdb      GTDB R232 16S trainset, built from GTDB's own SSU files
 #    --unite-euk UNITE all-eukaryotes release (ITS of non-fungi too)
+#    --fishmito  fish mitochondrial BLAST references for CytB and 12S: MIDORI2 (newest
+#                release on Zenodo, BLAST format with accessions) + MitoFish (newest monthly
+#                snapshot), records MitoFish judges heterospecific removed; also the MIDORI2
+#                CytB DADA2 trainset. Creates conda env ngamp-amp (blast, fastqc, fastp,
+#                krona, pandas, pyarrow). Same as --only fishmito.
 #
 #  Every file is checked against the publisher's MD5 where one is published,
 #  registered in backend/databases/db_paths.json (other keys are kept), and
@@ -21,7 +26,7 @@
 #  Existing files are never deleted; re-running only fetches what is missing.
 #
 #  Usage:  bash ~/r16s-app/download_databases.sh [--silva138] [--gtdb] [--unite-euk]
-#                                                [--only silva,unite,pr2,midori,tax4fun]
+#                                                [--fishmito] [--only silva,unite,pr2,midori,tax4fun,fishmito]
 # ============================================================
 set -uo pipefail   # no -e: one failed download must not abort the rest
 
@@ -37,14 +42,15 @@ warn() { echo -e "  ${YELLOW}⚠ $*${NC}"; }
 fail() { echo -e "  ${RED}✘ $*${NC}"; }
 hdr()  { echo; echo -e "${BOLD}$*${NC}"; }
 
-WANT_SILVA138=0; WANT_GTDB=0; WANT_UNITE_EUK=0; ONLY=""
+WANT_SILVA138=0; WANT_GTDB=0; WANT_UNITE_EUK=0; WANT_FISHMITO=0; ONLY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --silva138)  WANT_SILVA138=1 ;;
     --gtdb)      WANT_GTDB=1 ;;
     --unite-euk) WANT_UNITE_EUK=1 ;;
+    --fishmito)  WANT_FISHMITO=1 ;;
     --only)      ONLY="${2:-}"; shift ;;
-    -h|--help)   sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,32p' "$0"; exit 0 ;;
     *) warn "unknown option $1" ;;
   esac
   shift
@@ -286,6 +292,74 @@ if want midori; then
              "GB273 (2026-09-10)" "https://doi.org/10.5281/zenodo.22685700" -
   # the "_sp" species-trainset name the COX1 pipeline used to look for is no
   # longer needed: MIDORI2 trainsets already end at species.
+fi
+
+# ── Fish mitochondrial BLAST references (CytB, 12S) — on request ────────────
+if [[ $WANT_FISHMITO == 1 || ",$ONLY," == *",fishmito,"* ]]; then
+  hdr "[fishmito] Fish mitochondrial references — MIDORI2 (newest) + MitoFish (newest month)"
+  BASE=""
+  for c in conda mamba "$HOME/miniconda3/bin/conda"; do
+    if command -v "$c" >/dev/null 2>&1 || [[ -x "$c" ]]; then
+      b=$("$c" info --base 2>/dev/null | grep -o '/[^ ]*' | tail -1)
+      [[ -n "$b" && -d "$b/envs" ]] && { BASE="$b"; CONDA="$c"; break; }
+    fi
+  done
+  [[ -n "$BASE" ]] || { fail "conda not found — fishmito needs conda for BLAST+"; }
+  AMP="$BASE/envs/ngamp-amp"
+  if [[ -n "$BASE" ]] && ! { [[ -x "$AMP/bin/makeblastdb" ]] && "$AMP/bin/python" -c "import pandas, pyarrow" 2>/dev/null; }; then
+    for m in mamba conda; do command -v $m >/dev/null 2>&1 && { CONDA=$m; break; }; done
+    "$CONDA" create -y -n ngamp-amp -c conda-forge -c bioconda python=3.12 blast fastqc fastp krona pandas pyarrow \
+      || fail "conda env ngamp-amp failed"
+  fi
+  if [[ -x "$AMP/bin/makeblastdb" ]]; then
+    ok "env ngamp-amp: $("$AMP/bin/blastn" -version 2>/dev/null | head -1)"
+    LJ=$("$AMP/bin/python" "$APP_DIR/backend/fish_mito_ref.py" latest)
+    REL=$(echo "$LJ" | "$AMP/bin/python" -c "import json,sys;print(json.load(sys.stdin)['midori2']['release'])")
+    MURL=$(echo "$LJ" | "$AMP/bin/python" -c "import json,sys;print(json.load(sys.stdin)['midori2']['url'])")
+    MONTH=$(echo "$LJ" | "$AMP/bin/python" -c "import json,sys;print(json.load(sys.stdin)['mitofish'] or '')")
+    ok "newest: MIDORI2 $REL · MitoFish ${MONTH:-not reachable}"
+    M="$DB_DIR/MIDORI2"; F="$DB_DIR/fishmito"; SRC="$F/src"; mkdir -p "$M" "$SRC"
+    BURL="${MURL/_DADA2.zip/_BLAST.zip}"
+    need=()
+    for g in Cytb srRNA; do
+      [[ -s "$SRC/MIDORI2_UNIQ_NUC_${REL}_${g}_BLAST.fasta.zip" ]] || \
+        need+=("BLAST/uniq/fasta/MIDORI2_UNIQ_NUC_${REL}_${g}_BLAST.fasta.zip" "$SRC/MIDORI2_UNIQ_NUC_${REL}_${g}_BLAST.fasta.zip")
+    done
+    [[ ${#need[@]} -gt 0 ]] && { "$PY" "$APP_DIR/backend/python_scripts/zip_member_fetch.py" "$BURL" "${need[@]}" \
+      || fail "MIDORI2 $REL BLAST files failed"; }
+    CYD="$M/MIDORI2_UNIQ_NUC_${REL}_Cytb_DADA2.fasta.gz"
+    [[ -s "$CYD" ]] || "$PY" "$APP_DIR/backend/python_scripts/zip_member_fetch.py" "$MURL" \
+      "DADA2/uniq/MIDORI2_UNIQ_NUC_${REL}_Cytb_DADA2.fasta.gz" "$CYD" || fail "MIDORI2 $REL CytB DADA2 failed"
+    [[ -s "$CYD" ]] && register MIDORI2_CYTB "$CYD" "MIDORI2 GenBank ${REL#GB} (CytB)" "$REL" \
+      "https://doi.org/10.5281/zenodo.22685700" -
+    MF=""
+    if [[ -n "$MONTH" ]]; then
+      MF="$SRC/mitofish_${MONTH/\//-}"; mkdir -p "$MF"
+      [[ -s "$MF/mitofishdb.fa.gz" ]] || curl -fL --retry 3 -C - -o "$MF/mitofishdb.fa.gz" \
+        "https://mitofish.aori.u-tokyo.ac.jp/download/fullseq/$MONTH/mitofishdb.fa.gz" || fail "MitoFish sequences failed"
+      [[ -s "$MF/tables/seq_annotation.parquet" ]] || { curl -fL --retry 3 -o "$MF/tables.tar" \
+        "https://mitofish.aori.u-tokyo.ac.jp/download/tables/$MONTH/tables.tar" \
+        && mkdir -p "$MF/tables" && tar xf "$MF/tables.tar" -C "$MF/tables" && rm -f "$MF/tables.tar"; } \
+        || fail "MitoFish tables failed"
+    fi
+    TAG="${REL}_mitofish-${MONTH/\//-}"
+    for pair in "Cytb:FISHMITO_CYTB:Cytb" "12S:FISHMITO_12S:srRNA"; do
+      IFS=: read -r gene key mg <<<"$pair"
+      OUT="$F/$TAG/$gene"
+      if [[ -s "$OUT/fishmito_${gene}.nsq" || -s "$OUT/fishmito_${gene}.00.nsq" ]]; then
+        ok "fishmito $gene already built ($TAG)"
+      else
+        args=(build --gene "$gene" --midori "$SRC/MIDORI2_UNIQ_NUC_${REL}_${mg}_BLAST.fasta.zip" --out "$OUT"
+              --makeblastdb "$AMP/bin/makeblastdb" --midori_release "$REL" --mitofish_month "${MONTH:-none}")
+        [[ -n "$MF" && -s "$MF/tables/seq_annotation.parquet" ]] && args+=(--mitofish "$MF/mitofishdb.fa.gz" --tables "$MF/tables")
+        "$AMP/bin/python" "$APP_DIR/backend/fish_mito_ref.py" "${args[@]}" >/dev/null \
+          || { fail "fishmito $gene build failed"; continue; }
+      fi
+      register "$key" "$OUT/fishmito_${gene}.fasta" "MIDORI2 $REL + MitoFish ${MONTH:-—} ($gene, BLAST)" "$TAG" \
+        "Leray et al. 2022; Zhu et al. 2023" -
+      ok "fishmito $gene: $("$AMP/bin/python" -c "import json;d=json.load(open('$OUT/fishmito.json'));print(d['n_after_dedup'],'sequences;',d['n_heterospecific_removed']+d.get('n_midori2_heterospecific_removed',0),'heterospecific records removed')")"
+    done
+  fi
 fi
 
 # ── 5. Tax4Fun2 ─────────────────────────────────────────────────────────────

@@ -134,6 +134,14 @@ class RunParams(BaseModel):
     # ONT-16S    → emu_pipeline.py  (Oxford Nanopore, Emu)
     marker:        str   = "16S"
     # --- 16S / 12S / nema params ---
+    # 12S runs cover both vertebrate mitochondrial markers: CytB rides on the 12S
+    # entitlement (license.py is integrity-checked and lists 12S, not CytB).
+    mito_gene:          str   = "12S"     # "12S" or "CYTB" — picks the reference
+    # BLAST naming (blast_taxonomy.py) for 12S / CytB fish eDNA
+    tax_method:         str   = "dada2"   # dada2 | blast | both (blast names, DADA2 kept beside)
+    blast_limit:        str   = "fish"    # fish (txid7898) | vertebrates (txid7742) | all
+    blast_ncbi:         bool  = True      # check every ASV against NCBI nt (remote BLAST)
+    blast_id:           str   = "98.5,95,90,85,80"   # % identity: species,genus,family,order,class
     truncLen_F:    int   = 240
     truncLen_R:    int   = 200
     maxEE_F:       float = 2.0
@@ -719,6 +727,9 @@ DADA2_TAXONOMY_MARKERS_EXCLUDED = ("ONT-16S", "ONT16S", "ONT", "PACBIO",
                                    "ITS1", "ITS2", "ITS", "COX1", "ONT-WGS", "SHOTGUN")
 
 
+_BLAST_LIMITS = ("fish", "vertebrates", "all")
+
+
 def _db_reject_reason(p: str) -> str:
     """Why this path cannot serve as a DADA2 assignTaxonomy() reference — '' if it can.
 
@@ -738,6 +749,9 @@ def _db_reject_reason(p: str) -> str:
     # toSpecies trainsets are NOT rejected: silva_nr99_*_toSpecies_trainset.fa.gz
     # is a full 7-rank trainset, and the old check threw it away for having
     # "tospecies" in its name. Only assignSpecies-style names are refused.
+    if n.startswith("fishmito_"):
+        return ("this is the fish BLAST reference (fishmito_*), used by BLAST naming, not a DADA2 trainset. "
+                "Pick the MIDORI2 DADA2 file (MIDORI2_CYTB / 12S) as the DADA2 reference.")
     if "assignspecies" in n or "assign_species" in n or "species_assignment" in n:
         return ("this is an assignSpecies file — species labels only, with no "
                 "Domain..Genus hierarchy. Pick the *_toGenus_trainset file instead; "
@@ -771,6 +785,7 @@ def resolve_taxonomy_db(marker: str, db_path: str, db_paths_json: str = ""):
         # an 18S protist reference, which gives confidently-wrong taxonomy.
         prefs = {"16S": ["SILVA_16S_sp", "SILVA_16S"],
                  "12S": ["12S", "MIDORI2_12S"],     # MIDORI2 srRNA = mitochondrial 12S
+                 "CYTB": ["MIDORI2_CYTB"],          # MIDORI2 Cytb (download_databases.sh --fishmito)
                  "18S-NEMA": ["NemaBase_18S", "PR2_18S"]}.get(marker_up, ["SILVA_16S_sp", "SILVA_16S"])
         for k in prefs:
             v = dp.get(k, "")
@@ -805,6 +820,15 @@ def resolve_taxonomy_db(marker: str, db_path: str, db_paths_json: str = ""):
 async def run_analysis(job_id: str, params: RunParams):
     if job_id not in jobs:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
+
+    # BLAST naming options reach a command line: only known values pass.
+    if (params.blast_limit or "fish") not in _BLAST_LIMITS:
+        return JSONResponse(status_code=400, content={"error": "blast_limit must be fish, vertebrates or all"})
+    if not re.fullmatch(r"[0-9.]+(,[0-9.]+){4}", params.blast_id or "98.5,95,90,85,80"):
+        return JSONResponse(status_code=400, content={
+            "error": "blast_id must be five % identities: species,genus,family,order,class (e.g. 98.5,95,90,85,80)"})
+    if (params.tax_method or "dada2") not in ("dada2", "blast", "both"):
+        return JSONResponse(status_code=400, content={"error": "tax_method must be dada2, blast or both"})
 
     # ── Integrity gate (detect tampered license.py) ───────────────────────────
     if not _integrity_ok():
@@ -843,7 +867,8 @@ async def run_analysis(job_id: str, params: RunParams):
     # refused now rather than eight minutes into the run.
     _db_requested = params.dbPath
     _db_resolved, _db_auto, _db_err = resolve_taxonomy_db(
-        params.marker, params.dbPath, params.db_paths_json)
+        "CYTB" if (params.marker or "").upper() == "12S" and (params.mito_gene or "").upper() == "CYTB"
+        else params.marker, params.dbPath, params.db_paths_json)
     if _db_err:
         return JSONResponse(status_code=400, content={
             "error": "database_not_usable",
@@ -1384,6 +1409,12 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
             "--metadata",      metadata_path,
             "--db_paths_json", db_paths_json,
         ]
+        if (params.tax_method or "dada2") in ("blast", "both") and (params.marker or "").upper() == "12S":
+            _bkey = "FISHMITO_CYTB" if (params.mito_gene or "").upper() == "CYTB" else "FISHMITO_12S"
+            cmd += ["--tax_method", params.tax_method, "--blast_db", _dbp(_bkey),
+                    "--blast_limit", params.blast_limit or "fish",
+                    "--blast_ncbi", "TRUE" if params.blast_ncbi else "FALSE",
+                    "--blast_id", params.blast_id or "98.5,95,90,85,80", "--python", sys.executable]
         if params.primer_f:
             cmd += ["--primer_f", params.primer_f]
         if params.primer_r:
@@ -2132,6 +2163,87 @@ def _report_docx(doc: str, stem: str):
         return JSONResponse(status_code=500, content={"error": f"Word build failed: {e}"})
     return FileResponse(str(path), filename=path.name, media_type=(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+
+
+# ── 6f. Customer report (12S / CytB, the lab's per-sample format) ─────────────
+# custom_report.py runs FastQC, fastp and the R figures, so it takes minutes: it is
+# built in a background thread and polled. Result: <job>/customer_report.zip.
+CUSTOM_REPORTS: dict = {}
+_CUSTOM_LOCK = threading.Lock()
+_JOB_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,80}")
+
+
+def _custom_out(job_id: str) -> Path:
+    j = jobs.get(job_id) or {}
+    return Path(j.get("output_dir") or str(RESULTS_DIR / job_id))
+
+
+def _custom_name(job_id: str) -> str:
+    j = jobs.get(job_id) or {}
+    return (re.sub(r"[^A-Za-z0-9_.-]+", "_", j.get("job_name") or job_id)[:60] or job_id) + "_customer_report"
+
+
+def _custom_state(job_id: str) -> dict:
+    """In-memory state, or — after a backend restart — the zip already on disk."""
+    st = CUSTOM_REPORTS.get(job_id)
+    if st:
+        return st
+    z = _custom_out(job_id) / "customer_report.zip"
+    if z.exists():
+        return {"status": "done", "zip": str(z), "name": _custom_name(job_id), "recovered": True}
+    return {"status": "none"}
+
+
+@app.post("/custom_report/{job_id}")
+def start_custom_report(job_id: str):
+    if not _JOB_ID_RE.fullmatch(job_id):
+        return JSONResponse(status_code=400, content={"error": "bad job id"})
+    out_dir = _custom_out(job_id)
+    if not (out_dir / "asv_table.csv").exists():
+        return JSONResponse(status_code=400, content={"error": "this job has no ASV table (not a finished amplicon run)"})
+    name = _custom_name(job_id)[:-len("_customer_report")]
+    with _CUSTOM_LOCK:
+        if (CUSTOM_REPORTS.get(job_id) or {}).get("status") == "running":
+            return {"status": "running"}
+        CUSTOM_REPORTS[job_id] = {"status": "running", "started": time.time(), "name": name + "_customer_report"}
+
+    def _work():
+        import importlib
+        try:
+            for m in ("amp_data", "qc_tools", "amplicon_excel", "custom_report"):
+                importlib.reload(importlib.import_module(m))
+            import custom_report as _cr
+            dest = out_dir / "customer_report"
+            shutil.rmtree(dest, ignore_errors=True)
+            res = _cr.build(out_dir, UPLOAD_DIR / job_id, dest, job_label=name)
+            CUSTOM_REPORTS[job_id].update({"status": "done", "zip": res.get("zip"),
+                                           "warnings": [v for k, v in res.items() if k.endswith("_error")]})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            CUSTOM_REPORTS[job_id].update({"status": "error", "error": str(e)})
+    threading.Thread(target=_work, daemon=True).start()
+    return {"status": "running"}
+
+
+@app.get("/custom_report/{job_id}")
+def custom_report_status(job_id: str):
+    if not _JOB_ID_RE.fullmatch(job_id):
+        return JSONResponse(status_code=400, content={"error": "bad job id"})
+    st = dict(_custom_state(job_id))
+    st.pop("zip", None)
+    return st
+
+
+@app.get("/custom_report/{job_id}/download")
+def custom_report_download(job_id: str):
+    if not _JOB_ID_RE.fullmatch(job_id):
+        return JSONResponse(status_code=400, content={"error": "bad job id"})
+    st = _custom_state(job_id)
+    z = st.get("zip")
+    if not z or not Path(z).exists():
+        return JSONResponse(status_code=404, content={"error": "no customer report built for this job yet"})
+    return FileResponse(z, filename=f"{st.get('name', job_id)}.zip", media_type="application/zip")
 
 
 @app.post("/report")

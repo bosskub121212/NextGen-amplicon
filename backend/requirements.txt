@@ -14,3 +14,6 @@ weasyprint>=60
 # cairosvg turns the report charts (SVG) into PNG. cairosvg needs libcairo2.
 python-docx>=1.1
 cairosvg>=2.7
+
+# Excel workbooks of the per-sample customer report (amplicon_excel.py)
+openpyxl>=3.1

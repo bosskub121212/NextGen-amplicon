@@ -610,8 +610,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     {grp:"Illumina short-read", items:[
       {key:"16S",      label:"16S rRNA",       marker:"16S",
        desc:"Bacterial and archaeal community profiling from the 16S rRNA gene. DADA2 exact sequence variants, SILVA taxonomy, diversity and functional prediction."},
-      {key:"12S",      label:"12S rRNA",       marker:"12S",
-       desc:"Vertebrate metabarcoding from the 12S rRNA gene — eDNA surveys, diet analysis, species detection."},
+      {key:"12S",      label:"12S / CytB",     marker:"12S",
+       desc:"Vertebrate and fish metabarcoding from the mitochondrial 12S rRNA or cytochrome b (CytB) gene — eDNA surveys, diet analysis, species detection."},
       {key:"ITS1",     label:"ITS1 fungi",     marker:"ITS1",
        desc:"Fungal community profiling from the ITS1 spacer, against the UNITE reference."},
       {key:"ITS2",     label:"ITS2 fungi",     marker:"ITS2",
@@ -5876,7 +5876,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     {label:"16S V7–V8  (1055F / 1392R)", marker:"16S",  region:"V7-V8",
      f:"AACMGGATTAGATACCCKG",       r:"ACGTCATCCCCACCTTCC",     truncF:250, truncR:200},
     {label:"12S fish  (MiFish-U)",       marker:"12S",  region:"12S",
-     f:"GTCGGTAAAACTCGTGCCAGC",     r:"CATAGTGGGGTATCTAATCCCAGTTTG", truncF:0, truncR:0},
+     f:"GTCGGTAAAACTCGTGCCAGC",     r:"CATAGTGGGGTATCTAATCCCAGTTTG", truncF:0, truncR:0, mito_gene:"12S"},
+    {label:"CytB fish  (L14912 / H15149)", marker:"12S", region:"CytB",
+     f:"TTCCTAGCCATACAYTAYAC",      r:"GGTGGCKCCTCAGAAGGACATTTGKCCYCA", truncF:0, truncR:0, mito_gene:"CYTB"},
     {label:"ITS1  (ITS1F / ITS2)",       marker:"ITS1", region:"ITS1",
      f:"CTTGGTCATTTAGAGGAAGTAA",    r:"GCTGCGTTCTTCATCGATGC"},
     {label:"ITS1  (ITS1 / ITS2, alt)",   marker:"ITS1", region:"ITS1",
@@ -5921,7 +5923,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     steps.push({n:1, title:"Cutadapt — primer trimming",
       why:"Removes the primers before the denoiser sees the reads.",
       fields:[
-        ["_region",           "Amplicon region",  "region", "", ""],
+        ["_region",           "Amplicon region",  "region", "", ""]].concat(key === "12S" ? [
+        ["mito_gene",         "Mitochondrial gene", "select", "12S", [["12S", "12S rRNA"],
+                               ["CYTB", "Cytochrome b (CytB)"]]]] : []).concat([
         ["primer_f",          "Forward primer",   "mono",   "", "leave blank to skip cutadapt"],
         ["primer_r",          "Reverse primer",   "mono",   "", ""],
         ["cutadaptErrorRate", "Error rate",       "num",    "0.1", "fraction of mismatches allowed (-e)"],
@@ -5929,7 +5933,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["discardUntrimmed",  "Discard untrimmed","bool",   "false", "drop reads with no primer found"],
         ["run_fastqc",        "FastQC + MultiQC", "bool",   "false",
          "per-file HTML reports in qc/ (only if fastqc is installed); the read-quality summary is made either way"]
-      ]});
+      ])});
 
     if(dada2) steps.push({n:"1b", title:"Read orientation repair",
       why:"Pairs that start at the reverse primer cannot be merged, and cutadapt only searches one orientation.",
@@ -6035,7 +6039,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["minBoot",  "Minimum bootstrap", "int",  "50", "% of 100 resamplings"],
         ["_species", "Species assignment","ro",   "exact match (100%)",
                      "addSpecies() is exact matching — minBoot does not apply to it"]
-      ]});
+      ].concat(key === "12S" ? [
+        ["tax_method",  "Species names by", "select", "blast", [
+          ["blast", "BLASTn top hits (MIDORI2 + MitoFish), DADA2 kept beside"],
+          ["dada2", "DADA2 classifier only"]]],
+        ["blast_limit", "BLAST limited to", "select", "fish", [
+          ["fish", "Fish (as NCBI txid 7898)"], ["vertebrates", "Vertebrates (txid 7742)"], ["all", "No limit"]]],
+        ["blast_ncbi",  "Check against NCBI nt", "bool", "true",
+         "remote BLASTn of every ASV, same limit; disagreements are cut to the common rank and flagged. Needs internet"],
+        ["blast_id",    "% identity: species, genus, family, order, class", "mono", "98.5,95,90,85,80",
+         "a species is never named below its threshold"]] : [])});
 
     steps.push({n:6, title:"Diversity analysis",
       why:"PERMANOVA needs ≥2 groups with ≥2 samples each; below that it is skipped and says so.",
@@ -6576,6 +6589,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         setVal("f_primer_r", pr.r);
         if(pr.truncF !== undefined) setVal("f_truncLen_F", String(pr.truncF));
         if(pr.truncR !== undefined) setVal("f_truncLen_R", String(pr.truncR));
+        if(document.getElementById("f_mito_gene"))
+          setVal("f_mito_gene", pr.mito_gene || "12S");
         if(pr.region && document.getElementById("f_ont_region"))
           setVal("f_ont_region", pr.region);
         if(pr.region && document.getElementById("f_pb_region"))
@@ -7342,7 +7357,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     /* MIDORI2 ships COI and 12S (mitochondrial srRNA) under one name stem, so
        the gene token decides: srRNA is 12S, CO1 is COI. */
-    var marker = key === "12S"      ? /12s|mifish|srrna/i
+    var marker = key === "12S"      ? /12s|mifish|srrna|cytb/i
                : key === "16S"      ? /silva|gtdb|16s/i
                : key === "18S-nema" ? /nema|18s|pr2/i
                : key === "ONT-16S"  ? /emu|silva|16s/i
@@ -7363,6 +7378,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
          FILE. The pipeline finds the matching species file by itself from the
          trainset, so offering it as the main reference can only be a mistake. */
       if(/assignspecies|wspecies|multicopy_v\d+_species/i.test(base) || (!isEmu && /species_taxid/i.test(base))) return;
+      /* fishmito_* is the BLAST reference (BLAST naming finds it itself), not a DADA2 trainset. */
+      if(/^fishmito_/i.test(base)) return;
       var rel = f.rel_path || base;
       var dir = rel.indexOf("/") === -1 ? "" : rel.slice(0, rel.lastIndexOf("/"));
       var o = {
@@ -7900,6 +7917,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                   : (R.fmt === "docx" ? "Build Word" : "Build PDF") + " (" + R.pick.length + " run" + (R.pick.length === 1 ? "" : "s") + ")") + '</button>'
         + '<button class="btn" id="repNo">Close</button>'
         + (R.busy ? '<span class="what">A large comparison takes a minute.</span>' : "") + '</div>'
+        + (isMito(jid)
+            ? '<h4 style="margin-top:14px">Customer report</h4>'
+              + '<div class="what">The lab\'s per-sample format (cover left blank for the BI team): Word + PDF + the '
+              + 'SampleN_ folders with every figure, table and Excel file — as one zip. FastQC, fastp and the R figures '
+              + 'run now; a few minutes for many samples.</div>'
+              + '<div class="row"><button class="btn pri" id="custGo">Customer report (Word + PDF + files)</button>'
+              + '<span class="what" id="custMsg"></span></div>'
+            : "")
         + '</div>';
       var t = document.getElementById("repTitle");
       t.addEventListener("input", function(){ R.title = t.value; });
@@ -7919,6 +7944,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       document.getElementById("repNo").addEventListener("click", function(){
         box.innerHTML = ""; box.dataset.open = ""; });
       document.getElementById("repGo").addEventListener("click", build);
+      var cg = document.getElementById("custGo");
+      if(cg) cg.addEventListener("click", function(){ customReport(jid, cg, document.getElementById("custMsg")); });
     }
     function build(){
       if(R.busy || !R.pick.length) return;
@@ -7946,6 +7973,38 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     paint();
     box.scrollIntoView({block:"nearest"});
     refreshJobs().then(function(){ if(box.dataset.open === "1" && !R.busy) paint(); });
+  }
+
+  /* 12S / CytB runs: the per-sample customer report (custom_report.py), built in
+     the background on the server; polled until the zip is ready. */
+  function isMito(jid){
+    var j = STATE.jobs.filter(function(x){ return x.job_id === jid; })[0] || {};
+    return String(j.marker || "").toUpperCase() === "12S";
+  }
+  function customReport(jid, btn, msg){
+    var enc = encodeURIComponent(jid);
+    btn.disabled = true;
+    var say = function(t){ if(msg) msg.textContent = t; };
+    say("Building… (FastQC, fastp, figures)");
+    var poll = function(){
+      fetch("/custom_report/" + enc).then(function(r){ return r.json(); }).then(function(st){
+        if(st.status === "done"){
+          say("Downloading…");
+          return fetch("/custom_report/" + enc + "/download").then(function(r){
+            if(!r.ok) throw new Error("HTTP " + r.status);
+            return r.blob(); }).then(function(b){
+              saveBlob(b, (st.name || "customer_report") + ".zip");
+              say("Done." + (st.warnings && st.warnings.length ? " Note: " + st.warnings.join("; ") : ""));
+              btn.disabled = false; });
+        }
+        if(st.status === "error"){ say("Failed — " + (st.error || "see the server log")); btn.disabled = false; return; }
+        setTimeout(poll, 5000);
+      }).catch(function(e){ say("Failed — " + (e.message || e)); btn.disabled = false; });
+    };
+    fetch("/custom_report/" + enc, {method:"POST"}).then(function(r){
+      if(!r.ok) return r.json().then(function(j){ throw new Error(j.error || ("HTTP " + r.status)); });
+      setTimeout(poll, 4000);
+    }).catch(function(e){ say("Failed — " + (e.message || e)); btn.disabled = false; });
   }
 
   function wgsPdf(jid, btn, fmt){

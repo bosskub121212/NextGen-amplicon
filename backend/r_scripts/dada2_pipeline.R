@@ -104,6 +104,14 @@ option_list <- list(
   make_option("--taxDatabase",   type="character", default="SILVA_138"),
   make_option("--dbPath",        type="character", default=""),
   make_option("--minBoot",       type="integer",   default=50),
+  # BLAST naming for fish eDNA (12S / CytB): blast_taxonomy.py against the
+  # MIDORI2 + MitoFish reference (download_databases.sh --fishmito)
+  make_option("--tax_method",    type="character", default="dada2"),   # dada2 | blast | both
+  make_option("--blast_db",      type="character", default=""),
+  make_option("--blast_limit",   type="character", default="fish"),    # fish | vertebrates | all
+  make_option("--blast_ncbi",    type="character", default="TRUE"),
+  make_option("--blast_id",      type="character", default="98.5,95,90,85,80"),
+  make_option("--python",        type="character", default="python3"),
   make_option("--topN",          type="integer",   default=30),
   make_option("--metadata",      type="character", default=""),
   make_option("--tax4fun",       type="logical",   default=FALSE,
@@ -498,6 +506,12 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
 
     discard_flag <- if (isTRUE(opt$discard_untrimmed)) "--discard-untrimmed" else ""
     n_cut <- 0
+    # Per-sample counts (reads in / out, primer found) for the customer report:
+    # cutadapt >= 3.5 writes them with --json; older versions run as before.
+    json_ok <- tryCatch(any(grepl("--json", system2(CUTADAPT_BIN, "--help", stdout = TRUE, stderr = TRUE),
+                                  fixed = TRUE)), error = function(e) FALSE)
+    json_flag <- function(i) if (json_ok)
+      paste0("--json=", shQuote(file.path(cut_dir, paste0(sample_names[i], ".cutadapt.json")))) else ""
 
     if (is_single) {
       # ── Single-end cutadapt ──────────────────────────────────
@@ -509,7 +523,7 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
           "-e", opt$error_rate,
           "-O", opt$min_overlap,
           sprintf("-m 50 --cores=%d", THREADS),
-          discard_flag,
+          discard_flag, json_flag(i),
           "-o", cutFs[i],
           fnFs[i],
           "> /dev/null 2>&1"
@@ -538,7 +552,7 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
           "-e", opt$error_rate,
           "-O", opt$min_overlap,
           sprintf("-m 50 --cores=%d", THREADS),
-          discard_flag,
+          discard_flag, json_flag(i),
           "-o", cutFs[i], "-p", cutRs[i],
           fnFs[i], fnRs[i],
           "> /dev/null 2>&1"
@@ -1384,6 +1398,60 @@ if (!is.null(db_path) && db_path != "" && file.exists(db_path)) {
   }
 } else {
   cat("  No database file found — skipping taxonomy assignment.\n\n")
+}
+
+# ── BLAST naming (12S / CytB fish eDNA) ───────────────────────────────────────
+# DADA2's naive-Bayes call is kept (taxonomy_table_dada2.csv); the BLAST call
+# replaces `tax` before any table or plot is made, so every output uses it. Any
+# failure leaves the DADA2 names in place and says so — never a failed run.
+if (opt$tax_method %in% c("blast", "both")) {
+  cat("  BLAST naming:", if (nzchar(opt$blast_db)) basename(opt$blast_db) else "(no reference)", "\n")
+  if (!is.null(tax))
+    tryCatch(write.csv(as.data.frame(tax), file.path(opt$output, "taxonomy_table_dada2.csv")),
+             error = function(e) NULL)
+  dir.create(file.path(opt$output, "blast"), showWarnings = FALSE)
+  RANKS_BT <- c("Phylum","Class","Order","Family","Genus","Species")
+  bt <- tryCatch({
+    if (!(opt$blast_limit %in% c("fish", "vertebrates", "all")))
+      stop("blast_limit must be fish, vertebrates or all")
+    if (!grepl("^[0-9.]+(,[0-9.]+){4}$", opt$blast_id))
+      stop("blast_id must be five % identities: species,genus,family,order,class")
+    if (!nzchar(opt$blast_db) || !file.exists(opt$blast_db))
+      stop("BLAST reference not installed — run: bash ~/r16s-app/download_databases.sh --fishmito")
+    seqs   <- colnames(seqtab_nochim)
+    bdir   <- file.path(opt$output, "blast")
+    dir.create(bdir, showWarnings = FALSE)
+    asv_fa <- file.path(bdir, "asv.fasta")
+    writeLines(paste0(">q", seq_along(seqs), "\n", seqs), asv_fa)
+    bt_py  <- file.path(dirname(SCRIPT_DIR), "blast_taxonomy.py")
+    rc <- system2(opt$python, c(shQuote(bt_py), "--asv_fasta", shQuote(asv_fa), "--db", shQuote(opt$blast_db),
+                               "--limit", shQuote(opt$blast_limit),
+                               "--ncbi", if (toupper(opt$blast_ncbi) %in% c("TRUE", "ON", "1")) "on" else "off",
+                               "--id", shQuote(opt$blast_id), "--threads", opt$threads, "--out", shQuote(bdir)))
+    if (rc != 0) stop(sprintf("blast_taxonomy.py exited %d", rc))
+    bt_tab <- read.csv(file.path(bdir, "taxonomy_blast.csv"), stringsAsFactors = FALSE, check.names = FALSE)
+    bt_tab <- bt_tab[match(seqs, bt_tab$sequence), , drop = FALSE]
+    cols <- if (!is.null(tax)) colnames(tax) else RANKS_BT
+    # The DADA2 table's ranks must hold the BLAST ranks; a reference with other rank
+    # names (or too few) gets the BLAST ranks themselves rather than a half-empty table.
+    if (length(intersect(cols, RANKS_BT)) < 5) cols <- RANKS_BT
+    m <- matrix(NA_character_, nrow = length(seqs), ncol = length(cols), dimnames = list(seqs, cols))
+    for (r in intersect(cols, names(bt_tab))) {
+      v <- as.character(bt_tab[[r]]); v[is.na(v) | !nzchar(v)] <- NA_character_; m[, r] <- v
+    }
+    # Kingdom / Domain columns of a 7-rank reference: every BLAST-named ASV is eukaryotic
+    # (mitochondrial reference); an unnamed one stays NA.
+    for (k in intersect(cols, c("Kingdom", "Domain")))
+      m[, k] <- ifelse(!is.na(m[, "Phylum"]), "Eukaryota", NA_character_)
+    cat(sprintf("  BLAST: %d of %d ASVs named to species\n", sum(!is.na(m[, ncol(m)])), nrow(m)))
+    m
+  }, error = function(e) {
+    cat("  [warn] BLAST naming not used:", conditionMessage(e), "— keeping the DADA2 names\n")
+    tryCatch(writeLines(conditionMessage(e), file.path(opt$output, "blast", "BLAST_SKIPPED.txt")),
+             error = function(e2) NULL)
+    NULL
+  })
+  if (!is.null(bt)) tax <- bt
 }
 
 # A run whose taxonomy failed used to finish as "Complete" with an empty

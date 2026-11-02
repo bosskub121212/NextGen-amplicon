@@ -343,6 +343,10 @@ def main():
     test_func_fast.main()
     FAILS.extend(test_func_fast.FAILS)
     print()
+    import test_amp_fast                     # fish eDNA: references, BLAST, Excel, customer report
+    test_amp_fast.main()
+    FAILS.extend(test_amp_fast.FAILS)
+    print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")
         return 1
