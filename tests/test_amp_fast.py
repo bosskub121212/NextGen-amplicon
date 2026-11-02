@@ -1281,6 +1281,17 @@ def t_fix241_q60_and_plot_log(tmp: Path):
 TESTS += [t_fix241_q60_and_plot_log]
 
 
+
+def t_fix242_heatmap_labels(tmp: Path):
+    r = (ROOT / "backend" / "r_scripts" / "custom_report_plots.R").read_text()
+    i = r.find("microbiomeutilities::plot_taxa_heatmap")
+    check("heatmap: microbiomeutilities gets SV numbers as taxon names (no name printed twice)",
+          "taxa_names(pt) <- top$label" not in r and i > 0)
+
+
+TESTS += [t_fix242_heatmap_labels]
+
+
 def main() -> int:
     print("fish eDNA amplicons (CytB / 12S)")
     with tempfile.TemporaryDirectory() as td:

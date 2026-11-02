@@ -94,7 +94,8 @@ for (k in seq_len(nrow(jobs))) {
       if (has("microbiomeutilities") && nrow(top) >= 2) {
         done <- tryCatch({
           pt <- prune_taxa(top$SV, ps)
-          taxa_names(pt) <- top$label[match(taxa_names(pt), top$SV)]
+          # microbiomeutilities labels rows "<taxon name>:<best hit>" itself; the taxon names
+          # stay the SV numbers, so a row reads "SV001:Brevundimonas sp. DS20", not the name twice
           png(f, width = 1600, height = 300 + 42 * nrow(top), res = 150)
           microbiomeutilities::plot_taxa_heatmap(pt, subset.top = 50, VariableA = "Sample_name",
                                                  transformation = "log10", cluster_cols = FALSE,
