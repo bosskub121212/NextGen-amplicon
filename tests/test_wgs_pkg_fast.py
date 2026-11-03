@@ -819,6 +819,15 @@ def t_amp_package_nanoplot(d):
           "Q17.6" in html and "median of Q19.4" in html, "")
 
 
+def t_ont16s_never_paired(d):
+    m = (ROOT / "backend" / "main.py").read_text()
+    f = (ROOT / "frontend-beta" / "index.html").read_text()
+    check("ONT 16S: a sample paired as read 1 / read 2 is refused at submit",
+          'ONT 16S reads are single files' in m and '_paired = [m for m in (params.sampleFileMap or [])' in m)
+    check("ONT 16S: form starts single-end, Illumina pairing not offered",
+          'if(it.key === "ONT-16S"){' in f and 'sqo.value = "ont"' in f and "il.disabled = true" in f)
+
+
 def t_bar_top30(d):
     r = (ROOT / "backend" / "r_scripts" / "custom_report_plots.R").read_text()
     a = (ROOT / "backend" / "amp_package.py").read_text()
@@ -911,7 +920,7 @@ def t_pkg_name_collisions(d):
           and "Sample: FS 04" not in t[rep[0]], str(rep))
 
 
-TESTS += [t_bar_top30, t_amp_package_emu, t_amp_package_nanoplot, t_amp_package_dada2, t_pkg_wgs, t_pkg_amplicon, t_pkg_name_collisions, t_pkg_wiring]
+TESTS += [t_ont16s_never_paired, t_bar_top30, t_amp_package_emu, t_amp_package_nanoplot, t_amp_package_dada2, t_pkg_wgs, t_pkg_amplicon, t_pkg_name_collisions, t_pkg_wiring]
 
 
 def main() -> int:

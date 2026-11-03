@@ -865,6 +865,18 @@ async def run_analysis(job_id: str, params: RunParams):
             "error": "blast_id must be five % identities: species,genus,family,order,class (e.g. 98.5,95,90,85,80)"})
     if (params.tax_method or "dada2") not in ("dada2", "blast", "both"):
         return JSONResponse(status_code=400, content={"error": "tax_method must be dada2, blast or both"})
+    # Nanopore 16S reads are one file per sample (or chunk files of one sample) — never a
+    # read pair. A file paired as "file2" means the form guessed Illumina mates from names
+    # like X_R1 / X_R2 (often replicates R1, R2, R3): Emu would silently drop the second file.
+    if (params.marker or "").upper() in ("ONT-16S", "ONT16S", "ONT"):
+        _paired = [m for m in (params.sampleFileMap or []) if str((m or {}).get("file2") or "").strip()]
+        if _paired:
+            _ex = _paired[0]
+            return JSONResponse(status_code=400, content={
+                "error": f"ONT 16S reads are single files, but {len(_paired)} sample(s) were paired as read 1 / "
+                         f"read 2 (e.g. {_ex.get('file1')} + {_ex.get('file2')} as sample {_ex.get('sample')}). "
+                         "Set Sequencer to 'ONT R10.4+ (single-end)': every file becomes its own sample "
+                         "(…_R1, …_R2, …_R3 stay separate replicates)."})
 
     # ── Integrity gate (detect tampered license.py) ───────────────────────────
     if not _integrity_ok():

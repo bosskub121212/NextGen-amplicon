@@ -389,7 +389,7 @@ def run_sample(reads: Path, out: Path, dbs: dict, threads: int = 8, mean_len: fl
         if rc != 0 or not rep.exists():
             ent.update(status="failed", note="GOTTCHA2 failed — see readtax/logs/gottcha2.log")
         else:
-            ent.update(status="ok", version=_ver(g2), mode=mode, refs=["gottcha"])
+            ent.update(status="ok", version=_ver(g2, ("version",)), mode=mode, refs=["gottcha"])
             profiles["gottcha2"] = parse_gottcha2(rep)
     tools.append(ent)
 

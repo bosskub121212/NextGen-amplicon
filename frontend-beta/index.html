@@ -6670,6 +6670,18 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
     });
 
+    /* ONT 16S reads are never read pairs: start on single-end and do not offer
+       Illumina pairing, so files named …_R1 / …_R2 / …_R3 (replicates) each stay
+       their own sample instead of being paired as mates. */
+    if(it.key === "ONT-16S"){
+      var sqo = document.getElementById("seq");
+      if(sqo){
+        sqo.value = "ont";
+        var il = sqo.querySelector('option[value="illumina"]');
+        if(il){ il.disabled = true; il.textContent = "Illumina (paired-end) — not for ONT 16S"; }
+      }
+    }
+
     document.getElementById("seq").addEventListener("change", function(){
       var box = document.getElementById("otuBox");
       if(box) box.hidden = this.value !== "qiime2_vsearch";
