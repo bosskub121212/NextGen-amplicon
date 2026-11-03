@@ -825,7 +825,11 @@ def t_ont16s_never_paired(d):
     check("ONT 16S: a sample paired as read 1 / read 2 is refused at submit",
           'ONT 16S reads are single files' in m and '_paired = [m for m in (params.sampleFileMap or [])' in m)
     check("ONT 16S: form starts single-end, Illumina pairing not offered",
-          'if(it.key === "ONT-16S"){' in f and 'sqo.value = "ont"' in f and "il.disabled = true" in f)
+          'if(FORM && FORM.marker === "ONT-16S"){' in f and 'sqo.value = "ont"' in f and "il.disabled = true" in f)
+    i, j = f.find("function wireForm("), f.find("sqo.value = \"ont\"")
+    k = f.find("\n  function ", i + 10)
+    check("ONT 16S: the single-end default sits in wireForm and uses FORM (no 'it' there)",
+          i < j < k and "it.key" not in f[i:k], "")
 
 
 def t_bar_top30(d):

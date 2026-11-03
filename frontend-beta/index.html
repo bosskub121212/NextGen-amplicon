@@ -6673,7 +6673,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     /* ONT 16S reads are never read pairs: start on single-end and do not offer
        Illumina pairing, so files named …_R1 / …_R2 / …_R3 (replicates) each stay
        their own sample instead of being paired as mates. */
-    if(it.key === "ONT-16S"){
+    if(FORM && FORM.marker === "ONT-16S"){
       var sqo = document.getElementById("seq");
       if(sqo){
         sqo.value = "ont";
