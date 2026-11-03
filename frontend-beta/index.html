@@ -6087,8 +6087,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           ["V7-V8", "V7–V8 (~337 bp, genus-level)"]]],
         ["ont_min_abundance", "Minimum abundance", "num",    "0.0001", "Emu abundance filter"],
         ["ont_db_path",       "Emu database",      "path",   "", "directory containing the Emu database"],
-        ["ontMinLen",         "Minimum read length","int",   "300", "bp"],
-        ["ontMaxLen",         "Maximum read length","int",   "600", "bp"],
+        ["ontMinLen",         "Minimum read length (VSEARCH OTUs only)","int",   "300",
+         "not used by Emu — Emu: Chopper keeps 100–2,000 bp, then 1,000–1,700 bp (V1–V9) / 250–450 bp (V7–V8) after primer trimming"],
+        ["ontMaxLen",         "Maximum read length (VSEARCH OTUs only)","int",   "600", "bp — not used by Emu"],
         ["nThreads",          "CPU threads",       "int",    "8", "minimap2 / Emu, chopper, VSEARCH (Emu ran on 4 before)"],
         ["ont_parallel",      "Samples in parallel", "int",  "0",
          "Emu runs this many samples at once, sharing the threads; 0 = automatic from CPU and free RAM"],
@@ -6418,8 +6419,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }).forEach(function(d){
       html += '<optgroup label="' + esc(d || "databases/") + '">'
         + byDir[d].map(function(o){
-            return '<option value="' + esc(o.path) + '"' + (o.pick ? " selected" : "") + '>'
-              + esc(o.label) + '</option>'; }).join("")
+            /* The closed box shows only the option's text: name the folder in it too —
+               several databases hold a file called species_taxid.fasta. */
+            var folder = (d || "").replace(/^\s*—.*$/, "").split(" — ")[0].split("/").filter(Boolean).pop() || "databases";
+            return '<option value="' + esc(o.path) + '" title="' + esc(o.path) + '"' + (o.pick ? " selected" : "") + '>'
+              + esc(folder && o.label.indexOf(folder) !== 0 ? folder + " / " + o.label : o.label) + '</option>'; }).join("")
         + '</optgroup>';
     });
     return html + '<optgroup label="Other"><option value="__custom__">Custom path…</option></optgroup>';
