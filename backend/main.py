@@ -1049,6 +1049,8 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
     with jobs_lock:
         if jobs.get(job_id, {}).get("status") == "cancelled":
             return                      # cancelled while it was still queued
+        # set by POST /jobs/{id}/resume: carry on from the finished samples on disk
+        _resume = bool(jobs[job_id].pop("resume", False))
         jobs[job_id]["status"]      = "running"
         jobs[job_id]["step_label"]  = "Initializing pipeline..."
         jobs[job_id]["started_at"]  = time.time()
@@ -1373,6 +1375,8 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
         if params.ont_chimera:
             cmd += ["--chimera"]
         cmd += ["--parallel", str(max(0, int(params.ont_parallel or 0)))]
+        if _resume:
+            cmd += ["--resume"]
         if params.metadata:
             cmd += ["--metadata", metadata_path]
         _pipe_kind = "emu"
@@ -1537,7 +1541,9 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
                 jobs[job_id]["step_label"] = "Checking read quality..."
             _qc = read_qc.run(input_dir, params.primer_f or "", params.primer_r or "", None, n=20000,
                               fastqc_dir=str(Path(output_dir) / "qc" / "fastqc") if params.run_fastqc else None,
-                              threads=max(1, int(params.nThreads or 1)))
+                              threads=max(1, int(params.nThreads or 1)),
+                              single=(params.sequencerType or "illumina") != "illumina"
+                              or marker in ("ONT-16S", "ONT16S", "ONT"))
             (Path(output_dir) / "qc").mkdir(exist_ok=True)
             (Path(output_dir) / "qc" / "read_qc.json").write_text(json.dumps(_qc))
         except Exception as _qe:
@@ -1556,7 +1562,12 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
         cur_step_label: str | None = None
         cur_step_start: float | None = None
 
-        with open(log_file, "w") as lf:
+        # a resumed run keeps the interrupted run's log above its own
+        with open(log_file, "a" if _resume else "w") as lf:
+            if _resume:
+                lf.write("\n" + "=" * 60 + f"\nRESUMED {time.strftime('%Y-%m-%d %H:%M:%S')} — "
+                         "finished samples of the run above are reused\n" + "=" * 60 + "\n")
+                lf.flush()
             for raw in proc.stdout:  # type: ignore
                 line = raw.rstrip()
                 if not line:
@@ -2147,6 +2158,50 @@ def checkpoint_abort(job_id: str):
         jobs[job_id].pop("checkpoint_type", None)
         save_jobs()
     return {"ok": True, "message": "Pipeline aborted"}
+
+# ── 6b2. Resume an ONT 16S run that stopped part-way ---------------------------
+RESUMABLE_MARKERS = ("ONT-16S", "ONT16S", "ONT")
+
+def _emu_finished(out_dir: Path) -> int:
+    d = out_dir / "emu_output"
+    if not d.is_dir():
+        return 0
+    return sum(1 for s in d.iterdir() if s.is_dir() and any(s.glob("*rel-abundance*.tsv")))
+
+
+@app.post("/jobs/{job_id}/resume")
+def resume_job(job_id: str):
+    """Carry on an ONT 16S (Emu) run that was cut off (server restart, Windows Update,
+    power cut): same input files, same recorded settings, same results folder. Samples
+    whose Emu tables are on disk are reused; only the rest run, then the tables and plots.
+    Unlike /reset, nothing in the results folder is deleted."""
+    j = jobs.get(job_id)
+    if not j:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    if j.get("status") not in ("error", "cancelled"):
+        return JSONResponse(status_code=400, content={
+            "error": f"Only a run that stopped can be resumed (this one is '{j.get('status')}')"})
+    params_d = dict(j.get("params") or {})
+    if (params_d.get("marker") or j.get("marker") or "").upper() not in RESUMABLE_MARKERS:
+        return JSONResponse(status_code=400, content={"error": "Resume is available for ONT 16S runs"})
+    out_dir = RESULTS_DIR / job_id
+    if not (UPLOAD_DIR / job_id).is_dir():
+        return JSONResponse(status_code=400, content={"error": "The input files of this job are gone"})
+    try:
+        params = RunParams(**params_d)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": f"Recorded settings unreadable: {e}"})
+    n_done = _emu_finished(out_dir)
+    with jobs_lock:
+        j["resume"]     = True
+        j["status"]     = "queued"
+        j["error"]      = None
+        j["step_label"] = f"Resume queued — {n_done} sample(s) already finished are kept"
+        j["queue_seq"]  = seq = time.time()
+        save_jobs()
+    executor.submit(run_r_pipeline, job_id, params, seq)
+    return {"job_id": job_id, "status": "queued", "finished_samples": n_done}
+
 
 # ── 6c. Reset job to "uploaded" so it can be re-run with new params -----------
 @app.post("/jobs/{job_id}/reset")
@@ -3100,7 +3155,7 @@ def cleanup_orphan_results():
 
 # -- 9c. Database paths -------------------------------------------------------
 @app.get("/qc/{job_id}")
-def read_quality(job_id: str, primer_f: str = "", primer_r: str = "", expected_len: int = 0):
+def read_quality(job_id: str, primer_f: str = "", primer_r: str = "", expected_len: int = 0, single: int = 0):
     """Read quality of an upload, before any run: per-position quality, lengths,
     and a truncLen suggestion for paired amplicons (read_qc.py). Cached until
     the files or the primers change."""
@@ -3110,14 +3165,14 @@ def read_quality(job_id: str, primer_f: str = "", primer_r: str = "", expected_l
     try:
         import read_qc
         files = sorted(f for f in d.rglob("*") if f.is_file() and read_qc.FQ_RE.search(f.name))
-        sig = json.dumps([primer_f, primer_r, expected_len,
+        sig = json.dumps([primer_f, primer_r, expected_len, bool(single),
                           [(f.name, f.stat().st_size, int(f.stat().st_mtime)) for f in files]])
         cache = d / "_read_qc.json"
         if cache.exists():
             c = json.loads(cache.read_text())
             if c.get("_sig") == sig:
                 return c
-        res = read_qc.run(str(d), primer_f, primer_r, expected_len or None, n=10000)
+        res = read_qc.run(str(d), primer_f, primer_r, expected_len or None, n=10000, single=bool(single))
         res["_sig"] = sig
         cache.write_text(json.dumps(res))
         return res

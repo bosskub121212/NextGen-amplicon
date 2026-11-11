@@ -354,6 +354,10 @@ def main():
     import test_wgs_pkg_fast                 # WGS customer package: folders 1-8, report PDF/Word
     test_wgs_pkg_fast.main()
     FAILS.extend(test_wgs_pkg_fast.FAILS)
+
+    import test_resume_fast                  # ONT 16S resume after an interrupted run
+    test_resume_fast.main()
+    FAILS.extend(test_resume_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

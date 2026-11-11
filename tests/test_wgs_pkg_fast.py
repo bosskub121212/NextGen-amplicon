@@ -832,6 +832,27 @@ def t_ont16s_never_paired(d):
           i < j < k and "it.key" not in f[i:k], "")
 
 
+def t_readqc_single(d):
+    import read_qc
+    for n in ("D1K1_C_H_R1", "D1K1_C_H_R2", "D1K1_C_H_R3"):
+        _w(d / f"{n}.fastq", "@a\nACGT\n+\nIIII\n")
+    check("read check: single-end / ONT keeps X_R1, X_R2, X_R3 as three samples",
+          list(read_qc.find_samples(d, True)) == ["D1K1_C_H_R1", "D1K1_C_H_R2", "D1K1_C_H_R3"]
+          and list(read_qc.find_samples(d)) == ["D1K1_C_H", "D1K1_C_H_R3"])
+    f = (ROOT / "frontend-beta" / "index.html").read_text()
+    m = (ROOT / "backend" / "main.py").read_text()
+    check("read check: the console asks for single-end on ONT 16S", '"&single=" + (sgl ? 1 : 0)' in f
+          and "single=bool(single)" in m)
+
+
+def t_emu_sam_removed(d):
+    e = (ROOT / "backend" / "emu_pipeline.py").read_text()
+    i = e.find('status = "ok" if name in results')
+    check("Emu: the alignment SAM of a finished sample is deleted (only the tables are used)",
+          i > 0 and "_drop_sam(sample_out)" in e[i:i + 300] and 'sample_out.glob("*.sam")' in e
+          and "sam.unlink()" in e)
+
+
 def t_bar_top30(d):
     r = (ROOT / "backend" / "r_scripts" / "custom_report_plots.R").read_text()
     a = (ROOT / "backend" / "amp_package.py").read_text()
@@ -924,7 +945,7 @@ def t_pkg_name_collisions(d):
           and "Sample: FS 04" not in t[rep[0]], str(rep))
 
 
-TESTS += [t_ont16s_never_paired, t_bar_top30, t_amp_package_emu, t_amp_package_nanoplot, t_amp_package_dada2, t_pkg_wgs, t_pkg_amplicon, t_pkg_name_collisions, t_pkg_wiring]
+TESTS += [t_emu_sam_removed, t_readqc_single, t_ont16s_never_paired, t_bar_top30, t_amp_package_emu, t_amp_package_nanoplot, t_amp_package_dada2, t_pkg_wgs, t_pkg_amplicon, t_pkg_name_collisions, t_pkg_wiring]
 
 
 def main() -> int:

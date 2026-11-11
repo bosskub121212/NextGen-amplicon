@@ -37,6 +37,20 @@ def progress(pct: int, label: str):
 def log(msg: str):
     print(msg, flush=True)
 
+# --resume: carry on a run that stopped part-way (server restart, Windows Update,
+# power cut). Every step writes its per-sample output under a temporary name and
+# renames it only when complete, so a file under the final name is a finished one
+# and is reused; only what is missing runs again. Emu results count as finished
+# when emu_output/<sample>/ holds its rel-abundance table (Emu writes it last).
+RESUME = {"on": False}
+
+def _done(path: Path) -> bool:
+    return RESUME["on"] and path.exists() and path.stat().st_size > 0
+
+def _part(path: Path) -> Path:
+    """Temporary name beside `path` that keeps its extension (.fastq.gz stays gzip)."""
+    return path.with_name(".part-" + path.name)
+
 # ── Argument parsing ────────────────────────────────────────────────────────────
 def parse_args():
     p = argparse.ArgumentParser()
@@ -72,6 +86,8 @@ def parse_args():
     p.add_argument("--cutadapt_overlap",    type=int,   default=10,   help="cutadapt -O (min primer overlap)")
     p.add_argument("--parallel",      type=int, default=0,
                    help="Emu samples run at the same time (0 = decide from CPU count and free memory)")
+    p.add_argument("--resume",        action="store_true",
+                   help="Reuse finished per-sample outputs of an earlier, interrupted run")
     return p.parse_args()
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -159,8 +175,12 @@ def find_fastq(input_dir: Path, merge_dir: Path | None = None) -> dict[str, Path
                 else:
                     md = merge_dir or (input_dir / "_merged")
                     dest = md / f"{sample}.fastq.gz"
-                    log(f"  Merging {len(files)} files → {sample}.fastq.gz")
-                    samples[sample] = merge_reads(files, dest)
+                    if _done(dest):
+                        log(f"  Reusing merged {sample}.fastq.gz (resume)")
+                        samples[sample] = dest
+                    else:
+                        log(f"  Merging {len(files)} files → {sample}.fastq.gz")
+                        samples[sample] = merge_reads(files, dest)
                 for f in files:
                     map_rows.append((sample, f.name))
             if merge_dir is not None and any(len(v) > 1 for v in groups.values()):
@@ -244,21 +264,29 @@ def qc_filter_chopper(samples: dict, out_dir: Path, min_qual: int, min_len: int,
     qc_dir.mkdir(exist_ok=True)
     filtered = {}
 
+    reused = 0
     for name, fq in samples.items():
         out_fq = qc_dir / f"{name}.fastq.gz"
+        if _done(out_fq):
+            filtered[name] = out_fq
+            reused += 1
+            continue
+        tmp_fq = _part(out_fq)
         cat_cmd = ["zcat", str(fq)] if str(fq).endswith(".gz") else ["cat", str(fq)]
         chopper_cmd = [chopper, "-q", str(min_qual), "-l", str(min_len),
                        "--maxlength", str(max_len), "-t", str(threads)]
         log(f"  → QC filter (chopper): {name}")
         log(f"  CMD: {' '.join(cat_cmd)} | {' '.join(str(c) for c in chopper_cmd)} | gzip")
         try:
-            with open(out_fq, "wb") as out_f:
+            with open(tmp_fq, "wb") as out_f:
                 p1 = subprocess.Popen(cat_cmd, stdout=subprocess.PIPE)
                 p2 = subprocess.Popen(chopper_cmd, stdin=p1.stdout, stdout=subprocess.PIPE)
                 p1.stdout.close()
                 p3 = subprocess.Popen(["gzip"], stdin=p2.stdout, stdout=out_f)
                 p2.stdout.close()
                 p3.communicate()
+            if tmp_fq.exists() and tmp_fq.stat().st_size > 0:
+                tmp_fq.replace(out_fq)
             if out_fq.exists() and out_fq.stat().st_size > 0:
                 filtered[name] = out_fq
             else:
@@ -268,6 +296,8 @@ def qc_filter_chopper(samples: dict, out_dir: Path, min_qual: int, min_len: int,
             log(f"  [WARN] chopper failed for {name}: {e} — using unfiltered reads")
             filtered[name] = fq
 
+    if reused:
+        log(f"  QC filter: {reused} sample(s) reused from the earlier run (resume)")
     return filtered
 
 # ── Step 2: Trim primers with cutadapt ─────────────────────────────────────────
@@ -298,8 +328,13 @@ def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
     trim_dir.mkdir(exist_ok=True)
     trimmed = {}
 
+    reused = 0
     for name, fq in samples.items():
         out_fq = trim_dir / fq.name
+        if _done(out_fq):
+            trimmed[name] = out_fq
+            reused += 1
+            continue
         # ONT = single-end: forward primer at 5' end, RC(reverse primer) at 3' end
         # NEVER use -G/-A — those flags trigger paired-end mode and require two files.
         cmd = [cutadapt, "-j", str(threads), "-e", str(error_rate), "-O", str(overlap)]
@@ -317,10 +352,13 @@ def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
         cmd += ["--discard-untrimmed", "-m", str(min_len)]
         if max_len:
             cmd += ["-M", str(max_len)]
-        cmd += ["-o", str(out_fq), str(fq)]
-        run_cmd(cmd, f"Trim {name}")
+        cmd += ["-o", str(_part(out_fq)), str(fq)]
+        if run_cmd(cmd, f"Trim {name}") and _part(out_fq).exists():
+            _part(out_fq).replace(out_fq)
         trimmed[name] = out_fq if out_fq.exists() else fq
 
+    if reused:
+        log(f"  Primer trimming: {reused} sample(s) reused from the earlier run (resume)")
     return trimmed
 
 # ── Step 3: Remove chimeras with vsearch (reference-based) ─────────────────────
@@ -365,6 +403,9 @@ def remove_chimeras(samples: dict, out_dir: Path, db_path: str,
         fa_ok  = chim_dir / f"{name}.nonchimeric.fasta"
         fa_bad = chim_dir / f"{name}.chimeric.fasta"
         out_fq = chim_dir / f"{name}.fastq.gz"
+        if _done(out_fq):
+            cleaned[name] = out_fq
+            continue
 
         # cutadapt/chopper output is always plain fastq or fastq.gz — convert to
         # fasta since --uchime_ref requires it.
@@ -400,12 +441,13 @@ def remove_chimeras(samples: dict, out_dir: Path, db_path: str,
                     keep_ids.add(line[1:].strip().split()[0])
 
         n_kept = 0
-        with gzip.open(out_fq, "wt") as out_f:
+        with gzip.open(_part(out_fq), "wt") as out_f:
             for h, seq, plus, qual in _fastq_iter(fq):
                 rid = h[1:].split()[0] if h.startswith("@") else h.split()[0]
                 if rid in keep_ids:
                     out_f.write(f"{h}\n{seq}\n{plus}\n{qual}\n")
                     n_kept += 1
+        _part(out_fq).replace(out_fq)
 
         log(f"  {name}: {n_reads} reads → {n_kept} non-chimeric ({n_reads - n_kept} chimeras removed)")
         cleaned[name] = out_fq if n_kept > 0 else fq
@@ -500,9 +542,45 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
     log(f"  Emu: {len(samples)} sample(s), {par} at a time, {per_threads} thread(s) each "
         f"({_mem_available_gb():.0f} GB free memory)")
 
+    def _tables(sample_out: Path) -> Path | None:
+        # Prefer the thresholded file (already filtered by --min-abundance).
+        # Emu names: <basename>_rel-abundance-threshold-<N>.tsv (current)
+        #            <basename>_rel-abundance.tsv              (fallback / older)
+        tsv_thresh = list(sample_out.glob("*rel-abundance-threshold*.tsv"))
+        tsv_plain  = [p for p in sample_out.glob("*rel-abundance.tsv") if "threshold" not in p.name]
+        return (tsv_thresh or tsv_plain or [None])[0]
+
+    def _drop_sam(sample_out: Path):
+        # --keep-files leaves Emu's alignment SAM (every read × up to 50 hits, often
+        # several GB per sample). Nothing after Emu reads it; on a 90-sample run it
+        # filled the disk the results live on. The abundance tables stay.
+        for sam in sample_out.glob("*.sam"):
+            try:
+                sam.unlink()
+            except OSError:
+                pass
+
+    done = 0
+    todo = {}
+    for name, fq in samples.items():
+        sample_out = emu_out_dir / name
+        prev = _tables(sample_out) if RESUME["on"] and sample_out.is_dir() else None
+        if prev is not None:
+            results[name] = prev
+            _drop_sam(sample_out)
+            done += 1
+        else:
+            todo[name] = fq
+    if done:
+        log(f"  Emu: {done}/{len(samples)} sample(s) already finished in the earlier run — reused; "
+            f"{len(todo)} to run")
+        progress(42 + int(18 * done / max(1, len(samples))),
+                 f"Step 5/8 — Emu: {done}/{len(samples)} samples done")
+
     def one(name: str, fq: Path):
         sample_out = emu_out_dir / name
         sample_out.mkdir(parents=True, exist_ok=True)
+        _drop_sam(sample_out)           # left by a run that was cut off
         cmd = emu_prefix + [
             "abundance",
             "--type", "map-ont",
@@ -528,22 +606,17 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=emu_env).returncode
         return name, sample_out, rc, time.time() - t0
 
-    done = 0
-    with ThreadPoolExecutor(max_workers=par) as ex:
-        futs = [ex.submit(one, name, fq) for name, fq in samples.items()]
+    with ThreadPoolExecutor(max_workers=max(1, min(par, len(todo) or 1))) as ex:
+        futs = [ex.submit(one, name, fq) for name, fq in todo.items()]
         for fut in as_completed(futs):
             name, sample_out, rc, secs = fut.result()
             done += 1
-            # Prefer the thresholded file (already filtered by --min-abundance).
-            # Emu names: <basename>_rel-abundance-threshold-<N>.tsv (current)
-            #            <basename>_rel-abundance.tsv              (fallback / older)
-            tsv_thresh = list(sample_out.glob("*rel-abundance-threshold*.tsv"))
-            tsv_plain  = [p for p in sample_out.glob("*rel-abundance.tsv") if "threshold" not in p.name]
-            if tsv_thresh:
-                results[name] = tsv_thresh[0]
-            elif tsv_plain:
-                results[name] = tsv_plain[0]
+            tsv = _tables(sample_out)
+            if tsv is not None:
+                results[name] = tsv
             status = "ok" if name in results else f"FAILED (exit {rc})"
+            if name in results:
+                _drop_sam(sample_out)
             log(f"  Emu {done}/{len(samples)}: {name} {status} in {secs/60:.1f} min")
             if name not in results:
                 try:
@@ -746,6 +819,7 @@ def run_viz(out_dir: Path, metadata_path: str, top_n: int, threads: int,
 # ── Main ────────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
+    RESUME["on"] = bool(args.resume)
     input_dir  = Path(args.input)
     out_dir    = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -753,6 +827,8 @@ def main():
     log("=" * 50)
     log(f"  NextGen-Amplicon — ONT 16S Pipeline (Emu)")
     log(f"  Region: {args.region}  |  DB: {args.db_path}")
+    if args.resume:
+        log("  RESUME: finished per-sample outputs of the interrupted run are reused")
     log("=" * 50)
 
     # ── 1. Find samples ────────────────────────────────────────────────────────

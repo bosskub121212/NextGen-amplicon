@@ -214,8 +214,10 @@ def suggest_trunc(r1: dict, r2: dict, primer_f: str, primer_r: str, insert: int 
     return res
 
 
-def find_samples(d: Path) -> dict:
-    """{sample: [R1] or [R1, R2]} from the manifest, else from file names."""
+def find_samples(d: Path, single: bool = False) -> dict:
+    """{sample: [R1] or [R1, R2]} from the manifest, else from file names.
+    single=True (nanopore / single-end): every file is its own sample — "X_R1" and
+    "X_R2" are then replicates, not read 1 / read 2 of one pair."""
     man = d / "sample_manifest.json"
     if man.exists():
         try:
@@ -231,6 +233,8 @@ def find_samples(d: Path) -> dict:
             pass
     files = sorted(f for f in d.rglob("*") if f.is_file() and FQ_RE.search(f.name)
                    and "_wgs_work" not in f.parts)
+    if single:
+        return dict(sorted((FQ_RE.sub("", f.name), [f]) for f in files))
     pairs, single = {}, {}
     for f in files:
         m = PAIR_RE.match(f.name)
@@ -276,9 +280,9 @@ def find_tool(name):
 
 
 def run(input_dir: str, primer_f: str = "", primer_r: str = "", expected_len: int | None = None,
-        n: int = 20000, fastqc_dir: str | None = None, threads: int = 2) -> dict:
+        n: int = 20000, fastqc_dir: str | None = None, threads: int = 2, single: bool = False) -> dict:
     d = Path(input_dir)
-    samples = find_samples(d)
+    samples = find_samples(d, single)
     # MinKNOW folders hold hundreds of chunk files: look at no more than 60 of
     # them and at most ~400,000 reads in all, so this stays a few seconds.
     nfiles = sum(len(v) for v in samples.values())

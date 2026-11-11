@@ -1644,6 +1644,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
              unreachable because of a label. */
           : '<button class="btn danger" id="delBtn">Delete job</button>'
             + (isWgs ? '<button class="btn pri" id="wgReJob" data-resume="1" title="Carry on from where it stopped: samples and steps already finished are kept">Resume run</button>' : "")
+            + (M.marker === "ONT-16S" && (M.st === "error" || M.st === "cancelled")
+                ? '<button class="btn pri" id="emuResume" title="Carry on from where it stopped: samples Emu already finished are kept, only the rest run">Resume run</button>' : "")
             + '<button class="btn" id="resBtn">View any results</button>'
             + '<a class="btn" href="/classic?job=' + encodeURIComponent(jid) + '">Open in the classic UI</a>';
       body.innerHTML =
@@ -1708,6 +1710,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       if(wdc) wdc.addEventListener("click", function(){ wgsPdf(jid, wdc, "docx"); });
       var apd = document.getElementById("ampPdf");
       if(apd) apd.addEventListener("click", function(){ openReport(jid, "repBox"); });
+      var emr = document.getElementById("emuResume");
+      if(emr) emr.addEventListener("click", function(){ emuResume(jid, emr); });
       var are = document.getElementById("ampRe");
       if(are) are.addEventListener("click", function(){ ampRerun(jid, are); });
       var dlr = document.getElementById("dlRes");
@@ -7176,8 +7180,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     FORM.qc = null;
     box.innerHTML = '<div class="panel" style="margin-top:12px"><div class="sechdr"><h3>Read quality</h3>'
       + '<span class="hint">reading a subsample of every file…</span></div></div>';
+    /* nanopore / single-end: every file is a sample (X_R1, X_R2 = replicates), as in the run */
+    var sgl = FORM.marker === "ONT-16S" || ((document.getElementById("seq") || {}).value || "illumina") !== "illumina";
     fetch("/qc/" + encodeURIComponent(jid) + "?primer_f=" + encodeURIComponent(pf.trim())
-          + "&primer_r=" + encodeURIComponent(pr.trim()), {cache:"no-store"})
+          + "&primer_r=" + encodeURIComponent(pr.trim()) + "&single=" + (sgl ? 1 : 0), {cache:"no-store"})
       .then(function(r){ return r.json().then(function(j){
         if(!r.ok) throw new Error(j.error || ("HTTP " + r.status)); return j; }); })
       .then(function(j){ if(FORM.jobId === jid){ FORM.qc = j; paintQC(); } })
@@ -7961,6 +7967,23 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         if(btn){ btn.disabled = false; btn.textContent = "Run again"; }
         if(e && e.cancel) return;
         window.alert("Could not start the run — " + (e.message || e));
+      });
+  }
+
+  /* ONT 16S run cut off part-way (server restart, Windows Update): carry on with the
+     same files and settings. Nothing is deleted — samples Emu finished are reused. */
+  function emuResume(jid, btn){
+    if(!window.confirm("Resume this run?\n\nSamples Emu already finished are kept; only the "
+        + "remaining samples run, then the tables and plots. Nothing is deleted."))
+      return;
+    if(btn){ btn.disabled = true; btn.textContent = "Starting…"; }
+    fetch("/jobs/" + encodeURIComponent(jid) + "/resume", {method:"POST"})
+      .then(function(r){ return r.json().then(function(j){
+        if(!r.ok) throw new Error(j.message || j.error || ("HTTP " + r.status)); return j; }); })
+      .then(function(){ return refreshJobs().then(function(){ go({name:"job", id:jid}); }); })
+      .catch(function(e){
+        if(btn){ btn.disabled = false; btn.textContent = "Resume run"; }
+        window.alert("Could not resume — " + (e.message || e));
       });
   }
 
