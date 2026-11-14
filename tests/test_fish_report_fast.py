@@ -39,6 +39,24 @@ def main():
                   "BLAST+: architecture" in html and "MitoFish, MitoAnnotator" in html
                   and "Naive Bayesian classifier for rapid" not in html)
             check("config rows say BLAST", "Names by" in html and "NCBI nt check" in html)
+            check("chimera loss named, not blamed on read quality",
+                  "lost most at chimera removal" in html and "comes from PCR" in html)
+            check("composition explains phylum-level BLAST names", "only places it approximately" in html)
+            import csv as _csv
+            bp = d / "blast" / "taxonomy_blast.csv"
+            rows = list(_csv.DictReader(open(bp)))
+            for r in rows:
+                if r["id"] == "q2":      # a fish cut to phylum by conflicting hits, 99% identity
+                    r.update(Class="", Order="", Family="", Genus="", Species="", pident="99.0",
+                             rank_reached="Phylum", check="yes")
+                if r["id"] == "q4":      # a fish far from every reference
+                    r.update(Phylum="Chordata", pident="70.0", rank_reached="Phylum", target="yes", check="yes")
+            with open(bp, "w", newline="") as fh:
+                w = _csv.DictWriter(fh, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+            h3 = rb.build_profile_html(rb.Run(d, set()))
+            check("phylum-only fish: distant vs conflicting hits told apart",
+                  "Closest to a fish, below 80" in h3 and "name cut to phylum (conflicting" in h3)
+            check("flagged list without repeats", "flagged for checking (" in h3 and "Fish-like" in h3)
             # same run without BLAST: DADA2 wording stays, no BLAST section
             (d / "blast" / "BLAST_SKIPPED.txt").write_text("blastn not found")
             run2 = rb.Run(d, set())

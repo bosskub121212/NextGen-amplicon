@@ -2373,7 +2373,7 @@ def _blast_section(run, S, T) -> list:
     lim = str(bi.get("limit") or run.params.get("blast_limit") or "fish")
     tword = {"fish": "fish", "vertebrates": "vertebrate", "all": "target"}.get(lim, "target")
     tot = {s_: 0.0 for s_ in S}
-    part = {k: {s_: 0.0 for s_ in S} for k in ("yes", "no", "none")}
+    part = {k: {s_: 0.0 for s_ in S} for k in ("yes", "far", "no", "none")}
     fish, other = {}, {}
     flagged = []
     agree = Counter()
@@ -2382,9 +2382,6 @@ def _blast_section(run, S, T) -> list:
         t = str(r.get("target") or "").strip()
         t = t if t in ("yes", "no") else "none"
         reads = sum(row.get(s_, 0.0) for s_ in S)
-        for s_ in S:
-            tot[s_] += row.get(s_, 0.0)
-            part[t][s_] += row.get(s_, 0.0)
         if r.get("agreement"):
             agree[r["agreement"]] += 1
         rank, name = _blast_name(r)
@@ -2392,13 +2389,20 @@ def _blast_section(run, S, T) -> list:
             pid = float(r.get("pident") or "nan")
         except ValueError:
             pid = float("nan")
+        far = not (pid == pid and pid >= float(cls_th))
+        k_ = "far" if (t == "yes" and far) else t
+        for s_ in S:
+            tot[s_] += row.get(s_, 0.0)
+            part[k_][s_] += row.get(s_, 0.0)
         if t == "yes":
             if rank in ("", "Phylum"):
-                rank, name = "", f"Fish not in the reference (best hit below {cls_th}% identity)"
+                rank, name = "", (f"Closest to a fish, below {cls_th}% identity (unconfirmed)" if far else
+                                  "Fish, name cut to phylum (conflicting hits or NCBI disagreement)")
             e = fish.setdefault(name, {"rank": rank, "reads": 0.0, "pid": [], "in": set()})
         elif t == "no" and name:
             if rank == "Phylum":
-                name = f"{name} (best hit below {cls_th}% identity)"
+                name = (f"{name} (best hit below {cls_th}% identity)" if far else
+                        f"{name} (cut to phylum: conflicting hits)")
             e = other.setdefault(name, {"rank": rank, "reads": 0.0, "pid": [], "in": set()})
         else:
             e = None
@@ -2414,17 +2418,25 @@ def _blast_section(run, S, T) -> list:
     out = [f'<h3 class="pbreak">{tword.capitalize()} and non-target reads (BLAST)</h3>']
     fs = [(s_, pct("yes", s_)) for s_ in S]
     hi, lo = max(fs, key=lambda kv: kv[1]), min(fs, key=lambda kv: kv[1])
-    out.append(f"<p>{tword.capitalize()} DNA made up {100*sum(part['yes'].values())/all_tot:.1f}% of the "
-               f"reads over the whole run, from {lo[1]:.1f}% ({esc(lo[0])}) to {hi[1]:.1f}% ({esc(hi[0])}) "
-               f"per sample. The rest is DNA of other organisms the primers also amplified "
+    far_tot = sum(part["far"].values())
+    out.append(f"<p>{tword.capitalize()} DNA identified at {cls_th}% identity or more made up "
+               f"{100*sum(part['yes'].values())/all_tot:.1f}% of the reads over the whole run, from "
+               f"{lo[1]:.1f}% ({esc(lo[0])}) to {hi[1]:.1f}% ({esc(hi[0])}) per sample."
+               + (f" A further {100*far_tot/all_tot:.1f}% had a {tword} as best hit but below {cls_th}% "
+                  f"identity: too distant to confirm as {tword}, so it is reported apart." if far_tot else "")
+               + f" The rest is DNA of other organisms the primers also amplified "
                f"({100*sum(part['no'].values())/all_tot:.1f}%) and sequences without a match in the reference "
                f"({100*sum(part['none'].values())/all_tot:.1f}%). Composition figures further on include all "
                f"of it; the {tword} share is the part this marker targets.</p>")
-    out.append(T(["Sample", "Reads", f"{tword.capitalize()} %", "Non-target %", "No match %"],
-                 [[esc(s_), fmt(tot[s_]), f"{pct('yes', s_):.1f}", f"{pct('no', s_):.1f}",
-                   f"{pct('none', s_):.1f}"] for s_ in S],
-                 f"Reads per sample by BLAST result: {tword} (within the BLAST limit), other organisms, "
-                 f"and no match in the reference."))
+    out.append(T(["Sample", "Reads", f"{tword.capitalize()} %"]
+                 + ([f"{tword.capitalize()}-like, &lt;{cls_th}% %"] if far_tot else [])
+                 + ["Non-target %", "No match %"],
+                 [[esc(s_), fmt(tot[s_]), f"{pct('yes', s_):.1f}"]
+                  + ([f"{pct('far', s_):.1f}"] if far_tot else [])
+                  + [f"{pct('no', s_):.1f}", f"{pct('none', s_):.1f}"] for s_ in S],
+                 f"Reads per sample by BLAST result: {tword} (within the BLAST limit, identity at least "
+                 f"{cls_th}%)" + (f", best hit a {tword} but below {cls_th}%" if far_tot else "")
+                 + ", other organisms, and no match in the reference."))
     def _rows(d, n):
         rows = []
         for name, e in sorted(d.items(), key=lambda kv: -kv[1]["reads"])[:n]:
@@ -2437,15 +2449,16 @@ def _blast_section(run, S, T) -> list:
     if fish:
         out.append(T(["Taxon", "Named to", "Reads", "All", "Best-hit identity %", "Samples"], _rows(fish, 40),
                      f"{tword.capitalize()} taxa, named to the deepest rank whose identity threshold was met. "
-                     f"Sequences whose best hit is a {tword} below {cls_th}% identity are shown as not in the "
-                     f"reference: most likely a species the reference does not hold yet, so no name is given."))
+                     f"Sequences whose best hit is a {tword} below {cls_th}% identity get no name: they may be a "
+                     f"{tword} missing from the reference, or another organism whose closest reference "
+                     f"happens to be a {tword}."))
     if other:
         hs = sum(e["reads"] for k, e in other.items() if k.startswith("Homo"))
         out.append(T(["Taxon", "Named to", "Reads", "All", "Best-hit identity %", "Samples"], _rows(other, 15),
                      "The most abundant non-target taxa. A name at phylum level comes from a distant best hit "
                      "and is approximate."))
         if hs:
-            out.append(f"<p>Human DNA (<i>Homo sapiens</i>) made up {fmt(hs)} reads ({100*hs/all_tot:.2f}%), "
+            out.append(f"<p>Human DNA (<i>Homo sapiens</i>) made up {fmt(hs)} reads ({100*hs/all_tot:.2f}%); "
                        f"it is non-target and does not affect the {tword} names.</p>")
     if agree:
         lab = {"agree": "agree", "differ": "differ (cut to the shared rank, flagged)", "local_better":
@@ -2453,9 +2466,10 @@ def _blast_section(run, S, T) -> list:
                "ncbi_no_hit": f"no NCBI hit within the limit (mostly non-target)", "not_checked": "not checked"}
         out.append("<p><b>NCBI check.</b> " + "; ".join(f"{lab.get(k, esc(k))}: {v} {run.feat}"
                                                         for k, v in agree.most_common()) + ". "
-                   + (f"{len(flagged)} {run.feat} are flagged for checking"
-                      + (" (" + ", ".join(f"{esc(n)}" for n, _r in sorted(flagged, key=lambda x: -x[1])[:6]) + ")"
-                         if flagged else "") + "; see the check column of blast/taxonomy_blast.csv."
+                   + (f"{len(flagged)} {run.feat} are flagged for checking ("
+                      + ", ".join(f"{esc(n)}" + (f" &times;{c}" if c > 1 else "")
+                                  for n, c in Counter(n for n, _r in flagged).most_common(6))
+                      + "); see the check column of blast/taxonomy_blast.csv."
                       if flagged else "No ASV is flagged for checking.") + "</p>")
     return out
 
@@ -3144,10 +3158,31 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                 if ent and 100 * f0 / ent < 50:
                     low.append((nm, ent, f0, 100 * f0 / ent))
         if low:
-            qi += (f"{', '.join(esc(x[0]) for x in low)} retained less than half of "
-                   f"{'its' if len(low) == 1 else 'their'} "
-                   + ("reads that entered denoising" if cap else "input")
-                   + ", which deserves a look at the raw read quality before the results are interpreted. ")
+            byname = {str(next(iter(t.values()))): t for t in run.tracking}
+            def _worst_step(nm):
+                t, prev, best = byname.get(nm) or {}, "input", None
+                for lbl, k in steps:
+                    if k not in t:
+                        continue
+                    a = cap[nm][1] if (k == "denoisedF" and nm in cap) else float(t.get(prev) or 0)
+                    b = float(t.get(k) or 0)
+                    if a and (best is None or (a - b) / a > best[1]):
+                        best = (lbl, (a - b) / a)
+                    prev = k
+                return best
+            ws = {x[0]: _worst_step(x[0]) for x in low}
+            chim = [n for n, w in ws.items() if w and w[0] == "chimera removal"]
+            rest = [n for n in ws if n not in chim]
+            if chim:
+                qi += (f"{', '.join(esc(n) for n in chim)} lost most at chimera removal ("
+                       + ", ".join(f"{100*ws[n][1]:.0f}%" for n in chim)
+                       + " of merged reads): a high chimera share comes from PCR (many cycles or little "
+                         "template), not from sequencing quality. ")
+            if rest:
+                qi += (f"{', '.join(esc(n) for n in rest)} retained less than half of "
+                       f"{'its' if len(rest) == 1 else 'their'} "
+                       + ("reads that entered denoising" if cap else "input")
+                       + ", which deserves a look at the raw read quality before the results are interpreted. ")
         if run.emu:
             def _same(a, b):
                 return all(float(t.get(a) or 0) == float(t.get(b) or 0) for t in run.tracking)
@@ -3252,6 +3287,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                      key=lambda kv: -kv[1])[:4]
     txt = ("<p>At the phylum level the community was dominated by "
            + ", ".join(f"{esc(t)} ({v:.1f}% on average)" for t, v in mean_ph) + ". ")
+    if run.blast:
+        txt += ("Names here are the BLAST names; a sequence named only to phylum had no reference within the "
+                "class threshold, so its phylum is a distant best hit and only places it approximately. ")
     gphy: dict = {}
     for r_ in run.tax.values():
         g_, ph_ = run._clean_genus(r_.get("Genus")), (r_.get("Phylum") or "").strip()
