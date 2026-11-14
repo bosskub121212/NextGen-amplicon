@@ -2381,6 +2381,8 @@ def _blast_section(run, S, T) -> list:
         r = run.blast.get(q) or {}
         t = str(r.get("target") or "").strip()
         t = t if t in ("yes", "no") else "none"
+        if t == "none" and r.get("agreement") == "ncbi_only" and (r.get("Genus") or r.get("Species")):
+            t = "yes"          # named by NCBI, searched inside the limit (runs before v2.25.2 left it blank)
         reads = sum(row.get(s_, 0.0) for s_ in S)
         if r.get("agreement"):
             agree[r["agreement"]] += 1
@@ -2402,7 +2404,8 @@ def _blast_section(run, S, T) -> list:
         elif t == "no" and name:
             if rank == "Phylum":
                 name = (f"{name} (best hit below {cls_th}% identity)" if far else
-                        f"{name} (cut to phylum: conflicting hits)")
+                        f"{name} (local and NCBI best hits disagree; flagged)"
+                        if r.get("agreement") == "differ" else f"{name} (cut to phylum: conflicting hits)")
             e = other.setdefault(name, {"rank": rank, "reads": 0.0, "pid": [], "in": set()})
         else:
             e = None
@@ -2463,7 +2466,8 @@ def _blast_section(run, S, T) -> list:
     if agree:
         lab = {"agree": "agree", "differ": "differ (cut to the shared rank, flagged)", "local_better":
                "local reference closer", "ncbi_only": "named by NCBI only", "ncbi_tie": "NCBI ties",
-               "ncbi_no_hit": f"no NCBI hit within the limit (mostly non-target)", "not_checked": "not checked"}
+               "ncbi_no_hit": f"no NCBI hit within the limit (mostly non-target)", "not_checked": "not checked",
+               "outside_limit": f"non-target kept (NCBI, searched for {tword} only, had no closer {tword})"}
         out.append("<p><b>NCBI check.</b> " + "; ".join(f"{lab.get(k, esc(k))}: {v} {run.feat}"
                                                         for k, v in agree.most_common()) + ". "
                    + (f"{len(flagged)} {run.feat} are flagged for checking ("
@@ -3288,8 +3292,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     txt = ("<p>At the phylum level the community was dominated by "
            + ", ".join(f"{esc(t)} ({v:.1f}% on average)" for t, v in mean_ph) + ". ")
     if run.blast:
-        txt += ("Names here are the BLAST names; a sequence named only to phylum had no reference within the "
-                "class threshold, so its phylum is a distant best hit and only places it approximately. ")
+        txt += ("Names here are the BLAST names; a sequence named only to phylum mostly had no reference within "
+                "the class threshold (its phylum is a distant best hit and places it only approximately) or had "
+                "conflicting best hits. ")
     gphy: dict = {}
     for r_ in run.tax.values():
         g_, ph_ = run._clean_genus(r_.get("Genus")), (r_.get("Phylum") or "").strip()

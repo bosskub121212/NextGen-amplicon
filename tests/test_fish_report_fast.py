@@ -41,7 +41,7 @@ def main():
             check("config rows say BLAST", "Names by" in html and "NCBI nt check" in html)
             check("chimera loss named, not blamed on read quality",
                   "lost most at chimera removal" in html and "comes from PCR" in html)
-            check("composition explains phylum-level BLAST names", "only places it approximately" in html)
+            check("composition explains phylum-level BLAST names", "places it only approximately" in html)
             import csv as _csv
             bp = d / "blast" / "taxonomy_blast.csv"
             rows = list(_csv.DictReader(open(bp)))
@@ -57,6 +57,32 @@ def main():
             check("phylum-only fish: distant vs conflicting hits told apart",
                   "Closest to a fish, below 80" in h3 and "name cut to phylum (conflicting" in h3)
             check("flagged list without repeats", "flagged for checking (" in h3 and "Fish-like" in h3)
+            import blast_taxonomy as bt
+            th = {"Species": 98.5, "Genus": 95, "Family": 90, "Order": 85, "Class": 80}
+            c = bt.combine({"rank_reached": "none", "target": ""},
+                           [{"species": "Cyprinus carpio", "pident": "99.5", "accession": "X"}], th, {})
+            check("NCBI-only name is a target (searched inside the fish limit)",
+                  c.get("Species") == "Cyprinus carpio" and c.get("target") == "yes", str(c))
+            hum = {"Phylum": "Chordata", "Class": "Mammalia", "Genus": "Homo", "Species": "Homo sapiens",
+                   "best_hit": "Homo sapiens", "pident": "98.8", "rank_reached": "Species", "target": "no"}
+            c = bt.combine(hum, [{"species": "Parablennius sanguinolentus", "pident": "98.8", "accession": "A"}], th, {})
+            check("human ASV vs a fish-limited NCBI record of the same identity: human kept, not flagged",
+                  c["agreement"] == "outside_limit" and c["Species"] == "Homo sapiens" and not c["check"], str(c))
+            c = bt.combine(dict(hum, pident="85.0"),
+                           [{"species": "Parablennius sanguinolentus", "pident": "99.0", "accession": "A"}], th, {})
+            check("a fish clearly closer than the non-target hit still overrules (flagged)",
+                  c["agreement"] == "differ" and c["check"] == "yes", str(c))
+            rows = list(_csv.DictReader(open(bp)))
+            for r in rows:                # an older run: NCBI-only name left with an empty target
+                if r["id"] == "q4":
+                    r.update(Phylum="Chordata", Class="Actinopteri", Genus="Cyprinus", Species="Cyprinus carpio",
+                             target="", agreement="ncbi_only", pident="99.5", rank_reached="Species")
+            with open(bp, "w", newline="") as fh:
+                w = _csv.DictWriter(fh, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+            run4 = rb.Run(d, set())
+            sec = rb._blast_section(run4, run4.samples, lambda h, r, c: str(r))
+            check("older run: NCBI-only fish counted as fish", "No match" not in "".join(sec)[:0] and
+                  any("Cyprinus carpio" in x for x in sec), "".join(sec)[:300])
             # same run without BLAST: DADA2 wording stays, no BLAST section
             (d / "blast" / "BLAST_SKIPPED.txt").write_text("blastn not found")
             run2 = rb.Run(d, set())

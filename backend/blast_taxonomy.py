@@ -165,6 +165,9 @@ def combine(local: dict, ncbi: list[dict] | None, thresholds: dict, genus_lin: d
     local_better  NCBI's best is clearly (> 0.5 %) worse than the local hit: local stands
     differ        NCBI's best is another taxon as good or better: cut to the rank both share, flagged
     ncbi_only     no local name; NCBI's name used when its identity passes the thresholds
+    outside_limit the local hit is non-target (e.g. human) and NCBI, searched inside the limit, has
+                  no clearly closer fish: the local name stands (a fish record that matches human
+                  DNA as well is a contaminated record)
     ncbi_no_hit / not_checked
     """
     gl = genus_lin or {}
@@ -192,11 +195,14 @@ def combine(local: dict, ncbi: list[dict] | None, thresholds: dict, genus_lin: d
         g = b["species"].split()[0]
         up = gl.get(g, {})
         if bp >= thresholds.get("Species", 98.5) and len(sp) == 1:
+            # NCBI was searched inside the limit (fish / vertebrates), so a name from it is a target
             c.update({**up, "Genus": g, "Species": b["species"], "rank_reached": "Species", "check": "yes",
+                      "target": "yes",
                       "best_hit": b["species"], "pident": round(bp, 2), "source": "NCBI nt",
                       "accession": b.get("accession", "")})
         elif bp >= thresholds.get("Genus", 95.0) and len(gen) == 1:
-            c.update({**up, "Genus": g, "rank_reached": "Genus", "check": "yes", "best_hit": b["species"],
+            c.update({**up, "Genus": g, "rank_reached": "Genus", "check": "yes", "target": "yes",
+                      "best_hit": b["species"],
                       "pident": round(bp, 2), "source": "NCBI nt", "accession": b.get("accession", "")})
         return c
     if not named:
@@ -221,6 +227,13 @@ def combine(local: dict, ncbi: list[dict] | None, thresholds: dict, genus_lin: d
         return c
     if bp < lp - TIE:
         c["agreement"] = "local_better"
+        return c
+    # NCBI was searched INSIDE the limit (fish), so it cannot see the non-target organism the local
+    # reference found (human DNA past the blocking primer). A fish record matching a human sequence
+    # just as well is a contaminated GenBank record, not a fish: the local name stands. Only a fish
+    # clearly closer than the local non-target hit overrules it.
+    if str(local.get("target") or "") == "no" and bp <= lp + TIE:
+        c["agreement"] = "outside_limit"
         return c
     c["agreement"], c["check"] = "differ", "yes"
     g = b["species"].split()[0]
