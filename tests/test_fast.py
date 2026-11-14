@@ -358,6 +358,14 @@ def main():
     import test_resume_fast                  # ONT 16S resume after an interrupted run
     test_resume_fast.main()
     FAILS.extend(test_resume_fast.FAILS)
+
+    import test_argparse_help                # Python 3.14: bare % in argparse help crashes a script
+    test_argparse_help.main()
+    FAILS.extend(test_argparse_help.FAILS)
+
+    import test_fish_report_fast             # 12S / CytB run report named by BLAST
+    test_fish_report_fast.main()
+    FAILS.extend(test_fish_report_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

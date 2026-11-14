@@ -134,6 +134,8 @@ class Run:
 
         self._load_tables()
         self._classify()
+        self.blast, self.blast_info = self._load_blast()
+        self.denoise_cap = self._denoise_cap()
 
     def _detect_kind(self) -> str:
         pl = str(self.summary.get("pipeline") or "").lower()
@@ -250,6 +252,47 @@ class Run:
         self.rarefaction = self._rows("rarefaction.csv")
         self.orientation = self._json("orientation_report.json")
 
+    def _load_blast(self):
+        """BLAST naming of a 12S / CytB run (blast_taxonomy.py): {sequence: row} and blast_info.json.
+        Only when the run asked for it and it ran — a skipped BLAST leaves the DADA2 names, which
+        the report then describes as such."""
+        if str(self.params.get("tax_method") or "dada2") not in ("blast", "both"):
+            return {}, {}
+        b = self.path / "blast"
+        if (b / "BLAST_SKIPPED.txt").exists() or not (b / "taxonomy_blast.csv").exists():
+            return {}, {}
+        rows = {}
+        for r in self._rows("blast/taxonomy_blast.csv"):
+            q = str(r.get("sequence") or "").strip()
+            if q:
+                rows[q] = r
+        return rows, self._json("blast/blast_info.json")
+
+    def _denoise_cap(self) -> dict:
+        """Samples the DADA2 pipeline subsampled before denoising ('[denoise cap] S: a -> b reads'):
+        {sample: (before, after)}. Their drop at the denoising step is this cap, not read loss."""
+        p = self.path / "pipeline.log"
+        out = {}
+        if not p.exists():
+            return out
+        try:
+            for m in re.finditer(r"\[denoise cap\] (.+?): (\d+) -> (\d+) reads",
+                                 p.read_text(encoding="utf-8", errors="replace")):
+                out[m.group(1).strip()] = (int(m.group(2)), int(m.group(3)))
+        except OSError:
+            pass
+        return out
+
+    @property
+    def mito_gene(self) -> str:
+        """The mitochondrial gene of a 12S-pipeline run: 'CytB' or '12S' ('' for other markers)."""
+        mk = str(self.summary.get("marker") or self.params.get("marker") or "").upper()
+        if "12S" not in mk:
+            return ""
+        g = str(self.params.get("mito_gene") or "").upper()
+        db = str(self.params.get("dbPath") or "").lower()
+        return "CytB" if g == "CYTB" or "cytb" in db else "12S"
+
     def _clean_tax(self, rows, key):
         """Names as the reference meant them, whatever the run's age.
 
@@ -262,7 +305,7 @@ class Run:
         if not rows:
             return rows
         ranks = [c for c in rows[0] if c != key]
-        midori = self.kind == "cox1"
+        midori = self.kind == "cox1" or "midori" in str(self.params.get("dbPath") or "").lower()
         out = []
         for r in rows:
             r = dict(r)
@@ -279,7 +322,7 @@ class Run:
                     v = ""
                 r[c] = v
             out.append(r)
-        if midori and "Species" not in rows[0] and "Genus" in rows[0]:
+        if self.kind == "cox1" and "Species" not in rows[0] and "Genus" in rows[0]:
             gv = [str(r.get("Genus") or "") for r in out if r.get("Genus")]
             if gv and sum(" " in g for g in gv) > 0.5 * len(gv):
                 std = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]
@@ -480,11 +523,23 @@ class Run:
                        ("Read length kept", "50 bp and longer after merging; expected errors ≤ 1"
                         if self.paired else f'{p.get("ontMinLen", "—")}-{p.get("ontMaxLen", "—")} bp'),
                        ("UNOISE alpha / minsize", f'{p.get("otuUnoiseAlpha", 2.0)} / {p.get("otuUnoiseMinsize", 8)}')])
-        return [("Marker", marker), ("Reference database", self.db_name)] + prim + [
+        rows = [("Marker", marker), ("Reference database", self.db_name)] + prim + [
             ("truncLen F / R", self.trunc),
             ("maxEE F / R", f'{p.get("maxEE_F")} / {p.get("maxEE_R")}'),
             ("Pooling", p.get("pool") or "—"), mb,
             ("Chimera method", p.get("chimeraMethod"))]
+        if self.blast:
+            bi = self.blast_info or {}
+            th = bi.get("thresholds") or {}
+            rows += [("Names by", "BLASTn against MIDORI2 + MitoFish (DADA2 classifier kept beside)"),
+                     ("BLAST limited to", {"fish": "fish (NCBI txid 7898 + 7777)", "vertebrates":
+                                           "vertebrates (NCBI txid 7742)", "all": "no limit"}.get(
+                                               str(bi.get("limit") or p.get("blast_limit") or "fish"), "fish")),
+                     ("% identity (species / genus / family / order / class)",
+                      " / ".join(str(th.get(k, "—")) for k in ("Species", "Genus", "Family", "Order", "Class"))
+                      if th else str(p.get("blast_id") or "98.5,95,90,85,80").replace(",", " / ")),
+                     ("NCBI nt check", "on" if str(bi.get("ncbi") or "off") != "off" else "off")]
+        return rows
 
     @property
     def trunc(self) -> str:
@@ -1957,6 +2012,9 @@ REFERENCES = [
     # 25
     ("Nickols, W. A., et al. (2024).", "MaAsLin 3: Refining and extending generalized multivariable linear "
      "models for meta-omic association discovery.", "bioRxiv, 2024.12.13.628459."),
+    ("Camacho, C., et al. (2009).", "BLAST+: architecture and applications.", "BMC Bioinformatics, 10, 421."),
+    ("Zhu, T., Sato, Y., Sado, T., Miya, M., & Iwasaki, W. (2023).", "MitoFish, MitoAnnotator, and MiFish "
+     "Pipeline: updates in 10 years.", "Molecular Biology and Evolution, 40(3), msad035."),
 ]
 REF_DADA2 = [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 REF_EMU = [5, 0, 6, 7, 4, 8, 9, 10, 11, 12, 13, 14, 15, 16]
@@ -1975,6 +2033,9 @@ def _ref_indices(run) -> list[int]:
         tools = [0, 6, 21]
     else:
         tools = [0, 1] + ([20] if run.kind == "pacbio" else []) + [2] + ([19] if run.kind == "cox1" else [])
+    if getattr(run, "blast", None):
+        tools = [t for t in tools if t != 2] + [26]       # BLASTn names, not the naive Bayesian classifier
+        dbref = [d for d in dbref if d != 18] + [18, 27]   # MIDORI2 + MitoFish
     out = tools + dbref + [8, 9, 10, 11, 12, 13, 14, 15]
     if (run.path / "r_tables" / "maaslin3_results.csv").exists():
         out.append(25)
@@ -2252,6 +2313,9 @@ def _methods(run, an):
                    f"(method = {esc(p.get('chimeraMethod') or 'consensus')}). The non-chimeric ASV table "
                    f"was used for everything that follows.</p>")
         out.append("<h3>Taxonomic assignment</h3>")
+        if run.blast:
+            out += _blast_methods(run)
+            return out + _diversity_methods(run, an)
         out.append(f"<p>ASVs were classified with the DADA2 implementation of the naive Bayesian "
                    f"classifier (<span class=\"mono\">assignTaxonomy()</span>) against "
                    f"<b>{esc(run.db_name)}</b>, with a minimum bootstrap confidence of "
@@ -2259,6 +2323,145 @@ def _methods(run, an):
                    f"exact matching (<span class=\"mono\">addSpecies()</span>). Organelle sequences "
                    f"(mitochondria, chloroplasts) and eukaryotic ASVs were identified from the assigned "
                    f"lineage and set aside from the community figures.</p>")
+    return out + _diversity_methods(run, an)
+
+
+def _blast_methods(run) -> list:
+    """How a 12S / CytB run was named: BLASTn, ties, identity thresholds, limit, NCBI check."""
+    bi = run.blast_info or {}
+    th = bi.get("thresholds") or {"Species": 98.5, "Genus": 95, "Family": 90, "Order": 85, "Class": 80}
+    lim = str(bi.get("limit") or run.params.get("blast_limit") or "fish")
+    lim_txt = {"fish": "ray-finned and cartilaginous fishes (NCBI txid 7898 and 7777)",
+               "vertebrates": "vertebrates (NCBI txid 7742)", "all": "no taxonomic limit"}.get(lim, lim)
+    ver = (bi.get("reference") or {}).get("versions") or {}
+    ref = " + ".join(f"{k} {v}" for k, v in ver.items()) or "MIDORI2 + MitoFish"
+    ncbi = str(bi.get("ncbi") or "off") != "off"
+    out = [f"<p>Each ASV was named by nucleotide BLAST ({esc(bi.get('blastn') or 'BLASTn')}) against a "
+           f"fish mitochondrial reference built from {esc(ref)}. Hits within 0.5% identity of the best "
+           f"hit count as ties, and the name is their lowest common ancestor, cut to the deepest rank "
+           f"whose identity threshold the best hit meets: species {th.get('Species')}%, genus "
+           f"{th.get('Genus')}%, family {th.get('Family')}%, order {th.get('Order')}% and class "
+           f"{th.get('Class')}%. A species is never named below its threshold; an ASV that meets none of "
+           f"them keeps only its phylum. Target taxa are {esc(lim_txt)}; an ASV whose best hit lies outside "
+           f"them (other animals, algae, human DNA) keeps its own name and is counted as non-target, never "
+           f"forced onto a fish.</p>"]
+    if ncbi:
+        out.append("<p>Every ASV was also searched against NCBI nt (remote BLASTn, same taxonomic limit). "
+                   "Where NCBI and the local reference disagree, the name is cut to the rank they share and "
+                   "the ASV is flagged for checking.</p>")
+    out.append("<p>The DADA2 naive Bayesian classification against "
+               f"<b>{esc(run.db_name)}</b> is kept beside it (taxonomy_table_dada2.csv); the BLAST names "
+               "are used in every table and figure of this report (blast/taxonomy_blast.csv).</p>")
+    return out
+
+
+def _blast_name(r: dict):
+    """(deepest named rank, name) of a BLAST row; ('', '') when nothing was named."""
+    for k in ("Species", "Genus", "Family", "Order", "Class", "Phylum"):
+        v = str(r.get(k) or "").strip()
+        if v and v.upper() != "NA":
+            return k, v
+    return "", ""
+
+
+def _blast_section(run, S, T) -> list:
+    """Target (fish) and non-target reads per sample, the fish named, and what was not fish —
+    the first question of a fish eDNA run, answered before the community figures."""
+    bi = run.blast_info or {}
+    th = bi.get("thresholds") or {}
+    cls_th = th.get("Class", 80)
+    lim = str(bi.get("limit") or run.params.get("blast_limit") or "fish")
+    tword = {"fish": "fish", "vertebrates": "vertebrate", "all": "target"}.get(lim, "target")
+    tot = {s_: 0.0 for s_ in S}
+    part = {k: {s_: 0.0 for s_ in S} for k in ("yes", "no", "none")}
+    fish, other = {}, {}
+    flagged = []
+    agree = Counter()
+    for q, row in run.mat.items():
+        r = run.blast.get(q) or {}
+        t = str(r.get("target") or "").strip()
+        t = t if t in ("yes", "no") else "none"
+        reads = sum(row.get(s_, 0.0) for s_ in S)
+        for s_ in S:
+            tot[s_] += row.get(s_, 0.0)
+            part[t][s_] += row.get(s_, 0.0)
+        if r.get("agreement"):
+            agree[r["agreement"]] += 1
+        rank, name = _blast_name(r)
+        try:
+            pid = float(r.get("pident") or "nan")
+        except ValueError:
+            pid = float("nan")
+        if t == "yes":
+            if rank in ("", "Phylum"):
+                rank, name = "", f"Fish not in the reference (best hit below {cls_th}% identity)"
+            e = fish.setdefault(name, {"rank": rank, "reads": 0.0, "pid": [], "in": set()})
+        elif t == "no" and name:
+            if rank == "Phylum":
+                name = f"{name} (best hit below {cls_th}% identity)"
+            e = other.setdefault(name, {"rank": rank, "reads": 0.0, "pid": [], "in": set()})
+        else:
+            e = None
+        if e is not None:
+            e["reads"] += reads
+            if pid == pid:
+                e["pid"].append(pid)
+            e["in"].update(s_ for s_ in S if row.get(s_, 0.0) > 0)
+        if str(r.get("check") or "").lower() == "yes":
+            flagged.append((name or "unnamed", reads))
+    pct = lambda k, s_: (100 * part[k][s_] / tot[s_]) if tot[s_] else 0.0
+    all_tot = sum(tot.values()) or 1.0
+    out = [f'<h3 class="pbreak">{tword.capitalize()} and non-target reads (BLAST)</h3>']
+    fs = [(s_, pct("yes", s_)) for s_ in S]
+    hi, lo = max(fs, key=lambda kv: kv[1]), min(fs, key=lambda kv: kv[1])
+    out.append(f"<p>{tword.capitalize()} DNA made up {100*sum(part['yes'].values())/all_tot:.1f}% of the "
+               f"reads over the whole run, from {lo[1]:.1f}% ({esc(lo[0])}) to {hi[1]:.1f}% ({esc(hi[0])}) "
+               f"per sample. The rest is DNA of other organisms the primers also amplified "
+               f"({100*sum(part['no'].values())/all_tot:.1f}%) and sequences without a match in the reference "
+               f"({100*sum(part['none'].values())/all_tot:.1f}%). Composition figures further on include all "
+               f"of it; the {tword} share is the part this marker targets.</p>")
+    out.append(T(["Sample", "Reads", f"{tword.capitalize()} %", "Non-target %", "No match %"],
+                 [[esc(s_), fmt(tot[s_]), f"{pct('yes', s_):.1f}", f"{pct('no', s_):.1f}",
+                   f"{pct('none', s_):.1f}"] for s_ in S],
+                 f"Reads per sample by BLAST result: {tword} (within the BLAST limit), other organisms, "
+                 f"and no match in the reference."))
+    def _rows(d, n):
+        rows = []
+        for name, e in sorted(d.items(), key=lambda kv: -kv[1]["reads"])[:n]:
+            pr = (f"{min(e['pid']):.1f}&ndash;{max(e['pid']):.1f}" if e["pid"] and min(e["pid"]) != max(e["pid"])
+                  else f"{e['pid'][0]:.1f}" if e["pid"] else "&mdash;")
+            nm = f"<i>{esc(name)}</i>" if e["rank"] in ("Species", "Genus") else esc(name)
+            rows.append([nm, esc(e["rank"].lower()) or "&mdash;", fmt(e["reads"]),
+                         f"{100*e['reads']/all_tot:.2f}%", pr, str(len(e["in"]))])
+        return rows
+    if fish:
+        out.append(T(["Taxon", "Named to", "Reads", "All", "Best-hit identity %", "Samples"], _rows(fish, 40),
+                     f"{tword.capitalize()} taxa, named to the deepest rank whose identity threshold was met. "
+                     f"Sequences whose best hit is a {tword} below {cls_th}% identity are shown as not in the "
+                     f"reference: most likely a species the reference does not hold yet, so no name is given."))
+    if other:
+        hs = sum(e["reads"] for k, e in other.items() if k.startswith("Homo"))
+        out.append(T(["Taxon", "Named to", "Reads", "All", "Best-hit identity %", "Samples"], _rows(other, 15),
+                     "The most abundant non-target taxa. A name at phylum level comes from a distant best hit "
+                     "and is approximate."))
+        if hs:
+            out.append(f"<p>Human DNA (<i>Homo sapiens</i>) made up {fmt(hs)} reads ({100*hs/all_tot:.2f}%), "
+                       f"it is non-target and does not affect the {tword} names.</p>")
+    if agree:
+        lab = {"agree": "agree", "differ": "differ (cut to the shared rank, flagged)", "local_better":
+               "local reference closer", "ncbi_only": "named by NCBI only", "ncbi_tie": "NCBI ties",
+               "ncbi_no_hit": f"no NCBI hit within the limit (mostly non-target)", "not_checked": "not checked"}
+        out.append("<p><b>NCBI check.</b> " + "; ".join(f"{lab.get(k, esc(k))}: {v} {run.feat}"
+                                                        for k, v in agree.most_common()) + ". "
+                   + (f"{len(flagged)} {run.feat} are flagged for checking"
+                      + (" (" + ", ".join(f"{esc(n)}" for n, _r in sorted(flagged, key=lambda x: -x[1])[:6]) + ")"
+                         if flagged else "") + "; see the check column of blast/taxonomy_blast.csv."
+                      if flagged else "No ASV is flagged for checking.") + "</p>")
+    return out
+
+
+def _diversity_methods(run, an) -> list:
+    out = []
     out.append("<h3>Diversity analysis</h3>")
     unit = run.feat
     out.append(f"<p>Alpha diversity (Observed {unit}, Chao1, ACE, Shannon and Simpson) was computed "
@@ -2772,6 +2975,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         marker = "16S"
     elif run.kind == "cox1":
         marker = "COI"
+    elif run.mito_gene == "CytB":
+        marker = "CytB"
     region = run.summary.get("region") or ("V1–V9" if run.emu else
                                           (run.params.get("pb_region") or "V1–V9") if run.kind == "pacbio"
                                           else "V3–V4"
@@ -2789,6 +2994,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         "cox1": "Illumina paired-end, DADA2 amplicon sequence variants, MIDORI2 reference",
         "pacbio": "PacBio HiFi full-length 16S, DADA2 amplicon sequence variants",
     }.get(run.kind, "Illumina paired-end, DADA2 amplicon sequence variants")
+    if run.blast:
+        tech += ", named by BLASTn (MIDORI2 + MitoFish)"
     subtitle = subtitle or (f"{run.label} · {len(S)} sample{'s' if len(S) != 1 else ''} · " + tech)
     fig = [0]
     tab = [0]
@@ -2905,7 +3112,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                    + (f"and assigned to {run.n_asvs} taxa. " if run.emu else
                       f"and resolved into {run.n_asvs} {run.feat}. ")
                    + (f"{fmt(kreads.get('Bacteria', 0))} reads were classified as Bacteria and "
-                      f"{fmt(kreads.get('Archaea', 0))} as Archaea. " if kreads else "")
+                      f"{fmt(kreads.get('Archaea', 0))} as Archaea. " if kreads and run.bacterial else "")
                    + (f"{fmt(run.host + run.euk)} reads ({100*(run.host+run.euk)/run.total:.1f}%) were host "
                       f"organelle or eukaryotic and are excluded from the community figures. "
                       if run.total and (run.host + run.euk) > 0 else
@@ -2916,14 +3123,31 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
               f"{_range_txt([(n, i) for n, i, _f, _p in per])} per sample. The final retained reads "
               f"ranged {_range_txt([(n, f) for n, _i, f, _p in per])}, a retention of "
               f"{min(x[3] for x in per):.1f}&ndash;{max(x[3] for x in per):.1f}%. ")
-        if worst:
+        cap = {k: v for k, v in (run.denoise_cap or {}).items() if k in {x[0] for x in per}}
+        if worst and not (cap and worst[0].lower() == "denoising"):
             qi += (f"The largest loss across the run was at the {esc(worst[0].lower())} step "
                    f"({worst[1]:.1f}% of the reads entering that step). ")
         low = [x for x in per if x[3] < 50]
+        if cap:
+            n_cap = sorted({b for _a, b in cap.values()})
+            qi += (f"Before denoising, {len(cap)} sample{'s' if len(cap) != 1 else ''} with more than "
+                   f"{fmt(n_cap[0])} filtered reads {'were' if len(cap) != 1 else 'was'} randomly subsampled to "
+                   f"{fmt(n_cap[0])} reads ({', '.join(esc(k) for k in cap)}), which bounds the denoising run "
+                   f"time and leaves the composition unchanged. The drop at the denoising step and the "
+                   f"retention below are mostly this subsampling, not reads lost to quality. ")
+            # judge loss on the reads that actually entered denoising
+            low = []
+            for t in run.tracking:
+                nm = str(next(iter(t.values())))
+                ent = cap[nm][1] if nm in cap else float(t.get("filtered") or 0)
+                f0 = float(t.get(run.retained_key) or 0)
+                if ent and 100 * f0 / ent < 50:
+                    low.append((nm, ent, f0, 100 * f0 / ent))
         if low:
             qi += (f"{', '.join(esc(x[0]) for x in low)} retained less than half of "
-                   f"{'its' if len(low) == 1 else 'their'} input, which deserves a look at the raw read "
-                   f"quality before the results are interpreted. ")
+                   f"{'its' if len(low) == 1 else 'their'} "
+                   + ("reads that entered denoising" if cap else "input")
+                   + ", which deserves a look at the raw read quality before the results are interpreted. ")
         if run.emu:
             def _same(a, b):
                 return all(float(t.get(a) or 0) == float(t.get(b) or 0) for t in run.tracking)
@@ -3018,6 +3242,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
             ["Total off-target", fmt(qc.get("reads", 0)), f'{qc.get("pct", 0)}%']],
             "Off-target reads. &ldquo;Universal&rdquo; 16S primers co-amplify host mitochondrial DNA."))
 
+    if run.blast:
+        out += _blast_section(run, S, T)
+
     # ── composition ──────────────────────────────────────────────────────────
     out.append('<h3 class="pbreak">Taxonomic composition of samples</h3>')
     ph_all = an.rank_pct("Phylum")
@@ -3025,9 +3252,14 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                      key=lambda kv: -kv[1])[:4]
     txt = ("<p>At the phylum level the community was dominated by "
            + ", ".join(f"{esc(t)} ({v:.1f}% on average)" for t, v in mean_ph) + ". ")
+    gphy: dict = {}
+    for r_ in run.tax.values():
+        g_, ph_ = run._clean_genus(r_.get("Genus")), (r_.get("Phylum") or "").strip()
+        if g_ and ph_:
+            gphy.setdefault(g_, Counter())[ph_] += 1
     for s in (S if len(S) <= 8 else []):          # beyond 8 samples the table below says it
         dg = an.dominant("Genus", s, 3)
-        dp = an.dominant("Phylum", s, 1)
+        dp = [(gphy[dg[0][0]].most_common(1)[0][0], 0)] if dg and dg[0][0] in gphy else []
         if dg:
             txt += (f"{esc(s)} was {'dominated by' if dg[0][1] >= 30 else 'led by'} <i>{esc(dg[0][0])}</i> "
                     f"({dg[0][1]:.1f}%)"
@@ -3182,6 +3414,14 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                         "separates many but not all species." if run.kind == "pacbio" else
                         "Species come from the closest reference sequence above the identity threshold; "
                         "treat them as the nearest named relative." if run.kind == "vsearch" else
+                        (f"Species are named only when the best BLAST hit reaches "
+                         f"{(run.blast_info.get('thresholds') or {}).get('Species', 98.5)}% identity and no other "
+                         f"species lies within 0.5%; otherwise the name stops at the deepest rank whose threshold "
+                         f"is met. A species missing here is usually absent from the reference, not from the "
+                         f"sample.") if run.blast else
+                        "Species are assigned only by exact match of the whole fragment; for a mitochondrial "
+                        "marker the reference covers only part of the local fauna, so a missing species is "
+                        "usually missing from the reference." if run.mito_gene else
                         "Species are assigned only by exact match of the whole fragment. A low rate is "
                         "expected for a ~440 bp V3&ndash;V4 amplicon; full-length 16S is the appropriate "
                         "marker where species identification is required.") + "</p>")
@@ -3369,7 +3609,10 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         "cox1": "Relative abundance from COI amplicons reflects mitochondrial copies and primer fit, not "
                 "biomass or individuals; COI primers are degenerate and amplify some groups better than "
                 "others.",
-    }.get(run.kind, "Relative abundance from rRNA amplicons reflects gene copies, not cells: taxa with "
+    }.get(run.kind, "Relative abundance in environmental DNA reflects the DNA each organism shed and how "
+                    "well the primers fit it, not the number or biomass of organisms."
+                    if run.mito_gene else
+                    "Relative abundance from rRNA amplicons reflects gene copies, not cells: taxa with "
                     "many rRNA operons are over-represented."))
     notes.append(f"Full tables are in the result folder: "
                  f"{'taxonomy.csv' if run.kind in ('emu', 'vsearch') else 'taxonomy_table.csv'} "

@@ -397,7 +397,7 @@ def main(argv=None) -> int:
     ap.add_argument("--db", required=True, help="fishmito_<gene>.fasta (ids.tsv beside it)")
     ap.add_argument("--limit", default="fish", choices=["fish", "vertebrates", "all"])
     ap.add_argument("--ncbi", default="on", choices=["on", "off"])
-    ap.add_argument("--id", default="98.5,95,90,85,80", help="species,genus,family,order,class % identity")
+    ap.add_argument("--id", default="98.5,95,90,85,80", help="species,genus,family,order,class %% identity")
     ap.add_argument("--blastn", default="")
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--out", required=True)
