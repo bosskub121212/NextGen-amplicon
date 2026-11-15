@@ -585,9 +585,13 @@ class Run:
             return [("Input", "input"), ("QC (Q / length)", "qc_filtered"),
                     ("Primers trimmed", "primer_trimmed"), (last, "final")]
         allst = {
-            "vsearch": [("Input", "input"), ("Primers trimmed", "primer_trimmed"),
-                        ("Merged", "merged"), ("QC filtered", "qc_filtered"),
-                        ("Mapped to OTUs", "final")],
+            # Illumina pairs: trimmed, merged, then expected-error filtered; nanopore reads:
+            # chopper's quality filter first, then primer trimming
+            "vsearch": ([("Input", "input"), ("Primers trimmed", "primer_trimmed"),
+                         ("Merged", "merged"), ("QC filtered", "qc_filtered"),
+                         ("Mapped to OTUs", "final")] if self.paired else
+                        [("Input", "input"), ("QC filtered", "qc_filtered"),
+                         ("Primers trimmed", "primer_trimmed"), ("Mapped to OTUs", "final")]),
             "cox1": [("Input", "input"), ("Filtered", "filtered"), ("Merged", "merged"),
                      ("Non-chimeric", "nonchim"), ("Length filtered", "length_filtered"),
                      ("No stop codon", "codon_filtered"), ("LULU curated", "lulu_curated")],
@@ -3661,6 +3665,11 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         "cox1": "Relative abundance from COI amplicons reflects mitochondrial copies and primer fit, not "
                 "biomass or individuals; COI primers are degenerate and amplify some groups better than "
                 "others.",
+        "vsearch": "Relative abundance from ITS amplicons reflects rDNA copies, not cells: copy number varies "
+                   "more than tenfold between fungi, and ITS length differences favour shorter amplicons."
+                   if str(run.params.get("marker") or run.summary.get("marker") or "").upper().startswith("ITS")
+                   else "Relative abundance from rRNA amplicons reflects gene copies, not cells: taxa with "
+                        "many rRNA operons are over-represented.",
     }.get(run.kind, "Relative abundance in environmental DNA reflects the DNA each organism shed and how "
                     "well the primers fit it, not the number or biomass of organisms."
                     if run.mito_gene else

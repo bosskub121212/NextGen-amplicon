@@ -39,6 +39,8 @@ PRIMER_NAMES = {("TTCCTAGCCATACAYTAYAC", "GGTGGCKCCTCAGAAGGACATTTGKCCYCA"): ("Fi
                 ("GTCGGTAAAACTCGTGCCAGC", "CATAGTGGGGTATCTAATCCCAGTTTG"): ("MiFish-U-F", "MiFish-U-R"),
                 ("TTAGATACCCCACTATGC", "TAGAACAGGCTCCTCTAG"): ("Vert-12SV5-F", "Vert-12SV5-R"),
                 ("AGRGTTYGATYMTGGCTCAG", "RGYTACCTTGTTACGACTT"): ("27F", "1492R"),
+                ("TCCGTAGGTGAACCTGCGG", "GCTGCGTTCTTCATCGATGC"): ("ITS1", "ITS2"),
+                ("CTTGGTCATTTAGAGGAAGTAA", "GCTGCGTTCTTCATCGATGC"): ("ITS1F", "ITS2"),
                 ("CCTACGGGNGGCWGCAG", "GACTACHVGGGTATCTAATCC"): ("341F", "805R"),
                 ("CCTACGGGNGGCWGCAG", "GGACTACHVGGGTWTCTAAT"): ("341F", "785R"),
                 ("GTGYCAGCMGCCGCGGTAA", "GGACTACNVGGGTWTCTAAT"): ("515F", "806R"),
@@ -60,15 +62,30 @@ REFS = [
     "De Coster W, Rademakers R. (2023). NanoPack2: population-scale evaluation of long-read sequencing data. Bioinformatics 39:btad311.",
     "Li H. (2018). Minimap2: pairwise alignment for nucleotide sequences. Bioinformatics 34:3094–3100.",
     "Rognes T, Flouri T, Nichols B, Quince C, Mahé F. (2016). VSEARCH: a versatile open source tool for metagenomics. PeerJ 4:e2584.",
+    "Edgar RC. (2016). UNOISE2: improved error-correction for Illumina 16S and ITS amplicon sequencing. bioRxiv 081257.",
+    "Abarenkov K, Nilsson RH, Larsson KH, et al. (2024). The UNITE database for molecular identification and taxonomic communication of fungi and other eukaryotes. Nucleic Acids Research 52:D791–D797.",
+    "Vu D, Groenewald M, de Vries M, et al. (2019). Large-scale generation and analysis of filamentous fungal DNA barcodes boosts coverage for kingdom fungi and reveals thresholds for fungal species and higher taxon delimitation. Studies in Mycology 92:135–154.",
 ]
 # Which references apply to which pipeline (matched on a word of the reference).
 REF_ONLY = {"FastQC": "dada2", "fastp": "dada2", "DADA2": "dada2", "Emu:": "emu", "NanoPack2": "emu",
-            "Minimap2": "emu", "VSEARCH": "emu_chimera"}
+            "Minimap2": "emu", "VSEARCH": "emu_chimera", "UNOISE2": "vsearch", "UNITE": "vsearch",
+            "Vu D": "vsearch"}
 
 
 def _refs(run, ref_text: str) -> list[str]:
     out = []
+    vs = getattr(run, "engine", "") == "vsearch"
     for r in REFS:
+        tag = next((v for k, v in REF_ONLY.items() if k in r), None)
+        if vs:                         # VSEARCH OTU run: chopper (NanoPack2), VSEARCH, UNOISE, UNITE
+            if tag in ("dada2", "vsearch", "emu_chimera") or (tag == "emu" and "NanoPack2" in r):
+                if (tag == "dada2") or ("UNITE" in r and "UNITE" not in ref_text) or \
+                        ("Vu D" in r and "Vu et al." not in ref_text):
+                    continue
+                out.append(r)
+            elif tag is None and not any(k in r for k in ("MIDORI2", "MitoFish", "BLAST+")):
+                out.append(r)
+            continue
         if "MitoFish" in r and "MitoFish" not in ref_text:
             continue
         if "BLAST+" in r and "BLASTn" not in ref_text:
@@ -375,8 +392,47 @@ def emu_settings(run, s: str | None = None) -> dict:
             "min_ab": sm.get("emu_min_abundance", run.params.get("ont_min_abundance", 0.0001))}
 
 
+def vsearch_settings(run) -> dict:
+    """Read-prep settings of a VSEARCH OTU run: summary.json (v2.26+), else what main.py passed
+    (the ONT window and the Nanopore cutadapt values it substitutes for Illumina's defaults)."""
+    sm, p = run.summary, run.params
+    ont = str(p.get("sequencerType") or "") == "ont"
+    e_ = p.get("cutadaptErrorRate", 0.2)
+    o_ = p.get("cutadaptOverlap", 10)
+    lo, hi = p.get("ontMinLen", 100), p.get("ontMaxLen", 900)
+    out = {"q": sm.get("qc_min_qual", 10),
+            "e": sm.get("cutadapt_error_rate", 0.2 if (ont and e_ == 0.1) else e_),
+            "O": sm.get("cutadapt_overlap", 10 if (ont and o_ == 3) else o_),
+            "tmin": sm.get("trim_min_len", lo), "tmax": sm.get("trim_max_len", hi),
+            "alpha": sm.get("unoise_alpha", 2.0), "minsize": sm.get("unoise_minsize", 8),
+            "map_id": sm.get("otu_similarity", 0.97),
+            "its": str(p.get("marker") or sm.get("marker") or "").upper().startswith("ITS")}
+    out["tax_id"] = sm.get("tax_identity", 0.75 if out["its"] else 0.80)
+    return out
+
+
+def _db_label(run) -> str:
+    db = str(run.summary.get("db_path") or run.params.get("dbPath") or "")
+    n = Path(db).name
+    m = re.search(r"sh_general_release_(?:dynamic_)?(\d{2})\.(\d{2})\.(\d{4})", n)
+    if m:
+        return f"UNITE general release {m.group(3)}-{m.group(2)}-{m.group(1)} ({n})"
+    return n or "the reference"
+
+
 def _tax_text(run: AD.RunData) -> tuple[str, str]:
     p, bi = run.params, run.blast_info
+    if getattr(run, "engine", "") == "vsearch":
+        st = vsearch_settings(run)
+        db = _db_label(run)
+        th = ("species 98.41%, genus 94.3%, family 88.5%, order 81.2%, class 80.9% and phylum 75% identity, the "
+              "fungal thresholds of Vu et al. (2019)" if st["its"] else
+              "species 98.7%, genus 94.5%, family 86.5%, order 82%, class 78.5% and phylum 75% identity")
+        return (f"Each OTU was named by its best hit in {e(db)} (VSEARCH --usearch_global, both strands"
+                + f", searched from {100 * float(st['tax_id']):.0f}% identity"
+                + f"). Ranks are kept only down to the level the hit's identity supports: {th}; a rank the identity "
+                "does not reach is left empty and shown as '&lt;higher rank&gt; unidentified'.",
+                f"{db} (VSEARCH)")
     if run.kind == "emu":
         st = emu_settings(run)
         counts = ("Counts are Emu's estimated read counts (--keep-counts)." if run.counts_are_reads else
@@ -586,6 +642,69 @@ def _emu_steps(run, i, s, folder, img, qc, plots, job_label, rel=None, reads_rel
     return o
 
 
+def _vsearch_steps(run, i, s, folder, img, qc, plots, job_label, rel=None, reads_rel="",
+                   xlsx=None) -> list[str]:
+    """Clean data + VSEARCH OTU pipeline + data quality control of a nanopore run named by
+    VSEARCH (Nanopore ITS with UNITE) — same layout as _emu_steps."""
+    p, st = run.params, vsearch_settings(run)
+    t = run.tracking[s]
+    rel = rel or (lambda x: f"{folder}/Images_and_Outfiles/{x}")
+    if reads_rel == "":
+        reads_rel = f"{folder}/filtered_reads"
+    f_, r_ = p.get("primer_f", ""), p.get("primer_r", "")
+    fn, rn = PRIMER_NAMES.get((f_, r_), ("Forward primer", "Reverse primer"))
+    np_ = qc.get("nanoplot")
+    qc_ran = (run.dir / "qc_filtered").is_dir()
+    o = ["<h4>1. Quality control checks on raw sequence data" + (" by NanoPlot" if np_ else "") + "</h4>",
+         "<p>Read number, read length and read quality of the raw nanopore reads of this sample"
+         + (f" (NanoPlot {e(np_.get('version', ''))}; its plots are in the NanoPlot folder)" if np_ else
+            ", computed by the app from the FASTQ files") + ".</p>",
+         f'<p><span class="ul">Result:</span> {e(Q.sentence_read_stats(qc.get("stats")) if not qc.get("missing") else MISSING_RAW.format(tool="the read statistics"))}</p>',
+         "<h4>2. Quality filtering by Chopper</h4>",
+         (f"<p>Chopper removed reads with a mean quality below Q{st['q']}.</p>" if qc_ran else
+          "<p>Chopper was not available on the analysis machine; reads were not quality filtered.</p>"),
+         f'<p><span class="ul">Result:</span> ' + (f'{_num(t.get("qc_filtered"))} of {_num(t.get("raw_data"))} reads kept.'
+                                                   if qc_ran else "No quality filtering.") + "</p>",
+         "<h4>3. Remove primer sequences by cutadapt</h4>",
+         f"<p>cutadapt searched each read for the primers (error rate {st['e']:g}, minimum overlap {st['O']} bases) "
+         "and removed them; nanopore reads can come from either strand, so the reverse complements were searched as "
+         "well. Reads in which no primer was found were discarded, and reads shorter than "
+         f"{st['tmin']} or longer than {st['tmax']} bases after trimming were dropped.</p>"]
+    if not (f_ or r_):
+        o[-1] = "<p>No primer sequences were given for this run; cutadapt was not run.</p>"
+        res = "Primer removal was skipped."
+    else:
+        given = [f'{e(fn)}="{e(f_)}"'] * bool(f_) + [f'{e(rn)}="{e(r_)}"'] * bool(r_)
+        res = (f'The primer{"s" if len(given) > 1 else ""} {" and ".join(given)} {"were" if len(given) > 1 else "was"} '
+               f'removed; {_num(t.get("primer_trimmed"))} reads remained.')
+    o.append(f'<p><span class="ul">Result:</span> {res}</p>')
+    o += ["<h3>VSEARCH OTU pipeline</h3>",
+          "<p>The trimmed reads of all samples of the run were pooled and processed with VSEARCH (Rognes et al. 2016).</p>",
+          '<p class="indent">1) Dereplication and chimera removal -- identical reads were collapsed (--derep_fulllength) '
+          "and chimeras removed against the reference (--uchime_ref).</p>",
+          '<p class="indent">2) Denoising -- the unique sequences were denoised with UNOISE3 (--cluster_unoise, alpha '
+          f"{st['alpha']:g}, minimum size {st['minsize']}); each OTU is the centroid sequence of a denoised cluster.</p>",
+          '<p class="indent">3) Counting -- every read of the sample was mapped back to the OTUs (--usearch_global, '
+          f"{100 * float(st['map_id']):.0f}% identity, both strands); a read below that identity to every OTU is not "
+          "counted.</p>",
+          '<p class="indent">4) Taxonomic assignment -- each OTU was named by its best hit in the reference (see '
+          "2. Taxonomic profiles).</p>",
+          ('<p class="indent">Output:</p><ul class="files">'
+           f"<li>- &ldquo;{e(reads_rel)}&rdquo;</li></ul>" if reads_rel else ""),
+          '<p><span class="ul">Result:</span> <b>Data quality control</b></p>',
+          _fig(img / "Box_plot.png", 14), _cap(rel("Box_plot.png")),
+          _table(["SampleID", "Sample_name"] + run.track_cols,
+                 [[e(s), e(s)] + [_num(t.get(k)) for k in run.track_cols[:-1]]
+                  + [_num(t.get("perc"), "{:.2f}")]], "num"),
+          '<p class="indent">final = reads mapped to an OTU; assigned = reads on OTUs (the same here).</p>',
+          _xlsx_cap(img, rel, job_label, i, xlsx)]
+    return o
+
+
+def ont_steps(run):
+    return _vsearch_steps if getattr(run, "engine", "") == "vsearch" else _emu_steps
+
+
 def _sample_block(run, i, s, folder, img, qc, plots, alpha_r, job_label) -> list[str]:
     p = run.params
     t = run.tracking[s]
@@ -593,7 +712,7 @@ def _sample_block(run, i, s, folder, img, qc, plots, alpha_r, job_label) -> list
     f_, r_ = p.get("primer_f", ""), p.get("primer_r", "")
     fn, rn = PRIMER_NAMES.get((f_, r_), ("Forward primer", "Reverse primer"))
     o = ['<h2>Report Summary:</h2>', f"<h3>{i}. Sample{i}_{e(s)}</h3>", "<h3>Clean data</h3>"]
-    o += (_emu_steps if run.kind == "emu" else _dada2_steps)(run, i, s, folder, img, qc, plots, job_label)
+    o += (ont_steps(run) if run.kind == "emu" else _dada2_steps)(run, i, s, folder, img, qc, plots, job_label)
     emu = run.kind == "emu"
     if t.get("raw_data") is None:
         o.append('<p class="note">raw_data is unknown for this sample: ' + (

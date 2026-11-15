@@ -835,6 +835,12 @@ def write_summary(out_dir: Path, sample_names: list, n_otus: int,
         "unoise_minsize": args.unoise_minsize,
         "primer_f":       args.primer_f,
         "primer_r":       args.primer_r,
+        "qc_min_qual":    args.qc_min_qual,
+        "trim_min_len":   args.min_len,
+        "trim_max_len":   args.max_len,
+        "cutadapt_error_rate": args.cutadapt_error_rate,
+        "cutadapt_overlap":    args.cutadapt_overlap,
+        "tax_identity":   args.tax_identity,
     }
     path = out_dir / "summary.json"
     with open(path, "w") as f:

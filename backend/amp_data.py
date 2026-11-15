@@ -63,6 +63,10 @@ class RunData:
         self.summary = self._json("summary.json")
         self.blast_info = self._json("blast/blast_info.json")
         self.kind = self._kind()
+        # Emu and the VSEARCH OTU pipeline write the same shape (feature rows + taxonomy.csv +
+        # input / qc_filtered / primer_trimmed / final tracking): kind says how to READ the run,
+        # engine says which pipeline made it — what the report must describe.
+        self.engine = "vsearch" if self.summary.get("pipeline") == "qiime2_vsearch" else self.kind
         self.track_cols = EMU_TRACK_COLS if self.kind == "emu" else TRACK_COLS
         if self.kind == "emu":
             self._read_emu()
@@ -91,7 +95,7 @@ class RunData:
 
     @property
     def counts_are_reads(self) -> bool:
-        if self.kind != "emu":
+        if self.kind != "emu" or getattr(self, "engine", "") == "vsearch":
             return True
         kind = self.summary.get("emu_counts")
         if kind:

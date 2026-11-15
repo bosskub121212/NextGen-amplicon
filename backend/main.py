@@ -2411,6 +2411,12 @@ def _custom_check(job_id: str):
         except Exception:
             pass
     marker = marker or str((jobs.get(job_id) or {}).get("marker") or "")
+    try:
+        pipe = str(json.loads((out_dir / "summary.json").read_text()).get("pipeline") or "")
+    except Exception:
+        pipe = ""
+    if marker.upper() in ("ITS1", "ITS2", "ITS") and pipe == "qiime2_vsearch":
+        return out_dir, None                  # Nanopore ITS through VSEARCH + UNITE
     if marker.upper() not in _CUSTOM_MARKERS:
         return None, JSONResponse(status_code=400, content={
             "error": f"the customer report covers 12S / CytB, 16S and ONT 16S runs, not {marker or 'this run'}"})

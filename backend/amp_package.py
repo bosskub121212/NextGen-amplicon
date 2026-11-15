@@ -67,6 +67,10 @@ def marker_label(run: AD.RunData) -> tuple[str, str]:
     """(title word, method line) from what the run was."""
     p, sm = run.params, run.summary
     mk = str(p.get("marker") or sm.get("marker") or "").upper()
+    if getattr(run, "engine", "") == "vsearch":
+        if mk.startswith("ITS"):
+            return f"Fungal {mk}", f"{mk} region (fungi), Oxford Nanopore reads, VSEARCH OTUs + UNITE"
+        return (mk or "Amplicon"), f"{mk or 'amplicon'}, VSEARCH OTUs"
     if run.kind == "emu":
         return "16S rRNA", "Full-length 16S rRNA gene, Oxford Nanopore reads, Emu"
     if mk == "12S":
@@ -111,7 +115,8 @@ def build_sample(run_dir: Path, upload_dir: Path | None, sample: str, out_dir: P
     for sub in ("Taxonomic profiles", "Heatmap", "Krona plot", "Rarefaction curves"):
         (img / sub).mkdir(parents=True, exist_ok=True)
     emu = run.kind == "emu"
-    unit = ("taxon" if emu else "ASV") if run.counts_are_reads else "ppm"
+    vs = getattr(run, "engine", "") == "vsearch"
+    unit = ("OTU" if vs else "taxon" if emu else "ASV") if run.counts_are_reads else "ppm"
     notes = []
 
     # 1. reads: QC tools on the raw reads, filtered reads
@@ -152,6 +157,18 @@ def build_sample(run_dir: Path, upload_dir: Path | None, sample: str, out_dir: P
             if f.is_file() and f.suffix.lower() in (".tsv", ".csv", ".txt") and not f.name.endswith(".log"):
                 _put(f, F["2.Taxonomy"] / "Emu" / f.name)
     asvs = run.sample_asvs(s)
+    of = Path(run_dir) / "otus.fasta"
+    if vs and of.exists():                      # the centroid sequence of each OTU this sample holds
+        want = {str(a["id"]).split(";")[0] for a in asvs}
+        keep, out = False, []
+        for line in of.read_text(errors="replace").splitlines():
+            if line.startswith(">"):
+                keep = line[1:].split(";")[0].split()[0] in want
+            if keep:
+                out.append(line)
+        if out:
+            (F["2.Taxonomy"] / "outfiles").mkdir(parents=True, exist_ok=True)
+            (F["2.Taxonomy"] / "outfiles" / "otus.fasta").write_text("\n".join(out) + "\n")
     if not emu and any(a.get("best_hit") or a.get("ncbi_best") for a in asvs):
         (F["2.Taxonomy"] / "BLAST").mkdir(exist_ok=True)
         with open(F["2.Taxonomy"] / "BLAST" / "blast_ncbi_check.tsv", "w", newline="") as fh:
@@ -278,6 +295,7 @@ def nanostats(p: Path) -> dict:
 
 def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: dict, reads_rel, xlsx: Path) -> str:
     emu = run.kind == "emu"
+    vs = getattr(run, "engine", "") == "vsearch"
     t = run.tracking[s]
     word, line = marker_label(run)
     rel = lambda x: f"1.QcReads/{x}"
@@ -287,7 +305,7 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
 
     # 1. QC
     o.append('<h2 class="first">1. Quality control and clean data</h2>')
-    o += (CR._emu_steps if emu else CR._dada2_steps)(run, 1, s, "1.QcReads", root / "1.QcReads", qc, plots, "",
+    o += (CR.ont_steps(run) if emu else CR._dada2_steps)(run, 1, s, "1.QcReads", root / "1.QcReads", qc, plots, "",
                                                      rel=rel, reads_rel=reads_rel, xlsx=xl)
     if t.get("raw_data") is None:
         o.append('<p class="note">raw_data is unknown for this sample: ' + (
@@ -307,7 +325,8 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
     tax_t, _ = CR._tax_text(run)
     o += ["<h2>2. Taxonomic profiles</h2>", "<h3>Taxonomic assignment</h3>", f"<p>{tax_t}</p>"]
     if t.get("Nonchim") == 0:
-        o.append('<p class="note">' + ("No read of this sample was assigned by Emu" if emu else
+        o.append('<p class="note">' + ("No read of this sample was counted on an OTU" if vs else
+                                       "No read of this sample was assigned by Emu" if emu else
                                        "No reads of this sample passed filtering, merging and chimera removal")
                  + "; the profiles below are empty. Check the library or sequencing depth.</p>")
     if not emu and (run.dir / "blast" / "taxonomy_blast.csv").exists():
@@ -327,14 +346,14 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
     o += ["<h3>Bar charts of taxonomic profiles</h3>",
           f"<p>Relative abundance of the taxa detected in this sample at each rank (phyloseq "
           f"{e(plots.get('phyloseq', ''))}, ggplot2 {e(plots.get('ggplot2', ''))}). "
-          + ("Taxa" if emu else "ASVs") + " without a name at a rank are shown as '&lt;higher rank&gt; unidentified'. "
+          + ("OTUs" if vs else "Taxa" if emu else "ASVs") + " without a name at a rank are shown as '&lt;higher rank&gt; unidentified'. "
           "At a rank with more than 30 taxa the chart colours the 30 most abundant and sums the rest into one grey "
           "'Others' segment (its title gives the count); the tables in 2.Taxonomy/outfiles and the Excel file list "
           "every taxon.</p>"]
     for rank, _, low in CR.RANK_FILES:              # label and its chart never split over two pages
         o.append(f'<div class="keep"><p><u>At {rank} level</u></p>'
                  + CR._fig(T / "Bar charts" / f"plot_bar_{low}.png", 9) + "</div>")
-    unit = "taxa" if emu else "ASVs"
+    unit = "OTUs" if vs else "taxa" if emu else "ASVs"
     hm = plots.get("heatmap_tool", "pheatmap")
     o += [f'<div class="keep"><h3>Top 50 {unit} heatmap ({e(hm.split(" ")[0])})</h3>'
           + CR._fig(T / "Heatmap" / "Heat_map_top50.png", 13) + "</div>",
@@ -346,11 +365,12 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
                                                             "outfiles/expr.relative_abundance.all.txt",
                                                             "outfiles/expr.biom"]
     o.append("<p>Tables per rank (counts and relative abundance), "
-             + ("" if emu else "the ASV sequences (FASTA), ") + "and a BIOM file are in 2.Taxonomy/outfiles"
+             + ("the OTU centroid sequences (otus.fasta), " if vs and (T / "outfiles" / "otus.fasta").exists() else
+                "" if emu else "the ASV sequences (FASTA), ") + "and a BIOM file are in 2.Taxonomy/outfiles"
              + (", Emu's own per-sample table in 2.Taxonomy/Emu" if (T / "Emu").exists() else "")
              + (", the BLAST / NCBI check of every ASV in 2.Taxonomy/BLAST" if (T / "BLAST").exists() else "")
              + ".</p>")
-    if emu:
+    if emu and not vs:
         o.append("<p>Emu assigns each read to a reference species, so there are no ASV sequences; the taxon IDs are "
                  "those of the Emu database.</p>")
     o.append(results("2.Taxonomy"))
@@ -361,7 +381,9 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
           f"<p>How the number of {unit} found grows with the number of reads sampled (vegan "
           f"{e(plots.get('vegan', ''))}); a curve that levels off means the sequencing depth captured the sample's "
           "diversity." + (" Emu's counts are estimated reads and taxa below the minimum abundance were removed, so "
-                          "the curve and Chao1 are approximate." if emu and reads_ok else "") + "</p>"]
+                          "the curve and Chao1 are approximate." if emu and not vs and reads_ok else
+                          " UNOISE drops sequences seen fewer than its minimum size before clustering, so rare "
+                          "variants are not counted and Chao1 is a lower bound." if vs else "") + "</p>"]
     if reads_ok:
         o.append(CR._fig(root / "3.Diversity" / "Rarefaction_curves.png", 13))
     else:
