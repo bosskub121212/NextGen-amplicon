@@ -179,6 +179,18 @@ def build_sample(run_dir: Path, upload_dir: Path | None, sample: str, out_dir: P
         if out:
             (F["2.Taxonomy"] / "outfiles").mkdir(parents=True, exist_ok=True)
             (F["2.Taxonomy"] / "outfiles" / "otus.fasta").write_text("\n".join(out) + "\n")
+    un = [a for a in asvs if a.get("ncbi_un") and a["counts"].get(s, 0) > 0]
+    if vs and un:
+        (F["2.Taxonomy"] / "NCBI").mkdir(parents=True, exist_ok=True)
+        with open(F["2.Taxonomy"] / "NCBI" / "unassigned_otus_ncbi.tsv", "w", newline="") as fh:
+            w = csv.writer(fh, delimiter="\t")
+            w.writerow(["OTU", "Reads", "Length", "Group", "Named as", "Rank", "Closest NCBI record", "% identity",
+                        "% coverage", "Accession", "NCBI taxid", "Record title"])
+            for a in sorted(un, key=lambda x: -x["counts"].get(s, 0)):
+                r = a["ncbi_un"]
+                w.writerow([a["sv"], a["counts"].get(s, 0), r.get("length", ""), r.get("group", ""),
+                            r.get("named_as", ""), r.get("rank", ""), r.get("ncbi_hit", ""), r.get("pident", ""),
+                            r.get("qcov", ""), r.get("accession", ""), r.get("taxid", ""), r.get("title", "")])
     if not emu and any(a.get("best_hit") or a.get("ncbi_best") for a in asvs):
         (F["2.Taxonomy"] / "BLAST").mkdir(exist_ok=True)
         with open(F["2.Taxonomy"] / "BLAST" / "blast_ncbi_check.tsv", "w", newline="") as fh:
@@ -371,6 +383,8 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
           "<p>Krona shows the taxonomy as nested rings that can be zoomed in a web browser (the HTML file in "
           "2.Taxonomy/Krona); the figure is a still of it.</p>" + CR._fig(T / "Krona" / "krona_static.png", 12)
           + "</div>"]
+    if vs:
+        o += _ncbi_unassigned_html(run, s, e)
     files = ([] if emu else ["outfiles/expr.asv.fasta"]) + ["outfiles/expr.abundance.all.txt",
                                                             "outfiles/expr.relative_abundance.all.txt",
                                                             "outfiles/expr.biom"]
@@ -379,6 +393,7 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
                 "" if emu else "the ASV sequences (FASTA), ") + "and a BIOM file are in 2.Taxonomy/outfiles"
              + (", Emu's own per-sample table in 2.Taxonomy/Emu" if (T / "Emu").exists() else "")
              + (", the BLAST / NCBI check of every ASV in 2.Taxonomy/BLAST" if (T / "BLAST").exists() else "")
+             + (", the NCBI check of the unassigned OTUs in 2.Taxonomy/NCBI" if (T / "NCBI").exists() else "")
              + ".</p>")
     if emu and not vs:
         o.append("<p>Emu assigns each read to a reference species, so there are no ASV sequences; the taxon IDs are "
@@ -421,3 +436,62 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
     o.append("<h2>References</h2><ol>" + "".join(f"<li>{e(r)}</li>" for r in CR._refs(run, ref_text)) + "</ol>")
     return ("<!doctype html><html><head><meta charset=\"utf-8\"><title>Amplicon sequencing report</title>"
             f"<style>{CSS}</style></head><body>" + "\n".join(o) + "</body></html>")
+
+
+NCBI_GROUPS = ["Bacteria", "Archaea", "Fungi", "Plants", "Animals", "Other eukaryotes", "Viruses",
+               "Unclassified record", "No NCBI match"]
+
+
+def _ncbi_unassigned_html(run, s, e) -> list:
+    """'Sequences UNITE could not name' — the NCBI check of a VSEARCH run's unassigned OTUs, for one
+    sample: what they are by group, the OTUs, and why their reads are no profile."""
+    info = getattr(run, "ncbi_un_info", None)
+    sa = run.sample_asvs(s)
+    tot = sum(a["counts"].get(s, 0) for a in sa) or 1
+    unas = [a for a in sa if not (a.get("tax") or {}).get("Phylum") and a["counts"].get(s, 0) > 0]
+    if not unas or info is None:
+        return []
+    n_un = sum(a["counts"].get(s, 0) for a in unas)
+    ref = "UNITE" if "UNITE" in CR._db_label(run) else "the reference"
+    o = ['<div class="keep"><h3>Sequences the reference could not name (NCBI check)</h3>']
+    if info.get("error") and not info.get("checked"):
+        return o + [f"<p>{len(unas)} OTUs of this sample ({100 * n_un / tot:.1f}% of its counted reads) had no hit in "
+                    f"{e(ref)}. They were to be compared with NCBI nt, but NCBI could not be reached "
+                    f"({e(str(info['error'])[:160])}); they are shown as 'Unassigned'.</p></div>"]
+    chk = [a for a in unas if a.get("ncbi_un")]
+    fl = info.get("rank_floors") or {"genus": 95, "family": 90, "phylum": 80}
+    o.append(f"<p>{len(unas)} OTUs of this sample ({100 * n_un / tot:.1f}% of its counted reads) had no hit in {e(ref)}; "
+             "in the charts and tables above they are 'Unassigned'. Each was compared with NCBI nt (BLASTn megablast, "
+             f"{e(info.get('date', ''))}) and the table gives its closest NCBI record. A name is given to genus at "
+             f"&ge;{fl.get('genus', 95):g}% identity, to family at &ge;{fl.get('family', 90):g}% and to phylum at "
+             f"&ge;{fl.get('phylum', 80):g}%, over at least {info.get('min_cov', 80):g}% of the OTU and only when the "
+             "equally good records agree; otherwise only the group is given."
+             + (f" {len(unas) - len(chk)} OTU(s) were not checked." if len(chk) < len(unas) else "") + "</p>")
+    o.append("<p><b>These reads show what is present, not how much.</b> The primers are made for fungi; other DNA is "
+             "amplified only where they happen to bind, so its reads depend on primer binding, not on abundance, and "
+             "organisms they do not bind are missed. A bacterial community profile needs 16S rRNA sequencing.</p>")
+    by = {}
+    for a in chk:
+        g = a["ncbi_un"].get("group") or "Unclassified record"
+        x = by.setdefault(g, [0, 0, set()])
+        x[0] += 1
+        x[1] += a["counts"].get(s, 0)
+        if a["ncbi_un"].get("rank") in ("genus", "family", "phylum"):
+            x[2].add(a["ncbi_un"].get("named_as", ""))
+    rows = [[e(g), str(by[g][0]), f"{by[g][1]:,}", f"{100 * by[g][1] / tot:.2f}%",
+             e(", ".join(sorted(by[g][2])[:8]) + (" &hellip;" if len(by[g][2]) > 8 else ""))]
+            for g in NCBI_GROUPS if g in by]
+    o.append(CR._table(["Group", "OTUs", "Reads", "% of the sample's reads", "Named"], rows) + "</div>")
+    top = sorted(chk, key=lambda x: -x["counts"].get(s, 0))[:30]
+    o.append(CR._table(["OTU", "Reads", "Group", "Named as", "Closest NCBI record (% identity, % coverage)"],
+                       [[a["sv"], f"{a['counts'].get(s, 0):,}", e(a["ncbi_un"].get("group", "")),
+                         e(a["ncbi_un"].get("named_as", "")),
+                         (f"<i>{e(a['ncbi_un'].get('ncbi_hit', ''))}</i> ({a['ncbi_un'].get('pident', '')}%, "
+                          f"{a['ncbi_un'].get('qcov', '')}%)" if a["ncbi_un"].get("ncbi_hit") else "—")]
+                        for a in top]))
+    if len(chk) > len(top):
+        o.append(f"<p>The {len(top)} OTUs with most reads are shown; all {len(chk)} are in "
+                 "2.Taxonomy/NCBI/unassigned_otus_ncbi.tsv.</p>")
+    else:
+        o.append("<p>The table, with accessions and record titles, is in 2.Taxonomy/NCBI/unassigned_otus_ncbi.tsv.</p>")
+    return o

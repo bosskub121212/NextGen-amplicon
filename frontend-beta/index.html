@@ -6097,6 +6097,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["ontMaxLen",         "Maximum read length (VSEARCH OTUs only)","int",   "600", "bp — not used by Emu"],
         ["otuMergeId",        "Merge OTU variants (VSEARCH OTUs only)", "select", "0", [["0","off — every UNOISE OTU kept"],["0.97","97% — merge near-copies (nanopore errors)"],["0.98","98%"],["0.99","99%"]],
          "not used by Emu — OTUs within this identity of a more abundant one are merged into it"],
+        ["ncbiUnassigned",    "NCBI check of unassigned OTUs (VSEARCH OTUs only)", "bool", "true",
+         "not used by Emu — BLASTn of the OTUs the reference cannot name against NCBI nt (needs internet)"],
         ["nThreads",          "CPU threads",       "int",    "8", "minimap2 / Emu, chopper, VSEARCH (Emu ran on 4 before)"],
         ["ont_parallel",      "Samples in parallel", "int",  "0",
          "Emu runs this many samples at once, sharing the threads; 0 = automatic from CPU and free RAM"],
@@ -6127,7 +6129,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
          "after primer trimming — Nanopore ITS runs through VSEARCH OTUs with UNITE"],
         ["ontMaxLen",  "Maximum read length (Nanopore / VSEARCH)", "int", "900", "bp"],
         ["otuMergeId", "Merge OTU variants (Nanopore / VSEARCH)", "select", "0", [["0","off — every UNOISE OTU kept"],["0.97","97% — merge near-copies (nanopore errors)"],["0.98","98%"],["0.99","99%"]],
-         "OTUs within this identity of a more abundant one are merged into it; the most abundant sequence names the OTU"]
+         "OTUs within this identity of a more abundant one are merged into it; the most abundant sequence names the OTU"],
+        ["ncbiUnassigned", "NCBI check of unassigned OTUs (Nanopore / VSEARCH)", "bool", "true",
+         "BLASTn of the OTUs UNITE cannot name against NCBI nt (needs internet): shows off-target DNA such as bacteria or plants — what is there, not how much"]
       ]});
 
     if(dada2 || isPB || isCOX1 || isITS) steps.push({n:3, title:"DADA2 — ASV denoising",

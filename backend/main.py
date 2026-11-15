@@ -242,6 +242,8 @@ class RunParams(BaseModel):
     otuSimilarity: float = 0.97
     # Merge UNOISE OTUs within this identity (e.g. 0.97) — nanopore near-copies; 0 = off
     otuMergeId:    float = 0.0
+    # BLAST the OTUs the reference left unassigned against NCBI nt (VSEARCH runs; internet)
+    ncbiUnassigned: bool = True
     # --- VSEARCH UNOISE denoising params (qiime2_vsearch only). minsize=8 is the
     # standard USEARCH/UNOISE3 SOP default; lower it (e.g. 2-4) to retain more
     # low-abundance real variants as their own OTUs if the resulting OTU count
@@ -1165,6 +1167,7 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
             "--unoise_alpha",   str(params.otuUnoiseAlpha),
             "--unoise_minsize", str(params.otuUnoiseMinsize),
             "--otu_merge_id",   str(params.otuMergeId or 0),
+        ] + (["--ncbi_unassigned"] if params.ncbiUnassigned else []) + [
             "--min_len",        str(lo),
             "--max_len",        str(hi),
             "--topN",           str(params.topN),
@@ -1512,6 +1515,7 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
             "--unoise_alpha",   str(params.otuUnoiseAlpha),
             "--unoise_minsize", str(params.otuUnoiseMinsize),
             "--otu_merge_id",   str(params.otuMergeId or 0),
+        ] + (["--ncbi_unassigned"] if params.ncbiUnassigned else []) + [
             "--min_len",        str(params.ontMinLen),
             "--max_len",        str(params.ontMaxLen),
             "--topN",           str(params.topN),

@@ -77,6 +77,18 @@ class RunData:
             self._read_emu_tracking()
         else:
             self._read_tracking()
+        # NCBI check of the OTUs the reference left unassigned (VSEARCH runs; ncbi_unassigned.py)
+        self.ncbi_un_info = None
+        if self.engine == "vsearch":
+            try:
+                import ncbi_unassigned as NU
+                rows, self.ncbi_un_info = NU.load(self.dir)
+            except Exception:
+                rows = {}
+            for a in self.asvs:
+                r = rows.get(str(a.get("id", "")).split(";")[0])
+                if r:
+                    a["ncbi_un"] = r
         self.peer_names = list(self.samples)          # every sample of the run (name lookups only)
         self.alpha = {s: alpha([a["counts"].get(s, 0) for a in self.asvs if not a.get("not_taxon")])
                       for s in self.samples}

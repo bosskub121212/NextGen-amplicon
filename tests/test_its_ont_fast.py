@@ -157,10 +157,95 @@ def package_checks():
         check("package checks", False, traceback.format_exc(limit=5))
 
 
+def ncbi_checks():
+    print("Nanopore ITS: NCBI check of unassigned OTUs")
+    try:
+        import ncbi_unassigned as NU
+        lins = {"1": {"superkingdom": "Bacteria", "phylum": "Pseudomonadota", "family": "Lysobacteraceae",
+                      "genus": "Stenotrophomonas"},
+                "2": {"superkingdom": "Bacteria", "phylum": "Pseudomonadota", "family": "Brucellaceae",
+                      "genus": "Brucella"},
+                "3": {"superkingdom": "Bacteria", "phylum": "Pseudomonadota", "family": "Brucellaceae",
+                      "genus": "Ochrobactrum"},
+                "4": {"superkingdom": "Eukaryota", "kingdom": "Viridiplantae", "phylum": "Streptophyta",
+                      "family": "Poaceae", "genus": "Dichanthium"}}
+        h = lambda tid, pid, cov, bits, sp="x": {"taxid": tid, "pident": pid, "qcov": cov, "bits": bits, "species": sp}
+        r = NU.name_hit([h("1", 99.3, 100, 700)], lins)
+        check("named to genus at >=95% over >=80%", (r["group"], r["named_as"], r["rank"]) == ("Bacteria", "Stenotrophomonas", "genus"), r)
+        r = NU.name_hit([h("2", 99.6, 98, 450), h("3", 99.6, 98, 450)], lins)
+        check("tied records of two genera: family", (r["named_as"], r["rank"]) == ("Brucellaceae", "family"), r)
+        r = NU.name_hit([h("1", 98.0, 58, 400)], lins)
+        check("coverage below 80%: group only", (r["named_as"], r["rank"]) == ("Bacteria", "group"), r)
+        r = NU.name_hit([h("1", 85.0, 100, 300)], lins)
+        check("85% identity: phylum", r["named_as"] == "Pseudomonadota", r)
+        check("plant record -> Plants", NU.name_hit([h("4", 100, 100, 450)], lins)["group"] == "Plants")
+        check("no hit -> No NCBI match", NU.name_hit([], lins)["group"] == "No NCBI match")
+        with tempfile.TemporaryDirectory() as td:
+            d = make_vsearch_its_run(Path(td) / "run")
+            (d / "asv_table.csv").write_text((d / "asv_table.csv").read_text() + "OTU_4;size=50,77\n")
+            (d / "taxonomy.csv").write_text((d / "taxonomy.csv").read_text() + "OTU_4;size=50,,,,,,,\n")
+            (d / "otus.fasta").write_text((d / "otus.fasta").read_text() + ">OTU_4;size=50\nGATTACAGATTACA\n")
+            check("unassigned OTUs found (no phylum)", [x[0] for x in NU.unassigned_otus(d)] == ["OTU_4"])
+            calls = []
+            js = json.dumps({"BlastOutput2": [{"report": {"results": {"search": {
+                "query_title": "OTU_4", "query_len": 14, "hits": [{"description": [{"sciname": "Stenotrophomonas maltophilia",
+                "taxid": 1, "accession": "CP1", "title": "S. maltophilia chromosome"}],
+                "hsps": [{"query_from": 1, "query_to": 14, "identity": 14, "align_len": 14, "bit_score": 28}]}]}}}}]})
+            xml = ("<TaxaSet><Taxon><TaxId>1</TaxId><ScientificName>Stenotrophomonas maltophilia</ScientificName>"
+                   "<Rank>species</Rank><LineageEx><Taxon><ScientificName>Bacteria</ScientificName><Rank>domain</Rank></Taxon>"
+                   "<Taxon><ScientificName>Pseudomonadota</ScientificName><Rank>phylum</Rank></Taxon>"
+                   "<Taxon><ScientificName>Lysobacteraceae</ScientificName><Rank>family</Rank></Taxon>"
+                   "<Taxon><ScientificName>Stenotrophomonas</ScientificName><Rank>genus</Rank></Taxon></LineageEx>"
+                   "</Taxon></TaxaSet>")
+            def http(url, data=None):
+                calls.append(url)
+                if data:
+                    return b"RID = R1\nRTOE = 5\n"
+                if "SearchInfo" in url:
+                    return b"Status=READY"
+                if "JSON2_S" in url:
+                    return js.encode()
+                return xml.encode()
+            info = NU.run(d, http=http, sleep=lambda x: None, log=lambda *a: None)
+            rows, inf2 = NU.load(d)
+            check("NCBI check written: OTU_4 = Stenotrophomonas (Bacteria)", info["checked"] == 1
+                  and rows.get("OTU_4", {}).get("named_as") == "Stenotrophomonas"
+                  and rows["OTU_4"]["group"] == "Bacteria" and any("efetch" in c for c in calls), (info, rows))
+            import amp_data as AD, amp_package as AP
+            r = AD.load_run(d)
+            check("run carries the NCBI row on the OTU", any(a.get("ncbi_un") for a in r.asvs))
+            man = AP.build_sample(d, None, "PGU-ITS", Path(td) / "pk", formats=("html",), tools={})
+            root = Path(man["dir"])
+            html = (root / "Report_PGU-ITS.html").read_text()
+            check("report: NCBI section with group table and the caveat",
+                  "Sequences the reference could not name (NCBI check)" in html and "Stenotrophomonas" in html
+                  and "what is present, not how much" in html and "16S rRNA sequencing" in html)
+            check("package: 2.Taxonomy/NCBI/unassigned_otus_ncbi.tsv",
+                  "Stenotrophomonas" in (root / "2.Taxonomy" / "NCBI" / "unassigned_otus_ncbi.tsv").read_text())
+            import report_builder as RB
+            rh = RB.build_profile_html(RB.Run(d, set()))
+            check("run report: NCBI section, Bacteria share per sample",
+                  "Sequences the reference could not name (NCBI check)" in rh and "Stenotrophomonas" in rh
+                  and "16S rRNA sequencing" in rh)
+            (d / "ncbi_unassigned.json").write_text(json.dumps({"error": "timed out", "checked": 0}))
+            (d / "ncbi_unassigned.tsv").unlink()
+            man = AP.build_sample(d, None, "PGU-ITS", Path(td) / "pk2", formats=("html",), tools={})
+            html = (Path(man["dir"]) / "Report_PGU-ITS.html").read_text()
+            check("report: NCBI unreachable is said, not hidden", "NCBI could not be reached" in html)
+        m = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+        q = (ROOT / "backend" / "qiime2_vsearch_pipeline.py").read_text(encoding="utf-8")
+        check("main sends --ncbi_unassigned to both VSEARCH branches; pipeline runs it non-fatally",
+              m.count('(["--ncbi_unassigned"] if params.ncbiUnassigned else [])') == 2
+              and "NU.run(out_dir" in q and "not done:" in q)
+    except Exception:
+        check("ncbi checks", False, traceback.format_exc(limit=5))
+
+
 _main_orig = main
 def main():
     rc = _main_orig()
     package_checks()
+    ncbi_checks()
     return 1 if FAILS else rc
 
 if __name__ == "__main__":

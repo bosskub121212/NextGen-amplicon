@@ -91,6 +91,10 @@ def parse_args():
                    help="Merge UNOISE OTUs within this identity (0-1, e.g. 0.97) with --cluster_size, "
                         "the most abundant as centroid; 0 = off. For nanopore reads, whose errors leave "
                         "near-copies of an abundant OTU")
+    p.add_argument("--ncbi_unassigned", action="store_true",
+                   help="BLAST the OTUs the reference left unassigned against NCBI nt (internet) and keep the "
+                        "closest record of each (ncbi_unassigned.tsv) — off-target DNA such as bacteria in an ITS run")
+    p.add_argument("--ncbi_max_otus",  type=int, default=200, help="most-read unassigned OTUs sent to NCBI")
     p.add_argument("--threads",       type=int,   default=4)
     p.add_argument("--metadata",      default="")
     p.add_argument("--topN",          type=int,   default=30)
@@ -874,6 +878,7 @@ def write_summary(out_dir: Path, sample_names: list, n_otus: int,
         "trim_max_len":   args.max_len,
         "cutadapt_error_rate": args.cutadapt_error_rate,
         "cutadapt_overlap":    args.cutadapt_overlap,
+        "ncbi_unassigned": getattr(args, "_ncbi", None),
         "otu_merge_id":   (args.otu_merge_id if 0 < (args.otu_merge_id or 0) < 1 else None),
         "otus_unoise":    getattr(args, "_otus_unoise", None),
         "cutadapt_times":      2 if (args.primer_f and args.primer_r) else 1,
@@ -1034,6 +1039,16 @@ def main():
                                default_kingdom="" if its else "Bacteria")
     read_rows = write_read_tracking(samples_raw, samples_qc, samples_trimmed, mapped_totals, out_dir,
                                     paired_counts)
+    args._ncbi = None
+    if args.ncbi_unassigned:
+        progress(90, "Step 9/9 — NCBI check of unassigned OTUs (BLASTn, internet)")
+        try:
+            import ncbi_unassigned as NU
+            info = NU.run(out_dir, max_otus=args.ncbi_max_otus, log=log)
+            args._ncbi = {k: info.get(k) for k in ("checked", "unassigned_otus", "error", "failed_batches")}
+        except Exception as ex:                     # the run's results stand without it
+            log(f"  [WARN] NCBI check of unassigned OTUs not done: {ex}")
+            args._ncbi = {"error": str(ex)}
     write_summary(out_dir, sample_names, len(sorted_otus), read_rows, args)
     run_viz(out_dir, args.metadata, args.topN, args.threads, args.marker)
 

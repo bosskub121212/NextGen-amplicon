@@ -313,7 +313,7 @@ def _http(url: str, data: bytes | None = None) -> bytes:
 
 
 def run_ncbi(fasta: Path, entrez: str, timeout: int = 3600, http=_http, sleep=time.sleep,
-             batch: int = 100, status: dict | None = None) -> dict | None:
+             batch: int = 100, status: dict | None = None, min_cov: float = 80) -> dict | None:
     """NCBI nt check through the BLAST URL API (HTTPS, works behind web proxies; NCBI's
     rules: one status poll per minute per search). {qseqid: [hits best first]}; a query
     of a batch that failed is left out (= not checked). None when no batch finished.
@@ -366,12 +366,14 @@ def run_ncbi(fasta: Path, entrez: str, timeout: int = 3600, http=_http, sleep=ti
                 for h in s.get("hits", []):
                     d, hs = h["description"][0], h["hsps"][0]
                     cov = 100 * (hs["query_to"] - hs["query_from"] + 1) / ql
-                    if cov < 80:
+                    if cov < min_cov:
                         continue
                     name = d.get("sciname", "")
                     rows.append({"species": name, "genus": name.split(" ")[0] if name else "",
                                  "pident": round(100 * hs["identity"] / hs["align_len"], 2),
-                                 "accession": d.get("accession", ""), "bits": hs.get("bit_score", 0)})
+                                 "accession": d.get("accession", ""), "bits": hs.get("bit_score", 0),
+                                 "qcov": round(min(cov, 100.0), 1), "taxid": d.get("taxid", ""),
+                                 "title": d.get("title", "")})
                 rows.sort(key=lambda r: (-r["bits"], -r["pident"]))
                 got[qn] = rows
             out.update(got)

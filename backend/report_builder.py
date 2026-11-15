@@ -136,6 +136,11 @@ class Run:
         self._classify()
         self.blast, self.blast_info = self._load_blast()
         self.denoise_cap = self._denoise_cap()
+        try:                                         # NCBI check of unassigned OTUs (VSEARCH runs)
+            import ncbi_unassigned as _NU
+            self.ncbi_un, self.ncbi_un_info = _NU.load(self.path)
+        except Exception:
+            self.ncbi_un, self.ncbi_un_info = {}, None
 
     def _detect_kind(self) -> str:
         pl = str(self.summary.get("pipeline") or "").lower()
@@ -2383,6 +2388,49 @@ def _blast_name(r: dict):
     return "", ""
 
 
+def _ncbi_un_section(run, S, T) -> list:
+    """OTUs the reference could not name, checked at NCBI nt (ncbi_unassigned.py): what they are by
+    group per sample, and why their reads are no profile of those organisms."""
+    info, rows = run.ncbi_un_info or {}, run.ncbi_un or {}
+    out = ["<h3>Sequences the reference could not name (NCBI check)</h3>"]
+    if info.get("error") and not info.get("checked"):
+        return out + [f"<p>The OTUs the reference could not name were to be compared with NCBI nt, but NCBI could "
+                      f"not be reached ({esc(str(info['error'])[:160])}); they stay 'Unassigned'.</p>"]
+    if not rows:
+        return out + ["<p>Every OTU had a hit in the reference; nothing was sent to NCBI.</p>"]
+    groups = ["Bacteria", "Archaea", "Fungi", "Plants", "Animals", "Other eukaryotes", "Viruses",
+              "Unclassified record", "No NCBI match"]
+    tot = {s_: sum(r.get(s_, 0.0) for r in run.mat.values()) or 1.0 for s_ in S}
+    per = {}
+    named = {}
+    for q, row in run.mat.items():
+        r = rows.get(str(q).split(";")[0])
+        if not r:
+            continue
+        g = r.get("group") or "Unclassified record"
+        for s_ in S:
+            per.setdefault(g, {}).setdefault(s_, 0.0)
+            per[g][s_] += row.get(s_, 0.0)
+        if r.get("rank") in ("genus", "family", "phylum"):
+            named.setdefault(g, Counter())[r.get("named_as", "")] += sum(row.get(s_, 0.0) for s_ in S)
+    fl = info.get("rank_floors") or {}
+    out.append(f"<p>{info.get('checked', len(rows))} OTUs had no hit in the reference and were compared with NCBI nt "
+               f"(BLASTn megablast, {esc(info.get('date', ''))}). Each is named to genus at &ge;{fl.get('genus', 95):g}% "
+               f"identity, family &ge;{fl.get('family', 90):g}%, phylum &ge;{fl.get('phylum', 80):g}% over at least "
+               f"{info.get('min_cov', 80):g}% of the OTU when the equally good records agree, otherwise to its group"
+               + (f"; {info['left_out']} OTUs with fewer reads were not sent" if info.get("left_out") else "")
+               + ". The primers are made for the target group; other DNA is amplified only where they happen to "
+               "bind, so these reads show what is present, not how much of it, and organisms the primers do not "
+               "bind are missed. A bacterial community profile needs 16S rRNA sequencing.</p>")
+    g_in = [g for g in groups if g in per]
+    out.append(T(["Group"] + [esc(s_) for s_ in S] + ["Named (most reads first)"],
+                 [[esc(g)] + [f"{100 * per[g][s_] / tot[s_]:.2f}%" for s_ in S]
+                  + [esc(", ".join(n for n, _ in named.get(g, Counter()).most_common(6)))] for g in g_in],
+                 "Reads of the OTUs the reference could not name, by the group of their closest NCBI record "
+                 "(% of each sample's counted reads); the list per OTU is ncbi_unassigned.tsv."))
+    return out
+
+
 def _blast_section(run, S, T) -> list:
     """Target (fish) and non-target reads per sample, the fish named, and what was not fish —
     the first question of a fish eDNA run, answered before the community figures."""
@@ -3302,6 +3350,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
 
     if run.blast:
         out += _blast_section(run, S, T)
+    if getattr(run, "ncbi_un_info", None) is not None:
+        out += _ncbi_un_section(run, S, T)
 
     # ── composition ──────────────────────────────────────────────────────────
     out.append('<h3 class="pbreak">Taxonomic composition of samples</h3>')
