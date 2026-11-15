@@ -1131,7 +1131,59 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
         except Exception:
             return ""
 
-    if marker in ("ITS1", "ITS2", "ITS"):
+    if marker in ("ITS1", "ITS2", "ITS") and params.sequencerType in ("ont", "qiime2_vsearch"):
+        # ── ITS on Nanopore (or VSEARCH OTUs): single-end long reads ────────
+        # its_pipeline.R is DADA2 paired-end only (it stops on "No R2 FASTQ files").
+        # Nanopore ITS goes through the VSEARCH OTU pipeline instead: chopper,
+        # cutadapt both orientations, reference chimera check, UNOISE, map back,
+        # UNITE names cut by the fungal identity floors (Vu et al. 2019).
+        region = "ITS1" if marker in ("ITS1", "ITS") else "ITS2"
+        its_db = (params.dbPath if params.dbPath and Path(params.dbPath).is_file()
+                  else _dbp("UNITE_ITS1" if region == "ITS1" else "UNITE_ITS2"))
+        if not its_db:
+            with jobs_lock:
+                jobs[job_id].update({"status": "error", "finished_at": time.time(),
+                                     "step_label": "UNITE reference not installed",
+                                     "error": "UNITE reference not installed — run: "
+                                              "bash ~/r16s-app/download_databases.sh"})
+                save_jobs()
+            return
+        # The ONT read-length window defaults to 300-600 bp (16S V7-V8); ITS1 / ITS2
+        # spacers run from ~100 bp, so an untouched default is widened for ITS.
+        lo, hi = params.ontMinLen, params.ontMaxLen
+        if (lo, hi) == (300, 600):
+            lo, hi = 100, 900
+        cmd = [
+            sys.executable, str(R_SCRIPTS_DIR.parent / "qiime2_vsearch_pipeline.py"),
+            "--input",          input_dir,
+            "--output",         output_dir,
+            "--db_path",        its_db,
+            "--threads",        str(params.nThreads),
+            "--otu_similarity", str(params.otuSimilarity),
+            "--unoise_alpha",   str(params.otuUnoiseAlpha),
+            "--unoise_minsize", str(params.otuUnoiseMinsize),
+            "--min_len",        str(lo),
+            "--max_len",        str(hi),
+            "--topN",           str(params.topN),
+            "--marker",         region,
+            "--job_name",       params.job_name or job_id,
+            # Illumina's cutadapt defaults (-e 0.1 -O 3) drop nanopore reads whose primer
+            # site carries a couple of errors; untouched defaults become the ONT ones
+            "--cutadapt_error_rate", str(0.2 if (params.sequencerType == "ont" and
+                                                 params.cutadaptErrorRate == 0.1) else params.cutadaptErrorRate),
+            "--cutadapt_overlap",    str(10 if (params.sequencerType == "ont" and
+                                                params.cutadaptOverlap == 3) else params.cutadaptOverlap),
+        ]
+        if params.primer_f:
+            cmd += ["--primer_f", params.primer_f]
+        if params.primer_r:
+            cmd += ["--primer_r", params.primer_r]
+        if params.metadata:
+            cmd += ["--metadata", metadata_path]
+        _pipe_kind = "qiime2_vsearch"
+        _pipe_dbs = [("taxonomy", its_db)]
+
+    elif marker in ("ITS1", "ITS2", "ITS"):
         # ── ITS fungal pipeline ─────────────────────────────────────────────
         region = "ITS1" if marker in ("ITS1", "ITS") else "ITS2"
         cmd = [

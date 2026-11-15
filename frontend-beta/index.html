@@ -6118,8 +6118,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       why:"ITS length varies widely between taxa, so reads are not truncated to a fixed length.",
       fields:[
         ["its_region", "ITS region", "select", key, [["ITS1","ITS1"],["ITS2","ITS2"]]],
-        ["maxEE_F",    "maxEE, forward", "num", "2", ""],
-        ["maxEE_R",    "maxEE, reverse", "num", "2", ""]
+        ["maxEE_F",    "maxEE, forward", "num", "2", "Illumina (DADA2) only"],
+        ["maxEE_R",    "maxEE, reverse", "num", "2", "Illumina (DADA2) only"],
+        ["ontMinLen",  "Minimum read length (Nanopore / VSEARCH)", "int", "100",
+         "after primer trimming — Nanopore ITS runs through VSEARCH OTUs with UNITE"],
+        ["ontMaxLen",  "Maximum read length (Nanopore / VSEARCH)", "int", "900", "bp"]
       ]});
 
     if(dada2 || isPB || isCOX1 || isITS) steps.push({n:3, title:"DADA2 — ASV denoising",
@@ -6475,7 +6478,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       lastError: "",
       merge: false        /* ONT: several chunk files per sample, merged at run time */
     };
-    var canMerge = it.key === "ONT-16S" || it.key === "Shotgun";
+    var canMerge = it.key === "ONT-16S" || it.key === "Shotgun" || it.key === "ITS1" || it.key === "ITS2";
     var isSG = it.key === "Shotgun";
 
     work.innerHTML =
@@ -6857,8 +6860,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var stem = base.replace(EXT, "");
       if(FAIL.test(stem) || dir.split("/").some(function(q){ return FAIL.test(q); })) return;
       var m = stem.match(/(?:^|[^A-Za-z0-9])(barcode\d+|unclassified)(?![0-9])/i);
-      var minknow = /^[A-Z]{3}\d{4,6}_(pass|fail|skip)_/i.test(base);
-      var unit = m ? m[1].toLowerCase() : (minknow ? stem.replace(/[_.-]\d+$/, "") : stem);
+      var rid = stem.match(/^(fastq_runid_[0-9a-f-]+)(?:_\d+)+$/i);
+      var minknow = /^[A-Z]{3}\d{4,6}_(pass|fail|skip)_/i.test(base) || !!rid;
+      var unit = m ? m[1].toLowerCase() : rid ? rid[1] : (minknow ? stem.replace(/[_.-]\d+$/, "") : stem);
       var key = dir + "|" + unit;
       if(!G[key]){ G[key] = {key:key, folder:dir, barcode:m ? m[1].toLowerCase() : "", unit:unit,
                              files:[], minknow:minknow, stem:stem}; order.push(key); }

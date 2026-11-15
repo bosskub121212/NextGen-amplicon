@@ -101,6 +101,8 @@ CHUNK_RE = re.compile(r"[_.-]\d+$")
 FAIL_RE = re.compile(r"(^|[_\-.])fail([_\-.]|$)", re.I)
 # MinKNOW chunk names: <flowcell>_<pass|fail>_[barcodeNN_]<run id>_..._<n>.fastq.gz
 MINKNOW_RE = re.compile(r"^[A-Z]{3}\d{4,6}_(pass|fail|skip)_", re.I)
+# Guppy / older MinKNOW chunk names: fastq_runid_<run id>_<n>[_<m>].fastq.gz
+RUNID_RE = re.compile(r"^(fastq_runid_[0-9a-f-]+)(?:_\d+)+$", re.I)
 # Folder names that say nothing about the sample — never used as a sample name.
 GENERIC_DIR_RE = re.compile(
     r"^(fastq(_pass|_fail)?|pass|fail|merged|data|reads|raw|raw_data|barcod(e|ing)\d*|"
@@ -150,8 +152,10 @@ def group_fastqs(files: list[str], folders: dict | None = None,
         m = BARCODE_RE.search(stem)
         # Only MinKNOW's own chunk names carry a counter to strip; on any other
         # file "_1"/"_2" may well be a replicate and must not be merged away.
-        minknow = bool(MINKNOW_RE.match(base))
-        unit = m.group(1).lower() if m else (CHUNK_RE.sub("", stem) if minknow else stem)
+        rid = RUNID_RE.match(stem)
+        minknow = bool(MINKNOW_RE.match(base)) or bool(rid)
+        unit = (m.group(1).lower() if m else rid.group(1) if rid
+                else CHUNK_RE.sub("", stem) if minknow else stem)
         key = f"{folder}|{unit}"
         g = raw.setdefault(key, {"key": key, "folder": folder,
                                  "barcode": m.group(1).lower() if m else "",

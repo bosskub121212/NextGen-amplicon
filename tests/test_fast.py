@@ -366,6 +366,10 @@ def main():
     import test_fish_report_fast             # 12S / CytB run report named by BLAST
     test_fish_report_fast.main()
     FAILS.extend(test_fish_report_fast.FAILS)
+
+    import test_its_ont_fast                 # Nanopore ITS through VSEARCH + UNITE
+    test_its_ont_fast.main()
+    FAILS.extend(test_its_ont_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

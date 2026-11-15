@@ -2015,6 +2015,9 @@ REFERENCES = [
     ("Camacho, C., et al. (2009).", "BLAST+: architecture and applications.", "BMC Bioinformatics, 10, 421."),
     ("Zhu, T., Sato, Y., Sado, T., Miya, M., & Iwasaki, W. (2023).", "MitoFish, MitoAnnotator, and MiFish "
      "Pipeline: updates in 10 years.", "Molecular Biology and Evolution, 40(3), msad035."),
+    ("Vu, D., et al. (2019).", "Large-scale generation and analysis of filamentous fungal DNA barcodes boosts "
+     "coverage for kingdom fungi and reveals thresholds for fungal species and higher taxon delimitation.",
+     "Studies in Mycology, 92, 135–154."),
 ]
 REF_DADA2 = [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 REF_EMU = [5, 0, 6, 7, 4, 8, 9, 10, 11, 12, 13, 14, 15, 16]
@@ -2030,7 +2033,9 @@ def _ref_indices(run) -> list[int]:
         + ([18] if "midori" in db or run.kind == "cox1" else []) \
         + ([22] if "pr2" in db else []) + ([24] if "gtdb" in db else [])
     if run.kind == "vsearch":
-        tools = [0, 6, 21]
+        tools = [0, 6, 21] + ([5] if not run.paired else [])
+        if str(run.params.get("marker") or run.summary.get("marker") or "").upper().startswith("ITS"):
+            dbref = dbref + [28]
     else:
         tools = [0, 1] + ([20] if run.kind == "pacbio" else []) + [2] + ([19] if run.kind == "cox1" else [])
     if getattr(run, "blast", None):
@@ -2207,7 +2212,11 @@ def _methods_other(run, an):
         out.append("<h3>Taxonomic assignment</h3>")
         out.append(f"<p>Each OTU took the taxonomy of its best hit in <b>{esc(run.db_name)}</b> "
                    f"(<span class=\"mono\">--usearch_global</span>); ranks were kept only down to the "
-                   f"level the identity supports.</p>")
+                   f"level the identity supports"
+                   + (" &mdash; for fungal ITS species 98.41%, genus 94.3%, family 88.5%, order 81.2%, "
+                      "class 80.9% and phylum 75% identity (Vu et al. 2019)"
+                      if str(run.params.get("marker") or run.summary.get("marker") or "").upper().startswith("ITS")
+                      else "") + ".</p>")
     return out
 
 

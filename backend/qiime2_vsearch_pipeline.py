@@ -100,13 +100,31 @@ def parse_args():
 
 # ── Helpers (self-contained — duplicated from emu_pipeline.py by design, so ────
 #    each pipeline script stays independently deployable/editable) ─────────────
-def find_fastq(input_dir: Path) -> dict[str, Path]:
+def merge_reads(files: list[Path], dest: Path) -> Path:
+    """Concatenate one sample's FASTQ chunk files into one .fastq.gz (gzip members append;
+    plain chunks are compressed on the way). Written under a temporary name first."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(".part-" + dest.name)
+    with open(tmp, "wb") as out:
+        for f in files:
+            if str(f).lower().endswith(".gz"):
+                with open(f, "rb") as fh:
+                    shutil.copyfileobj(fh, out, 8 << 20)
+            else:
+                with open(f, "rb") as fh, gzip.GzipFile(fileobj=out, mode="wb", compresslevel=1) as gz:
+                    shutil.copyfileobj(fh, gz, 8 << 20)
+    tmp.replace(dest)
+    return dest
+
+
+def find_fastq(input_dir: Path, merge_dir: Path | None = None) -> dict[str, Path]:
     """Find FASTQ files and map sample_name -> path (manifest-aware, single-end)."""
     manifest_path = input_dir / "sample_manifest.json"
     if manifest_path.exists():
         try:
             manifest = json.loads(manifest_path.read_text())
             samples = {}
+            groups: dict[str, list[Path]] = {}
             for row in manifest:
                 sample = row.get("sample", "").strip()
                 file1  = row.get("file1", "").strip()
@@ -120,7 +138,19 @@ def find_fastq(input_dir: Path) -> dict[str, Path]:
                 if not fpath.exists():
                     log(f"  [WARN] manifest file not found, skipping: {file1}")
                     continue
-                samples[safe_sample] = fpath
+                groups.setdefault(safe_sample, [])
+                if fpath not in groups[safe_sample]:
+                    groups[safe_sample].append(fpath)
+            for sample, files in groups.items():
+                if len(files) == 1:
+                    samples[sample] = files[0]
+                else:
+                    # several rows with one sample name = the chunk files of one sample
+                    # (a MinKNOW delivery); merged so each sample is one file downstream
+                    md = (merge_dir or (input_dir / "_merged"))
+                    dest = md / f"{sample}.fastq.gz"
+                    log(f"  Merging {len(files)} files → {sample}.fastq.gz")
+                    samples[sample] = merge_reads(files, dest)
             if samples:
                 log(f"  Using sample_manifest.json ({len(samples)} sample(s))")
                 return samples
@@ -591,6 +621,13 @@ _RANK_IDENTITY_FLOOR = {
     "order": 82.0, "class": 78.5, "phylum": 75.0, "superkingdom": 0.0,
 }
 
+# Fungal ITS: the median identity that separates taxa at each rank in the UNITE / CBS
+# barcode data (Vu et al. 2019, Studies in Mycology 92: 135-154).
+_ITS_IDENTITY_FLOOR = {
+    "species": 98.41, "genus": 94.3, "family": 88.5,
+    "order": 81.2, "class": 80.9, "phylum": 75.0, "superkingdom": 0.0,
+}
+
 def _truncate_by_identity(tax: dict, pct_id: float) -> dict:
     """Drop any rank whose confidence threshold the observed %identity doesn't clear."""
     return {rank: val for rank, val in tax.items()
@@ -620,7 +657,7 @@ def _assign_taxonomy_trainset_format(vsearch: str, otus_fasta: Path, ref_fasta: 
            "--id", str(identity), "--top_hits_only", "--strand", "both",
            "--userout", str(hits_path), "--userfields", "query+target+id",
            "--threads", str(threads)]
-    run_cmd(cmd, f"Assign OTU taxonomy (vsearch @ {identity * 100:.0f}% identity vs. SILVA trainset FASTA)")
+    run_cmd(cmd, f"Assign OTU taxonomy (vsearch @ {identity * 100:.0f}% identity vs. the reference FASTA)")
 
     otu_tax: dict[str, dict] = {}
     n_truncated = 0
@@ -662,6 +699,22 @@ def parse_lineage(lineage: str) -> dict:
       PR2         Eukaryota;TSAR;Alveolata;...;Genus;Genus_species   (9 levels)
       MIDORI2     Arthropoda_6656;Insecta_50557;...;Musca domestica_7370
     """
+    if "|" in lineage and re.search(r"(^|[|;])k__", lineage):
+        # UNITE general release: Name|Accession|SH…|reps|k__Fungi;p__…;…;g__Genus;s__Genus_species
+        lin = lineage.split("|")[-1]
+        ranks = {"k": "superkingdom", "p": "phylum", "c": "class", "o": "order",
+                 "f": "family", "g": "genus", "s": "species"}
+        tax = {}
+        for part in lin.split(";"):
+            m = re.match(r"^\s*([kpcofgs])__(.*)$", part)
+            if not m:
+                continue
+            v = m.group(2).strip()
+            if not v or re.match(r"(?i)^(unidentified|.*_incertae_sedis|incertae_sedis)$", v) \
+                    or v.lower().endswith("_sp"):
+                continue
+            tax[ranks[m.group(1)]] = v.replace("_", " ") if m.group(1) == "s" else v
+        return tax
     pieces = [p.strip() for p in lineage.split(";") if p.strip()]
     if pieces and sum(bool(re.search(r"_\d+$", p)) for p in pieces) >= max(1, len(pieces) - 1):
         clean = [re.sub(r"_\d+$", "", p) for p in pieces]
@@ -686,7 +739,8 @@ def parse_lineage(lineage: str) -> dict:
 
 
 # ── Step 9: Write ASV/taxonomy tables (same format as emu_pipeline.py) ─────────
-def write_tables(sample_names: list, otu_counts: dict, otu_tax: dict, out_dir: Path):
+def write_tables(sample_names: list, otu_counts: dict, otu_tax: dict, out_dir: Path,
+                 default_kingdom: str = "Bacteria"):
     sorted_otus = sorted(otu_counts.items(), key=lambda x: sum(x[1].values()), reverse=True)
 
     asv_path = out_dir / "asv_table.csv"
@@ -716,7 +770,7 @@ def write_tables(sample_names: list, otu_counts: dict, otu_tax: dict, out_dir: P
                 species_full = f"{genus} sp." if genus else ""
             writer.writerow([
                 otu_id,
-                row.get("superkingdom", "") or "Bacteria",
+                row.get("superkingdom", "") or default_kingdom,
                 row.get("phylum", "") or "",
                 row.get("class", "") or "",
                 row.get("order", "") or "",
@@ -818,6 +872,14 @@ def main():
     log(f"  OTU identity: {args.otu_similarity*100:.1f}%  |  DB: {args.db_path}")
     log("=" * 50)
 
+    its = str(args.marker or "").upper().startswith("ITS")
+    if its:
+        _RANK_IDENTITY_FLOOR.update(_ITS_IDENTITY_FLOOR)
+        if args.tax_identity == 0.80:            # the 16S default; ITS phylum floor is 75%
+            args.tax_identity = 0.75
+        log(f"  Marker {args.marker}: fungal ITS identity floors (Vu et al. 2019), "
+            f"taxonomy search at {args.tax_identity * 100:.0f}%")
+
     vsearch = find_tool("vsearch")
     if not vsearch:
         log("[ERROR] vsearch not found — this pipeline requires it (unlike Emu's optional "
@@ -850,7 +912,7 @@ def main():
                 "right and that the reads overlap (amplicon shorter than R1 + R2 - 16 bp).")
             sys.exit(1)
     else:
-        samples_raw = find_fastq(input_dir)
+        samples_raw = find_fastq(input_dir, out_dir / "merged_reads")
         if not samples_raw:
             log(f"[ERROR] No FASTQ files found in: {input_dir}")
             sys.exit(1)
@@ -919,7 +981,8 @@ def main():
 
     # ── 9. Write tables + viz ───────────────────────────────────────────────────
     progress(86, "Step 9/9 — Writing tables & generating plots")
-    sorted_otus = write_tables(sample_names, otu_counts, otu_tax, out_dir)
+    sorted_otus = write_tables(sample_names, otu_counts, otu_tax, out_dir,
+                               default_kingdom="" if its else "Bacteria")
     read_rows = write_read_tracking(samples_raw, samples_qc, samples_trimmed, mapped_totals, out_dir,
                                     paired_counts)
     write_summary(out_dir, sample_names, len(sorted_otus), read_rows, args)
