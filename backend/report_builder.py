@@ -2202,7 +2202,9 @@ def _methods_other(run, an):
                             "one expected error were discarded (<span class=\"mono\">--fastq_filter "
                             "--fastq_maxee 1</span>). " if run.paired else
                             "Reads were quality-filtered with chopper and primer-trimmed with cutadapt, "
-                            "searching both strands. ")
+                            "searching both strands" + ("; both primers were removed from each read "
+                            "(<span class=\"mono\">-n 2</span>)" if sm.get("cutadapt_times") == 2 else "")
+                            + ". ")
                    + ("Merged reads shorter than 50 bp were discarded." if run.paired else
                       f"Reads outside {p.get('ontMinLen', '—')}&ndash;{p.get('ontMaxLen', '—')} bp were "
                       f"discarded.") + "</p>" + prim_ul)

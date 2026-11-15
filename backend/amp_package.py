@@ -159,13 +159,23 @@ def build_sample(run_dir: Path, upload_dir: Path | None, sample: str, out_dir: P
     asvs = run.sample_asvs(s)
     of = Path(run_dir) / "otus.fasta"
     if vs and of.exists():                      # the centroid sequence of each OTU this sample holds
-        want = {str(a["id"]).split(";")[0] for a in asvs}
-        keep, out = False, []
+        # named by the SV numbers of the tables (SV001 = most reads), the pipeline's OTU id kept after it
+        sv = {str(a["id"]).split(";")[0]: a for a in asvs if a.get("id")}
+        seqs, cur = {}, None
         for line in of.read_text(errors="replace").splitlines():
             if line.startswith(">"):
-                keep = line[1:].split(";")[0].split()[0] in want
-            if keep:
-                out.append(line)
+                k = line[1:].split(";")[0].split()[0]
+                cur = k if k in sv else None
+                if cur:
+                    seqs[cur] = []
+            elif cur:
+                seqs[cur].append(line.strip())
+        out = []
+        for k in sorted(seqs, key=lambda k: sv[k]["sv"]):
+            a = sv[k]
+            lab = AD.label(a, "Species")
+            out += [f">{a['sv']} {k} reads={a['counts'].get(s, 0)}" + (f" {lab}" if lab else ""),
+                    "".join(seqs[k])]
         if out:
             (F["2.Taxonomy"] / "outfiles").mkdir(parents=True, exist_ok=True)
             (F["2.Taxonomy"] / "outfiles" / "otus.fasta").write_text("\n".join(out) + "\n")

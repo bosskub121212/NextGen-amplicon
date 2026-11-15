@@ -232,6 +232,8 @@ def prepare_paired(pairs: dict, out_dir: Path, primer_f: str, primer_r: str, thr
                 cmd += ["-g", primer_f, "-A", _rev_comp(primer_f)]
             if primer_r:
                 cmd += ["-G", primer_r, "-a", _rev_comp(primer_r)]
+            if primer_f and primer_r:
+                cmd += ["-n", "2"]          # a read that runs through the amplicon holds both
             cmd += ["-o", str(t1), "-p", str(t2), str(r1), str(r2)]
             run_cmd(cmd, f"Trim primers (paired) {name}")
             if not t1.exists():
@@ -337,6 +339,7 @@ def qc_filter_chopper(samples: dict, out_dir: Path, min_qual: int,
     return filtered
 
 # ── Step 2: Trim primers with cutadapt ─────────────────────────────────────────
+FWD_MIN_OVERLAP = 7     # bases of the forward primer's 3' end accepted at a read start
 def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
                  threads: int, error_rate: float, overlap: int,
                  min_len: int, max_len: int) -> dict[str, Path]:
@@ -356,11 +359,18 @@ def trim_primers(samples: dict, out_dir: Path, primer_f: str, primer_r: str,
         out_fq = trim_dir / fq.name
         cmd = [cutadapt, "-j", str(threads), "-e", str(error_rate), "-O", str(overlap)]
         if primer_f:
-            cmd += ["-g", primer_f]
+            # a read often starts inside the forward primer (the barcode trimming took its
+            # first bases): accept its last FWD_MIN_OVERLAP bases at the read start too
+            fo = min(overlap, FWD_MIN_OVERLAP)
+            cmd += ["-g", primer_f + (f";o={fo}" if fo < overlap else "")]
         if primer_r:
             cmd += ["-a", _rev_comp(primer_r)]
         if primer_f or primer_r:
             cmd += ["--revcomp"]
+        if primer_f and primer_r:
+            # cutadapt removes one adapter per read by default; a whole amplicon read
+            # carries both primers, so allow two rounds (as emu_pipeline does)
+            cmd += ["-n", "2"]
         cmd += ["--discard-untrimmed", "-m", str(min_len)]
         if max_len:
             cmd += ["-M", str(max_len)]
@@ -840,6 +850,9 @@ def write_summary(out_dir: Path, sample_names: list, n_otus: int,
         "trim_max_len":   args.max_len,
         "cutadapt_error_rate": args.cutadapt_error_rate,
         "cutadapt_overlap":    args.cutadapt_overlap,
+        "cutadapt_times":      2 if (args.primer_f and args.primer_r) else 1,
+        "cutadapt_fwd_overlap": (min(args.cutadapt_overlap, FWD_MIN_OVERLAP)
+                                 if args.primer_f and not getattr(args, "_paired", False) else None),
         "tax_identity":   args.tax_identity,
     }
     path = out_dir / "summary.json"

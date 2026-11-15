@@ -49,6 +49,15 @@ def main():
               == [("PGU-ITS", 5)], str([(x["sample"], len(x["files"])) for x in g]))
         g2 = w.group_fastqs(["L21_1.fastq.gz", "L21_2.fastq.gz"], {})
         check("replicates _1/_2 are not merged", len(g2) == 2)
+        cmds = []
+        qv.run_cmd = lambda cmd, label="": cmds.append(cmd)
+        qv.find_tool = lambda n: n
+        with tempfile.TemporaryDirectory() as td:
+            qv.trim_primers({"S": Path(td) / "S.fastq.gz"}, Path(td), "TCCGTAGGTGAACCTGCGG",
+                            "GCTGCGTTCTTCATCGATGC", 2, 0.2, 10, 100, 900)
+        c = cmds[0] if cmds else []
+        check("cutadapt (single-end) removes both primers of a read (-n 2) and a 7-base forward-primer stub",
+              "-n" in c and c[c.index("-n") + 1] == "2" and "TCCGTAGGTGAACCTGCGG;o=7" in c, c)
         m = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
         i = m.find('if marker in ("ITS1", "ITS2", "ITS") and params.sequencerType in ("ont", "qiime2_vsearch")')
         j = m.find('elif marker in ("ITS1", "ITS2", "ITS"):')
@@ -105,6 +114,10 @@ def package_checks():
             html = (root / "Report_PGU-ITS.html").read_text()
             check("folders 1-4 made", all((root / f).is_dir() for f in AP.FOLDERS))
             check("OTU centroids of the sample", (root / "2.Taxonomy" / "outfiles" / "otus.fasta").exists())
+            fa = (root / "2.Taxonomy" / "outfiles" / "otus.fasta").read_text().splitlines()
+            check("otus.fasta named by the tables' SV numbers", fa[0].startswith(">SV001 OTU_1 reads=1769")
+                  and "Nannizziopsis arthrosporioides" in fa[0] and fa[1] == "ACGTACGT"
+                  and fa[2].startswith(">SV002 OTU_2"), fa[:4])
             check("report: fungal ITS title and VSEARCH method",
                   "Fungal ITS1 amplicon sequencing report" in html and "VSEARCH OTU pipeline" in html
                   and "UNOISE3" in html and "Vu et al. (2019)" in html and "UNITE general release 2025-02-19" in html)

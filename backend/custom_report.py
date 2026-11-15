@@ -406,6 +406,7 @@ def vsearch_settings(run) -> dict:
             "tmin": sm.get("trim_min_len", lo), "tmax": sm.get("trim_max_len", hi),
             "alpha": sm.get("unoise_alpha", 2.0), "minsize": sm.get("unoise_minsize", 8),
             "map_id": sm.get("otu_similarity", 0.97),
+            "times": sm.get("cutadapt_times", 1), "fo": sm.get("cutadapt_fwd_overlap"),
             "its": str(p.get("marker") or sm.get("marker") or "").upper().startswith("ITS")}
     out["tax_id"] = sm.get("tax_identity", 0.75 if out["its"] else 0.80)
     return out
@@ -668,7 +669,10 @@ def _vsearch_steps(run, i, s, folder, img, qc, plots, job_label, rel=None, reads
          "<h4>3. Remove primer sequences by cutadapt</h4>",
          f"<p>cutadapt searched each read for the primers (error rate {st['e']:g}, minimum overlap {st['O']} bases) "
          "and removed them; nanopore reads can come from either strand, so the reverse complements were searched as "
-         "well. Reads in which no primer was found were discarded, and reads shorter than "
+         "well" + ("; both primers were removed from each read (two rounds, cutadapt -n 2)" if st["times"] == 2 else "")
+         + (f", and the forward primer was also recognised when only its last {st['fo']} bases were left at the "
+            "start of a read" if st["fo"] and st["fo"] < st["O"] else "")
+         + ". Reads in which no primer was found were discarded, and reads shorter than "
          f"{st['tmin']} or longer than {st['tmax']} bases after trimming were dropped.</p>"]
     if not (f_ or r_):
         o[-1] = "<p>No primer sequences were given for this run; cutadapt was not run.</p>"
