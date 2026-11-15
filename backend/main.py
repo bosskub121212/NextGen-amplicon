@@ -240,6 +240,8 @@ class RunParams(BaseModel):
     sequencerType: str   = "illumina"   # illumina | ont | qiime2_vsearch
     # --- VSEARCH OTU clustering identity, used when sequencerType == "qiime2_vsearch" ---
     otuSimilarity: float = 0.97
+    # Merge UNOISE OTUs within this identity (e.g. 0.97) — nanopore near-copies; 0 = off
+    otuMergeId:    float = 0.0
     # --- VSEARCH UNOISE denoising params (qiime2_vsearch only). minsize=8 is the
     # standard USEARCH/UNOISE3 SOP default; lower it (e.g. 2-4) to retain more
     # low-abundance real variants as their own OTUs if the resulting OTU count
@@ -1162,6 +1164,7 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
             "--otu_similarity", str(params.otuSimilarity),
             "--unoise_alpha",   str(params.otuUnoiseAlpha),
             "--unoise_minsize", str(params.otuUnoiseMinsize),
+            "--otu_merge_id",   str(params.otuMergeId or 0),
             "--min_len",        str(lo),
             "--max_len",        str(hi),
             "--topN",           str(params.topN),
@@ -1508,6 +1511,7 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
             "--otu_similarity", str(params.otuSimilarity),
             "--unoise_alpha",   str(params.otuUnoiseAlpha),
             "--unoise_minsize", str(params.otuUnoiseMinsize),
+            "--otu_merge_id",   str(params.otuMergeId or 0),
             "--min_len",        str(params.ontMinLen),
             "--max_len",        str(params.ontMaxLen),
             "--topN",           str(params.topN),

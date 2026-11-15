@@ -6095,6 +6095,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["ontMinLen",         "Minimum read length (VSEARCH OTUs only)","int",   "300",
          "not used by Emu — Emu: Chopper keeps 100–2,000 bp, then 1,000–1,700 bp (V1–V9) / 250–450 bp (V7–V8) after primer trimming"],
         ["ontMaxLen",         "Maximum read length (VSEARCH OTUs only)","int",   "600", "bp — not used by Emu"],
+        ["otuMergeId",        "Merge OTU variants (VSEARCH OTUs only)", "select", "0", [["0","off — every UNOISE OTU kept"],["0.97","97% — merge near-copies (nanopore errors)"],["0.98","98%"],["0.99","99%"]],
+         "not used by Emu — OTUs within this identity of a more abundant one are merged into it"],
         ["nThreads",          "CPU threads",       "int",    "8", "minimap2 / Emu, chopper, VSEARCH (Emu ran on 4 before)"],
         ["ont_parallel",      "Samples in parallel", "int",  "0",
          "Emu runs this many samples at once, sharing the threads; 0 = automatic from CPU and free RAM"],
@@ -6123,7 +6125,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["maxEE_R",    "maxEE, reverse", "num", "2", "Illumina (DADA2) only"],
         ["ontMinLen",  "Minimum read length (Nanopore / VSEARCH)", "int", "100",
          "after primer trimming — Nanopore ITS runs through VSEARCH OTUs with UNITE"],
-        ["ontMaxLen",  "Maximum read length (Nanopore / VSEARCH)", "int", "900", "bp"]
+        ["ontMaxLen",  "Maximum read length (Nanopore / VSEARCH)", "int", "900", "bp"],
+        ["otuMergeId", "Merge OTU variants (Nanopore / VSEARCH)", "select", "0", [["0","off — every UNOISE OTU kept"],["0.97","97% — merge near-copies (nanopore errors)"],["0.98","98%"],["0.99","99%"]],
+         "OTUs within this identity of a more abundant one are merged into it; the most abundant sequence names the OTU"]
       ]});
 
     if(dada2 || isPB || isCOX1 || isITS) steps.push({n:3, title:"DADA2 — ASV denoising",

@@ -58,7 +58,24 @@ def main():
         c = cmds[0] if cmds else []
         check("cutadapt (single-end) removes both primers of a read (-n 2) and a 7-base forward-primer stub",
               "-n" in c and c[c.index("-n") + 1] == "2" and "TCCGTAGGTGAACCTGCGG;o=7" in c, c)
+        cmds.clear()
+        with tempfile.TemporaryDirectory() as td:
+            o = Path(td) / "otus.fasta"
+            o.write_text(">OTU_1;size=9\nACGT\n>OTU_2;size=3\nACGA\n")
+            def fake(cmd, label=""):
+                cmds.append(cmd); Path(cmd[cmd.index("--centroids") + 1]).write_text(">OTU_1;size=12\nACGT\n"); return True
+            qv.run_cmd = fake
+            f, n0, n1 = qv.merge_otu_variants("vsearch", o, Path(td), 0.97, 2)
+            c = cmds[0] if cmds else []
+            check("OTU variants merged with cluster_size at the chosen identity, UNOISE set kept",
+                  "--cluster_size" in c and c[c.index("--id") + 1] == "0.97" and (n0, n1) == (2, 1)
+                  and (Path(td) / "otus_unoise.fasta").exists() and f == o, (c, n0, n1))
+            qv.run_cmd = lambda cmd, label="": False
+            o.write_text(">OTU_1;size=9\nACGT\n>OTU_2;size=3\nACGA\n")
+            f, n0, n1 = qv.merge_otu_variants("vsearch", o, Path(td), 0.97, 2)
+            check("failed merge falls back to the UNOISE OTUs", (n0, n1) == (2, 2) and o.read_text().count(">") == 2)
         m = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+        check("main: otuMergeId sent to both VSEARCH branches", m.count('"--otu_merge_id",   str(params.otuMergeId or 0)') == 2)
         i = m.find('if marker in ("ITS1", "ITS2", "ITS") and params.sequencerType in ("ont", "qiime2_vsearch")')
         j = m.find('elif marker in ("ITS1", "ITS2", "ITS"):')
         check("main: Nanopore ITS -> VSEARCH pipeline with UNITE before the DADA2 ITS branch",
@@ -113,6 +130,7 @@ def package_checks():
             root = Path(man["dir"])
             html = (root / "Report_PGU-ITS.html").read_text()
             check("folders 1-4 made", all((root / f).is_dir() for f in AP.FOLDERS))
+            check("report: no merge sentence when OTU variants were not merged", "were then merged" not in html)
             check("OTU centroids of the sample", (root / "2.Taxonomy" / "outfiles" / "otus.fasta").exists())
             fa = (root / "2.Taxonomy" / "outfiles" / "otus.fasta").read_text().splitlines()
             check("otus.fasta named by the tables' SV numbers", fa[0].startswith(">SV001 OTU_1 reads=1769")

@@ -407,6 +407,7 @@ def vsearch_settings(run) -> dict:
             "alpha": sm.get("unoise_alpha", 2.0), "minsize": sm.get("unoise_minsize", 8),
             "map_id": sm.get("otu_similarity", 0.97),
             "times": sm.get("cutadapt_times", 1), "fo": sm.get("cutadapt_fwd_overlap"),
+            "merge": sm.get("otu_merge_id"), "n_unoise": sm.get("otus_unoise"),
             "its": str(p.get("marker") or sm.get("marker") or "").upper().startswith("ITS")}
     out["tax_id"] = sm.get("tax_identity", 0.75 if out["its"] else 0.80)
     return out
@@ -687,7 +688,12 @@ def _vsearch_steps(run, i, s, folder, img, qc, plots, job_label, rel=None, reads
           '<p class="indent">1) Dereplication and chimera removal -- identical reads were collapsed (--derep_fulllength) '
           "and chimeras removed against the reference (--uchime_ref).</p>",
           '<p class="indent">2) Denoising -- the unique sequences were denoised with UNOISE3 (--cluster_unoise, alpha '
-          f"{st['alpha']:g}, minimum size {st['minsize']}); each OTU is the centroid sequence of a denoised cluster.</p>",
+          f"{st['alpha']:g}, minimum size {st['minsize']}); each OTU is the centroid sequence of a denoised cluster"
+          + (f". OTUs within {100 * float(st['merge']):g}% identity of a more abundant one were then merged into it "
+             "(--cluster_size, abundance-sorted, so the most abundant sequence stays the centroid)"
+             + (f", {st['n_unoise']} OTUs before merging" if st.get("n_unoise") else "")
+             + "; nanopore sequencing errors otherwise leave near-copies of an abundant OTU as OTUs of their own"
+             if st.get("merge") else "") + ".</p>",
           '<p class="indent">3) Counting -- every read of the sample was mapped back to the OTUs (--usearch_global, '
           f"{100 * float(st['map_id']):.0f}% identity, both strands); a read below that identity to every OTU is not "
           "counted.</p>",

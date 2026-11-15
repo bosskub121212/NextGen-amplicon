@@ -87,6 +87,10 @@ def parse_args():
     p.add_argument("--tax_identity",   type=float, default=0.80, help="VSEARCH taxonomy-assignment identity (0-1)")
     p.add_argument("--unoise_alpha",   type=float, default=2.0, help="VSEARCH UNOISE alpha — higher merges more low-abundance variants into a higher-abundance parent")
     p.add_argument("--unoise_minsize", type=int,   default=8,   help="VSEARCH UNOISE minimum size — unique sequences observed fewer times than this are discarded before clustering. Lower this if OTU counts look too low vs. a reference/other pipeline; raise it if OTU counts look inflated")
+    p.add_argument("--otu_merge_id",   type=float, default=0.0,
+                   help="Merge UNOISE OTUs within this identity (0-1, e.g. 0.97) with --cluster_size, "
+                        "the most abundant as centroid; 0 = off. For nanopore reads, whose errors leave "
+                        "near-copies of an abundant OTU")
     p.add_argument("--threads",       type=int,   default=4)
     p.add_argument("--metadata",      default="")
     p.add_argument("--topN",          type=int,   default=30)
@@ -507,6 +511,26 @@ def cluster_otus(vsearch: str, nonchim_fasta: Path, out_dir: Path,
     ok = run_cmd(cmd, f"Denoise & cluster OTUs (UNOISE, alpha={unoise_alpha}, minsize={unoise_minsize})")
     return otus if ok and otus.exists() else None
 
+def merge_otu_variants(vsearch: str, otus: Path, out_dir: Path, identity: float, threads: int) -> tuple[Path, int, int]:
+    """Cluster the UNOISE OTUs at `identity` (--cluster_size: abundance-sorted, so the most
+    abundant OTU of a cluster is its centroid and keeps its sequence). Returns
+    (fasta, OTUs before, OTUs after); the UNOISE set stays as otus_unoise.fasta and which OTU
+    went where in otu_merge.uc. On failure the UNOISE OTUs are used unchanged."""
+    n0 = sum(1 for l in open(otus) if l.startswith(">"))
+    unoise = out_dir / "otus_unoise.fasta"
+    otus.replace(unoise)
+    cmd = [vsearch, "--cluster_size", str(unoise), "--id", str(identity),
+           "--sizein", "--sizeout", "--centroids", str(otus), "--uc", str(out_dir / "otu_merge.uc"),
+           "--relabel", "OTU_", "--strand", "both", "--threads", str(threads)]
+    ok = run_cmd(cmd, f"Merge OTU variants at {identity * 100:g}% identity (cluster_size)")
+    if not (ok and otus.exists()):
+        log("  [WARN] merging OTU variants failed — the UNOISE OTUs are used as they are")
+        unoise.replace(otus)
+        return otus, n0, n0
+    n1 = sum(1 for l in open(otus) if l.startswith(">"))
+    log(f"  OTU variants merged at {identity * 100:g}%: {n0} -> {n1} OTUs")
+    return otus, n0, n1
+
 # ── Step 7: Map each sample's reads back to OTU centroids ──────────────────────
 def map_reads_to_otus(vsearch: str, samples: dict, otus_fasta: Path, out_dir: Path,
                       similarity: float, threads: int):
@@ -850,6 +874,8 @@ def write_summary(out_dir: Path, sample_names: list, n_otus: int,
         "trim_max_len":   args.max_len,
         "cutadapt_error_rate": args.cutadapt_error_rate,
         "cutadapt_overlap":    args.cutadapt_overlap,
+        "otu_merge_id":   (args.otu_merge_id if 0 < (args.otu_merge_id or 0) < 1 else None),
+        "otus_unoise":    getattr(args, "_otus_unoise", None),
         "cutadapt_times":      2 if (args.primer_f and args.primer_r) else 1,
         "cutadapt_fwd_overlap": (min(args.cutadapt_overlap, FWD_MIN_OVERLAP)
                                  if args.primer_f and not getattr(args, "_paired", False) else None),
@@ -983,6 +1009,10 @@ def main():
     if not otus_fasta:
         log("[ERROR] OTU clustering failed.")
         sys.exit(1)
+    args._otus_unoise = None
+    if args.otu_merge_id and 0 < args.otu_merge_id < 1:
+        otus_fasta, args._otus_unoise, _n = merge_otu_variants(vsearch, otus_fasta, out_dir,
+                                                               args.otu_merge_id, args.threads)
 
     # ── 7. Map reads back to OTU centroids ──────────────────────────────────────
     progress(64, f"Step 7/9 — Mapping reads to {sum(1 for _ in open(otus_fasta) if _.startswith('>'))} OTUs")

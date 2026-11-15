@@ -2213,7 +2213,11 @@ def _methods_other(run, an):
                    f"against the reference (<span class=\"mono\">--uchime_ref</span>), and the remaining "
                    f"unique sequences were denoised with UNOISE3 (<span class=\"mono\">--cluster_unoise</span>, "
                    f"alpha {p.get('otuUnoiseAlpha', 2.0)}, minimum size {p.get('otuUnoiseMinsize', 8)}). "
-                   f"Every read was then mapped back to the OTU centroids "
+                   + (f"OTUs within {100 * float(sm['otu_merge_id']):g}% identity of a more abundant one were "
+                      f"merged into it (<span class=\"mono\">--cluster_size</span>, the most abundant sequence "
+                      f"kept as centroid" + (f"; {sm['otus_unoise']} OTUs before merging" if sm.get("otus_unoise") else "")
+                      + "). " if sm.get("otu_merge_id") else "")
+                   + f"Every read was then mapped back to the OTU centroids "
                    f"(<span class=\"mono\">--usearch_global</span>) to count it.</p>")
         out.append("<h3>Taxonomic assignment</h3>")
         out.append(f"<p>Each OTU took the taxonomy of its best hit in <b>{esc(run.db_name)}</b> "
