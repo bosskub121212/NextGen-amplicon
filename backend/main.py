@@ -2337,6 +2337,8 @@ class ReportRequest(BaseModel):
     top_asv:  int = 30          # 30 / 50 / 100 — only used by the single-run layout
     compare:  bool = False      # force the comparison layout on one folder
     format:   str = "pdf"       # "pdf" or "docx" (an editable Word file from the same HTML)
+    group_col: Optional[str] = None        # one run: the grouping (metadata.csv column) to analyse
+    groups:    Optional[List[str]] = None  # one run: report only the samples of these groups
 
 
 def _report_docx(doc: str, stem: str):
@@ -2994,7 +2996,17 @@ def build_report(req: ReportRequest):
         else:
             label = j.get("job_name") or jid
         try:
-            runs.append(rb.Run(Path(out), rb.KITOME, label))
+            only = None
+            if len(req.job_ids) == 1 and req.group_col and req.groups:
+                only = rb.samples_in_groups(Path(out), req.group_col, req.groups)
+                if not only:
+                    return JSONResponse(status_code=400, content={
+                        "error": f"No sample of the job is in the groups {', '.join(req.groups)} of "
+                                 f"\u201c{req.group_col}\u201d (metadata.csv). Save the groups first."})
+                label = f"{label} \u2014 {', '.join(req.groups)}"
+            runs.append(rb.Run(Path(out), rb.KITOME, label, samples=only,
+                               group_col=(req.group_col if len(req.job_ids) == 1 else None),
+                               groups=(req.groups if len(req.job_ids) == 1 else None)))
         except Exception as e:
             missing.append(f"{label}: {e}")
     if not runs:

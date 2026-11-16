@@ -64,6 +64,27 @@ SERIES = ["#1E6E8C", "#8FA8B2", "#2E6B46", "#96660A", "#6B4E8C"]
 MANY, CHUNK = 24, 45
 
 
+def _skey(x) -> str:
+    """A sample name folded for matching (case, punctuation, R's make.names dots)."""
+    return re.sub(r"[^a-z0-9]", "", str(x).lower())
+
+
+def samples_in_groups(path, group_col: str, groups) -> list[str]:
+    """Samples of metadata.csv whose value in group_col is one of groups (all grouped samples when
+    groups is empty), in the file's order."""
+    p = Path(path) / "metadata.csv"
+    if not p.exists() or not group_col:
+        return []
+    with open(p, newline="", encoding="utf-8", errors="replace") as fh:
+        rows = list(csv.DictReader(fh))
+    if not rows or group_col not in rows[0]:
+        return []
+    idk = list(rows[0].keys())[0]
+    want = {str(g).strip() for g in (groups or [])}
+    return [str(r[idk]).strip() for r in rows
+            if (r.get(group_col) or "").strip() and (not want or (r.get(group_col) or "").strip() in want)]
+
+
 def _gammaincc(a, x):
     """Regularised upper incomplete gamma Q(a, x) (Numerical Recipes gser / gcf)."""
     if x <= 0:
@@ -220,10 +241,18 @@ class Run:
     and reference databases are absorbed in one place.
     """
 
-    def __init__(self, path: Path, kitome: set[str], label: str | None = None):
+    def __init__(self, path: Path, kitome: set[str], label: str | None = None,
+                 samples=None, group_col: str | None = None, groups=None):
+        """samples: report only these samples (a report for some groups of the run); everything
+        — totals, tables, diversity — is then computed from them alone. group_col: the grouping
+        (metadata.csv column) to analyse, over the one chosen in Customise charts; groups: the
+        groups of it that were picked (their order is kept)."""
         self.path = Path(path)
         if not self.path.is_dir():
             raise FileNotFoundError(f"not a directory: {self.path}")
+        self.only = list(samples) if samples else None
+        self.group_pick = group_col or ""
+        self.groups_pick = list(groups or [])
         self.kitome = kitome
         self.label = label or self.path.name
 
@@ -314,6 +343,15 @@ class Run:
             seq_col = "sequence" if "sequence" in cols else cols[-1]
         self.samples = [c for c in cols if c != seq_col and c != ""]
         self.tracking = self._rows("read_tracking.csv")
+        self.all_samples = list(self.samples)
+        if self.only:
+            want = {_skey(x) for x in self.only}
+            self.samples = [x for x in self.samples if _skey(x) in want]
+            if not self.samples:
+                raise ValueError(f"{self.path.name}: none of the chosen samples is in this run")
+            keep = {_skey(x) for x in self.samples}
+            gone = {_skey(x) for x in self.all_samples} - keep
+            self.tracking = [t for t in self.tracking if _skey(next(iter(t.values()), "")) not in gone]
         # Emu reports relative abundance (the pipeline stores it as parts per
         # million). Scaled to each sample's classified reads it becomes Emu's
         # estimated read count, so every "reads" figure below means reads.
@@ -356,10 +394,19 @@ class Run:
                 row[s] += v
                 tot += v
             self.abund[seq] = self.abund.get(seq, 0.0) + tot
+        if self.only:                    # features none of the chosen samples holds are not in this report
+            for q in [q for q, v in self.abund.items() if v <= 0]:
+                self.abund.pop(q, None)
+                self.mat.pop(q, None)
         self.total = sum(self.abund.values())
 
         self.alpha = self._rows("alpha_diversity.csv")
         self.rarefaction = self._rows("rarefaction.csv")
+        if self.only:
+            gone = {_skey(x) for x in self.all_samples} - {_skey(x) for x in self.samples}
+            drop = lambda r: any(_skey(v) in gone for v in list(r.values())[:2])
+            self.alpha = [r for r in self.alpha if not drop(r)]
+            self.rarefaction = [r for r in self.rarefaction if not drop(r)]
         self.orientation = self._json("orientation_report.json")
 
     def _load_blast(self):
@@ -1457,6 +1504,9 @@ class Analysis:
             except Exception:
                 pick = ""
             col = pick if pick in keys and pick != idk else ""
+            forced = getattr(self.run, "group_pick", "")
+            if forced and forced in keys and forced != idk:
+                col = forced
             col = col or next((k for k in keys if k in ("group", "Group")), "")
             if not col:
                 col = next((k for k in keys if k.lower() not in skip
@@ -1481,12 +1531,13 @@ class Analysis:
         return {s: g[s] for s in self.samples if s in g}
 
     def group_list(self):
-        """[(group, [samples])] in first-seen order of the run's samples."""
-        out = OrderedDict()
+        """[(group, [samples])]: the groups picked for the report in their order, else in
+        first-seen order of the run's samples."""
+        out = OrderedDict((g, []) for g in getattr(self.run, "groups_pick", []) or [])
         for s_ in self.samples:
             if s_ in self.groups:
                 out.setdefault(self.groups[s_], []).append(s_)
-        return list(out.items())
+        return [(g, v) for g, v in out.items() if v]
 
     def permanova_groups(self, perms=999, seed=1):
         """PERMANOVA (Anderson 2001) of Bray–Curtis on the current groups, computed here so that it
@@ -3323,7 +3374,10 @@ def _readqc_section(run, F, T):
         return []
     out = ["<h3>Raw read quality</h3>"]
     rows = []
+    keep = {_skey(x) for x in run.samples}
     for name, ent in qc["samples"].items():
+        if run.only and _skey(name) not in keep:
+            continue
         fs = ent.get("files", [])
         if not fs:
             continue
@@ -3570,6 +3624,14 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     out.append('<div class="kpis">' + "".join(
         f'<div class="kpi"><div class="v">{v}</div><div class="l">{esc(l)}</div></div>'
         for v, l in kpis) + "</div>")
+    if run.only:
+        gl_ = an.group_list()
+        out.append('<div class="note acc"><b>This report covers ' + f"{len(S)} of the run&rsquo;s "
+                   f"{len(run.all_samples)} samples</b>"
+                   + (f": the group{'s' if len(gl_) != 1 else ''} "
+                      + ", ".join(f"<b>{esc(g)}</b> ({len(v)})" for g, v in gl_)
+                      + f" of the grouping &ldquo;{esc(an.group_col)}&rdquo;" if gl_ else "")
+                   + ". Every number, table and figure below is computed from these samples only.</div>")
     srows = [[esc(s), esc(an.groups.get(s, "—")), f'<span class="dim">{esc(an.desc.get(s, ""))}</span>']
              for s in S]
     out.append(_tbl(["Sample", "Group", "Description"], srows) if (an.groups or an.desc)

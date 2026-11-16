@@ -74,6 +74,24 @@ def main():
                   "Taxa by group" in gh and "The ten most abundant genera of each group" in gh
                   and "Kruskal&ndash;Wallis" in gh and "PERMANOVA on Bray&ndash;Curtis dissimilarity (999 permutations)" in gh
                   and "mean relative abundance per group" in gh)
+            sub = RB.samples_in_groups(d, "Type", ["C", "W"])
+            rs = RB.Run(d, set(), "grp \u2014 C, W", samples=sub, group_col="Type", groups=["W", "C"])
+            sh = RB.build_profile_html(rs)
+            check("report of two groups: only their samples, groups in the order picked",
+                  len(rs.samples) == len(sub) and len(rs.all_samples) == 60 and 0 < len(sub) < 60
+                  and f"This report covers {len(sub)} of the run&rsquo;s 60 samples" in sh
+                  and sh.index("<b>W</b>") < sh.index("<b>C</b>") and "Analysis by group" in sh
+                  and all(x.split("_")[1] in ("C", "W") for x in rs.samples), len(sub))
+            try:
+                RB.Run(d, set(), samples=["nope"])
+                check("no chosen sample in the run -> error", False)
+            except ValueError:
+                check("no chosen sample in the run -> error", True)
+            m = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+            h_ = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
+            check("report request carries the grouping and the ticked groups",
+                  "group_col: Optional[str]" in m and "rb.samples_in_groups(" in m
+                  and 'id="repGcol"' in h_ and "group_col: oneRun ? R.gcol : null" in h_)
             check("wide bars ordered by group, with group brackets", "ordered by group" in gh
                   and 'font-weight="700" text-anchor="middle">C<' in gh)
         k = RB._kruskal([[0.92, 1.1, 3.4, 2.2, 7.7, 5.1, 6.4, 9.0], [3.5, 12.1, 9.9, 4.4, 8.8, 10.2, 7.3, 11.0, 6.1, 5.5],

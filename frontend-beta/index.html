@@ -8415,7 +8415,52 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(!box) return;
     if(box.dataset.open === "1"){ box.innerHTML = ""; box.dataset.open = ""; return; }
     box.dataset.open = "1";
-    var R = {pick:[jid], top:30, title:"", busy:false, err:"", fmt:"pdf"};
+    var R = {pick:[jid], top:30, title:"", busy:false, err:"", fmt:"pdf",
+             /* groups of this job (metadata.csv): report some of them and compare them */
+             meta:null, gcol:"", gpick:[]};
+    api("/results/" + encodeURIComponent(jid) + "/metadata").then(function(m){
+      var rows = (m && m.rows) || [], cols = (m && m.columns) || [];
+      var idc = cols[0] || "";
+      var G = {};
+      cols.slice(1).forEach(function(c){
+        var order = [], n = {};
+        rows.forEach(function(r){
+          var v = String(r[c] == null ? "" : r[c]).trim();
+          if(!v) return;
+          if(!(v in n)){ n[v] = 0; order.push(v); }
+          n[v]++;
+        });
+        var longest = Math.max.apply(null, [0].concat(order.map(function(v){ return v.length; })));
+        if(order.length >= 1 && longest <= 40 && order.length < rows.length) G[c] = {order: order, n: n};
+      });
+      R.meta = {cols: Object.keys(G), G: G, id: idc};
+      if(box.dataset.open === "1") paint();
+    }).catch(function(){ R.meta = {cols: [], G: {}}; });
+    function groupsHtml(){
+      if(R.pick.length !== 1 || R.pick[0] !== jid || !R.meta || !R.meta.cols.length) return "";
+      var G = R.gcol ? R.meta.G[R.gcol] : null;
+      var nS = G ? R.gpick.reduce(function(a, g){ return a + (G.n[g] || 0); }, 0) : 0;
+      return '<div class="lab">Groups</div>'
+        + '<select id="repGcol"><option value="">All samples (no grouping)</option>'
+        + R.meta.cols.map(function(c){
+            return '<option value="' + esc(c) + '"' + (c === R.gcol ? " selected" : "") + '>Grouping: ' + esc(c)
+              + ' (' + R.meta.G[c].order.length + ' groups)</option>'; }).join("") + '</select>'
+        + (G ? '<div class="runs">' + G.order.map(function(g){
+              var on = R.gpick.indexOf(g) !== -1;
+              return '<label class="' + (on ? "on" : "") + '"><input type="checkbox" data-g="' + esc(g) + '"'
+                + (on ? " checked" : "") + '><span class="nm">' + esc(g) + '</span>'
+                + '<span class="chip mk">' + G.n[g] + ' sample' + (G.n[g] === 1 ? "" : "s") + '</span></label>';
+            }).join("") + '</div>'
+            + '<div class="what">' + (R.gpick.length
+                ? 'The report covers the ' + nS + ' samples of the ' + R.gpick.length + ' ticked group'
+                  + (R.gpick.length === 1 ? "" : "s") + ' only; every number and figure is computed from them.'
+                  + (R.gpick.length >= 2 ? ' With two or more groups it adds <b>Analysis by group</b>: group means, '
+                    + 'taxa per group, alpha diversity by group (Kruskal\u2013Wallis) and beta diversity by group '
+                    + '(PERMANOVA, within / between).' : ' Tick a second group to compare them.')
+                : 'Tick the groups to report.') + '</div>'
+          : '<div class="what">Groups are set in View results \u2192 Customise charts (Save groups), or by '
+            + 'Upload metadata there.</div>');
+    }
     function runs(){
       /* the job this was opened from is always listed, even if the job list
          was fetched before it finished */
@@ -8440,6 +8485,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                   return '<button class="btn' + (R.top === n ? " on" : "") + '" data-top="' + n + '">Top ' + n + '</button>'; }).join("")
               + '</div>'
             : "")
+        + groupsHtml()
         + '<div class="lab">Runs to include (' + R.pick.length + ')</div>'
         + '<div class="runs">' + (list.length ? list.map(function(j){
             var i = R.pick.indexOf(j.job_id), on = i >= 0;
@@ -8469,6 +8515,21 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       Array.prototype.forEach.call(box.querySelectorAll("[data-top]"), function(b){
         b.addEventListener("click", function(){ R.top = parseInt(b.dataset.top, 10); paint(); });
       });
+      var gsel = document.getElementById("repGcol");
+      if(gsel) gsel.addEventListener("change", function(){
+        R.gcol = gsel.value;
+        R.gpick = R.gcol ? R.meta.G[R.gcol].order.slice() : [];
+        paint();
+      });
+      Array.prototype.forEach.call(box.querySelectorAll("[data-g]"), function(c){
+        c.addEventListener("change", function(){
+          var g = c.dataset.g, i = R.gpick.indexOf(g);
+          if(i >= 0) R.gpick.splice(i, 1); else R.gpick.push(g);
+          var order = R.meta.G[R.gcol].order;          /* keep the grouping's own order */
+          R.gpick.sort(function(a, b){ return order.indexOf(a) - order.indexOf(b); });
+          paint();
+        });
+      });
       Array.prototype.forEach.call(box.querySelectorAll("[data-j]"), function(c){
         c.addEventListener("change", function(){
           var id = c.dataset.j, i = R.pick.indexOf(id);
@@ -8483,13 +8544,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }
     function build(){
       if(R.busy || !R.pick.length) return;
+      var oneRun = R.pick.length === 1 && R.pick[0] === jid && R.gcol;
+      if(oneRun && !R.gpick.length){ R.err = "Tick at least one group, or choose All samples."; paint(); return; }
       R.busy = true; R.err = ""; paint();
       var names = R.pick.map(function(id){
         var j = STATE.jobs.filter(function(x){ return x.job_id === id; })[0];
         return (j && j.job_name) || id; });
       fetch("/report", {method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({job_ids: R.pick, title: R.title.trim() || null, top_asv: R.top, format: R.fmt,
-                              company: "NextGen Network Corporation Company Limited", labels: names})})
+                              company: "NextGen Network Corporation Company Limited", labels: names,
+                              group_col: oneRun ? R.gcol : null, groups: oneRun ? R.gpick : null})})
         .then(function(r){
           if(!r.ok) return r.text().then(function(t){
             var m = "HTTP " + r.status;
