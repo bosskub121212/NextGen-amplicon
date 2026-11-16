@@ -3995,6 +3995,34 @@ async def save_metadata(job_id: str, request: Request):
     (job_dir / "metadata.csv").write_text(csv_text, encoding="utf-8")
     return {"ok": True, "path": "metadata.csv"}
 
+@app.post("/results/{job_id}/metadata/upload")
+async def upload_metadata(job_id: str, file: UploadFile = File(...)):
+    """Metadata prepared outside the app (CSV / TSV / Excel) becomes the job's metadata.csv. The
+    sample column is found by its values and matched to the job's names ignoring case and
+    punctuation; the old file is kept as metadata.csv.bak-<time>. Answers what matched."""
+    import metadata_upload as MU
+    job_dir = RESULTS_DIR / job_id
+    if not job_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Job not found")
+    raw = await file.read()
+    if len(raw) > MU.MAX_BYTES:
+        return JSONResponse(status_code=400, content={"error": "File larger than 5 MB."})
+    try:
+        rows = MU.read_table(raw, file.filename or "")
+    except Exception as ex:
+        return JSONResponse(status_code=400, content={"error": f"Could not read the file: {ex}"})
+    samples = MU.job_samples(job_dir)
+    if not samples:
+        return JSONResponse(status_code=400, content={"error": "This job has no sample table (asv_table.csv)."})
+    res = MU.check(rows, samples)
+    if res.get("error"):
+        return JSONResponse(status_code=400, content={"error": res["error"]})
+    old = job_dir / "metadata.csv"
+    if old.exists():
+        old.replace(job_dir / f"metadata.csv.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    old.write_text(res.pop("csv"), encoding="utf-8")
+    return res
+
 @app.post("/results/{job_id}/metadata/json")
 async def save_metadata_json(job_id: str, request: Request):
     """Save metadata from JSON array [{SampleID, Group, ...}] → metadata.csv."""

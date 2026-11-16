@@ -374,6 +374,10 @@ def main():
     import test_report_many_fast             # 89-sample runs: landscape figure pages
     test_report_many_fast.main()
     FAILS.extend(test_report_many_fast.FAILS)
+
+    import test_metadata_upload_fast         # groups after the run: upload, group manager
+    test_metadata_upload_fast.main()
+    FAILS.extend(test_metadata_upload_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

@@ -64,6 +64,99 @@ SERIES = ["#1E6E8C", "#8FA8B2", "#2E6B46", "#96660A", "#6B4E8C"]
 MANY, CHUNK = 24, 45
 
 
+def _gammaincc(a, x):
+    """Regularised upper incomplete gamma Q(a, x) (Numerical Recipes gser / gcf)."""
+    if x <= 0:
+        return 1.0
+    gln = math.lgamma(a)
+    if x < a + 1:
+        ap, s_, d = a, 1.0 / a, 1.0 / a
+        for _ in range(500):
+            ap += 1
+            d *= x / ap
+            s_ += d
+            if abs(d) < abs(s_) * 1e-12:
+                break
+        return max(0.0, 1.0 - s_ * math.exp(-x + a * math.log(x) - gln))
+    b, c, d = x + 1 - a, 1e300, 1.0 / (x + 1 - a)
+    h = d
+    for i in range(1, 500):
+        an_ = -i * (i - a)
+        b += 2
+        d = an_ * d + b
+        d = 1e-300 if abs(d) < 1e-300 else d
+        c = b + an_ / c
+        c = 1e-300 if abs(c) < 1e-300 else c
+        d = 1.0 / d
+        de = d * c
+        h *= de
+        if abs(de - 1) < 1e-12:
+            break
+    return min(1.0, math.exp(-x + a * math.log(x) - gln) * h)
+
+
+def _kruskal(groups_vals):
+    """Kruskal–Wallis H (ties corrected), df and p (chi-square) over [[values of a group], ...];
+    None when it cannot be computed."""
+    gv = [list(v) for v in groups_vals if len(v)]
+    if len(gv) < 2:
+        return None
+    allv = sorted((x, gi) for gi, vs in enumerate(gv) for x in vs)
+    N = len(allv)
+    if N - len(gv) < 1:
+        return None
+    ranks, i, ties = [0.0] * N, 0, 0.0
+    while i < N:
+        j = i
+        while j + 1 < N and allv[j + 1][0] == allv[i][0]:
+            j += 1
+        r = (i + j) / 2 + 1
+        for q in range(i, j + 1):
+            ranks[q] = r
+        t = j - i + 1
+        ties += t ** 3 - t
+        i = j + 1
+    R = [0.0] * len(gv)
+    for (x, gi), r in zip(allv, ranks):
+        R[gi] += r
+    H = 12.0 / (N * (N + 1)) * sum(R[g] ** 2 / len(gv[g]) for g in range(len(gv))) - 3 * (N + 1)
+    C = 1 - ties / (N ** 3 - N) if N > 1 else 1
+    if C <= 0:
+        return None
+    H /= C
+    df = len(gv) - 1
+    return H, df, _gammaincc(df / 2.0, H / 2.0)
+
+
+def _group_chunks(samples, groups, k=CHUNK):
+    """Samples ordered by group (first-seen order; ungrouped last) and cut into pages of at most
+    k, a page break falling between groups where the groups allow it."""
+    order, seen = [], []
+    for s_ in samples:
+        g = groups.get(s_)
+        if g is not None and g not in seen:
+            seen.append(g)
+    blocks = [[s_ for s_ in samples if groups.get(s_) == g] for g in seen]
+    rest = [s_ for s_ in samples if s_ not in groups]
+    if rest:
+        blocks.append(rest)
+    parts, cur = [], []
+    for b in blocks:
+        if len(b) > k:                       # a group larger than a page: its own near-equal parts
+            if cur:
+                parts.append(cur)
+                cur = []
+            parts.extend(_chunks(b, k))
+            continue
+        if len(cur) + len(b) > k:
+            parts.append(cur)
+            cur = []
+        cur = cur + b
+    if cur:
+        parts.append(cur)
+    return parts
+
+
 def _chunks(items, k=CHUNK):
     """items in near-equal consecutive parts of at most k (89 -> 45 + 44, not 45 + 44 + 0)."""
     items = list(items)
@@ -1348,25 +1441,98 @@ class Analysis:
 
     # sample → group, from the run's metadata
     def _groups(self):
+        """sample -> group. metadata.csv first: it is the file Customise charts writes, so groups
+        set after the run win over the ones given with it (run_params.json). Its 'group' / 'Group'
+        column, else its first other column holding 2+ values (a grouping named, say, 'Type')."""
         g, desc = {}, {}
-        for m in (self.run.params.get("metadata") or []):
-            sid = str(m.get("sampleId") or m.get("sample") or "").strip()
-            if sid:
-                if m.get("group"):
-                    g[sid] = str(m["group"]).strip()
-                if m.get("description"):
-                    desc[sid] = str(m["description"]).strip()
-        if not g:
-            for r in self.run._rows("metadata.csv"):
-                vals = list(r.values())
-                sid = str(r.get("sampleId") or r.get("sample") or (vals[0] if vals else "")).strip()
-                grp = r.get("group") or r.get("Group")
-                if sid and grp:
-                    g[sid] = str(grp).strip()
+        self.group_col = ""
+        rows = self.run._rows("metadata.csv")
+        if rows:
+            keys = list(rows[0].keys())
+            idk = keys[0] if keys else ""
+            skip = {idk.lower(), "sampleid", "sample", "description", "sample_id", "#sampleid"}
+            try:                     # the grouping chosen in Customise charts, when it is a column here
+                pick = str(json.loads((self.run.path / "edit_charts" / "settings.json").read_text())
+                           .get("groupCol") or "")
+            except Exception:
+                pick = ""
+            col = pick if pick in keys and pick != idk else ""
+            col = col or next((k for k in keys if k in ("group", "Group")), "")
+            if not col:
+                col = next((k for k in keys if k.lower() not in skip
+                            and len({(r.get(k) or "").strip() for r in rows} - {""}) >= 2), "")
+            for r in rows:
+                sid = str(r.get("sampleId") or r.get("sample") or r.get(idk) or "").strip()
+                if sid and col and (r.get(col) or "").strip():
+                    g[sid] = str(r[col]).strip()
                 if sid and r.get("description"):
                     desc[sid] = str(r["description"]).strip()
+            self.group_col = col if g else ""
+        if not g:
+            for m in (self.run.params.get("metadata") or []):
+                sid = str(m.get("sampleId") or m.get("sample") or "").strip()
+                if sid:
+                    if m.get("group"):
+                        g[sid] = str(m["group"]).strip()
+                    if m.get("description"):
+                        desc[sid] = str(m["description"]).strip()
+            self.group_col = "group" if g else ""
         self.desc = desc
         return {s: g[s] for s in self.samples if s in g}
+
+    def group_list(self):
+        """[(group, [samples])] in first-seen order of the run's samples."""
+        out = OrderedDict()
+        for s_ in self.samples:
+            if s_ in self.groups:
+                out.setdefault(self.groups[s_], []).append(s_)
+        return list(out.items())
+
+    def permanova_groups(self, perms=999, seed=1):
+        """PERMANOVA (Anderson 2001) of Bray–Curtis on the current groups, computed here so that it
+        follows metadata.csv as it is now (the run's beta_stats.txt used the groups of the run).
+        {"R2", "F", "p", "n", "k", "perms"} or None without two groups and a replicate."""
+        if getattr(self, "_perm", "x") != "x":
+            return self._perm
+        import random as _r
+        S = self.samples
+        idx = [i for i, s_ in enumerate(S) if s_ in self.groups]
+        labs = [self.groups[S[i]] for i in idx]
+        n, levels = len(idx), sorted(set(labs))
+        k = len(levels)
+        self._perm = None
+        if k < 2 or n - k < 1 or max(labs.count(l) for l in levels) < 2:
+            return None
+        D = self.bray()
+        code = {l: i for i, l in enumerate(levels)}
+        lab = [code[l] for l in labs]
+        pairs = [(i, j, D[idx[i]][idx[j]] ** 2) for i in range(n) for j in range(i + 1, n)]
+        sst = sum(v for _i, _j, v in pairs) / n
+        if sst <= 0:
+            return None
+
+        def ssw(L):
+            acc = [0.0] * k
+            cnt = [0] * k
+            for c in L:
+                cnt[c] += 1
+            for i, j, v in pairs:
+                if L[i] == L[j]:
+                    acc[L[i]] += v
+            return sum(acc[c] / cnt[c] for c in range(k) if cnt[c])
+
+        def fstat(w):
+            b = sst - w
+            return (b / (k - 1)) / (w / (n - k)) if w > 0 else float("inf")
+        w0 = ssw(lab)
+        f0 = fstat(w0)
+        rnd, L, hits = _r.Random(seed), list(lab), 1
+        for _ in range(perms):
+            rnd.shuffle(L)
+            if fstat(ssw(L)) >= f0 - 1e-12:
+                hits += 1
+        self._perm = {"R2": (sst - w0) / sst, "F": f0, "p": hits / (perms + 1), "n": n, "k": k, "perms": perms}
+        return self._perm
 
     # ── taxonomy ──────────────────────────────────────────────────────────────
     def label(self, seq, rank) -> str:
@@ -1538,7 +1704,7 @@ def _xlabels(p, labels, xs, y, maxlen=22, size=8.4, vertical=False):
                      f'text-anchor="middle">{t}</text>')
 
 
-def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None, wide=False) -> str:
+def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None, wide=False, groups=None) -> str:
     """Top-n taxa per sample as 100% stacked bars, with a legend down the right. wide: for a
     landscape page (one part of a many-sample run; colours stay those of the whole run)."""
     samples = samples or an.samples
@@ -1552,7 +1718,7 @@ def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None, wide=Fals
     italic = rank in ("Genus", "Species") if italic is None else italic
     longest = max((len(str(s)) for s in samples), default=4)
     if wide:
-        W, x0, y0, ph = 1000, 46, 24, 440
+        W, x0, y0, ph = 1000, 46, (40 if groups else 24), 440
         leg_x = W - 225
         pw = leg_x - x0 - 18
         bot = 14 + min(longest, 22) * 4.8
@@ -1590,6 +1756,19 @@ def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None, wide=Fals
                      f'fill="{col[t]}" stroke="#fff" stroke-width=".25"><title>{esc(t)} {v:.2f}%</title></rect>')
             acc += v
     _xlabels(p, samples, xs, y0 + ph + 8, size=8, vertical=wide)
+    if groups:                                  # a labelled bracket over each group's bars
+        i = 0
+        while i < len(samples):
+            g = groups.get(samples[i], "")
+            j = i
+            while j + 1 < len(samples) and groups.get(samples[j + 1], "") == g:
+                j += 1
+            if g:
+                xa, xb = xs[i] - slot * 0.42, xs[j] + slot * 0.42
+                p.append(f'<line x1="{xa:.1f}" y1="{y0-6}" x2="{xb:.1f}" y2="{y0-6}" stroke="{INK}" stroke-width="1"/>')
+                p.append(f'<text x="{(xa+xb)/2:.1f}" y="{y0-10}" font-size="8.6" fill="{INK}" font-weight="700" '
+                         f'text-anchor="middle">{esc(_short(g, max(4, int((xb-xa)/5))))}</text>')
+            i = j + 1
     # legend
     rows = len(order)
     lh = min(14.0, (H - 30) / max(rows, 1))
@@ -1777,10 +1956,10 @@ def svg_steps(run, an) -> str:
     return "".join(p)
 
 
-def svg_alpha(an, alpha, idx=None, wide=False) -> str:
+def svg_alpha(an, alpha, idx=None, wide=False, samples=None) -> str:
     """Four panels — Observed, Chao1, Shannon, Simpson — one bar per sample. wide: the given
     indices one above the other across a landscape page (many samples)."""
-    samples = an.samples
+    samples = samples or an.samples
     if wide:
         return _svg_alpha_wide(samples, alpha, idx or ["Observed", "Chao1"])
     idx = ["Observed", "Chao1", "Shannon", "Simpson"]
@@ -1849,6 +2028,57 @@ def _svg_alpha_wide(samples, alpha, idx) -> str:
             p.append(f'<rect x="{xc-bw/2:.1f}" y="{oy+ph_-h:.1f}" width="{bw:.1f}" height="{h:.1f}" fill="{ACC}">'
                      f'<title>{esc(s)} {v:.3g}</title></rect>')
         _xlabels(p, samples, xs, oy + ph_ + 6, size=min(7.2, slot * 0.8), vertical=True)
+    p.append("</svg>")
+    return "".join(p)
+
+
+def svg_alpha_groups(glist, alpha, idx=("Observed", "Chao1", "Shannon", "Simpson")) -> str:
+    """One panel per index: a box (quartiles, median, whiskers to the extremes) and the samples as
+    dots, per group."""
+    names = [g for g, _ in glist]
+    longest = max((len(str(g)) for g in names), default=4)
+    rot = len(names) > 6 or longest > 9
+    pw_, ph_ = 205, 130
+    bot = (16 + min(longest, 18) * 3.8) if rot else 20
+    cellh = ph_ + bot + 26
+    W, H = 520, int(cellh * ((len(idx) + 1) // 2) + 14)
+    p = _svg_open(W, H)
+    for k, name in enumerate(idx):
+        ox = 40 + (k % 2) * 262
+        oy = 26 + (k // 2) * cellh
+        vals = [[alpha[s_][name] for s_ in mem] for _g, mem in glist]
+        mx = 1.0 if name == "Simpson" else (max((v for vs in vals for v in vs), default=1) or 1)
+        p.append(f'<text x="{ox-36}" y="{oy-13}" font-size="9.4" fill="{INK}" font-weight="700">{name}</text>')
+        for gg in (0, .5, 1):
+            y = oy + ph_ - ph_ * gg
+            lab = f"{mx*gg:.2f}" if name in ("Shannon", "Simpson") else fmt(mx * gg)
+            p.append(f'<line x1="{ox}" y1="{y:.1f}" x2="{ox+pw_}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
+            p.append(f'<text x="{ox-4}" y="{y+2.5:.1f}" font-size="7.6" fill="{FAINT}" text-anchor="end" {MONO}>{lab}</text>')
+        slot = pw_ / max(len(glist), 1)
+        bw = min(slot * 0.5, 40)
+        xs = []
+        Y = lambda v: oy + ph_ - ph_ * v / mx
+        for gi, vs in enumerate(vals):
+            xc = ox + slot * (gi + 0.5)
+            xs.append(xc)
+            c = _pal(gi)
+            if not vs:
+                continue
+            q = sorted(vs)
+            qq = lambda f: q[0] if len(q) == 1 else (q[int(math.floor(f * (len(q) - 1)))]
+                                                     + (q[min(len(q) - 1, int(math.floor(f * (len(q) - 1))) + 1)]
+                                                        - q[int(math.floor(f * (len(q) - 1)))])
+                                                     * (f * (len(q) - 1) - math.floor(f * (len(q) - 1))))
+            p.append(f'<line x1="{xc:.1f}" y1="{Y(q[0]):.1f}" x2="{xc:.1f}" y2="{Y(q[-1]):.1f}" stroke="{MUT}" stroke-width=".8"/>')
+            p.append(f'<rect x="{xc-bw/2:.1f}" y="{Y(qq(.75)):.1f}" width="{bw:.1f}" '
+                     f'height="{max(Y(qq(.25))-Y(qq(.75)), .8):.1f}" fill="{c}" fill-opacity=".25" stroke="{c}" stroke-width="1"/>')
+            p.append(f'<line x1="{xc-bw/2:.1f}" y1="{Y(qq(.5)):.1f}" x2="{xc+bw/2:.1f}" y2="{Y(qq(.5)):.1f}" stroke="{INK}" stroke-width="1.3"/>')
+            for m_, v in enumerate(vs):        # dots spread across the box, deterministically
+                jx = (((m_ * 37) % 11) / 10 - 0.5) * bw * 0.8
+                p.append(f'<circle cx="{xc+jx:.1f}" cy="{Y(v):.1f}" r="1.7" fill="{c}" fill-opacity=".85"/>')
+        _xlabels(p, names, xs, oy + ph_ + 8, maxlen=18, size=7.4) if rot else [
+            p.append(f'<text x="{x:.1f}" y="{oy+ph_+12:.1f}" font-size="7.8" fill="{INK}" text-anchor="middle">'
+                     f'{esc(_short(g, 12))}</text>') for g, x in zip(names, xs)]
     p.append("</svg>")
     return "".join(p)
 
@@ -2483,6 +2713,127 @@ def _blast_name(r: dict):
     return "", ""
 
 
+def _group_section(run, an, alpha, S, F, T) -> list:
+    """Analysis by group (metadata.csv): which taxa each group holds, its alpha diversity
+    (Kruskal–Wallis) and how the groups differ in composition (PERMANOVA, distances)."""
+    gl = [(g, [x for x in v if x in S]) for g, v in an.group_list()]
+    gl = [(g, v) for g, v in gl if v]
+    if len(gl) < 2 or not any(len(v) >= 2 for _g, v in gl):
+        return []
+    col = getattr(an, "group_col", "") or "group"
+    ung = [x for x in S if x not in an.groups]
+    out = ['<h3 class="pbreak">Analysis by group</h3>',
+           f"<p>The samples were grouped by the column <b>{esc(col)}</b> of the job&rsquo;s metadata.csv "
+           f"({len(gl)} groups"
+           + (f"; {len(ung)} sample{'s' if len(ung) != 1 else ''} without a value "
+              f"{'are' if len(ung) != 1 else 'is'} left out of the comparisons" if ung else "")
+           + "). Group means are the means of the samples&rsquo; relative abundances, so every sample "
+           "counts equally whatever its depth.</p>"]
+    tot = {x: an.comm_tot.get(x, 0) for x in S}
+    out.append(T(["Group", "Samples", "Mean reads", "Samples in the group"],
+                 [[esc(g), str(len(v)), fmt(sum(tot[x] for x in v) / len(v)), _left(esc(", ".join(v)))] for g, v in gl],
+                 f"Groups of the column &ldquo;{esc(col)}&rdquo;."))
+
+    # taxa by group
+    out.append("<h3>Taxa by group</h3>")
+    gen = an.rank_pct("Genus")
+    names = [t for t in gen if t not in ("Unclassified", "Other")]
+    mean = {t: {g: sum(gen[t].get(x, 0) for x in v) / len(v) for g, v in gl} for t in names}
+    pres = {t: {g: sum(1 for x in v if gen[t].get(x, 0) > 0) for g, v in gl} for t in names}
+    in_all = [t for t in names if all(pres[t][g] > 0 for g, _v in gl)]
+    only = {g: sorted((t for t in names if pres[t][g] * 2 >= len(v) and pres[t][g] > 0
+                       and all(pres[t][h] == 0 for h, _w in gl if h != g)), key=lambda t: -mean[t][g])
+            for g, v in gl}
+    det = [t for t in names if any(pres[t][g] for g, _v in gl)]
+    out.append(f"<p>{len(det)} genera were detected; {len(in_all)} of them in every group. "
+               + ("Genera found only in one group (in at least half of its samples and in no sample of another "
+                  "group) are listed below; " if any(only.values()) else
+                  "No genus was found consistently in one group and absent from all the others; ")
+               + "the top genera of each group follow, with the number of its samples holding each.</p>")
+    out.append(T(["Group", "Top genera: mean % (samples holding it)"],
+                 [[esc(g), _left("; ".join(f"<i>{esc(t)}</i> {mean[t][g]:.1f}% ({pres[t][g]}/{len(v)})"
+                                           for t in sorted(names, key=lambda t: -mean[t][g])[:10] if mean[t][g] > 0))]
+                  for g, v in gl], "The ten most abundant genera of each group."))
+    if any(only.values()):
+        out.append(T(["Group", "Genera", "Found only in this group: mean % (samples holding it)"],
+                     [[esc(g), str(len(only[g])),
+                       _left("; ".join(f"<i>{esc(t)}</i> {mean[t][g]:.2f}% ({pres[t][g]}/{len(v)})" for t in only[g][:12])
+                        + (" &hellip;" if len(only[g]) > 12 else "") or "&mdash;")] for g, v in gl],
+                     "Genera present in at least half of one group&rsquo;s samples and in no sample of any other group."))
+    for rank in ("Phylum", "Genus", "Species"):
+        if rank not in run.rank_cols:
+            continue
+        pct = an.rank_pct(rank)
+        gt = {t: {g: sum(pct[t].get(x, 0) for x in v) / len(v) for g, v in gl} for t in pct}
+        named = sorted((t for t in gt if t != "Unclassified"), key=lambda t: -sum(gt[t].values()))
+        tbl_ = {t: gt[t] for t in named[:30]}
+        if named[30:]:
+            tbl_["Other"] = {g: sum(gt[t][g] for t in named[30:]) for g, _v in gl}
+        if "Unclassified" in gt:
+            tbl_["Unclassified"] = gt["Unclassified"]
+        out.append(F(svg_stacked(an, rank, 30, samples=[g for g, _v in gl], table=tbl_),
+                     f"Top 30 {PLURAL.get(rank, rank.lower())} &mdash; mean relative abundance per group."))
+
+    # alpha by group
+    idx = ["Observed", "Chao1", "Shannon", "Simpson"]
+    out.append('<h3 class="pbreak">Alpha diversity by group</h3>')
+    kw = {i_: _kruskal([[alpha[x][i_] for x in v] for _g, v in gl]) for i_ in idx}
+    sig = [i_ for i_ in idx if kw[i_] and kw[i_][2] < 0.05]
+    out.append("<p>Alpha diversity of the samples in each group, compared with the Kruskal&ndash;Wallis test "
+               "(rank-based, no assumption of normality). "
+               + (f"The groups differ in {', '.join(sig)} (p &lt; 0.05); the test says that at least one group "
+                  "differs, not which one &mdash; the boxes show where the differences lie. " if sig else
+                  "No index differs significantly between the groups (all p &ge; 0.05). ")
+               + "Richness (Observed, Chao1) grows with sequencing depth, so groups of very different depth "
+               "are compared with care.</p>")
+    out.append(F(svg_alpha_groups(gl, alpha, idx), "Alpha diversity per group: box = quartiles, line = median, "
+                 "dots = samples."))
+
+    def ms(vs, d):
+        if not vs:
+            return "&mdash;"
+        m = sum(vs) / len(vs)
+        sd = (sum((v - m) ** 2 for v in vs) / (len(vs) - 1)) ** 0.5 if len(vs) > 1 else 0.0
+        return f"{m:.{d}f} &plusmn; {sd:.{d}f}"
+    out.append(T(["Group", "n"] + idx,
+                 [[esc(g), str(len(v))] + [ms([alpha[x][i_] for x in v], 3 if i_ in ("Shannon", "Simpson") else 1)
+                                           for i_ in idx] for g, v in gl]
+                 + [["Kruskal&ndash;Wallis", ""] + [(f"H = {kw[i_][0]:.2f}, p = {kw[i_][2]:.3g}" if kw[i_] else "&mdash;")
+                                                    for i_ in idx]],
+                 "Mean &plusmn; SD per group; last row: Kruskal&ndash;Wallis test across the groups."))
+
+    # beta by group
+    out.append("<h3>Beta diversity by group</h3>")
+    D = an.bray()
+    ix = {x: i for i, x in enumerate(an.samples)}
+    pg = an.permanova_groups()
+    rows = []
+    for g, v in gl:
+        wi = [D[ix[a]][ix[b]] for i, a in enumerate(v) for b in v[i + 1:]]
+        bt = [D[ix[a]][ix[b]] for a in v for h, w in gl if h != g for b in w]
+        rows.append([esc(g), (f"{sum(wi)/len(wi):.3f}" if wi else "&mdash;"),
+                     (f"{sum(bt)/len(bt):.3f}" if bt else "&mdash;")])
+    out.append('<div style="break-inside: avoid">')
+    out.append("<p>" + (f"PERMANOVA on Bray&ndash;Curtis dissimilarity ({pg['perms']} permutations) gave "
+                        f"R&sup2; = {pg['R2']:.3f}, pseudo-F = {pg['F']:.2f}, p = {pg['p']:.3g}: the grouping explains "
+                        f"{100*pg['R2']:.1f}% of the variation in composition"
+                        + (", a significant difference between the groups. " if pg["p"] < 0.05 else
+                           ", which is not a significant difference. ")
+                        if pg else "PERMANOVA needs two groups and replicated samples. ")
+               + "PERMANOVA is also sensitive to groups that differ in spread rather than in centre, so the table "
+               "gives each group&rsquo;s mean dissimilarity within itself and to the other groups; the PCoA under "
+               "Beta diversity is coloured by group.</p>")
+    out.append(T(["Group", "Mean Bray&ndash;Curtis within the group", "Mean to the other groups"], rows,
+                 "Lower within than between: the group&rsquo;s samples resemble each other more than they "
+                 "resemble other groups.") + "</div>")
+    return out
+
+
+def _left(html_):
+    """A table cell of running text: left-aligned (the report's cells are right-aligned numbers)."""
+    return f'<div style="text-align:left">{html_}</div>'
+
+
 def _ncbi_un_section(run, S, T) -> list:
     """OTUs the reference could not name, checked at NCBI nt (ncbi_unassigned.py): what they are by
     group per sample, and why their reads are no profile of those organisms."""
@@ -2656,7 +3007,9 @@ def _diversity_methods(run, an) -> list:
                + (" Because there is one sample per condition, comparisons are descriptive; no "
                   "statistical test between groups is possible without replicates."
                   if len(an.samples) > 1 and an.groups and len(set(an.groups.values())) >= len(an.samples)
-                  else " PERMANOVA (vegan adonis2) is reported where groups have replicates."
+                  else " Where samples are grouped (metadata.csv, also set after the run under Customise "
+                       "charts), groups are compared by PERMANOVA on Bray&ndash;Curtis (999 permutations, "
+                       "Anderson 2001) and their alpha diversity by the Kruskal&ndash;Wallis test."
                   if an.groups and len(set(an.groups.values())) < len(an.samples) else "")
                + "</p>")
     return out
@@ -3492,7 +3845,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     out.append(T(["Sample", "Top phyla", "Top genera"], dom_rows, "Dominant taxa per sample."))
 
     many = len(S) > MANY
-    parts = _chunks(S) if many else [S]
+    gby = an.groups if len({an.groups.get(x) for x in S} - {None}) >= 2 else {}
+    parts = (_group_chunks(S, gby) if gby else _chunks(S)) if many else [S]
     for rank in RANKS:
         if rank not in run.rank_cols:
             continue
@@ -3511,8 +3865,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
             out.append('<section class="wide">'
                        f'<h3 class="pbreak">Top 30 {rank} (Relative Abundance)'
                        + (f" &mdash; part {i + 1} of {len(parts)}" if len(parts) > 1 else "") + "</h3>"
-                       + F(svg_stacked(an, rank, 30, samples=part, wide=True),
-                           cap + f" Samples {esc(part[0])} to {esc(part[-1])} ({len(part)} of {len(S)}); "
+                       + F(svg_stacked(an, rank, 30, samples=part, wide=True, groups=gby or None),
+                           cap + f" Samples {esc(part[0])} to {esc(part[-1])} ({len(part)} of {len(S)}"
+                           + (", ordered by group" if gby else "") + "); "
                            "the taxa and colours are the same on every part.",
                            folder(f"r_tables/taxonomy_{rank.lower()}.csv") if i == len(parts) - 1 else None)
                        + "</section>")
@@ -3705,7 +4060,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         for k, idx_ in enumerate((["Observed", "Chao1"], ["Shannon", "Simpson"])):
             out.append('<section class="wide">'
                        + f'<h3 class="pbreak">Alpha diversity &mdash; {" and ".join(idx_)}</h3>'
-                       + F(svg_alpha(an, alpha, idx_, wide=True), f"{' and '.join(idx_)} per sample.",
+                       + F(svg_alpha(an, alpha, idx_, wide=True, samples=[x for pt in parts for x in pt]),
+                           f"{' and '.join(idx_)} per sample" + (", ordered by group" if gby else "") + ".",
                            folder("r_tables/alpha_diversity.csv", "alpha_diversity.csv") if k else None)
                        + "</section>")
 
@@ -3727,11 +4083,12 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         bt += ("Overall the samples have highly distinct compositions. " if mean_d > 0.7 else
                "The samples share a substantial part of their composition. " if mean_d < 0.4 else
                "The samples differ moderately in composition. ")
-        pm = an.permanova()
+        pg = an.permanova_groups() if an.groups else None
+        pm = (pg["R2"], pg["p"]) if pg else (None if an.groups else an.permanova())
         if pm:
             bt += (f"PERMANOVA on group gave R&sup2; = {pm[0]:.3f}, p = {pm[1]:.3g}"
-                   + (" &mdash; a significant group effect. " if pm[1] < 0.05 else
-                      " &mdash; no significant group effect. "))
+                   + (" &mdash; a significant group effect (see Analysis by group). " if pm[1] < 0.05 else
+                      " &mdash; no significant group effect (see Analysis by group). "))
         elif an.groups and len(set(an.groups.values())) >= len(S):
             bt += ("With one sample per group no permutation test is possible, so the ordination and "
                    "clustering below are exploratory. ")
@@ -3800,26 +4157,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                        + (f", and the matrix itself is in {', '.join(have)}" if have else "") + ".</p>")
 
     # ── group view ───────────────────────────────────────────────────────────
-    grp = {}
-    for s in S:
-        if s in an.groups:
-            grp.setdefault(an.groups[s], []).append(s)
-    if len(grp) >= 2 and any(len(v) >= 2 for v in grp.values()):
-        out.append('<h3 class="pbreak">Composition by group</h3>')
-        out.append("<p>Mean relative abundance of the samples in each group "
-                   + "; ".join(f"{esc(g)}: {', '.join(esc(x) for x in v)}" for g, v in grp.items())
-                   + ".</p>")
-        for rank in ("Phylum", "Genus"):
-            pct = an.rank_pct(rank)
-            gt = {t: {g: sum(pct[t][s] for s in v) / len(v) for g, v in grp.items()} for t in pct}
-            named = sorted((t for t in gt if t != "Unclassified"), key=lambda t: -sum(gt[t].values()))
-            tbl_ = {t: gt[t] for t in named[:30]}
-            if named[30:]:
-                tbl_["Other"] = {g: sum(gt[t][g] for t in named[30:]) for g in grp}
-            if "Unclassified" in gt:
-                tbl_["Unclassified"] = gt["Unclassified"]
-            out.append(F(svg_stacked(an, rank, 30, samples=list(grp), table=tbl_),
-                         f"Top 30 {rank.lower()} &mdash; mean relative abundance per group."))
+    out += _group_section(run, an, alpha, S, F, T)
 
     out += _controls_section(run, an, T)
     out += _maaslin_section(run, T)

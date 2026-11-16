@@ -385,6 +385,28 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   border-top:1px solid var(--line);flex-wrap:wrap}
 .gsave .msg{flex:1;min-width:0;font-size:11.5px;color:var(--fg-2);line-height:1.45}
 .samps{display:flex;flex-direction:column;padding:6px 0;max-height:260px;overflow:auto}
+.gboxes{display:flex;flex-direction:column;gap:7px;margin-top:8px;max-height:420px;overflow:auto}
+.gbox{border:1px solid var(--line);border-radius:7px;padding:6px 8px;background:var(--bg,#fff)}
+.gbox.gung{border-style:dashed}
+.gbox.over{outline:2px solid var(--acc,#1E6E8C);outline-offset:-1px}
+.gbh{display:flex;align-items:center;gap:8px;font-size:12.5px}
+.gbh .gn{color:var(--mut,#4E6672);font-size:11.5px}
+.gbh .gact{margin-left:auto;display:flex;gap:10px}
+.lnk{background:none;border:0;padding:0;color:var(--acc,#1E6E8C);cursor:pointer;font-size:11.5px;text-decoration:underline}
+.gchips{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;min-height:20px}
+.gchip{font-family:"DejaVu Sans Mono",monospace;font-size:10.5px;padding:2px 6px;border:1px solid var(--line);border-radius:10px;cursor:grab;background:#F4F7F8;user-select:none}
+.gchip.dragging{opacity:.4}
+.gempty{font-size:11px;color:var(--mut,#4E6672);font-style:italic}
+.gupmsg{font-size:11.5px;margin-top:6px;padding:6px 8px;border-left:3px solid var(--acc,#1E6E8C);background:#EDF4F7}
+.gupmsg.err{border-left-color:#B00020;background:#FBEDEE}
+.gmodal-ov{position:fixed;inset:0;background:rgba(15,25,30,.38);display:flex;align-items:center;justify-content:center;z-index:9999}
+.gmodal{background:#fff;border-radius:9px;padding:14px 16px;width:min(560px,92vw);max-height:84vh;display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,.25)}
+.gmodal h3{margin:0 0 8px;font-size:15px}
+.gmodal .gsearch{padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:13px}
+.gmodal .glist{overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 8px;flex:1;min-height:160px}
+.gli{display:flex;align-items:center;gap:7px;font-family:"DejaVu Sans Mono",monospace;font-size:12px;padding:2px 0}
+.gli .gnow{font-family:inherit;font-size:10.5px;color:#96660A}
+.gcount{font-size:11.5px;color:var(--mut,#4E6672);align-self:center}
 .leftcol{display:flex;flex-direction:column;gap:12px;min-width:0}
 .lowcols{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);align-items:start}
 .lowcols.one{grid-template-columns:minmax(0,1fr)}
@@ -2295,6 +2317,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   }
 
   var CHART = null;
+  /* the last metadata upload's report, shown once the editor reloads with the new file */
+  var UPLOAD_NOTE = {id:"", html:"", err:false, pick:""};
 
   function defaultFont(){
     return {titleSize:16, axisSize:12, legendSize:11,
@@ -2402,6 +2426,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var prefCol = CHART.groupCols.filter(function(k){
         return k.toLowerCase().replace(/[^a-z]/g, "") === "group"; })[0];
       CHART.groupCol = prefCol || CHART.groupCols[0];
+      if(saved.groupCol && CHART.groupCols.indexOf(saved.groupCol) !== -1) CHART.groupCol = saved.groupCol;
+      if(UPLOAD_NOTE.id === id && UPLOAD_NOTE.pick && CHART.groupCols.indexOf(UPLOAD_NOTE.pick) !== -1)
+        CHART.groupCol = UPLOAD_NOTE.pick;
       CHART.groupAll = {};
       CHART.groupCols.forEach(function(k){
         var m = {};
@@ -4968,6 +4995,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
               : 'Add a second grouping to keep, say, “all four” and “R1 vs R2” in one job '
                 + 'instead of one run each.')
           + '</span></div>'
+        + groupManagerHtml(sampleNames)
         + (canFacet
             ? '<div class="f"><label for="c_facet">Split the chart by group</label>'
               + '<select id="c_facet">'
@@ -5002,6 +5030,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
                   : 'they are drawn together in a “(no group)” panel.')
               + '</span></div>'
             : "")
+        + groupByNameHtml(sampleNames)
         + '<div class="f"><div class="row" style="display:flex;gap:7px;flex-wrap:wrap">'
           + '<button class="btn" id="gClear">Clear groups</button>'
           + '<button class="btn" id="gEach">One group per sample</button>'
@@ -5058,7 +5087,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
              ? nTake + ' unticked sample' + (nTake === 1 ? "" : "s") + ' will be taken out of “'
                + esc(CHART.groupCol || "Group") + '” (left blank in metadata.csv) when you save, '
                + 'so this grouping holds only the ticked ones. The other groupings are not touched.'
-             : CHART.groupSaved ? 'Saved to the job\u2019s metadata.csv.'
+             : CHART.groupSaved ? 'Saved to the job\u2019s metadata.csv. Press <b>Re-render in R</b> to redraw the '
+               + 'R charts by these groups; <b>Report (PDF / Word)</b> on the job page analyses them too.'
              : 'Groups are read from and written to the job\u2019s '
                + '<span class="mono">metadata.csv</span>.')
           + '</span><button class="btn' + (canSave ? " pri" : "")
@@ -5067,6 +5097,260 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     return {side: out.slice(0, iCol).join(""),
             colours: out.slice(iCol, iGrp).join(""),
             groups: out.slice(iGrp).join("")};
+  }
+
+  /* Group by part of the sample name: D1K2_W_HI_R1 split at "_" -> part 2 = "W",
+     parts 1-2 = "D1K2_W". Fills every sample's group box at once; nothing is saved until
+     "Save groups", and any box can still be edited by hand first. */
+  /* ── group manager: groups as boxes; drag samples between them, or tick them from a
+     searchable list (Manage). Works on CHART.groups, the grouping on screen; Save groups
+     writes it to metadata.csv as before. */
+  function curNames(){
+    var S2 = CHART.shape || {};
+    return S2.samples || S2.labels || S2.names || [];
+  }
+  function groupsInOrder(names){
+    var all = CHART.groupOrderAll || (CHART.groupOrderAll = {});
+    var order = (all[CHART.groupCol] || []).slice();
+    names.forEach(function(n){
+      var g = (CHART.groups[n] || "").trim();
+      if(g && order.indexOf(g) === -1) order.push(g);
+    });
+    all[CHART.groupCol] = order;
+    return order;
+  }
+  function groupManagerHtml(names){
+    var order = groupsInOrder(names);
+    function box(g, members, ung){
+      return '<div class="gbox' + (ung ? " gung" : "") + '" data-g="' + esc(g) + '">'
+        + '<div class="gbh"><b>' + (ung ? "Not in a group" : esc(g)) + '</b>'
+        + '<span class="gn">' + members.length + ' sample' + (members.length === 1 ? "" : "s") + '</span>'
+        + (ung ? "" : '<span class="gact"><button class="lnk gman" data-g="' + esc(g) + '">Manage</button>'
+            + '<button class="lnk gren" data-g="' + esc(g) + '">Rename</button>'
+            + '<button class="lnk gdel" data-g="' + esc(g) + '">Delete</button></span>')
+        + '</div><div class="gchips">'
+        + members.map(function(n){
+            return '<span class="gchip" draggable="true" data-s="' + esc(n) + '" title="Drag onto a group">'
+              + esc(labelOf(n)) + '</span>'; }).join("")
+        + (members.length ? "" : '<span class="gempty">' + (ung ? "every sample has a group"
+            : "drag samples here, or press Manage") + '</span>')
+        + '</div></div>';
+    }
+    var note = UPLOAD_NOTE.id === CHART.id && UPLOAD_NOTE.html
+      ? '<div class="gupmsg' + (UPLOAD_NOTE.err ? " err" : "") + '">' + UPLOAD_NOTE.html + '</div>' : "";
+    return '<div class="f"><label>Groups in \u201c' + esc(CHART.groupCol || "Group") + '\u201d</label>'
+      + '<div class="row" style="display:flex;gap:7px;flex-wrap:wrap">'
+      + '<button class="btn" id="gNew">\uff0b Create group</button>'
+      + '<button class="btn" id="gUp">Upload metadata\u2026</button>'
+      + '<input type="file" id="gUpFile" accept=".csv,.tsv,.txt,.xlsx" hidden></div>'
+      + note
+      + '<div class="gboxes">'
+      + order.map(function(g){
+          return box(g, names.filter(function(n){ return (CHART.groups[n] || "").trim() === g; }), false); }).join("")
+      + box("", names.filter(function(n){ return !(CHART.groups[n] || "").trim(); }), true)
+      + '</div><span class="note">Create a group, then drag samples onto it or press <b>Manage</b> to tick '
+      + 'them from a list with a search box (type D1K1, tick all shown). A sample is in one group of this '
+      + 'grouping at a time. <b>Upload metadata</b> takes a CSV / TSV / Excel file prepared elsewhere: '
+      + 'its sample-name column is found and matched to this job, and every other column becomes a grouping. '
+      + 'Nothing typed here is kept until <b>Save groups</b>.</span></div>';
+  }
+  function openGroupManage(g, names){
+    var cur = {}, tick = {};
+    names.forEach(function(n){ cur[n] = (CHART.groups[n] || "").trim(); tick[n] = cur[n] === g; });
+    var ov = document.createElement("div");
+    ov.className = "gmodal-ov";
+    ov.innerHTML = '<div class="gmodal" role="dialog" aria-modal="true" aria-label="Samples in group">'
+      + '<h3>Samples in \u201c' + esc(g) + '\u201d</h3>'
+      + '<input type="text" class="gsearch" placeholder="Search, e.g. D1K1 or _W_" aria-label="Search samples">'
+      + '<div class="row" style="display:flex;gap:7px;margin:7px 0;flex-wrap:wrap">'
+      + '<button class="btn gtall">Tick all shown</button><button class="btn guall">Untick all shown</button>'
+      + '<span class="gcount"></span></div>'
+      + '<div class="glist"></div>'
+      + '<div class="row" style="display:flex;gap:7px;justify-content:flex-end;margin-top:9px">'
+      + '<button class="btn gcancel">Cancel</button><button class="btn pri gok">Done</button></div></div>';
+    document.body.appendChild(ov);
+    var q = ov.querySelector(".gsearch"), list = ov.querySelector(".glist");
+    function shown(){
+      var t = q.value.trim().toLowerCase();
+      return names.filter(function(n){
+        return !t || n.toLowerCase().indexOf(t) !== -1 || labelOf(n).toLowerCase().indexOf(t) !== -1; });
+    }
+    function draw(){
+      var sh = shown();
+      list.innerHTML = sh.map(function(n){
+        var other = cur[n] && cur[n] !== g;
+        return '<label class="gli"><input type="checkbox" data-s="' + esc(n) + '"' + (tick[n] ? " checked" : "") + '>'
+          + esc(labelOf(n)) + (other ? ' <span class="gnow">now in ' + esc(cur[n])
+            + (tick[n] ? " \u2192 moves here" : "") + '</span>' : "") + '</label>'; }).join("")
+        || '<p class="note">No sample matches.</p>';
+      ov.querySelector(".gcount").textContent = names.filter(function(n){ return tick[n]; }).length
+        + " ticked \u00b7 " + sh.length + " shown";
+    }
+    function close(){ if(ov.parentNode) ov.parentNode.removeChild(ov); document.removeEventListener("keydown", onKey); }
+    function onKey(e){ if(e.key === "Escape") close(); }
+    list.addEventListener("change", function(e){
+      var sn = e.target.getAttribute && e.target.getAttribute("data-s");
+      if(sn !== null && sn !== undefined){ tick[sn] = e.target.checked; draw(); }
+    });
+    q.addEventListener("input", draw);
+    ov.querySelector(".gtall").addEventListener("click", function(){ shown().forEach(function(n){ tick[n] = true; }); draw(); });
+    ov.querySelector(".guall").addEventListener("click", function(){ shown().forEach(function(n){ tick[n] = false; }); draw(); });
+    ov.querySelector(".gcancel").addEventListener("click", close);
+    ov.addEventListener("click", function(e){ if(e.target === ov) close(); });
+    document.addEventListener("keydown", onKey);
+    ov.querySelector(".gok").addEventListener("click", function(){
+      names.forEach(function(n){
+        if(tick[n]) CHART.groups[n] = g;
+        else if(cur[n] === g) delete CHART.groups[n];
+      });
+      CHART.groupDirty = true; CHART.groupSaved = false;
+      close(); paintCharts();
+    });
+    draw(); q.focus();
+  }
+  function bindGroupManager(){
+    var names = curNames();
+    function setGroup(n, g){
+      if(g) CHART.groups[n] = g; else delete CHART.groups[n];
+      CHART.groupDirty = true; CHART.groupSaved = false;
+    }
+    var nb = document.getElementById("gNew");
+    if(nb) nb.addEventListener("click", function(){
+      var nm = prompt("Name of the new group (for example D1K1):", "");
+      nm = (nm || "").trim().replace(/[,\n\r"]/g, "");
+      if(!nm) return;
+      var all = CHART.groupOrderAll || (CHART.groupOrderAll = {});
+      all[CHART.groupCol] = all[CHART.groupCol] || [];
+      if(all[CHART.groupCol].indexOf(nm) === -1) all[CHART.groupCol].push(nm);
+      paintCharts();
+      openGroupManage(nm, curNames());
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".gman"), function(b){
+      b.addEventListener("click", function(){ openGroupManage(b.getAttribute("data-g"), curNames()); });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".gren"), function(b){
+      b.addEventListener("click", function(){
+        var g = b.getAttribute("data-g");
+        var nm = (prompt("New name for the group \u201c" + g + "\u201d:", g) || "").trim().replace(/[,\n\r"]/g, "");
+        if(!nm || nm === g) return;
+        names.forEach(function(n){ if((CHART.groups[n] || "").trim() === g) setGroup(n, nm); });
+        var o = (CHART.groupOrderAll || {})[CHART.groupCol] || [];
+        var i = o.indexOf(g);
+        if(i !== -1){ if(o.indexOf(nm) === -1) o[i] = nm; else o.splice(i, 1); }
+        CHART.groupDirty = true; CHART.groupSaved = false;
+        paintCharts();
+      });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".gdel"), function(b){
+      b.addEventListener("click", function(){
+        var g = b.getAttribute("data-g");
+        names.forEach(function(n){ if((CHART.groups[n] || "").trim() === g) setGroup(n, ""); });
+        var o = (CHART.groupOrderAll || {})[CHART.groupCol] || [];
+        if(o.indexOf(g) !== -1) o.splice(o.indexOf(g), 1);
+        CHART.groupDirty = true; CHART.groupSaved = false;
+        paintCharts();
+      });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".gchip"), function(c){
+      c.addEventListener("dragstart", function(e){
+        e.dataTransfer.setData("text/plain", c.getAttribute("data-s"));
+        e.dataTransfer.effectAllowed = "move";
+        c.classList.add("dragging");
+      });
+      c.addEventListener("dragend", function(){ c.classList.remove("dragging"); });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".gbox"), function(bx){
+      bx.addEventListener("dragover", function(e){ e.preventDefault(); bx.classList.add("over"); });
+      bx.addEventListener("dragleave", function(){ bx.classList.remove("over"); });
+      bx.addEventListener("drop", function(e){
+        e.preventDefault();
+        bx.classList.remove("over");
+        var sn = e.dataTransfer.getData("text/plain");
+        if(!sn || names.indexOf(sn) === -1) return;
+        setGroup(sn, bx.getAttribute("data-g") || "");
+        paintCharts();
+      });
+    });
+    var up = document.getElementById("gUp"), uf = document.getElementById("gUpFile");
+    if(up && uf){
+      up.addEventListener("click", function(){ uf.click(); });
+      uf.addEventListener("change", function(){
+        var f = uf.files && uf.files[0];
+        if(!f) return;
+        var fd = new FormData();
+        fd.append("file", f);
+        up.disabled = true;
+        up.textContent = "Uploading\u2026";
+        fetch("/results/" + encodeURIComponent(CHART.id) + "/metadata/upload", {method:"POST", body:fd})
+          .then(function(r){ return r.json().catch(function(){ return {}; }).then(function(j){ return [r.ok, j]; }); })
+          .then(function(x){
+            var ok = x[0], j = x[1] || {};
+            if(!ok){
+              UPLOAD_NOTE = {id:CHART.id, err:true, pick:"",
+                html:"<b>" + esc(f.name) + " was not used.</b> " + esc(j.error || j.detail || "Upload failed.")};
+              paintCharts();
+              return;
+            }
+            var miss = j.missing_job || [], extra = j.unmatched_file || [];
+            UPLOAD_NOTE = {id:CHART.id, err:false, pick:j.pick || (j.columns || [])[0] || "",
+              html:"<b>" + esc(f.name) + "</b> is now this job\u2019s metadata.csv (the previous file was kept as a "
+                + "backup). Sample names were in the column \u201c" + esc(j.id_col) + "\u201d: "
+                + j.matched + " of " + j.samples + " samples matched. Groupings: " + esc((j.columns || []).join(", ")) + "."
+                + (miss.length ? " <b>" + miss.length + " sample" + (miss.length === 1 ? "" : "s")
+                    + " of the job had no row</b> and stay ungrouped: " + esc(miss.slice(0, 12).join(", "))
+                    + (miss.length > 12 ? " \u2026" : "") + "." : "")
+                + (extra.length ? " Not in this job (ignored): " + esc(extra.slice(0, 12).join(", "))
+                    + (extra.length > 12 ? " \u2026" : "") + "." : "")
+                + " Press <b>Re-render in R</b> to redraw the R charts by these groups; "
+                + "<b>Report (PDF / Word)</b> on the job page analyses them too."};
+            renderCharts(CHART.id);
+          })
+          .catch(function(e){
+            UPLOAD_NOTE = {id:CHART.id, err:true, pick:"", html:"Upload failed: " + esc(e.message || e)};
+            paintCharts();
+          });
+      });
+    }
+  }
+
+  function nameParts(name, sep){ return sep ? String(name).split(sep) : [String(name)]; }
+  function groupByNameHtml(names){
+    var bn = CHART.byName || (CHART.byName = {sep: "_", rng: ""});
+    var ex = (names && names[0]) || "";
+    var parts = nameParts(ex, bn.sep);
+    var opts = [];
+    for(var i = 0; i < parts.length; i++)
+      for(var j = i; j < parts.length; j++){
+        if(i === 0 && j === parts.length - 1 && parts.length > 1) continue;   /* the whole name */
+        opts.push([i + "-" + j, (i === j ? "part " + (i + 1) : "parts " + (i + 1) + "\u2013" + (j + 1))
+          + " \u2014 " + parts.slice(i, j + 1).join(bn.sep)]);
+      }
+    if(!bn.rng && opts.length)                        /* default: part 2, else the first */
+      bn.rng = (opts.filter(function(o){ return o[0] === "1-1"; })[0] || opts[0])[0];
+    return '<div class="f"><label for="gNameRng">Group by name</label>'
+      + '<div class="row" style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">'
+      + '<input type="text" id="gNameSep" value="' + esc(bn.sep) + '" style="width:3.2em;text-align:center"'
+        + ' title="Separator between the parts of a name" aria-label="Separator">'
+      + '<select id="gNameRng"' + (opts.length ? "" : " disabled") + '>'
+        + opts.map(function(o){ return '<option value="' + o[0] + '"' + (o[0] === bn.rng ? " selected" : "")
+            + '>' + esc(o[1]) + '</option>'; }).join("")
+      + '</select>'
+      + '<button class="btn" id="gName"' + (opts.length ? "" : " disabled") + '>Fill groups</button></div>'
+      + '<span class="note">Splits each sample name at the separator and uses the chosen part as its group '
+      + '(shown for ' + esc(ex) + '). It fills every box below; check them, then Save groups. '
+      + 'Use \u201c\uff0b New grouping\u2026\u201d first to keep this as a grouping of its own.</span></div>';
+  }
+  function groupByName(names){
+    var bn = CHART.byName || {sep: "_", rng: "0-0"};
+    var r = String(bn.rng || "0-0").split("-"), a = +r[0], b = +r[1];
+    var g = {}, n = 0;
+    names.forEach(function(nm){
+      var p = nameParts(nm, bn.sep);
+      if(p.length <= b) return;                       /* a name with fewer parts stays blank */
+      var v = p.slice(a, b + 1).join(bn.sep).trim();
+      if(v){ g[nm] = v; n++; }
+    });
+    return {groups: g, n: n};
   }
 
   function lowerHtml(C){
@@ -5215,6 +5499,20 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }
     on("gClear", "click", function(){
       CHART.groups = {}; CHART.groupDirty = true; CHART.groupSaved = false; paintCharts();
+    });
+    bindGroupManager();
+    on("gNameSep", "change", function(){
+      CHART.byName = {sep: this.value, rng: ""}; paintCharts();
+    });
+    on("gNameRng", "change", function(){ (CHART.byName = CHART.byName || {sep: "_"}).rng = this.value; });
+    on("gName", "click", function(){
+      var S2 = CHART.shape || {};
+      var nm = S2.samples || S2.labels || S2.names || [];
+      var sel = document.getElementById("gNameRng");
+      if(sel) (CHART.byName = CHART.byName || {sep: "_"}).rng = sel.value;
+      var res = groupByName(nm);
+      CHART.groups = res.groups;
+      CHART.groupDirty = true; CHART.groupSaved = false; paintCharts();
     });
     on("gEach", "click", function(){
       var S2 = CHART.shape || {};
@@ -5368,6 +5666,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     }).then(function(r){
       if(!r.ok) throw new Error("HTTP " + r.status);
       CHART.groupDirty = false; CHART.groupSaved = true; paintCharts();
+      /* keep settings.json's groupCol with the grouping just saved: the run report and the
+         R re-render take the grouping to analyse from it */
+      saveChartSettings();
       if(typeof then === "function") then();
     }).catch(function(e){
       if(btn) btn.disabled = false;

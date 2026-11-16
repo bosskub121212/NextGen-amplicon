@@ -59,6 +59,29 @@ def main():
                   and "Bray&ndash;Curtis dissimilarity between samples; darker" not in h)
             steps = re.search(r"<svg[^>]*>(?:(?!</svg>).)*Pipeline step(?:(?!</svg>).)*</svg>", h, re.S)
             check("read-step chart: no 60-name legend", steps and "60 samples, one grey" in steps.group(0))
+            # groups set after the run (Customise charts writes metadata.csv; any grouping column)
+            d = make_run(Path(td) / "grp", 60)
+            S = (d / "asv_table.csv").read_text().splitlines()[0].split(",")[1:]
+            (d / "metadata.csv").write_text("SampleID,Type\n" + "".join(f"{x},{x.split('_')[1]}\n" for x in S))
+            (d / "run_params.json").write_text(json.dumps({**json.loads((d / "run_params.json").read_text()),
+                "metadata": [{"sampleId": x, "group": ""} for x in S]}))
+            run = RB.Run(d, set())
+            an = RB.Analysis(run) if hasattr(RB, "Analysis") else None
+            gh = RB.build_profile_html(run)
+            check("groups read from metadata.csv column 'Type' (over run_params)",
+                  "grouped by the column <b>Type</b>" in gh and "Analysis by group" in gh, "")
+            check("taxa, alpha (Kruskal-Wallis) and beta (PERMANOVA) by group",
+                  "Taxa by group" in gh and "The ten most abundant genera of each group" in gh
+                  and "Kruskal&ndash;Wallis" in gh and "PERMANOVA on Bray&ndash;Curtis dissimilarity (999 permutations)" in gh
+                  and "mean relative abundance per group" in gh)
+            check("wide bars ordered by group, with group brackets", "ordered by group" in gh
+                  and 'font-weight="700" text-anchor="middle">C<' in gh)
+        k = RB._kruskal([[0.92, 1.1, 3.4, 2.2, 7.7, 5.1, 6.4, 9.0], [3.5, 12.1, 9.9, 4.4, 8.8, 10.2, 7.3, 11.0, 6.1, 5.5],
+                         [1, 1, 2, 2, 3]])
+        check("Kruskal-Wallis with ties: H and p as scipy.stats.kruskal",
+              k and abs(k[0] - 11.0456973) < 1e-5 and k[1] == 2 and abs(k[2] - 0.0039944529) < 1e-8, k)
+        check("chi-square tail (incomplete gamma) as scipy chi2.sf(4.6, 3)", abs(RB._gammaincc(1.5, 2.3) - 0.2035421) < 1e-6)
+        with tempfile.TemporaryDirectory() as td:
             small = RB.build_profile_html(RB.Run(make_run(Path(td) / "few", 6), set()))
             check("a 6-sample run keeps its portrait figures", 'class="wide"' not in small
                   and "Bray&ndash;Curtis dissimilarity between samples; darker" in small)
