@@ -54,6 +54,13 @@ div.keep { page-break-inside: avoid; } p.cap { page-break-before: avoid; }
 table { border-collapse: collapse; width: 100%; margin: 2mm 0; font-size: 9pt; table-layout: fixed; }
 th, td { border: 1px solid #c8c8c8; padding: 1.5mm 2mm; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
 th { background: #f2f2f2; } table.num { font-size: 7.6pt; } table.num td + td + td { text-align: right; }
+table.ncbi, table.ncbisum { font-size: 8pt; } table.ncbi td, table.ncbi th, table.ncbisum td, table.ncbisum th { overflow-wrap: normal; padding: 1mm 1.5mm; }
+table.ncbi th:nth-child(1) { width: 8%; } table.ncbi th:nth-child(2) { width: 9%; } table.ncbi th:nth-child(3) { width: 10%; }
+table.ncbi th:nth-child(4) { width: 20%; } table.ncbi th:nth-child(5) { width: 37%; } table.ncbi th:nth-child(6) { width: 16%; }
+table.ncbi td:nth-child(2), table.ncbi td:nth-child(6) { text-align: right; }
+table.ncbisum th:nth-child(1) { width: 18%; } table.ncbisum th:nth-child(2) { width: 8%; } table.ncbisum th:nth-child(3) { width: 11%; }
+table.ncbisum th:nth-child(4) { width: 12%; } table.ncbisum th:nth-child(5) { width: 51%; }
+table.ncbisum td:nth-child(2), table.ncbisum td:nth-child(3), table.ncbisum td:nth-child(4) { text-align: right; }
 ul.files { font-size: 9.5pt; list-style: none; padding-left: 0; } .indent { margin-left: 6mm; }
 .ul { text-decoration: underline; font-weight: bold; }
 """
@@ -442,6 +449,13 @@ NCBI_GROUPS = ["Bacteria", "Archaea", "Fungi", "Plants", "Animals", "Other eukar
                "Unclassified record", "No NCBI match"]
 
 
+def _idcov(r: dict) -> str:
+    try:
+        return f"{float(r.get('pident')):.1f} / {float(r.get('qcov')):.0f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def _ncbi_unassigned_html(run, s, e) -> list:
     """'Sequences UNITE could not name' — the NCBI check of a VSEARCH run's unassigned OTUs, for one
     sample: what they are by group, the OTUs, and why their reads are no profile."""
@@ -473,22 +487,25 @@ def _ncbi_unassigned_html(run, s, e) -> list:
     by = {}
     for a in chk:
         g = a["ncbi_un"].get("group") or "Unclassified record"
-        x = by.setdefault(g, [0, 0, set()])
+        x = by.setdefault(g, [0, 0, {}])
         x[0] += 1
         x[1] += a["counts"].get(s, 0)
         if a["ncbi_un"].get("rank") in ("genus", "family", "phylum"):
-            x[2].add(a["ncbi_un"].get("named_as", ""))
+            nm = a["ncbi_un"].get("named_as", "")
+            x[2][nm] = x[2].get(nm, 0) + a["counts"].get(s, 0)
+    for g in by:                                   # names with most reads first
+        by[g][2] = [n for n, _ in sorted(by[g][2].items(), key=lambda kv: -kv[1])] if isinstance(by[g][2], dict) else []
     rows = [[e(g), str(by[g][0]), f"{by[g][1]:,}", f"{100 * by[g][1] / tot:.2f}%",
-             e(", ".join(sorted(by[g][2])[:8]) + (" &hellip;" if len(by[g][2]) > 8 else ""))]
+             e(", ".join(by[g][2][:8])) + (" &hellip;" if len(by[g][2]) > 8 else "")]
             for g in NCBI_GROUPS if g in by]
-    o.append(CR._table(["Group", "OTUs", "Reads", "% of the sample's reads", "Named"], rows) + "</div>")
+    o.append(CR._table(["Group", "OTUs", "Reads", "% of reads", "Named (most reads first)"], rows, "ncbisum") + "</div>")
     top = sorted(chk, key=lambda x: -x["counts"].get(s, 0))[:30]
-    o.append(CR._table(["OTU", "Reads", "Group", "Named as", "Closest NCBI record (% identity, % coverage)"],
+    o.append(CR._table(["OTU", "Reads", "Group", "Named as", "Closest NCBI record", "% identity / % coverage"],
                        [[a["sv"], f"{a['counts'].get(s, 0):,}", e(a["ncbi_un"].get("group", "")),
                          e(a["ncbi_un"].get("named_as", "")),
-                         (f"<i>{e(a['ncbi_un'].get('ncbi_hit', ''))}</i> ({a['ncbi_un'].get('pident', '')}%, "
-                          f"{a['ncbi_un'].get('qcov', '')}%)" if a["ncbi_un"].get("ncbi_hit") else "—")]
-                        for a in top]))
+                         (f"<i>{e(a['ncbi_un'].get('ncbi_hit', ''))}</i>" if a["ncbi_un"].get("ncbi_hit") else "—"),
+                         _idcov(a["ncbi_un"])]
+                        for a in top], "ncbi"))
     if len(chk) > len(top):
         o.append(f"<p>The {len(top)} OTUs with most reads are shown; all {len(chk)} are in "
                  "2.Taxonomy/NCBI/unassigned_otus_ncbi.tsv.</p>")
