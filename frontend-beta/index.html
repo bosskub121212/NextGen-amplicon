@@ -646,8 +646,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
        desc:"Fungal community profiling from the ITS2 spacer, against the UNITE reference."},
       {key:"COX1",     label:"COX1 / CO1",     marker:"COX1",
        desc:"Animal barcoding from the COI gene, against MIDORI2. Codon-aware filtering for the invertebrate table."},
-      {key:"18S-nema", label:"18S nematode",   marker:"18S-nema",
-       desc:"Nematode community profiling from 18S, against NemaBase."}
+      {key:"18S-nema", label:"18S eukaryote / nematode", marker:"18S-nema",
+       desc:"18S V4 (e.g. TAReuk primers): the whole eukaryote community against PR2 — algae, protists, fungi, small animals — or nematodes only against 18S-NemaBase. Pick the reference under Taxonomy classification."}
     ]},
     {grp:"Long-read", items:[
       {key:"PacBio",   label:"PacBio CCS 16S", marker:"PacBio",
@@ -6298,7 +6298,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      f:"TCCGTAGGTGAACCTGCGG",       r:"GCTGCGTTCTTCATCGATGC"},
     {label:"ITS2  (ITS3 / ITS4)",        marker:"ITS2", region:"ITS2",
      f:"GTGAATCATCGAATCTTTGAA",     r:"TCCTCCGCTTATTGATATGC"},
-    {label:"18S V4  (nematode)",         marker:"18S-nema", region:"V4",
+    {label:"18S V4  (TAReuk454FWD1 / TAReukREV3)", marker:"18S-nema", region:"V4",
      f:"CCAGCASCYGCGGTAATTCC",      r:"ACTTTCGTTCTTGATYRA"},
     {label:"COX1 mlCOIintF / jgHCO2198", marker:"COX1", region:"COI",
      f:"GGWACWGGWTGAACWGTWTAYCCYCC", r:"TANACYTCNGGRTGNCCRAARAAYCA"},

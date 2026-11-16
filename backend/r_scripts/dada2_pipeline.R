@@ -1467,6 +1467,16 @@ if (is.null(tax)) {
               "unreadable, or memory ran out while loading it."))
 }
 
+# PR2 (18S eukaryotes): a name PR2 gives a rank it leaves undefined ("Chlorophyta_X", "_XX")
+# and "Genus_sp." are not taxa — set to NA so every table and figure shows them as
+# "<higher rank> unidentified"; species "Genus_epithet" are written "Genus epithet".
+if (!is.null(tax) && any(c("Supergroup", "Subdivision") %in% colnames(tax))) {
+  ph <- grepl("_X+$", tax) | grepl("_sp\\.?$", tax, ignore.case = TRUE)
+  tax[ph] <- NA
+  if ("Species" %in% colnames(tax)) tax[, "Species"] <- gsub("_", " ", tax[, "Species"])
+  cat(sprintf("  PR2 names: %d placeholder name(s) ('_X', 'Genus_sp.') set to NA\n", sum(ph, na.rm = TRUE)))
+}
+
 # ═══════════════════════════════════════════════════════════════
 #  POST-TAXONOMY QC — off-target (host) detection + decontamination
 # ═══════════════════════════════════════════════════════════════

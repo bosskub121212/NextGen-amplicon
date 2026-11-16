@@ -80,6 +80,11 @@ def marker_label(run: AD.RunData) -> tuple[str, str]:
         return (mk or "Amplicon"), f"{mk or 'amplicon'}, VSEARCH OTUs"
     if run.kind == "emu":
         return "16S rRNA", "Full-length 16S rRNA gene, Oxford Nanopore reads, Emu"
+    if mk in ("18S-NEMA", "18S"):
+        db = str(p.get("dbPath") or sm.get("db_path") or "").lower()
+        if "pr2" in db:
+            return "18S rRNA (eukaryotes)", "18S rRNA gene V4 (eukaryotes), Illumina paired reads, DADA2 + PR2"
+        return "18S rRNA (nematodes)", "18S rRNA gene V4 (nematodes), Illumina paired reads, DADA2 + 18S-NemaBase"
     if mk == "12S":
         g = "CytB" if str(p.get("mito_gene", "")).upper() == "CYTB" else "12S rRNA"
         return g, f"{g} gene (mitochondrial), Illumina paired reads, DADA2"

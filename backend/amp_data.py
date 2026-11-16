@@ -13,6 +13,7 @@ samples — the basis of the one-package-per-sample customer report.
 from __future__ import annotations
 
 import csv
+import re
 import json
 import math
 from pathlib import Path
@@ -29,6 +30,14 @@ EMU_NOT_TAXA = {"unassigned", "unmapped", "mapped_unclassified"}
 def _v(x) -> str:
     x = (x or "").strip()
     return "" if x in NA else x
+
+
+def _pr2(rank: str, v: str) -> str:
+    """PR2 names: a rank PR2 leaves undefined ('Chlorophyta_X', '_XX') or 'Genus_sp.' is a blank;
+    species are written 'Genus_epithet'."""
+    if re.search(r"_X+$", v) or re.search(r"(?i)_sp\.?$", v):
+        return ""
+    return v.replace("_", " ") if rank == "Species" else v
 
 
 def label(asv: dict, rank: str) -> str:
@@ -232,8 +241,9 @@ class RunData:
             with open(tp, newline="") as fh:
                 rd = csv.reader(fh)
                 th = next(rd)
+                pr2 = "Supergroup" in th or "Subdivision" in th       # PR2 (18S eukaryotes)
                 for r in rd:
-                    tax[r[0]] = {h: _v(v) for h, v in zip(th[1:], r[1:])}
+                    tax[r[0]] = {h: _pr2(h, _v(v)) if pr2 else _v(v) for h, v in zip(th[1:], r[1:])}
         bl = {}
         bp = self.dir / "blast" / "taxonomy_blast.csv"
         if bp.exists():

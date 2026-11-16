@@ -463,6 +463,10 @@ class Run:
             return rows
         ranks = [c for c in rows[0] if c != key]
         midori = self.kind == "cox1" or "midori" in str(self.params.get("dbPath") or "").lower()
+        # PR2 (18S eukaryotes): 'Supergroup' / 'Subdivision' columns or the file name. Its placeholders
+        # for a rank PR2 leaves undefined ('Chlorophyta_X', '_XX') are blanks; species are 'Genus_epithet'.
+        self.is_pr2 = ("Supergroup" in ranks or "Subdivision" in ranks
+                       or "pr2" in str(self.params.get("dbPath") or self.summary.get("db_path") or "").lower())
         out = []
         for r in rows:
             r = dict(r)
@@ -477,6 +481,11 @@ class Run:
                         v = ""
                 if re.fullmatch(r"(?i)unidentified|.*_incertae_sedis", v):
                     v = ""
+                if self.is_pr2:
+                    if re.search(r"_X+$", v) or re.search(r"(?i)_sp\.?$", v):
+                        v = ""
+                    elif c == "Species":
+                        v = v.replace("_", " ")
                 r[c] = v
             out.append(r)
         if self.kind == "cox1" and "Species" not in rows[0] and "Genus" in rows[0]:
@@ -2716,13 +2725,24 @@ def _methods(run, an):
         if run.blast:
             out += _blast_methods(run)
             return out + _diversity_methods(run, an)
+        pr2 = getattr(run, "is_pr2", False)
         out.append(f"<p>ASVs were classified with the DADA2 implementation of the naive Bayesian "
                    f"classifier (<span class=\"mono\">assignTaxonomy()</span>) against "
                    f"<b>{esc(run.db_name)}</b>, with a minimum bootstrap confidence of "
-                   f"{esc(p.get('minBoot', 50))}. Species were added where the reference carries them, by "
-                   f"exact matching (<span class=\"mono\">addSpecies()</span>). Organelle sequences "
-                   f"(mitochondria, chloroplasts) and eukaryotic ASVs were identified from the assigned "
-                   f"lineage and set aside from the community figures.</p>")
+                   f"{esc(p.get('minBoot', 50))}. "
+                   + ("PR2 (Guillou et al. 2013) is the reference for eukaryotic 18S; its ranks are Domain, "
+                      "Supergroup, Division (reported here as Phylum), Subdivision, Class, Order, Family, Genus and "
+                      "Species, and its species come from the same classifier and bootstrap threshold. Names PR2 "
+                      "uses for a rank it leaves undefined (ending in &ldquo;_X&rdquo;) are reported as "
+                      "unclassified at that rank. ASVs whose lineage names them mitochondria or chloroplasts were "
+                      "set aside from the community figures; ASVs PR2 places outside the Eukaryota stay in the "
+                      "tables under their own Domain.</p>" if pr2 else
+                      "Species were added where the reference carries them, by exact matching "
+                      "(<span class=\"mono\">addSpecies()</span>). Organelle sequences (mitochondria, chloroplasts)"
+                      + (" were identified from the assigned lineage and set aside from the community figures.</p>"
+                         if run.euk_target else
+                         " and eukaryotic ASVs were identified from the assigned lineage and set aside from the "
+                         "community figures.</p>")))
     return out + _diversity_methods(run, an)
 
 
@@ -3570,7 +3590,10 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                                           if (run.params.get("primer_f") or "").startswith("CCTACGG")
                                           else "")
     rep_title = (f"16S {region} Amplicon Sequencing Report".replace("  ", " ")
-                 if "16S" in marker.upper() else f"{marker} Amplicon Sequencing Report")
+                 if "16S" in marker.upper() else
+                 ("18S rRNA V4 Eukaryote Amplicon Sequencing Report" if getattr(run, "is_pr2", False)
+                  else "18S rRNA Nematode Amplicon Sequencing Report")
+                 if "18S" in marker.upper() or "NEMA" in marker.upper() else f"{marker} Amplicon Sequencing Report")
     project = title if title and title.strip() and title.strip() != rep_title else None
     title = rep_title          # the report type heads the page; a user title becomes the project line
     tech = {
@@ -4073,6 +4096,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                         "Species are assigned only by exact match of the whole fragment; for a mitochondrial "
                         "marker the reference covers only part of the local fauna, so a missing species is "
                         "usually missing from the reference." if run.mito_gene else
+                        "PR2 species are the classifier&rsquo;s best match at the bootstrap threshold. The ~380 bp "
+                        "18S V4 fragment separates many genera but few species, so read species names as tentative "
+                        "and the genus as the reliable rank." if getattr(run, "is_pr2", False) else
                         "Species are assigned only by exact match of the whole fragment. A low rate is "
                         "expected for a ~440 bp V3&ndash;V4 amplicon; full-length 16S is the appropriate "
                         "marker where species identification is required.") + "</p>")

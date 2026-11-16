@@ -94,6 +94,38 @@ def main():
                   and 'id="repGcol"' in h_ and "group_col: oneRun ? R.gcol : null" in h_)
             check("wide bars ordered by group, with group brackets", "ordered by group" in gh
                   and 'font-weight="700" text-anchor="middle">C<' in gh)
+        with tempfile.TemporaryDirectory() as td:          # 18S V4 against PR2
+            d = Path(td) / "pr2"
+            d.mkdir()
+            S = ["KK-NE-1", "KK-NE-2", "KK-S-1"]
+            L = [("Eukaryota", "TSAR", "Stramenopiles", "Gyrista", "Bacillariophyceae", "Bacillariophyceae_X",
+                  "Naviculaceae", "Navicula", "Navicula_sp."),
+                 ("Eukaryota", "Obazoa", "Opisthokonta", "Metazoa", "Arthropoda", "Crustacea", "Calanidae",
+                  "Calanus", "Calanus_finmarchicus")]
+            seqs = ["ACGT" * 95, "TTGCA" * 76]
+            (d / "asv_table.csv").write_text("sequence," + ",".join(S) + "\n"
+                                             + "".join(q + ",100,200,300\n" for q in seqs))
+            (d / "taxonomy_table.csv").write_text("ASV,Kingdom,Supergroup,Phylum,Subdivision,Class,Order,Family,Genus,Species\n"
+                                                  + "".join(q + "," + ",".join(l) + "\n" for q, l in zip(seqs, L)))
+            (d / "read_tracking.csv").write_text("sample,input,filtered,nonchim\n" + "".join(f"{x},900,800,700\n" for x in S))
+            pj = {"marker": "18S-nema", "dbPath": "/db/NemaBase/pr2_version_5.1.1_SSU_dada2.fasta.gz",
+                  "primer_f": "CCAGCASCYGCGGTAATTCC", "primer_r": "ACTTTCGTTCTTGATYRA"}
+            (d / "run_params.json").write_text(json.dumps(pj))
+            (d / "summary.json").write_text(json.dumps({"marker": "18S-nema"}))
+            ph = RB.build_profile_html(RB.Run(d, set()))
+            check("18S PR2 run report: eukaryote title, PR2 ranks, '_X' blanked, species as binomials",
+                  "18S rRNA V4 Eukaryote Amplicon Sequencing Report" in ph and "Division (reported here as Phylum)" in ph
+                  and "Bacillariophyceae_X" not in ph and "Calanus finmarchicus" in ph and "16S" not in
+                  re.sub(r"<[^>]+>", " ", ph).split("References")[0])
+            import amp_data as AD, amp_package as AP, custom_report as CR
+            r = AD.load_run(d)
+            t, ref = CR._tax_text(r)
+            refs = CR._refs(r, t + " " + ref)
+            check("18S PR2 package: label, PR2 text and reference; no UNOISE / UNITE / Vu",
+                  AP.marker_label(r)[0] == "18S rRNA (eukaryotes)" and "PR2 5.1.1" in ref
+                  and any("(PR2)" in x for x in refs) and not any(k in x for x in refs for k in ("UNOISE2", "UNITE", "Vu D"))
+                  and AD.label(next(a for a in r.asvs if a["tax"].get("Genus") == "Navicula"), "Species") == "Navicula unidentified",
+                  (AP.marker_label(r), ref, refs))
         k = RB._kruskal([[0.92, 1.1, 3.4, 2.2, 7.7, 5.1, 6.4, 9.0], [3.5, 12.1, 9.9, 4.4, 8.8, 10.2, 7.3, 11.0, 6.1, 5.5],
                          [1, 1, 2, 2, 3]])
         check("Kruskal-Wallis with ties: H and p as scipy.stats.kruskal",

@@ -64,12 +64,14 @@ REFS = [
     "Rognes T, Flouri T, Nichols B, Quince C, Mahé F. (2016). VSEARCH: a versatile open source tool for metagenomics. PeerJ 4:e2584.",
     "Edgar RC. (2016). UNOISE2: improved error-correction for Illumina 16S and ITS amplicon sequencing. bioRxiv 081257.",
     "Abarenkov K, Nilsson RH, Larsson KH, et al. (2024). The UNITE database for molecular identification and taxonomic communication of fungi and other eukaryotes. Nucleic Acids Research 52:D791–D797.",
+    "Guillou L, Bachar D, Audic S, et al. (2013). The Protist Ribosomal Reference database (PR2): a catalog of unicellular eukaryote small sub-unit rRNA sequences with curated taxonomy. Nucleic Acids Research 41:D597–D604.",
+    "Gattoni K, Gendron EMS, Sandoval-Ruiz R, et al. (2023). 18S-NemaBase: curated 18S rRNA database of nematode sequences. Journal of Nematology 55:e2023-1.",
     "Vu D, Groenewald M, de Vries M, et al. (2019). Large-scale generation and analysis of filamentous fungal DNA barcodes boosts coverage for kingdom fungi and reveals thresholds for fungal species and higher taxon delimitation. Studies in Mycology 92:135–154.",
 ]
 # Which references apply to which pipeline (matched on a word of the reference).
 REF_ONLY = {"FastQC": "dada2", "fastp": "dada2", "DADA2": "dada2", "Emu:": "emu", "NanoPack2": "emu",
             "Minimap2": "emu", "VSEARCH": "emu_chimera", "UNOISE2": "vsearch", "UNITE": "vsearch",
-            "Vu D": "vsearch"}
+            "Vu D": "vsearch", "(PR2)": "pr2", "18S-NemaBase": "nemabase"}
 
 
 def _refs(run, ref_text: str) -> list[str]:
@@ -77,6 +79,8 @@ def _refs(run, ref_text: str) -> list[str]:
     vs = getattr(run, "engine", "") == "vsearch"
     for r in REFS:
         tag = next((v for k, v in REF_ONLY.items() if k in r), None)
+        if tag == "pr2" and "PR2" not in ref_text or tag == "nemabase" and "NemaBase" not in ref_text:
+            continue
         if vs:                         # VSEARCH OTU run: chopper (NanoPack2), VSEARCH, UNOISE, UNITE
             if tag in ("dada2", "vsearch", "emu_chimera") or (tag == "emu" and "NanoPack2" in r):
                 if (tag == "dada2") or ("UNITE" in r and "UNITE" not in ref_text) or \
@@ -86,6 +90,8 @@ def _refs(run, ref_text: str) -> list[str]:
             elif tag is None and not any(k in r for k in ("MIDORI2", "MitoFish", "BLAST+")):
                 out.append(r)
             continue
+        if tag == "vsearch" and not ("UNITE" in r and "UNITE" in ref_text):
+            continue                   # UNOISE2 / Vu: VSEARCH runs only; UNITE when it was the reference
         if "MitoFish" in r and "MitoFish" not in ref_text:
             continue
         if "BLAST+" in r and "BLASTn" not in ref_text:
@@ -338,6 +344,19 @@ def _species_file(run_dir: Path) -> str:
 def _dada2_text(p: dict, run_dir: Path | None = None) -> tuple[str, str]:
     db = p.get("dbPath", "") or ""
     sp = _species_file(run_dir) if run_dir else ""
+    n = Path(db).name
+    m = re.search(r"pr2_version_([\d.]+?)_", n, re.I)
+    if m or "pr2" in n.lower():
+        v = f"PR2 {m.group(1)}" if m else "PR2"
+        return (f"Classify sequences with the DADA2 naive Bayesian classifier (assignTaxonomy, minBoot="
+                f"{p.get('minBoot', 50)}) against {v} ({e(n)}; Guillou et al. 2013), the reference for eukaryotic "
+                "18S rRNA. Its ranks are Domain, Supergroup, Division (shown as Phylum), Subdivision, Class, Order, "
+                "Family, Genus and Species; a name PR2 uses for a rank it leaves undefined (ending in '_X') is shown "
+                "as '&lt;higher rank&gt; unidentified', and species come from the same classifier.", f"{v} (18S eukaryotes)")
+    if "nemabase" in n.lower():
+        return (f"Classify sequences with the DADA2 naive Bayesian classifier (assignTaxonomy, minBoot="
+                f"{p.get('minBoot', 50)}) against 18S-NemaBase ({e(n)}; Gattoni et al. 2023), a curated reference of "
+                "nematode 18S sequences.", "18S-NemaBase (nematodes)")
     t = (f"Classify sequences with the DADA2 naive Bayesian classifier (assignTaxonomy, minBoot="
          f"{p.get('minBoot', 50)}) against {e(Path(db).name or 'the reference database')}"
          + (f"; species were added by exact matching (addSpecies) against {e(sp)}" if sp else "") + ".")
