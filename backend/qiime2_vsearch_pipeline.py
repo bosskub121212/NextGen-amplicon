@@ -913,6 +913,7 @@ def run_viz(out_dir: Path, metadata_path: str, top_n: int, threads: int, marker:
 # ── Main ────────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
+    NS = 10 if args.ncbi_unassigned else 9          # steps the job page shows
     input_dir = Path(args.input)
     out_dir   = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -938,7 +939,7 @@ def main():
         sys.exit(1)
 
     # ── 1. Find samples ────────────────────────────────────────────────────────
-    progress(5, "Step 1/9 — Scanning input FASTQ files")
+    progress(5, f"Step 1/{NS} — Scanning input FASTQ files")
     pairs = find_pairs(input_dir)
     paired_counts = None
     args._paired = bool(pairs)
@@ -948,7 +949,7 @@ def main():
         # expected-error filter (used by every UNOISE/OTU workflow).
         log(f"  Found {len(pairs)} paired-end samples: {', '.join(pairs)}")
         samples_raw = {k: v[0] for k, v in pairs.items()}
-        progress(12, "Step 2/9 — Trimming primers and merging read pairs (cutadapt + vsearch)")
+        progress(12, f"Step 2/{NS} — Trimming primers and merging read pairs (cutadapt + vsearch)")
         # The read-length window in the settings is the ONT one (300-2000 bp by
         # default) and would throw away a whole V4 run; for merged pairs the
         # primers already fix the length, so only fragments are removed.
@@ -972,22 +973,22 @@ def main():
     if pairs:
         pass
     elif args.skip_qc:
-        log("  Step 2/9 — QC filtering skipped (--skip_qc)")
+        log(f"  Step 2/{NS} — QC filtering skipped (--skip_qc)")
         samples_qc = samples_raw
     else:
-        progress(12, "Step 2/9 — QC filtering (chopper)")
+        progress(12, f"Step 2/{NS} — QC filtering (chopper)")
         samples_qc = qc_filter_chopper(samples_raw, out_dir, args.qc_min_qual, args.threads)
 
     # ── 3. Trim primers ─────────────────────────────────────────────────────────
     if not pairs:
-        progress(20, "Step 3/9 — Trimming primers (cutadapt)")
+        progress(20, f"Step 3/{NS} — Trimming primers (cutadapt)")
         samples_trimmed = trim_primers(
             samples_qc, out_dir, args.primer_f, args.primer_r, args.threads,
             error_rate=args.cutadapt_error_rate, overlap=args.cutadapt_overlap,
             min_len=args.min_len, max_len=args.max_len)
 
     # ── 4. Pool + dereplicate ───────────────────────────────────────────────────
-    progress(30, "Step 4/9 — Pooling samples & dereplicating (vsearch)")
+    progress(30, f"Step 4/{NS} — Pooling samples & dereplicating (vsearch)")
     pooled_fasta = out_dir / "pooled.fasta"
     n_pooled = pool_samples_to_fasta(samples_trimmed, pooled_fasta)
     log(f"  Pooled {n_pooled} reads across {len(samples_trimmed)} samples")
@@ -997,7 +998,7 @@ def main():
         sys.exit(1)
 
     # ── 5. Chimera removal (reference-based, on abundance-sorted uniques) ──────
-    progress(42, "Step 5/9 — Chimera removal vs. reference (vsearch)")
+    progress(42, f"Step 5/{NS} — Chimera removal vs. reference (vsearch)")
     ref_fasta_chim = resolve_reference_fasta(args.db_path)
     if ref_fasta_chim:
         nonchim = remove_chimeras_ref(vsearch, uniques, out_dir, ref_fasta_chim, args.threads)
@@ -1008,7 +1009,7 @@ def main():
 
     # ── 6. OTU clustering (UNOISE denoising, not fixed-identity clustering — see
     #      cluster_otus() for why "OTU Similarity" no longer applies to this step) ──
-    progress(52, "Step 6/9 — Denoising & clustering OTUs (vsearch UNOISE)")
+    progress(52, f"Step 6/{NS} — Denoising & clustering OTUs (vsearch UNOISE)")
     otus_fasta = cluster_otus(vsearch, nonchim, out_dir, args.otu_similarity, args.threads,
                               unoise_alpha=args.unoise_alpha, unoise_minsize=args.unoise_minsize)
     if not otus_fasta:
@@ -1020,7 +1021,7 @@ def main():
                                                                args.otu_merge_id, args.threads)
 
     # ── 7. Map reads back to OTU centroids ──────────────────────────────────────
-    progress(64, f"Step 7/9 — Mapping reads to {sum(1 for _ in open(otus_fasta) if _.startswith('>'))} OTUs")
+    progress(64, f"Step 7/{NS} — Mapping reads to {sum(1 for _ in open(otus_fasta) if _.startswith('>'))} OTUs")
     sample_names, otu_counts, mapped_totals = map_reads_to_otus(
         vsearch, samples_trimmed, otus_fasta, out_dir, args.otu_similarity, args.threads)
 
@@ -1029,19 +1030,21 @@ def main():
         sys.exit(1)
 
     # ── 8. Taxonomy assignment ──────────────────────────────────────────────────
-    progress(76, "Step 8/9 — Assigning taxonomy (vsearch vs. reference)")
+    progress(76, f"Step 8/{NS} — Assigning taxonomy (vsearch vs. reference)")
     otu_tax = assign_taxonomy(vsearch, otus_fasta, args.db_path, out_dir,
                               args.tax_identity, args.threads)
 
     # ── 9. Write tables + viz ───────────────────────────────────────────────────
-    progress(86, "Step 9/9 — Writing tables & generating plots")
+    progress(86, f"Step 9/{NS} — Writing tables & generating plots")
     sorted_otus = write_tables(sample_names, otu_counts, otu_tax, out_dir,
                                default_kingdom="" if its else "Bacteria")
     read_rows = write_read_tracking(samples_raw, samples_qc, samples_trimmed, mapped_totals, out_dir,
                                     paired_counts)
     args._ncbi = None
+    write_summary(out_dir, sample_names, len(sorted_otus), read_rows, args)
+    run_viz(out_dir, args.metadata, args.topN, args.threads, args.marker)
     if args.ncbi_unassigned:
-        progress(90, "Step 9/9 — NCBI check of unassigned OTUs (BLASTn, internet)")
+        progress(94, f"Step 10/{NS} — NCBI check of unassigned OTUs (BLASTn vs NCBI nt, internet)")
         try:
             import ncbi_unassigned as NU
             info = NU.run(out_dir, max_otus=args.ncbi_max_otus, log=log)
@@ -1049,8 +1052,7 @@ def main():
         except Exception as ex:                     # the run's results stand without it
             log(f"  [WARN] NCBI check of unassigned OTUs not done: {ex}")
             args._ncbi = {"error": str(ex)}
-    write_summary(out_dir, sample_names, len(sorted_otus), read_rows, args)
-    run_viz(out_dir, args.metadata, args.topN, args.threads, args.marker)
+        write_summary(out_dir, sample_names, len(sorted_otus), read_rows, args)   # with the NCBI result
 
     # Cleanup large intermediates (keep otus.fasta + tables; drop pooled/uniques)
     for p in (pooled_fasta, uniques, out_dir / "uniques.sorted.fasta",

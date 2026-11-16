@@ -242,8 +242,9 @@ class RunParams(BaseModel):
     otuSimilarity: float = 0.97
     # Merge UNOISE OTUs within this identity (e.g. 0.97) — nanopore near-copies; 0 = off
     otuMergeId:    float = 0.0
-    # BLAST the OTUs the reference left unassigned against NCBI nt (VSEARCH runs; internet)
-    ncbiUnassigned: bool = True
+    # BLAST the OTUs the reference left unassigned against NCBI nt (VSEARCH runs; internet).
+    # Off unless ticked: it sends the customer's sequences to NCBI.
+    ncbiUnassigned: bool = False
     # --- VSEARCH UNOISE denoising params (qiime2_vsearch only). minsize=8 is the
     # standard USEARCH/UNOISE3 SOP default; lower it (e.g. 2-4) to retain more
     # low-abundance real variants as their own OTUs if the resulting OTU count

@@ -237,6 +237,10 @@ def ncbi_checks():
         check("main sends --ncbi_unassigned to both VSEARCH branches; pipeline runs it non-fatally",
               m.count('(["--ncbi_unassigned"] if params.ncbiUnassigned else [])') == 2
               and "NU.run(out_dir" in q and "not done:" in q)
+        check("NCBI check is its own step (10 of 10), after the plots, off unless ticked",
+              'f"Step 10/{NS} — NCBI check' in q and "NS = 10 if args.ncbi_unassigned else 9" in q
+              and q.index("run_viz(out_dir") < q.index("Step 10/{NS}") and "ncbiUnassigned: bool = False" in m
+              and "Step 9/9" not in q)
     except Exception:
         check("ncbi checks", False, traceback.format_exc(limit=5))
 
