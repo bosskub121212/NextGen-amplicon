@@ -58,6 +58,18 @@ __version__ = "2.0.0"
 INK, ACC, WARN, STOP = "#16242B", "#1E6E8C", "#96660A", "#A83232"
 MUT, FAINT, RULE, KIT_C = "#4E6672", "#7D949E", "#D6E0E4", "#C9A227"
 SERIES = ["#1E6E8C", "#8FA8B2", "#2E6B46", "#96660A", "#6B4E8C"]
+# Runs with more samples than MANY get their sample-wise figures on landscape pages, at most
+# CHUNK samples to a page, so that every bar and label stays readable (an 89-sample coral run
+# was printed as one A4 strip of hair-thin bars).
+MANY, CHUNK = 24, 45
+
+
+def _chunks(items, k=CHUNK):
+    """items in near-equal consecutive parts of at most k (89 -> 45 + 44, not 45 + 44 + 0)."""
+    items = list(items)
+    parts = max(1, math.ceil(len(items) / k))
+    size = math.ceil(len(items) / parts) if items else 1
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 RANKS = ["Phylum", "Class", "Order", "Family", "Genus", "Species"]
 
@@ -1510,11 +1522,15 @@ def _svg_open(W, H):
             f'xmlns="http://www.w3.org/2000/svg">']
 
 
-def _xlabels(p, labels, xs, y, maxlen=22, size=8.4):
+def _xlabels(p, labels, xs, y, maxlen=22, size=8.4, vertical=False):
     rot = len(labels) > 3 or max((len(str(l)) for l in labels), default=0) > 10
     for l, x in zip(labels, xs):
         t = esc(_short(l, maxlen))
-        if rot:
+        if vertical:                      # reads bottom-to-top, hanging below the axis
+            xx = x + size * 0.34
+            p.append(f'<text x="{xx:.1f}" y="{y:.1f}" font-size="{size}" fill="{INK}" '
+                     f'text-anchor="end" transform="rotate(-90 {xx:.1f} {y:.1f})">{t}</text>')
+        elif rot:
             p.append(f'<text x="{x:.1f}" y="{y:.1f}" font-size="{size}" fill="{INK}" '
                      f'text-anchor="end" transform="rotate(-40 {x:.1f} {y:.1f})">{t}</text>')
         else:
@@ -1522,8 +1538,9 @@ def _xlabels(p, labels, xs, y, maxlen=22, size=8.4):
                      f'text-anchor="middle">{t}</text>')
 
 
-def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None) -> str:
-    """Top-n taxa per sample as 100% stacked bars, with a legend down the right."""
+def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None, wide=False) -> str:
+    """Top-n taxa per sample as 100% stacked bars, with a legend down the right. wide: for a
+    landscape page (one part of a many-sample run; colours stay those of the whole run)."""
     samples = samples or an.samples
     if table is None:
         keep, table = an.top(rank, n)
@@ -1534,10 +1551,16 @@ def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None) -> str:
     col["Other"], col["Unclassified"] = OTHER_C, UNCL_C
     italic = rank in ("Genus", "Species") if italic is None else italic
     longest = max((len(str(s)) for s in samples), default=4)
-    W, x0, y0, ph = 520, 40, 22, 430
-    leg_x = 322
-    pw = leg_x - x0 - 16
-    bot = 20 + min(longest, 22) * 4.0
+    if wide:
+        W, x0, y0, ph = 1000, 46, 24, 440
+        leg_x = W - 225
+        pw = leg_x - x0 - 18
+        bot = 14 + min(longest, 22) * 4.8
+    else:
+        W, x0, y0, ph = 520, 40, 22, 430
+        leg_x = 322
+        pw = leg_x - x0 - 16
+        bot = 20 + min(longest, 22) * 4.0
     H = int(y0 + ph + bot + 10)
     p = _svg_open(W, H)
     p.append(f'<text x="{x0}" y="11" font-size="9.4" fill="{MUT}">Relative abundance — '
@@ -1550,7 +1573,7 @@ def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None) -> str:
              f'transform="rotate(-90 9 {y0+ph/2:.1f})">Relative abundance (%)</text>')
     ns = max(len(samples), 1)
     slot = pw / ns
-    bw = min(slot * 0.66, 84)
+    bw = min(slot * (0.74 if wide else 0.66), 84)
     xs = []
     for i, s in enumerate(samples):
         xc = x0 + slot * (i + 0.5)
@@ -1566,7 +1589,7 @@ def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None) -> str:
             p.append(f'<rect x="{xc-bw/2:.1f}" y="{y:.2f}" width="{bw:.1f}" height="{h:.2f}" '
                      f'fill="{col[t]}" stroke="#fff" stroke-width=".25"><title>{esc(t)} {v:.2f}%</title></rect>')
             acc += v
-    _xlabels(p, samples, xs, y0 + ph + 10)
+    _xlabels(p, samples, xs, y0 + ph + 8, size=8, vertical=wide)
     # legend
     rows = len(order)
     lh = min(14.0, (H - 30) / max(rows, 1))
@@ -1598,16 +1621,18 @@ def _heat_col(v, vmax):
     return "#%02X%02X%02X" % tuple(int(x) for x in c)
 
 
-def svg_heatmap(an, rank="Genus", n=30) -> str:
+def svg_heatmap(an, rank="Genus", n=30, samples=None, wide=False) -> str:
     """Top-n taxa × samples, clustered: rows by profile (UPGMA, Euclidean on log %),
-    columns by Bray-Curtis when there are three or more samples."""
+    columns by Bray-Curtis when there are three or more samples. samples: one part of a
+    many-sample run, in the order given (rows and colour scale stay those of the whole run)."""
     keep, table = an.top(rank, n)
     if not keep:
         return ""
-    samples = list(an.samples)
+    part = samples is not None
+    samples = list(samples) if part else list(an.samples)
     # columns
     col_tree = None
-    if len(samples) >= 3:
+    if len(samples) >= 3 and not part:
         vec = [[table[t][s] for t in keep] for s in samples]
         D = [[_bray(a, b) for b in vec] for a in vec]
         col_tree = _upgma(D)
@@ -1616,17 +1641,17 @@ def svg_heatmap(an, rank="Genus", n=30) -> str:
     lv = [[math.log10(table[t][s] + 0.01) for s in an.samples] for t in keep]
     row_tree = _upgma([[_euclid(a, b) for b in lv] for a in lv]) if len(keep) > 1 else None
     rows = [keep[i] for i in _leaves(row_tree)] if row_tree else keep
-    vmax = max((table[t][s] for t in keep for s in samples), default=1) or 1
-    W = 520
+    vmax = max((table[t][s] for t in keep for s in an.samples), default=1) or 1
+    W = 1000 if wide else 520
     dend_w = 70
-    lab_w = 160
+    lab_w = 175 if wide else 160
     top_h = 52 if col_tree else 8
     cw = min(92, (W - dend_w - lab_w - 10) / max(len(samples), 1))
-    ch = 15.0
+    ch = 12.6 if wide else 15.0
     x0 = dend_w + 4
     y0 = 20 + top_h
     longest = max((len(str(s)) for s in samples), default=4)
-    H = int(y0 + ch * len(rows) + 22 + min(longest, 22) * 4.0 + 38)
+    H = int(y0 + ch * len(rows) + 22 + min(longest, 22) * (4.8 if wide else 4.0) + 38)
     p = _svg_open(W, H)
     p.append(f'<text x="0" y="11" font-size="9.4" fill="{MUT}">Top {len(keep)} {esc(rank.lower())} '
              f'— relative abundance (%)</text>')
@@ -1667,7 +1692,8 @@ def svg_heatmap(an, rank="Genus", n=30) -> str:
             yb = y0 - 3 - (top_h - 6) * h2 / hmax
             p.append(f'<line x1="{p1:.1f}" y1="{ya:.1f}" x2="{p2:.1f}" y2="{yb:.1f}" stroke="{MUT}" stroke-width=".7"/>')
     yb = y0 + ch * len(rows)
-    _xlabels(p, samples, [x0 + (j + 0.5) * cw for j in range(len(samples))], yb + 9)
+    _xlabels(p, samples, [x0 + (j + 0.5) * cw for j in range(len(samples))], yb + 9,
+             size=8 if wide else 8.4, vertical=wide)
     # colour key
     ky = H - 14
     kx = 0
@@ -1724,19 +1750,25 @@ def svg_steps(run, an) -> str:
             p.append(f'<line x1="{x:.1f}" y1="{ylo:.1f}" x2="{x:.1f}" y2="{yhi:.1f}" stroke="{FAINT}" stroke-width=".8"/>')
             p.append(f'<rect x="{x-11:.1f}" y="{yq3:.1f}" width="22" height="{max(yq1-yq3,0.8):.1f}" fill="#EAF1F4" stroke="{MUT}" stroke-width=".7"/>')
             p.append(f'<line x1="{x-11:.1f}" y1="{ymed:.1f}" x2="{x+11:.1f}" y2="{ymed:.1f}" stroke="{INK}" stroke-width="1.1"/>')
+    many = len(data) > MANY
     for si, (name, vs) in enumerate(data):
-        c = SERIES[si] if len(data) <= len(SERIES) else _pal(si)
+        c = FAINT if many else (SERIES[si] if len(data) <= len(SERIES) else _pal(si))
         pts = " ".join(f"{x:.1f},{y0+ph-ph*v/mx:.1f}" for x, v in zip(xs, vs))
-        p.append(f'<polyline points="{pts}" fill="none" stroke="{c}" stroke-width="1" opacity=".75"/>')
+        p.append(f'<polyline points="{pts}" fill="none" stroke="{c}" stroke-width="{.6 if many else 1}" '
+                 f'opacity="{.45 if many else .75}"><title>{esc(name)}</title></polyline>')
         for x, v in zip(xs, vs):
-            p.append(f'<circle cx="{x:.1f}" cy="{y0+ph-ph*v/mx:.1f}" r="2.1" fill="{c}"/>')
+            p.append(f'<circle cx="{x:.1f}" cy="{y0+ph-ph*v/mx:.1f}" r="{1.3 if many else 2.1}" fill="{c}"/>')
     for (l, _k), x in zip(steps, xs):
         p.append(f'<text x="{x:.1f}" y="{y0+ph+12}" font-size="8.2" fill="{INK}" text-anchor="middle">{esc(l)}</text>')
     p.append(f'<text x="{x0+pw/2:.1f}" y="{H-24}" font-size="8.4" fill="{MUT}" text-anchor="middle">Pipeline step</text>')
     p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="8.4" fill="{MUT}" text-anchor="middle" '
              f'transform="rotate(-90 9 {y0+ph/2:.1f})">Read count</text>')
     lx = x0 + pw + 14
-    for si, (name, _vs) in enumerate(data[:18]):
+    if many:                                    # 89 names do not fit a legend: the table lists them
+        p.append(f'<text x="{lx}" y="{y0+8}" font-size="8" fill="{MUT}">{len(data)} samples, one grey</text>')
+        p.append(f'<text x="{lx}" y="{y0+20}" font-size="8" fill="{MUT}">line each; boxes: spread</text>')
+        p.append(f'<text x="{lx}" y="{y0+32}" font-size="8" fill="{MUT}">per step (see the table)</text>')
+    for si, (name, _vs) in enumerate([] if many else data[:18]):
         c = SERIES[si] if len(data) <= len(SERIES) else _pal(si)
         y = y0 + 4 + si * 12.5
         p.append(f'<circle cx="{lx+3}" cy="{y:.1f}" r="2.6" fill="{c}"/>')
@@ -1745,10 +1777,13 @@ def svg_steps(run, an) -> str:
     return "".join(p)
 
 
-def svg_alpha(an, alpha) -> str:
-    """Four panels — Observed, Chao1, Shannon, Simpson — one bar per sample."""
-    idx = ["Observed", "Chao1", "Shannon", "Simpson"]
+def svg_alpha(an, alpha, idx=None, wide=False) -> str:
+    """Four panels — Observed, Chao1, Shannon, Simpson — one bar per sample. wide: the given
+    indices one above the other across a landscape page (many samples)."""
     samples = an.samples
+    if wide:
+        return _svg_alpha_wide(samples, alpha, idx or ["Observed", "Chao1"])
+    idx = ["Observed", "Chao1", "Shannon", "Simpson"]
     longest = max((len(str(s)) for s in samples), default=4)
     pw_, ph_ = 205, 130
     bot = 16 + min(longest, 20) * 3.8
@@ -1786,6 +1821,38 @@ def svg_alpha(an, alpha) -> str:
     return "".join(p)
 
 
+def _svg_alpha_wide(samples, alpha, idx) -> str:
+    longest = max((len(str(s)) for s in samples), default=4)
+    W, ox, pw_, ph_ = 1000, 58, 922, 168
+    bot = 12 + min(longest, 22) * 4.2
+    cellh = ph_ + bot + 30
+    H = int(cellh * len(idx) + 8)
+    p = _svg_open(W, H)
+    slot = pw_ / max(len(samples), 1)
+    bw = min(slot * 0.62, 40)
+    for k, name in enumerate(idx):
+        oy = 24 + k * cellh
+        vals = [alpha[s][name] for s in samples]
+        mx = 1.0 if name == "Simpson" else (max(vals, default=1) or 1)
+        p.append(f'<text x="0" y="{oy-11}" font-size="10" fill="{INK}" font-weight="700">{name}</text>')
+        for g in (0, .25, .5, .75, 1):
+            y = oy + ph_ - ph_ * g
+            v = mx * g
+            p.append(f'<line x1="{ox}" y1="{y:.1f}" x2="{ox+pw_}" y2="{y:.1f}" stroke="{RULE}" stroke-width=".6"/>')
+            lab = f"{v:.2f}" if name in ("Shannon", "Simpson") else fmt(v)
+            p.append(f'<text x="{ox-4}" y="{y+2.5:.1f}" font-size="7.8" fill="{FAINT}" text-anchor="end" {MONO}>{lab}</text>')
+        xs = []
+        for i, (s, v) in enumerate(zip(samples, vals)):
+            xc = ox + slot * (i + 0.5)
+            xs.append(xc)
+            h = ph_ * v / mx
+            p.append(f'<rect x="{xc-bw/2:.1f}" y="{oy+ph_-h:.1f}" width="{bw:.1f}" height="{h:.1f}" fill="{ACC}">'
+                     f'<title>{esc(s)} {v:.3g}</title></rect>')
+        _xlabels(p, samples, xs, oy + ph_ + 6, size=min(7.2, slot * 0.8), vertical=True)
+    p.append("</svg>")
+    return "".join(p)
+
+
 def svg_rare(an) -> str:
     """Rarefaction: expected features against subsampled depth, one curve per sample."""
     curves = an.rarefaction()
@@ -1812,7 +1879,11 @@ def svg_rare(an) -> str:
     p.append(f'<text x="9" y="{y0+ph/2:.1f}" font-size="8.4" fill="{MUT}" text-anchor="middle" '
              f'transform="rotate(-90 9 {y0+ph/2:.1f})">Observed {an.run.feat}</text>')
     lx = x0 + pw + 14
-    for i, s in enumerate(samples[:20]):
+    if len(samples) > MANY:
+        p.append(f'<text x="{lx}" y="{y0+8}" font-size="8" fill="{MUT}">{len(samples)} samples, one curve</text>')
+        p.append(f'<text x="{lx}" y="{y0+20}" font-size="8" fill="{MUT}">each; depths and counts</text>')
+        p.append(f'<text x="{lx}" y="{y0+32}" font-size="8" fill="{MUT}">per sample are in the tables</text>')
+    for i, s in enumerate([] if len(samples) > MANY else samples[:20]):
         c = SERIES[i] if len(samples) <= len(SERIES) else _pal(i)
         y = y0 + 6 + i * 12.5
         p.append(f'<line x1="{lx}" y1="{y:.1f}" x2="{lx+10}" y2="{y:.1f}" stroke="{c}" stroke-width="2"/>')
@@ -1835,7 +1906,9 @@ def _group_colors(an):
             for i in range(len(an.samples))], None
 
 
-def svg_pcoa(an) -> str:
+def svg_pcoa(an, wide=False) -> str:
+    """wide: a landscape page for many samples — labels only where they do not collide,
+    no sample legend."""
     D = an.bray()
     if len(D) < 3:
         return ""
@@ -1848,7 +1921,10 @@ def svg_pcoa(an) -> str:
         pad = (hi - lo) * 0.18 or 0.1
         return lo - pad, hi + pad
     (xl, xh), (yl, yh) = rng(xs), rng(ys)
-    W, H, x0, y0, pw, ph = 520, 300, 46, 14, 330, 240
+    if wide:
+        W, H, x0, y0, pw, ph = 1000, 540, 56, 14, (760 if cmap else 920), 480
+    else:
+        W, H, x0, y0, pw, ph = 520, 300, 46, 14, 330, 240
     p = _svg_open(W, H)
     p.append(f'<rect x="{x0}" y="{y0}" width="{pw}" height="{ph}" fill="none" stroke="{RULE}"/>')
     X = lambda v: x0 + pw * (v - xl) / (xh - xl)
@@ -1863,7 +1939,24 @@ def svg_pcoa(an) -> str:
         p.append(f'<text x="{X(vx):.1f}" y="{y0+ph+11}" font-size="7.6" fill="{FAINT}" text-anchor="middle" {MONO}>{vx:.2f}</text>')
         p.append(f'<text x="{x0-4}" y="{Y(vy)+2.5:.1f}" font-size="7.6" fill="{FAINT}" text-anchor="end" {MONO}>{vy:.2f}</text>')
     placed = [(X(cx) - 5, Y(cy) + 4, 10) for cx, cy in coords]     # points are obstacles too
-    for s, (cx, cy), c in zip(an.samples, coords, cols):
+    if wide:
+        for s, (cx, cy), c in zip(an.samples, coords, cols):
+            p.append(f'<circle cx="{X(cx):.1f}" cy="{Y(cy):.1f}" r="4" fill="{c}" stroke="#fff" stroke-width=".8">'
+                     f'<title>{esc(s)}</title></circle>')
+        for s, (cx, cy) in zip(an.samples, coords):
+            t = _short(s, 24)
+            w_ = len(t) * 3.9
+            for dx, dy, anc in ((6, -5, "start"), (6, 9, "start"), (-6, -5, "end"), (-6, 9, "end")):
+                lx_, ly_ = X(cx) + dx, Y(cy) + dy
+                x1_ = lx_ - w_ if anc == "end" else lx_
+                if x1_ < x0 or x1_ + w_ > x0 + pw or ly_ < y0 + 8 or ly_ > y0 + ph - 2:
+                    continue
+                if not any(abs(ly_ - py) < 8.5 and x1_ < px + q_ and px < x1_ + w_ for px, py, q_ in placed):
+                    placed.append((x1_, ly_, w_))
+                    p.append(f'<text x="{lx_:.1f}" y="{ly_:.1f}" font-size="7.2" fill="{INK}" '
+                             f'text-anchor="{anc}">{esc(t)}</text>')
+                    break
+    for s, (cx, cy), c in ([] if wide else zip(an.samples, coords, cols)):
         p.append(f'<circle cx="{X(cx):.1f}" cy="{Y(cy):.1f}" r="4.2" fill="{c}" stroke="#fff" stroke-width=".8"/>')
         anchor = "end" if X(cx) > x0 + pw * 0.7 else "start"
         dx = -6 if anchor == "end" else 6
@@ -1880,8 +1973,9 @@ def svg_pcoa(an) -> str:
     p.append(f'<text x="10" y="{y0+ph/2:.1f}" font-size="8.6" fill="{MUT}" text-anchor="middle" '
              f'transform="rotate(-90 10 {y0+ph/2:.1f})">PCoA 2 ({pct[1]:.1f}%)</text>')
     lx = x0 + pw + 14
-    items = list(cmap.items()) if cmap else list(zip(an.samples, cols))
-    p.append(f'<text x="{lx}" y="{y0+4}" font-size="8.2" fill="{INK}" font-weight="700">{"Group" if cmap else "Sample"}</text>')
+    items = list(cmap.items()) if cmap else ([] if wide else list(zip(an.samples, cols)))
+    if items:
+        p.append(f'<text x="{lx}" y="{y0+4}" font-size="8.2" fill="{INK}" font-weight="700">{"Group" if cmap else "Sample"}</text>')
     for i, (nm, c) in enumerate(items[:20]):
         y = y0 + 16 + i * 12.5
         p.append(f'<circle cx="{lx+3}" cy="{y:.1f}" r="3" fill="{c}"/>')
@@ -1897,7 +1991,8 @@ def svg_upgma(an) -> str:
         return ""
     tree = _upgma(D)
     order = _leaves(tree)
-    rowh = 22
+    rowh = min(22.0, max(6.0, 660.0 / len(order)))      # many samples: the tree on one page
+    fs = min(8.6, rowh * 0.86)
     W = 520
     x0, pw = 20, 320
     y0 = 10
@@ -1912,7 +2007,7 @@ def svg_upgma(an) -> str:
     cols, _cm = _group_colors(an)
     for k in order:
         p.append(f'<circle cx="{x0+pw:.1f}" cy="{pos[k]:.1f}" r="2.6" fill="{cols[k]}"/>')
-        p.append(f'<text x="{x0+pw+7:.1f}" y="{pos[k]+2.8:.1f}" font-size="8.6" fill="{INK}">{esc(an.samples[k])}</text>')
+        p.append(f'<text x="{x0+pw+7:.1f}" y="{pos[k]+fs*0.33:.1f}" font-size="{fs:.1f}" fill="{INK}">{esc(an.samples[k])}</text>')
     ya = y0 + rowh * len(order) + 6
     p.append(f'<line x1="{x0}" y1="{ya}" x2="{x0+pw}" y2="{ya}" stroke="{FAINT}" stroke-width=".7"/>')
     for k in range(5):
@@ -3396,28 +3491,55 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                          "; ".join(f"<i>{esc(t)}</i> {v:.1f}%" for t, v in an.dominant("Genus", s, 3))])
     out.append(T(["Sample", "Top phyla", "Top genera"], dom_rows, "Dominant taxa per sample."))
 
+    many = len(S) > MANY
+    parts = _chunks(S) if many else [S]
     for rank in RANKS:
         if rank not in run.rank_cols:
             continue
         keep, _t = an.top(rank, 30)
         if not keep:
             continue
-        out.append(f'<h3 class="pbreak">Top 30 {rank} (Relative Abundance)</h3>')
-        out.append(F(svg_stacked(an, rank, 30),
-                     f"Relative abundance of the {len(keep)} most abundant "
-                     f"{PLURAL.get(rank, rank.lower())} per sample"
-                     + ". Percentages are of each sample&rsquo;s community reads"
-                     + (" with host organelle reads set aside" if run.host + run.euk > 0 else "") + ".",
-                     folder(f"r_tables/taxonomy_{rank.lower()}.csv")))
+        cap = (f"Relative abundance of the {len(keep)} most abundant "
+               f"{PLURAL.get(rank, rank.lower())} per sample"
+               + ". Percentages are of each sample&rsquo;s community reads"
+               + (" with host organelle reads set aside" if run.host + run.euk > 0 else "") + ".")
+        if not many:
+            out.append(f'<h3 class="pbreak">Top 30 {rank} (Relative Abundance)</h3>')
+            out.append(F(svg_stacked(an, rank, 30), cap, folder(f"r_tables/taxonomy_{rank.lower()}.csv")))
+            continue
+        for i, part in enumerate(parts):          # landscape, at most CHUNK samples a page
+            out.append('<section class="wide">'
+                       f'<h3 class="pbreak">Top 30 {rank} (Relative Abundance)'
+                       + (f" &mdash; part {i + 1} of {len(parts)}" if len(parts) > 1 else "") + "</h3>"
+                       + F(svg_stacked(an, rank, 30, samples=part, wide=True),
+                           cap + f" Samples {esc(part[0])} to {esc(part[-1])} ({len(part)} of {len(S)}); "
+                           "the taxa and colours are the same on every part.",
+                           folder(f"r_tables/taxonomy_{rank.lower()}.csv") if i == len(parts) - 1 else None)
+                       + "</section>")
 
-    out.append('<h3 class="pbreak">Heatmap visualization of dominant genera</h3>')
-    out.append("<p>The genus-level heatmap summarises the 30 dominant genera across samples. Genera "
-               "(rows) are clustered by the similarity of their abundance profiles"
-               + (" and samples (columns) by Bray&ndash;Curtis dissimilarity" if len(S) >= 3 else "")
-               + "; colour is relative abundance on a log scale, and each cell gives the percentage. "
-               "Blocks of dark cells confined to one sample mark genera characteristic of it.</p>")
-    out.append(F(svg_heatmap(an, "Genus", 30), "Top 30 genera &mdash; relative abundance heatmap with "
-                 "clustering dendrogram.", folder("r_tables/taxonomy_heatmap_genus.csv")))
+    if not many:
+        out.append('<h3 class="pbreak">Heatmap visualization of dominant genera</h3>')
+        out.append("<p>The genus-level heatmap summarises the 30 dominant genera across samples. Genera "
+                   "(rows) are clustered by the similarity of their abundance profiles"
+                   + (" and samples (columns) by Bray&ndash;Curtis dissimilarity" if len(S) >= 3 else "")
+                   + "; colour is relative abundance on a log scale, and each cell gives the percentage. "
+                   "Blocks of dark cells confined to one sample mark genera characteristic of it.</p>")
+        out.append(F(svg_heatmap(an, "Genus", 30), "Top 30 genera &mdash; relative abundance heatmap with "
+                     "clustering dendrogram.", folder("r_tables/taxonomy_heatmap_genus.csv")))
+    else:
+        for i, part in enumerate(parts):
+            out.append('<section class="wide">'
+                       '<h3 class="pbreak">Heatmap visualization of dominant genera'
+                       + (f" &mdash; part {i + 1} of {len(parts)}" if len(parts) > 1 else "") + "</h3>"
+                       + ("<p>The 30 dominant genera of the run (rows, clustered by the similarity of their "
+                          "abundance profiles) across the samples (columns, in the order of the stacked bars, "
+                          f"{len(parts)} parts); colour is relative abundance on a log scale, the same scale on "
+                          "every part. Dark cells confined to a few samples mark genera characteristic of them; "
+                          "the samples&rsquo; similarity is shown under Beta diversity.</p>" if i == 0 else "")
+                       + F(svg_heatmap(an, "Genus", 30, samples=part, wide=True),
+                           f"Top 30 genera &mdash; relative abundance, samples {esc(part[0])} to {esc(part[-1])}.",
+                           folder("r_tables/taxonomy_heatmap_genus.csv") if i == len(parts) - 1 else None)
+                       + "</section>")
 
     if run.bacterial:
         out.append("<h3>Archaeal community</h3>")
@@ -3576,8 +3698,16 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                    f'{alpha[s]["Simpson"]:.3f}'] for s in S],
                  "Alpha diversity indices per sample. Shannon uses the natural logarithm; Simpson is "
                  "1 &minus; &Sigma;p&sup2;, approaching 1 when no single organism dominates."))
-    out.append(F(svg_alpha(an, alpha), "Alpha diversity indices per sample.",
-                 folder("r_tables/alpha_diversity.csv", "alpha_diversity.csv")))
+    if not many:
+        out.append(F(svg_alpha(an, alpha), "Alpha diversity indices per sample.",
+                     folder("r_tables/alpha_diversity.csv", "alpha_diversity.csv")))
+    else:
+        for k, idx_ in enumerate((["Observed", "Chao1"], ["Shannon", "Simpson"])):
+            out.append('<section class="wide">'
+                       + f'<h3 class="pbreak">Alpha diversity &mdash; {" and ".join(idx_)}</h3>'
+                       + F(svg_alpha(an, alpha, idx_, wide=True), f"{' and '.join(idx_)} per sample.",
+                           folder("r_tables/alpha_diversity.csv", "alpha_diversity.csv") if k else None)
+                       + "</section>")
 
     # ── beta ─────────────────────────────────────────────────────────────────
     if len(S) >= 2:
@@ -3648,16 +3778,26 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                        "cross-talk between samples multiplexed in one run looks like, so they should not "
                        "be taken as members of the second sample&rsquo;s community without independent "
                        "evidence.</p>")
-        pc = svg_pcoa(an)
+        pc = svg_pcoa(an, wide=many)
         if pc:
-            out.append(F(pc, f"Principal coordinates analysis (PCoA) of Bray&ndash;Curtis dissimilarity. "
-                         f"Axis 1 explains {an.pcoa_pct[0]:.1f}% and axis 2 {an.pcoa_pct[1]:.1f}% of the "
-                         f"variation.", folder("r_tables/pca_scores.csv", "beta_stats.txt")))
+            fig_ = F(pc, f"Principal coordinates analysis (PCoA) of Bray&ndash;Curtis dissimilarity. "
+                     f"Axis 1 explains {an.pcoa_pct[0]:.1f}% and axis 2 {an.pcoa_pct[1]:.1f}% of the "
+                     f"variation." + (" Sample names are printed where they do not overlap." if many else ""),
+                     folder("r_tables/pca_scores.csv", "beta_stats.txt"))
+            out.append('<section class="wide"><h3 class="pbreak">Beta diversity &mdash; PCoA</h3>' + fig_
+                       + "</section>" if many else fig_)
         if len(S) >= 3:
-          out.append(F(svg_upgma(an), "UPGMA clustering tree based on Bray&ndash;Curtis dissimilarity.",
-                     folder("beta_stats.txt")))
-        out.append(F(svg_bc_heat(an), "Bray&ndash;Curtis dissimilarity between samples; darker cells and "
-                     "higher values are more dissimilar.", folder("r_tables/beta_heatmap.csv", "beta_stats.txt")))
+          tree_ = F(svg_upgma(an), "UPGMA clustering tree based on Bray&ndash;Curtis dissimilarity.",
+                    folder("beta_stats.txt"))
+          out.append(f'<div class="pbreak">{tree_}</div>' if many else tree_)
+        if len(S) <= 40:
+            out.append(F(svg_bc_heat(an), "Bray&ndash;Curtis dissimilarity between samples; darker cells and "
+                         "higher values are more dissimilar.", folder("r_tables/beta_heatmap.csv", "beta_stats.txt")))
+        else:
+            have = [n_ for n_ in ("r_tables/beta_heatmap.csv", "beta_stats.txt") if (run.path / n_).exists()]
+            out.append(f"<p>With {len(S)} samples the {len(S)} &times; {len(S)} Bray&ndash;Curtis matrix is too "
+                       "large to print legibly; the tree above orders the samples by it"
+                       + (f", and the matrix itself is in {', '.join(have)}" if have else "") + ".</p>")
 
     # ── group view ───────────────────────────────────────────────────────────
     grp = {}
@@ -3754,6 +3894,11 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
 
 
 _CSS_FULL = """
+@page wide { size: A4 landscape; margin: 14mm 14mm 16mm 14mm; }
+section.wide { page: wide; }
+section.wide h3 { margin-top: 0; }
+section.wide figure { margin: 1mm 0 0; }
+section.wide p { margin-bottom: 1.5mm; }
 @page { @top-right { content: "@@TITLE@@"; font-family: Carlito, "DejaVu Sans", sans-serif;
         font-size: 7.4pt; font-weight: 700; color: #4E6672; border-bottom: 2.5px solid #9CC57A;
         padding-bottom: 1mm; } }

@@ -272,16 +272,37 @@ def _ws(s: str) -> str:
 class _Writer:
     def __init__(self, doc, svgs, content_w_cm):
         self.doc, self.svgs, self.cw = doc, svgs, content_w_cm
+        self.cw0 = content_w_cm
         self.pending_break = False
         self.after_block = False
+        # <section class="wide"> (report_builder, many samples) -> a landscape Word section;
+        # the next top-level block outside one goes back to portrait
+        self.landscape = False
+        self.in_wide = False
+        self.fresh = False                  # a new section has just started a page
+
+    def _orient(self, wide: bool):
+        if wide == self.landscape:
+            return
+        from docx.enum.section import WD_ORIENT, WD_SECTION
+        from docx.shared import Cm
+        sec = self.doc.add_section(WD_SECTION.NEW_PAGE)
+        sec.orientation = WD_ORIENT.LANDSCAPE if wide else WD_ORIENT.PORTRAIT
+        sec.page_width, sec.page_height = (Cm(29.7), Cm(21.0)) if wide else (Cm(21.0), Cm(29.7))
+        self.landscape = wide
+        self.cw = self.cw0 + 8.7 if wide else self.cw0
+        self.fresh = True
 
     # paragraphs with inline formatting
     def para(self, container=None, style=None):
         tgt = container if container is not None else self.doc
         p = tgt.add_paragraph(style=style) if style else tgt.add_paragraph()
         if self.pending_break and container is None:
-            p.paragraph_format.page_break_before = True
+            if not self.fresh:                 # a new section already starts the page
+                p.paragraph_format.page_break_before = True
             self.pending_break = False
+        if container is None:
+            self.fresh = False
         if self.after_block and container is None:
             # space after a table / note box, without an empty paragraph that can
             # spill onto a page of its own
@@ -375,6 +396,16 @@ class _Writer:
                 self.inline(p, node)
             return
         tag, cls = node.tag, node.classes
+        if container is None and not self.in_wide:
+            if tag == "section" and "wide" in cls:
+                self._orient(True)
+                self.in_wide = True
+                try:
+                    self.mixed(node, None)
+                finally:
+                    self.in_wide = False
+                return
+            self._orient(False)
         if "pbreak" in cls and container is None:
             self.pending_break = True
         if tag in ("h1", "h2", "h3", "h4"):
