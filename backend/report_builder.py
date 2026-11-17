@@ -2793,7 +2793,7 @@ def _group_section(run, an, alpha, S, F, T) -> list:
         return []
     col = getattr(an, "group_col", "") or "group"
     ung = [x for x in S if x not in an.groups]
-    out = ['<h3 class="pbreak">Analysis by group</h3>',
+    out = ['<h2 class="pbreak">Analysis by group</h2>',
            f"<p>The samples were grouped by the column <b>{esc(col)}</b> of the job&rsquo;s metadata.csv "
            f"({len(gl)} groups"
            + (f"; {len(ung)} sample{'s' if len(ung) != 1 else ''} without a value "
@@ -3654,7 +3654,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                    + (f": the group{'s' if len(gl_) != 1 else ''} "
                       + ", ".join(f"<b>{esc(g)}</b> ({len(v)})" for g, v in gl_)
                       + f" of the grouping &ldquo;{esc(an.group_col)}&rdquo;" if gl_ else "")
-                   + ". Every number, table and figure below is computed from these samples only.</div>")
+                   + ". Every number, table and figure below is computed from these samples only."
+                   + (" The groups are compared in the chapter <b>Analysis by group</b>, after Beta diversity."
+                      if len(gl_) >= 2 else "") + "</div>")
     srows = [[esc(s), esc(an.groups.get(s, "—")), f'<span class="dim">{esc(an.desc.get(s, ""))}</span>']
              for s in S]
     out.append(_tbl(["Sample", "Group", "Description"], srows) if (an.groups or an.desc)
