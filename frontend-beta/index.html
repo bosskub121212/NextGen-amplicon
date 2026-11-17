@@ -8417,7 +8417,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     box.dataset.open = "1";
     var R = {pick:[jid], top:30, title:"", busy:false, err:"", fmt:"pdf",
              /* groups of this job (metadata.csv): report some of them and compare them */
-             meta:null, gcol:"", gpick:[]};
+             meta:null, gcol:"", gpick:[], arch:true};
     api("/results/" + encodeURIComponent(jid) + "/metadata").then(function(m){
       var rows = (m && m.rows) || [], cols = (m && m.columns) || [];
       var idc = cols[0] || "";
@@ -8486,6 +8486,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
               + '</div>'
             : "")
         + groupsHtml()
+        + (R.pick.length <= 1
+            ? '<label class="what" style="display:flex;gap:7px;align-items:center;margin:8px 0">'
+              + '<input type="checkbox" id="repArch"' + (R.arch ? "" : " checked") + '>'
+              + 'Leave out the Archaeal community section (a Bacteria-only project). Without it ticked the '
+              + 'section appears only when archaeal reads were found.</label>' : "")
         + '<div class="lab">Runs to include (' + R.pick.length + ')</div>'
         + '<div class="runs">' + (list.length ? list.map(function(j){
             var i = R.pick.indexOf(j.job_id), on = i >= 0;
@@ -8515,6 +8520,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       Array.prototype.forEach.call(box.querySelectorAll("[data-top]"), function(b){
         b.addEventListener("click", function(){ R.top = parseInt(b.dataset.top, 10); paint(); });
       });
+      var ra = document.getElementById("repArch");
+      if(ra) ra.addEventListener("change", function(){ R.arch = !ra.checked; });
       var gsel = document.getElementById("repGcol");
       if(gsel) gsel.addEventListener("change", function(){
         R.gcol = gsel.value;
@@ -8553,7 +8560,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       fetch("/report", {method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({job_ids: R.pick, title: R.title.trim() || null, top_asv: R.top, format: R.fmt,
                               company: "NextGen Network Corporation Company Limited", labels: names,
-                              group_col: oneRun ? R.gcol : null, groups: oneRun ? R.gpick : null})})
+                              group_col: oneRun ? R.gcol : null, groups: oneRun ? R.gpick : null,
+                              archaea: R.arch})})
         .then(function(r){
           if(!r.ok) return r.text().then(function(t){
             var m = "HTTP " + r.status;

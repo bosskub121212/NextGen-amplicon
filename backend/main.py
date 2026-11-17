@@ -2339,6 +2339,7 @@ class ReportRequest(BaseModel):
     format:   str = "pdf"       # "pdf" or "docx" (an editable Word file from the same HTML)
     group_col: Optional[str] = None        # one run: the grouping (metadata.csv column) to analyse
     groups:    Optional[List[str]] = None  # one run: report only the samples of these groups
+    archaea:   bool = True                 # False: leave the archaea section out (a Bacteria-only project)
 
 
 def _report_docx(doc: str, stem: str):
@@ -3023,7 +3024,8 @@ def build_report(req: ReportRequest):
     if len(runs) == 1 and not req.compare:
         doc = rb.build_profile_html(runs[0], title=req.title, subtitle=req.subtitle,
                                     app=app_name, company=req.company or "",
-                                    top_asv=max(1, min(int(req.top_asv or 30), 500)))
+                                    top_asv=max(1, min(int(req.top_asv or 30), 500)),
+                                    archaea=req.archaea)
     else:
         doc = rb.build_html(runs, title=req.title, subtitle=req.subtitle,
                             app=app_name, company=req.company or "")

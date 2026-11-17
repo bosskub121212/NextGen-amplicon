@@ -51,6 +51,10 @@ def main():
             check("stacked bars and heatmap split in landscape parts",
                   h.count('<section class="wide">') >= 6 * 2 + 2 and "Top 30 Genus (Relative Abundance) &mdash; part 2 of 2" in h
                   and "Heatmap visualization of dominant genera &mdash; part 2 of 2" in h, h.count('class="wide"'))
+            check("no archaeal reads -> no Archaeal community section", "Archaeal community" not in h)
+            m_ = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+            check("report request can leave the archaea section out",
+                  "archaea:   bool = True" in m_ and "archaea=req.archaea" in m_)
             check("landscape page rule in the CSS", "@page wide { size: A4 landscape;" in h and "section.wide { page: wide; }" in h)
             check("sample labels vertical in the wide charts", 'transform="rotate(-90' in h)
             check("alpha on two landscape pages, PCoA on one", "Alpha diversity &mdash; Observed and Chao1" in h

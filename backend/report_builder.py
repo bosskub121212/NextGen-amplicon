@@ -2856,7 +2856,15 @@ def _group_section(run, an, alpha, S, F, T) -> list:
                   "differs, not which one &mdash; the boxes show where the differences lie. " if sig else
                   "No index differs significantly between the groups (all p &ge; 0.05). ")
                + "Richness (Observed, Chao1) grows with sequencing depth, so groups of very different depth "
-               "are compared with care.</p>")
+               "are compared with care."
+               + (" Chao1 equals Observed in every sample here: the counts hold no singletons (Emu removes taxa "
+                  "below its minimum abundance), so Chao1 has nothing to extrapolate from and its test repeats "
+                  "Observed&rsquo;s." if all(abs(alpha[x]["Chao1"] - alpha[x]["Observed"]) < 1e-9
+                                             for _g, v in gl for x in v) else "")
+               + (" With two groups the Kruskal&ndash;Wallis test is equivalent to the Mann&ndash;Whitney U test; "
+                  "it depends only on the samples&rsquo; ranks, so two indices that order the samples alike "
+                  "(Shannon and Simpson often do) give the same result." if len(gl) == 2 else "")
+               + "</p>")
     out.append(F(svg_alpha_groups(gl, alpha, idx), "Alpha diversity per group: box = quartiles, line = median, "
                  "dots = samples."))
 
@@ -3567,7 +3575,7 @@ def _maaslin_section(run, T):
 
 
 def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
-                       subtitle=None, top_asv=30) -> str:
+                       subtitle=None, top_asv=30, archaea=True) -> str:
     """Full result report for one run, laid out as Method / Result / References with a
     figure for every analysis: read tracking, composition at every rank, a clustered
     genus heatmap, archaea, alpha diversity and rarefaction, and beta diversity."""
@@ -3983,10 +3991,13 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                            folder("r_tables/taxonomy_heatmap_genus.csv") if i == len(parts) - 1 else None)
                        + "</section>")
 
-    if run.bacterial:
+    # Archaea: only when some were found (a page of zeros says nothing), and never when the
+    # report was asked without it (a project about Bacteria only)
+    show_arch = run.bacterial and archaea and n_arch > 0
+    if show_arch:
         out.append("<h3>Archaeal community</h3>")
-    if not run.bacterial:
-        pass                                   # 18S / ITS / COI: no archaea section
+    if not show_arch:
+        pass                                   # 18S / ITS / COI, none found, or left out
     elif n_arch > 0:
         out.append(f"<p>Archaeal reads were {'rare' if n_arch / max(fin, 1) < 0.01 else 'present'} in this "
                    f"dataset: {fmt(n_arch)} reads in total, "
@@ -3995,10 +4006,14 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                       "minimum rather than an estimate of archaeal load." if not run.emu else "") + "</p>")
     else:
         out.append("<p>No archaeal reads were detected in any sample.</p>")
-    if run.bacterial:
+    if show_arch:
+        rows_a = [x for x in arch_rows if x[1] > 0]
         out.append(T(["Sample", "Archaeal reads", "% of sample", "Dominant taxon"],
                      [[esc(s), fmt(r), f"{p_:.3f}%", f"<i>{esc(t)}</i>" if t != "—" else t]
-                      for s, r, p_, t in arch_rows], "Archaeal reads per sample."))
+                      for s, r, p_, t in rows_a],
+                     "Archaeal reads per sample" + (f" ({len(rows_a)} of {len(arch_rows)} samples hold any; the "
+                                                    "others have none)" if len(rows_a) < len(arch_rows) else "")
+                     + "."))
 
     # reagent-associated genera, top features, species
     tg = run.top_genera(15) if run.bacterial else []
