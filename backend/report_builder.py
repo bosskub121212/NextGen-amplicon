@@ -488,6 +488,14 @@ class Run:
                         v = v.replace("_", " ")
                 r[c] = v
             out.append(r)
+        if "Species" in ranks and "Genus" in ranks:
+            # VSEARCH naming before v2.33.3 cut MIDORI2 species ("Musca domestica") at the space and
+            # wrote the genus again as the species; a one-word species equal to its genus is no species
+            for r in out:
+                sp, g = str(r.get("Species") or "").strip(), str(r.get("Genus") or "").strip()
+                if sp and g and sp == g:
+                    r["Species"] = ""
+                    self.species_is_genus = getattr(self, "species_is_genus", 0) + 1
         if self.kind == "cox1" and "Species" not in rows[0] and "Genus" in rows[0]:
             gv = [str(r.get("Genus") or "") for r in out if r.get("Genus")]
             if gv and sum(" " in g for g in gv) > 0.5 * len(gv):

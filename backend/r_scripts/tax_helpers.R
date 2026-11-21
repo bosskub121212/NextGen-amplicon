@@ -475,6 +475,9 @@ tax_vsearch_tophit <- function(seqs, db, levels, cutoffs, threads = 1, verbose =
     args <- c("--usearch_global", fa, "--db", part, "--id", sprintf("%.3f", minid),
               "--maxaccepts", "50", "--maxrejects", "200", "--maxhits", "50",
               "--strand", "both", "--userout", out, "--userfields", "query+target+id",
+              # whole header: vsearch cuts a label at its first space by default, and MIDORI2's
+              # species rank is "Genus epithet_taxid" — the species came back as the genus name
+              "--notrunclabels",
               "--threads", as.character(threads), "--quiet")
     rc <- system2(vs, args, stdout = FALSE, stderr = FALSE)
     if (!identical(rc, 0L) || !file.exists(out))

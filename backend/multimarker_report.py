@@ -62,7 +62,16 @@ def target_of(run, m: str) -> str:
 def naming_of(run) -> str:
     if run.blast:
         return "BLASTn, MIDORI2 + MitoFish"
-    return {"vsearch": "VSEARCH SINTAX / consensus", "emu": "Emu"}.get(run.kind, "DADA2 classifier")
+    if str(run.summary.get("tax_method") or "").lower() == "vsearch":
+        return "VSEARCH best hit, identity cut-offs"
+    return {"vsearch": "VSEARCH best hit", "emu": "Emu"}.get(run.kind, "DADA2 classifier")
+
+
+def ref_of(run) -> str:
+    """The reference's label, without the file name db_name adds in brackets."""
+    n = str(run.db_name)
+    m = re.match(r"^(.+?) \((.+)\)$", n)
+    return m.group(1) if m else n
 
 
 def _group_ranks(run, m: str):
@@ -95,11 +104,13 @@ def _feature_name(run, q, m):
         if rank == "Species":
             v = v.replace("_", " ")
             g = run._clean_genus(r.get("Genus"))
+            if g and v == g:            # a species that is only its genus name (old VSEARCH naming)
+                continue
             if " " not in v and g:
                 v = f"{g} {v}"
         elif rank == "Genus":
             v = run._clean_genus(v) or v
-        return group, rank, v
+        return group.replace("_", " "), rank, v.replace("_", " ")
     return "Unassigned", "", "Not named"
 
 
@@ -210,13 +221,83 @@ class MarkerData:
         return sorted(((k, v[0], v[1]) for k, v in g.items()), key=lambda x: -x[1])
 
 
+def pipeline_of(run) -> str:
+    """The pipeline that made the job, as the figure headings name it."""
+    m = marker_of(run)
+    return {"cox1": "COX1 pipeline (DADA2 + codon filter)", "its": "ITS pipeline (DADA2)",
+            "vsearch": "VSEARCH OTU pipeline", "emu": "ONT 16S pipeline (Emu)",
+            "pacbio": "PacBio pipeline (DADA2)"}.get(run.kind, f"DADA2 {m} pipeline")
+
+
+# ── figures side by side ──────────────────────────────────────────────────────
+def _figure_pages(md) -> list:
+    """One landscape page per topic, the markers' charts side by side, each headed with the
+    marker, the job and the pipeline that made it."""
+    ans = {}
+    for d in md:
+        try:
+            ans[id(d)] = rb.Analysis(d.run)
+        except Exception:
+            ans[id(d)] = None
+
+    def grp_rank(d):
+        cols = list(next(iter(d.run.tax.values()), {}).keys()) + list(d.run.rank_cols)
+        return next((r for r in _group_ranks(d.run, d.m) if r in cols), "Phylum")
+
+    def safe(f):
+        try:
+            return f() or ""
+        except Exception:
+            return ""
+
+    topics = [
+        ("Reads through the pipeline steps",
+         "Reads per sample after each step of each pipeline; the steps differ between pipelines (COX1 adds a "
+         "length and a stop-codon filter).",
+         lambda d, an: rb.svg_steps(d.run, an)),
+        ("Composition &mdash; organism groups",
+         "The 15 most abundant organism groups per sample (class for 12S, PR2 subdivision for 18S, phylum "
+         "for COI), as % of each sample&rsquo;s reads for that marker.",
+         lambda d, an: rb.svg_stacked(an, grp_rank(d), 15)),
+        ("Composition &mdash; genera",
+         "The 15 most abundant genera per sample, as % of each sample&rsquo;s reads for that marker.",
+         lambda d, an: rb.svg_stacked(an, "Genus", 15)),
+        ("Alpha diversity",
+         "Observed ASVs, Chao1, Shannon and Simpson per sample. Each marker counts its own ASVs, so the "
+         "values compare samples within a marker, not markers with each other.",
+         lambda d, an: rb.svg_alpha(an, an.alpha())),
+        ("Rarefaction",
+         "ASVs found against sequencing depth; a curve that levels off means the depth was enough to see "
+         "what that marker can see in the sample.",
+         lambda d, an: rb.svg_rare(an)),
+        ("Beta diversity &mdash; PCoA (Bray&ndash;Curtis)",
+         "Samples close together hold a similar community for that marker.",
+         lambda d, an: rb.svg_pcoa(an)),
+    ]
+    out = []
+    for k, (title, note, f) in enumerate(topics):
+        cells = []
+        for d in md:
+            an = ans[id(d)]
+            svg = safe(lambda: f(d, an)) if an is not None else ""
+            head = (f'<div class="sh"><b>{esc(d.lab)}</b> &middot; {esc(d.run.label)}</div>'
+                    f'<div class="sp">{esc(pipeline_of(d.run))} &middot; {esc(ref_of(d.run))}</div>')
+            cells.append(f"<td>{head}" + (svg or '<p class="dim">Not available for this job.</p>') + "</td>")
+        first = ('<h2 style="margin-top:0">2. Figures side by side</h2><p>The same figure from each '
+                 "marker&rsquo;s job, one topic to a page; each column is headed with the marker, the job and "
+                 "the pipeline that made it.</p>") if k == 0 else ""
+        out.append(f'<section class="wide side">{first}<h3>2{"ABCDEF"[k]}. {title}</h3><p class="dim">{note}</p>'
+                   f'<table class="side"><tr>{"".join(cells)}</tr></table></section>')
+    return out
+
+
 # ── report ────────────────────────────────────────────────────────────────────
-def _tbl(head, rows, left=(0,)):
+def _tbl(head, rows, left=(0,), cls="mmt"):
     """report_builder's table with the given columns (text) aligned left."""
     al = lambda i: ' style="text-align:left"' if i in left else ""
     h = "".join(f"<th{al(i)}>{c}</th>" for i, c in enumerate(head))
     b = "".join("<tr>" + "".join(f"<td{al(i)}>{c}</td>" for i, c in enumerate(r)) + "</tr>" for r in rows)
-    return f'<table class="mmt"><thead><tr>{h}</tr></thead><tbody>{b}</tbody></table>'
+    return f'<table class="{cls}"><thead><tr>{h}</tr></thead><tbody>{b}</tbody></table>'
 
 
 def _n(n, one, many=None):
@@ -297,16 +378,16 @@ def build_multimarker_html(runs, title=None, app="NextGen-Amplicon", company="",
     rows = []
     for d in md:
         o = ov[id(d)]
-        rows.append([f"<b>{esc(d.lab)}</b><br><span class=\"dim\">{esc(d.run.label)}</span>",
-                     esc(d.target), esc(d.run.db_name) + f"<br><span class=\"dim\">{esc(naming_of(d.run))}</span>",
+        rows.append([f"<b>{esc(d.lab)}</b>",
+                     esc(d.target), esc(ref_of(d.run)) + f"<br><span class=\"dim\">{esc(naming_of(d.run))}</span>",
                      str(len(d.run.samples)), fmt(o["inp"]) if o["inp"] else "—", fmt(o["fin"]),
                      fmt(o["n_feat"]), str(o["n_taxa"]), str(o["n_sp"]), f"{o['genus_pct']:.1f}%"])
     out.append(T("The markers. <i>Reads</i>: sequenced, and in the final table after quality filtering, "
                  "merging and chimera removal (organelle reads of 18S set aside). <i>Taxa</i>: distinct names at "
                  "their deepest rank; <i>species</i>: of these, named to species. <i>Genus %</i>: share of the "
                  "final reads named to genus or species."))
-    out.append(_tbl(["Marker", "Target", "Reference / naming", "Samples", "Reads sequenced", "Final reads",
-                     "ASVs", "Taxa", "Species", "Genus %"], rows, left=(0, 1, 2)))
+    out.append(_tbl(["Marker", "Target", "Reference / naming", "Samples", "Reads<br>sequenced", "Final<br>reads",
+                     "ASVs", "Taxa", "Species", "Genus<br>%"], rows, left=(0, 1, 2), cls="mmt ov"))
 
     rows = []
     for d in md:
@@ -342,8 +423,10 @@ def build_multimarker_html(runs, title=None, app="NextGen-Amplicon", company="",
             f"{esc(k)} ({esc(m)})" for k, m in low[:12]) + (" and others" if len(low) > 12 else "")
             + " kept fewer than 1,000 final reads: what these samples show is less certain.</div>")
 
-    # ── 2. what was found at each site ────────────────────────────────────────
-    out.append('<h2 class="pbreak">2. What was found at each site</h2>')
+    out += _figure_pages(md)
+
+    # ── 3. what was found at each site ────────────────────────────────────────
+    out.append('<h2 class="pbreak">3. What was found at each site</h2>')
     out.append(
         "<p>A taxon counts as found at a site when at least one read of it is in one of the site&rsquo;s "
         "field replicates. Its abundance is the mean, over the site&rsquo;s replicates, of its share of each "
@@ -390,7 +473,7 @@ def build_multimarker_html(runs, title=None, app="NextGen-Amplicon", company="",
         out.append("<ul>" + "".join(items) + "</ul>")
 
     # one table per marker: taxa x sites
-    out.append('<h2 class="pbreak">3. Taxa by site, marker by marker</h2>')
+    out.append('<h2 class="pbreak">4. Taxa by site, marker by marker</h2>')
     for d in md:
         allt = [t for t in d.taxa]
         stats = {t: {site: d.site_stats(t, v["reps"]) for site, v in sites.items()} for t in allt}
@@ -426,7 +509,7 @@ def build_multimarker_html(runs, title=None, app="NextGen-Amplicon", company="",
                    + "</tr></thead><tbody>" + "".join(body) + "</tbody></table>")
 
     # ── methods and notes ─────────────────────────────────────────────────────
-    out.append("<h2>4. Methods and notes</h2>")
+    out.append("<h2>5. Methods and notes</h2>")
     notes = []
     for d in md:
         p = d.run.params
@@ -449,6 +532,19 @@ def build_multimarker_html(runs, title=None, app="NextGen-Amplicon", company="",
            + """
 table.mm { font-size: 7.8pt; }
 table.mmt td { vertical-align: top; line-height: 1.3; }
+table.ov { font-size: 7.6pt; table-layout: fixed; }
+section.side { break-before: page; }
+table.side { table-layout: fixed; width: 100%; border-collapse: collapse; margin-top: 1mm; }
+table.side td { vertical-align: top; text-align: left; padding: 0 2.5mm 0 0; border: none; }
+table.side td + td { border-left: .5px solid #D5DEE2; padding-left: 2.5mm; }
+table.side .sh { font-size: 8.6pt; } table.side .sp { font-size: 7pt; color: #6B7F88; margin-bottom: 1mm; }
+table.side svg { width: 100%; height: auto; }
+table.ov th, table.ov td { padding-right: 1.4mm; overflow-wrap: anywhere; }
+table.ov th:nth-child(1) { width: 9%; } table.ov th:nth-child(2) { width: 15%; }
+table.ov th:nth-child(3) { width: 24%; } table.ov th:nth-child(4) { width: 7%; }
+table.ov th:nth-child(5), table.ov th:nth-child(6) { width: 10%; }
+table.ov th:nth-child(7), table.ov th:nth-child(8), table.ov th:nth-child(9) { width: 6%; }
+table.ov th:nth-child(10) { width: 7%; }
 table.mm td { vertical-align: top; line-height: 1.25; }
 table.mm td:nth-child(2) { text-align: left; }
 table.mm thead th:nth-child(2) { text-align: left; }

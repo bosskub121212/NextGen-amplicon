@@ -98,7 +98,8 @@ def main():
                   and not MM.is_multimarker([runs[0], runs[0]]))
             h = MM.build_multimarker_html(runs)
             check("title and both sections", "Multi-marker Amplicon Comparison Report" in h
-                  and "1. Overview per marker" in h and "2. What was found at each site" in h)
+                  and "1. Overview per marker" in h and "3. What was found at each site" in h
+                  and "2. Figures side by side" in h and h.count("<table class=\"side\">") == 6)
             check("4 sites, 12 field samples + 4 controls", "4 sites" in h and "12 field samples + 4 controls" in h, "")
             check("sample missing from COI said so", h.count("not in this job") >= 1 and ">KY-W-3<" in h)
             check("PR2 group = subdivision, placeholder blanked", "Gyrista" in h and "Crustacea_X" not in h
@@ -109,6 +110,24 @@ def main():
             check("per-marker site tables", h.count('<table class="mm">') == 3)
             check("controls column", "In controls (4)" in h)
             check("genus only for COI Brachionus", "<i>Brachionus</i>" in h)
+            # COI named by VSEARCH before v2.33.3: species = genus name ("Ravinia Ravinia")
+            rv = make(td / "coi_v", "COX1", names("{s}-{r}_COI-XT", "{s}-CT_COI-XT"),
+                      ["Phylum", "Class", "Order", "Family", "Genus", "Species"],
+                      [(["Arthropoda", "Insecta", "Diptera", "Sarcophagidae", "Ravinia", "Ravinia"], None),
+                       (["Arthropoda", "Insecta", "Diptera", "Muscidae", "Musca", "Musca domestica"], None)], seed=4)
+            sj = json.loads((rv / "summary.json").read_text()); sj["tax_method"] = "vsearch"
+            (rv / "summary.json").write_text(json.dumps(sj))
+            runv = RB.Run(rv, set(), "COI_v")
+            hv = MM.build_multimarker_html([runs[0], runv])
+            check("species equal to its genus is no species (report_builder and this report)",
+                  "Ravinia Ravinia" not in hv and "<i>Ravinia</i>" in hv and "<i>Musca domestica</i>" in hv
+                  and "Ravinia Ravinia" not in RB.build_profile_html(runv))
+            check("COI named by VSEARCH says so", "VSEARCH best hit, identity cut-offs" in hv)
+            check("overview table fixed layout, reference label without file name",
+                  'class="mmt ov"' in h and "pr2_version_5.1.1_SSU_dada2.fasta.gz" not in h.split("Table 2.")[0]
+                  or "(pipeline default)" in h)
+            th = (ROOT / "backend" / "r_scripts" / "tax_helpers.R").read_text(encoding="utf-8")
+            check("VSEARCH naming keeps the whole MIDORI2 header (--notrunclabels)", '"--notrunclabels"' in th)
             # PDF builds
             try:
                 from weasyprint import HTML
