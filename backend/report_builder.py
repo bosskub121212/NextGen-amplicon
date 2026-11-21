@@ -3131,7 +3131,7 @@ def _blast_section(run, S, T) -> list:
     if agree:
         lab = {"agree": "agree", "differ": "differ (cut to the shared rank, flagged)", "local_better":
                "local reference closer", "ncbi_only": "named by NCBI only", "ncbi_tie": "NCBI ties",
-               "ncbi_no_hit": f"no NCBI hit within the limit (mostly non-target)", "not_checked": "not checked",
+               "ncbi_no_hit": "no NCBI hit within the limit", "not_checked": "not checked",
                "outside_limit": f"non-target kept (NCBI, searched for {tword} only, had no closer {tword})"}
         out.append("<p><b>NCBI check.</b> " + "; ".join(f"{lab.get(k, esc(k))}: {v} {run.feat}"
                                                         for k, v in agree.most_common()) + ". "
