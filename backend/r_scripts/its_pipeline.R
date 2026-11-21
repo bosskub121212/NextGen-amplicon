@@ -156,7 +156,7 @@ if (cutadapt_ok) {
   n_trimmed <- 0
   for (i in seq_along(fnFs_raw)) {
     cmd <- sprintf(
-      "%s -g %s -a %s -G %s -A %s -e %s -O %d -m 50 -j %d %s -o %s -p %s %s %s > /dev/null 2>&1",
+      "%s -g %s -a %s -G %s -A %s -e %s -O %d -n 2 -m 50 -j %d %s -o %s -p %s %s %s > /dev/null 2>&1",
       CUTADAPT_BIN,
       primer_f, primer_r_rc,
       primer_r, primer_f_rc,

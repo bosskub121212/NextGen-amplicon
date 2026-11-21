@@ -522,6 +522,7 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
           "-g", opt$primer_f, "-a", primer_r_rc,
           "-e", opt$error_rate,
           "-O", opt$min_overlap,
+          "-n", "2",   # a read through a short amplicon holds both primers: remove both (cutadapt removes one by default)
           sprintf("-m 50 --cores=%d", THREADS),
           discard_flag, json_flag(i),
           "-o", cutFs[i],
@@ -551,6 +552,7 @@ if (nchar(opt$primer_f) > 0 && nchar(opt$primer_r) > 0) {
           "-G", opt$primer_r,   "-A", primer_f_rc,
           "-e", opt$error_rate,
           "-O", opt$min_overlap,
+          "-n", "2",   # a read through a short amplicon holds both primers: remove both (cutadapt removes one by default)
           sprintf("-m 50 --cores=%d", THREADS),
           discard_flag, json_flag(i),
           "-o", cutFs[i], "-p", cutRs[i],

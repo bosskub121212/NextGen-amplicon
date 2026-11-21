@@ -234,7 +234,7 @@ if (cutadapt_ok) {
   discard_flag <- if (isTRUE(opt$discard_untrimmed)) "--discard-untrimmed" else ""
   for (i in seq_along(fnFs)) {
     cmd <- sprintf(
-      "%s -g %s -a %s -G %s -A %s -e %s -O %d -m 50 -j %d %s -o %s -p %s %s %s > /dev/null 2>&1",
+      "%s -g %s -a %s -G %s -A %s -e %s -O %d -n 2 -m 50 -j %d %s -o %s -p %s %s %s > /dev/null 2>&1",
       CUTADAPT_BIN,
       opt$primer_f, primer_r_rc,
       opt$primer_r, primer_f_rc,
@@ -522,8 +522,11 @@ if (!is.null(dbs$genus) && file.exists(dbs$genus)) {
   if (file.exists(.helper_path)) source(.helper_path)
   tax_levels <- if (exists("tax_pick_levels", mode = "function")) tax_pick_levels(dbs$genus) else NULL
   if (is.null(tax_levels)) {
-    stop("Could not read the rank structure of ", dbs$genus,
-         " (tax_helpers.R missing or unreadable reference) — refusing to guess rank names.")
+    why <- if (exists("tax_reference_problem", mode = "function")) tax_reference_problem(dbs$genus) else NULL
+    stop("Could not read the rank structure of ", dbs$genus, ": ",
+         if (!is.null(why)) why else "tax_helpers.R missing or unreadable reference",
+         ". Refusing to guess rank names. Get the current MIDORI2 COI reference with ",
+         "'bash download_databases.sh --only midori' and pick 'MIDORI2 GenBank 273 (COI)' in the form.")
   }
   # MIDORI2 COI holds ~240,000 species lineages; DADA2's classifier needs
   # 256 KB per lineage (~64 GB), so it is classified by best VSEARCH hit instead

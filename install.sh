@@ -584,11 +584,10 @@ dl_unite() {
 
 dl_midori() {
   echo "=== Downloading MIDORI2 COX1 ==="
-  mkdir -p "$DB_DIR/MIDORI2"
-  wget -q --show-progress \
-    "https://www.reference-midori.info/download/Databases/GenBank256_2023-12-15/DADA2/uniq/MIDORI2_UNIQ_NUC_GB256_CO1_DADA2.fasta.gz" \
-    -O "$DB_DIR/MIDORI2/MIDORI2_COX1_dada2.fa.gz"
-  update_db_path "MIDORI2_COX1" "$DB_DIR/MIDORI2/MIDORI2_COX1_dada2.fa.gz"
+  # The old reference-midori.info GB256 link now answers with a web page, which wget -q saved
+  # as MIDORI2_COX1_dada2.fa.gz without a word; COX1 runs then stopped at taxonomy.
+  # download_databases.sh fetches the current release (Zenodo) and registers it.
+  bash "$INSTALL_DIR/download_databases.sh" --only midori
   echo "  ✓  MIDORI2 done"
 }
 

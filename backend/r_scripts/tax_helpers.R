@@ -79,6 +79,8 @@ tax_inspect_reference <- function(p, n_headers = 2000) {
       hdrs <- c(hdrs, chunk[startsWith(chunk, ">")])
     }
     if (length(hdrs) == 0) return(default)
+    hdrs <- iconv(hdrs, "UTF-8", "UTF-8", sub = "?")   # a stray non-UTF-8 byte broke trimws()
+    hdrs[is.na(hdrs)] <- ">"
     parts <- lapply(hdrs, function(h) {
       x <- trimws(strsplit(sub("^>", "", h), ";")[[1]]); x[nzchar(x)]
     })
@@ -120,7 +122,35 @@ tax_inspect_reference <- function(p, n_headers = 2000) {
     midori <- length(last) >= 20 && mean(grepl("_[0-9]+$", last)) > 0.8
     list(depth = depth, has_species = has_sp, has_kingdom = has_kingdom,
          midori = midori, kind = "trainset", n = length(hdrs))
-  }, error = function(e) default)
+  }, error = function(e) {
+    cat("  [warn] reading the reference headers failed:", conditionMessage(e), "\n"); default })
+}
+
+
+# Why a reference file cannot be read as a DADA2 trainset, in words for the log; NULL when it
+# looks fine. A download that failed often leaves a web page (HTML) or an empty file under the
+# reference's name, and the run then stopped with only "could not read the rank structure".
+tax_reference_problem <- function(p) {
+  if (!file.exists(p)) return(paste("the file does not exist:", p))
+  sz <- file.info(p)$size
+  if (is.na(sz) || sz < 1000) return(sprintf("the file is %s bytes - an empty or failed download", sz))
+  tryCatch({
+    con <- if (grepl("\\.gz$", p)) gzfile(p, "rt") else file(p, "rt")
+    on.exit(close(con), add = TRUE)
+    x <- readLines(con, n = 200, warn = FALSE)
+    x <- iconv(x, "UTF-8", "UTF-8", sub = "?")
+    x <- x[!is.na(x) & nzchar(trimws(x))]
+    if (!length(x)) return("the file is empty")
+    if (grepl("^\\s*<", x[1])) return(paste0("the file is a web page (HTML), not FASTA - a failed download. ",
+                                         "First line: ", substr(x[1], 1, 120)))
+    if (!any(startsWith(x, ">"))) return(paste0("no FASTA header (>) in the first lines. First line: ",
+                                                substr(x[1], 1, 120)))
+    h <- x[startsWith(x, ">")]
+    if (!any(grepl(";", h, fixed = TRUE))) return(paste0("the headers carry no ';'-separated lineage (an ",
+                                     "assignSpecies or BLAST file, not a DADA2 trainset). First header: ",
+                                     substr(h[1], 1, 120)))
+    NULL
+  }, error = function(e) paste("the file could not be read:", conditionMessage(e)))
 }
 
 
@@ -130,7 +160,11 @@ tax_pick_levels <- function(db_path, verbose = TRUE) {
   info  <- tax_inspect_reference(db_path)
   depth <- info$depth
   if (is.na(depth)) {
-    if (verbose) cat("  [warn] Could not read rank depth from the reference — using DADA2 defaults\n")
+    if (verbose) {
+      why <- tax_reference_problem(db_path)
+      cat("  [warn] Could not read rank depth from the reference — using DADA2 defaults",
+          if (!is.null(why)) paste0("\n         ", why) else "", "\n")
+    }
     return(NULL)
   }
   # Measured from the headers; the filename is only a last resort when the

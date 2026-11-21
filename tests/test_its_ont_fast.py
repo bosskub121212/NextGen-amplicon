@@ -232,6 +232,17 @@ def ncbi_checks():
             man = AP.build_sample(d, None, "PGU-ITS", Path(td) / "pk2", formats=("html",), tools={})
             html = (Path(man["dir"]) / "Report_PGU-ITS.html").read_text()
             check("report: NCBI unreachable is said, not hidden", "NCBI could not be reached" in html)
+        rs = {f: (ROOT / "backend" / "r_scripts" / f).read_text(encoding="utf-8")
+              for f in ("dada2_pipeline.R", "cox1_pipeline.R", "its_pipeline.R")}
+        check("DADA2 / COX1 / ITS cutadapt remove both primers of a read-through pair (-n 2)",
+              rs["dada2_pipeline.R"].count('"-n", "2"') == 2 and "-O %d -n 2" in rs["cox1_pipeline.R"]
+              and "-O %d -n 2" in rs["its_pipeline.R"])
+        th = (ROOT / "backend" / "r_scripts" / "tax_helpers.R").read_text(encoding="utf-8")
+        check("unreadable reference: the log says why (web page / empty / no lineage), COX1 names the fix",
+              "tax_reference_problem <- function" in th and "web page (HTML)" in th
+              and 'iconv(hdrs, "UTF-8", "UTF-8", sub = "?")' in th
+              and "tax_reference_problem(dbs$genus)" in rs["cox1_pipeline.R"]
+              and "download_databases.sh --only midori" in rs["cox1_pipeline.R"])
         m = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
         q = (ROOT / "backend" / "qiime2_vsearch_pipeline.py").read_text(encoding="utf-8")
         check("main sends --ncbi_unassigned to both VSEARCH branches; pipeline runs it non-fatally",

@@ -3027,8 +3027,18 @@ def build_report(req: ReportRequest):
                                     top_asv=max(1, min(int(req.top_asv or 30), 500)),
                                     archaea=req.archaea)
     else:
-        doc = rb.build_html(runs, title=req.title, subtitle=req.subtitle,
-                            app=app_name, company=req.company or "")
+        mm = None
+        try:                          # runs of different markers (12S + 18S + COI of the same samples)
+            mm = importlib.import_module("multimarker_report")
+            importlib.reload(mm)
+        except Exception:
+            mm = None
+        if mm is not None and mm.is_multimarker(runs):
+            doc = mm.build_multimarker_html(runs, title=req.title, subtitle=req.subtitle,
+                                            app=app_name, company=req.company or "")
+        else:
+            doc = rb.build_html(runs, title=req.title, subtitle=req.subtitle,
+                                app=app_name, company=req.company or "")
 
     stem = "report_" + "_".join(r.label for r in runs)[:60].replace(" ", "_")
     stem = re.sub(r"[^A-Za-z0-9_.-]", "", stem) or "report"

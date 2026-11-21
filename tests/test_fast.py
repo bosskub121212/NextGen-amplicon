@@ -378,6 +378,10 @@ def main():
     import test_metadata_upload_fast         # groups after the run: upload, group manager
     test_metadata_upload_fast.main()
     FAILS.extend(test_metadata_upload_fast.FAILS)
+
+    import test_multimarker_fast             # 12S + 18S + COI of the same samples: one report
+    test_multimarker_fast.main()
+    FAILS.extend(test_multimarker_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

@@ -6462,8 +6462,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       fields:[
         ["dbPath",   "Taxonomy database", "db",   "", ""],
         ["minBoot",  "Minimum bootstrap", "int",  "50", "% of 100 resamplings"],
-        ["_species", "Species assignment","ro",   "exact match (100%)",
-                     "addSpecies() is exact matching — minBoot does not apply to it"]
+        (key === "18S-nema"
+          ? ["_species", "Species assignment", "ro", "by the classifier (the reference's species rank)",
+             "PR2 and 18S-NemaBase carry species as a rank, so species come from the same classifier and minBoot — nothing to set"]
+          : ["_species", "Species assignment","ro",   "exact match (100%)",
+                     "addSpecies() is exact matching — minBoot does not apply to it"])
       ].concat(key === "12S" ? [
         ["tax_method",  "Species names by", "select", "blast", [
           ["blast", "BLASTn top hits (MIDORI2 + MitoFish), DADA2 kept beside"],
@@ -8472,7 +8475,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       box.innerHTML = '<div class="rep">'
         + '<h4>Build report</h4>'
         + '<div class="what">One run = full report (QC, charts, ASV table, diversity). '
-        + 'Tick more runs for a comparison report — one column per run, in the order ticked.</div>'
+        + 'Tick more runs for a comparison report — one column per run, in the order ticked. '
+        + 'Runs of <b>different markers</b> of the same samples (e.g. 12S + 18S + COI) give a '
+        + '<b>Multi-marker report</b> instead: an overview per marker and what each marker found at each site.</div>'
         + '<div class="lab">Report title</div>'
         + '<input type="text" id="repTitle" placeholder="e.g. Reference database comparison" value="' + esc(R.title) + '">'
         + '<div class="lab">File type</div><div class="segs">'
@@ -8499,6 +8504,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
               + '<span class="nm">' + esc(j.job_name || j.job_id) + '</span>'
               + '<span class="chip mk">' + esc(j.marker || "") + '</span></label>';
           }).join("") : '<div class="what" style="padding:10px">No completed amplicon runs.</div>') + '</div>'
+        + (function(){
+            var mk = {};
+            R.pick.forEach(function(id){
+              var j = STATE.jobs.filter(function(x){ return x.job_id === id; })[0];
+              mk[String((j && j.marker) || "").toUpperCase()] = 1; });
+            return R.pick.length > 1 && Object.keys(mk).length > 1
+              ? '<div class="what"><b>Multi-marker report</b>: ' + Object.keys(mk).map(esc).join(" + ")
+                + '. Samples are matched by name without each job\'s marker tag (KK-NE-1-Riaz12S = KK-NE-1_TAR = '
+                + 'KK-NE-1_COI-XT); the site is the name without the replicate number, names ending in CT are '
+                + 'controls.</div>'
+              : (R.pick.length > 1 ? '<div class="what">Same marker: <b>Reference comparison</b> (the same data '
+                + 'analysed in different ways, side by side).</div>' : "");
+          })()
         + (R.err ? '<div class="err">' + esc(R.err) + '</div>' : "")
         + '<div class="row"><button class="btn pri" id="repGo"' + (R.busy || !R.pick.length ? " disabled" : "") + '>'
         + (R.busy ? (R.fmt === "docx" ? "Building Word file…" : "Building PDF…")
