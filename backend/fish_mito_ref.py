@@ -271,6 +271,10 @@ def build(out_dir: Path, gene: str, midori_fa: Path, mitofish_fa: Path | None, t
                                               if gene in GENES else gene, stats):
             n_mf += 1
             add("MitoFish", acc, seq, lin)
+    # MitoFish records whose species its lineage table does not place: ranks from the same genus
+    import blast_taxonomy as _BT
+    _lin = {i: r for i, r in enumerate(recs)}
+    stats["n_lineage_filled"] = _BT.fill_lineages(_lin)
     recs, n_shared = merge_shared(recs)
     fa = out_dir / f"fishmito_{gene}.fasta"
     with open(fa, "w") as fo, open(out_dir / "ids.tsv", "w") as ft:

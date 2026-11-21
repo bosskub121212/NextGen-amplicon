@@ -109,6 +109,22 @@ def main():
             m_ = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
             check("Download results allowed for 18S and COX1 jobs", '"18S-NEMA", "COX1", "COI")' in m_
                   and '"18S", "18S-NEMA", "COX1", "COI"].indexOf' in fe)
+            # BLAST: a MitoFish record with no lineage (Oxyurichthys papuensis, GEOFI763-21) is a fish
+            import blast_taxonomy as BT
+            L = {"a": {"source": "MIDORI2;MitoFish", "Phylum": "Chordata", "Class": "Actinopteri", "Order": "Gobiiformes",
+                       "Family": "Gobiidae", "Genus": "Oxyurichthys", "Species": "Oxyurichthys auchenolepis"},
+                 "b": {"source": "MitoFish", "Phylum": "", "Class": "", "Order": "", "Family": "", "Genus": "",
+                       "Species": "Oxyurichthys papuensis"},
+                 "h": {"source": "MIDORI2", "Phylum": "Chordata", "Class": "Mammalia", "Order": "Primates",
+                       "Family": "Hominidae", "Genus": "Homo", "Species": "Homo sapiens"}}
+            BT.fill_lineages(L)
+            th = {"Species": 98.5, "Genus": 95, "Family": 90, "Order": 85, "Class": 80}
+            r = BT.assign([{"sseqid": "b", "pident": "98.0", "bitscore": "180", "qcovhsp": "100"},
+                           {"sseqid": "h", "pident": "80", "bitscore": "120", "qcovhsp": "100"}], L, th, "vertebrates")
+            check("BLAST: a MitoFish record without a lineage takes its genus's; 98% goby -> fish, genus Oxyurichthys",
+                  r["target"] == "yes" and r["Genus"] == "Oxyurichthys" and r["Family"] == "Gobiidae", r)
+            fm = (ROOT / "backend" / "fish_mito_ref.py").read_text(encoding="utf-8")
+            check("fish_mito_ref fills those lineages when the reference is built", "fill_lineages(_lin)" in fm)
             rs = (ROOT / "backend" / "r_scripts" / "cox1_pipeline.R").read_text(encoding="utf-8")
             check("cox1_pipeline.R: summary says whether LULU ran", 'requireNamespace("lulu", quietly = TRUE)\nsummary_list$lulu_requested' in rs)
     except Exception:

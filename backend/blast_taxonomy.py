@@ -49,6 +49,8 @@ OUT_COLS = ["id", "sequence"] + RANKS + ["best_hit", "pident", "qcov", "source",
 def in_limit(lin: dict, limit: str) -> bool:
     if limit == "all":
         return True
+    if not lin.get("Class") and set(str(lin.get("source", "")).split(";")) == {"MitoFish"}:
+        return True       # MitoFish holds fish only: a record it does not place is still a fish
     if limit == "fish":
         return lin.get("Class", "") in FISH_CLASSES
     return lin.get("Phylum", "") == "Chordata" and lin.get("Class", "") not in NON_VERT_CHORDATES
@@ -254,11 +256,37 @@ def combine(local: dict, ncbi: list[dict] | None, thresholds: dict, genus_lin: d
     return c
 
 
+def fill_lineages(lin: dict) -> int:
+    """Records that name a species but leave the ranks above it empty — MitoFish records whose
+    species MitoFish's own lineage table does not place (Oxyurichthys papuensis, GEOFI763-21) — take
+    Phylum..Genus from a record of the same genus. Without it such a record is neither named nor
+    recognised as a fish: a 98% goby hit was counted as non-target with no name. Returns the
+    number of records filled."""
+    gl = {}
+    for l in lin.values():
+        g = l.get("Genus", "")
+        if g and g not in gl and l.get("Phylum") and l.get("Class"):
+            gl[g] = {r: l.get(r, "") for r in RANKS[:-1]}
+    n = 0
+    for l in lin.values():
+        if l.get("Phylum") and l.get("Class"):
+            continue
+        g = l.get("Genus", "") or (l.get("Species", "").split() or [""])[0]
+        full = gl.get(g)
+        if full:
+            for r in RANKS[:-1]:
+                if not l.get(r):
+                    l[r] = full[r]
+            n += 1
+    return n
+
+
 def load_ids(db_fasta: Path) -> dict:
     lin = {}
     with open(Path(db_fasta).parent / "ids.tsv", newline="") as fh:
         for r in csv.DictReader(fh, delimiter="\t"):
             lin[r["id"]] = r
+    fill_lineages(lin)
     return lin
 
 
