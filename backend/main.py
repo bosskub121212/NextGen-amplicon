@@ -2398,7 +2398,7 @@ def _custom_state(job_id: str) -> dict:
 
 
 # Pipelines the customer report knows how to describe truthfully.
-_CUSTOM_MARKERS = ("12S", "16S", "ONT-16S", "ONT16S", "ONT")
+_CUSTOM_MARKERS = ("12S", "16S", "ONT-16S", "ONT16S", "ONT", "18S", "18S-NEMA", "COX1", "COI")
 
 
 class CustomReportRequest(BaseModel):
@@ -2431,10 +2431,10 @@ def _custom_check(job_id: str):
         return out_dir, None                  # Nanopore ITS through VSEARCH + UNITE
     if marker.upper() not in _CUSTOM_MARKERS:
         return None, JSONResponse(status_code=400, content={
-            "error": f"the customer report covers 12S / CytB, 16S and ONT 16S runs, not {marker or 'this run'}"})
+            "error": f"the customer report covers 12S / CytB, 16S, ONT 16S, 18S and COI runs, not {marker or 'this run'}"})
     # 16S / 12S text describes paired Illumina reads through DADA2; ONT-through-DADA2 and
     # VSEARCH OTU runs of those markers would get sentences about steps they never had.
-    if marker.upper() in ("16S", "12S") and (seq or "illumina").lower() != "illumina":
+    if marker.upper() in ("16S", "12S", "18S", "18S-NEMA", "COX1", "COI") and (seq or "illumina").lower() != "illumina":
         return None, JSONResponse(status_code=400, content={
             "error": f"the customer report covers Illumina DADA2 runs of {marker}; this run used sequencerType={seq}"})
     return out_dir, None

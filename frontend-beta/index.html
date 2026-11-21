@@ -1966,7 +1966,11 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     if(p.dbPath_requested && p.dbPath && p.dbPath_requested !== p.dbPath)
       row("⚠ Database requested", p.dbPath_requested + "  (the run used the file above)");
     if(p.dbPath_auto) row("Database chosen automatically", "yes");
-    row("truncLen F / R",      (p.truncLen_F || p.truncLen_R) ? (p.truncLen_F + " / " + p.truncLen_R) : "");
+    /* COX1 truncates with its own pair; the ITS pipelines do not truncate. truncLen_F/R ride
+       along in their settings unused, and showing them listed values the run never applied. */
+    if(/^COX/i.test(p.marker || "")) row("truncLen F / R", (p.truncLen_cox1_f || "—") + " / " + (p.truncLen_cox1_r || "—"));
+    else if(/^ITS/i.test(p.marker || "")) row("truncLen F / R", "none (ITS reads are not truncated)");
+    else row("truncLen F / R",      (p.truncLen_F || p.truncLen_R) ? (p.truncLen_F + " / " + p.truncLen_R) : "");
     row("maxEE F / R",         (p.maxEE_F || p.maxEE_R) ? (p.maxEE_F + " / " + p.maxEE_R) : "");
     row("trimLeft F / R",      (p.trimLeft_F || p.trimLeft_R) ? (p.trimLeft_F + " / " + p.trimLeft_R) : "");
     row("Pooling",             p.pool);
@@ -8640,7 +8644,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   var CUST = {};
   function canCustomReport(jid){
     var j = STATE.jobs.filter(function(x){ return x.job_id === jid; })[0] || {};
-    return ["12S", "16S", "ONT-16S", "ONT16S", "ONT"].indexOf(String(j.marker || "").toUpperCase()) >= 0;
+    return ["12S", "16S", "ONT-16S", "ONT16S", "ONT", "18S", "18S-NEMA", "COX1", "COI"].indexOf(String(j.marker || "").toUpperCase()) >= 0;
   }
   function paintCust(jid){
     var box = document.getElementById("custBox");

@@ -540,11 +540,12 @@ table.side td + td { border-left: .5px solid #D5DEE2; padding-left: 2.5mm; }
 table.side .sh { font-size: 8.6pt; } table.side .sp { font-size: 7pt; color: #6B7F88; margin-bottom: 1mm; }
 table.side svg { width: 100%; height: auto; }
 table.ov th, table.ov td { padding-right: 1.4mm; overflow-wrap: anywhere; }
-table.ov th:nth-child(1) { width: 9%; } table.ov th:nth-child(2) { width: 15%; }
-table.ov th:nth-child(3) { width: 24%; } table.ov th:nth-child(4) { width: 7%; }
-table.ov th:nth-child(5), table.ov th:nth-child(6) { width: 10%; }
-table.ov th:nth-child(7), table.ov th:nth-child(8), table.ov th:nth-child(9) { width: 6%; }
-table.ov th:nth-child(10) { width: 7%; }
+table.ov thead th { letter-spacing: .02em; overflow-wrap: normal; }
+table.ov th:nth-child(1) { width: 7%; } table.ov th:nth-child(2) { width: 14%; }
+table.ov th:nth-child(3) { width: 20%; } table.ov th:nth-child(4) { width: 9%; }
+table.ov th:nth-child(5) { width: 11%; } table.ov th:nth-child(6) { width: 10%; }
+table.ov th:nth-child(7), table.ov th:nth-child(8) { width: 7%; }
+table.ov th:nth-child(9) { width: 8%; } table.ov th:nth-child(10) { width: 7%; }
 table.mm td { vertical-align: top; line-height: 1.25; }
 table.mm td:nth-child(2) { text-align: left; }
 table.mm thead th:nth-child(2) { text-align: left; }

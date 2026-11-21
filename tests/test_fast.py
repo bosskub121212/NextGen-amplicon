@@ -382,6 +382,10 @@ def main():
     import test_multimarker_fast             # 12S + 18S + COI of the same samples: one report
     test_multimarker_fast.main()
     FAILS.extend(test_multimarker_fast.FAILS)
+
+    import test_report_checks_fast           # 12S / 18S / COI single-run reports, checked one by one
+    test_report_checks_fast.main()
+    FAILS.extend(test_report_checks_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

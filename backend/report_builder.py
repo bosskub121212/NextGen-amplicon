@@ -683,7 +683,8 @@ class Run:
                        ("ASV length kept", sm.get("length_range")
                         or f'{p.get("cox1_min_len", "—")}-{p.get("cox1_max_len", "—")} bp'),
                        ("Genetic code (stop-codon filter)", sm.get("codon_table") or p.get("codon_table")),
-                       ("LULU curation", "yes" if sm.get("lulu", p.get("run_lulu", True)) else "no"),
+                       ("LULU curation", {"ran": "yes", "off": "no",
+                                          "missing": "skipped (LULU not installed)"}[self.lulu_state]),
                        mb])
         if self.kind == "pacbio":
             return ([("Marker", "16S full length (PacBio HiFi)"), ("Reference database", self.db_name)]
@@ -715,15 +716,57 @@ class Run:
                      ("NCBI nt check", "on" if str(bi.get("ncbi") or "off") != "off" else "off")]
         return rows
 
+    def _trunc_pair(self):
+        """The truncLen the pipeline actually used: COX1 has its own pair (truncLen_cox1_f/r), and the
+        ITS pipelines do not truncate — truncLen_F/R ride along in their run_params unused."""
+        p = self.params
+        if self.kind == "cox1":
+            return p.get("truncLen_cox1_f"), p.get("truncLen_cox1_r")
+        if self.kind == "its":
+            return None, None
+        return p.get("truncLen_F"), p.get("truncLen_R")
+
     @property
     def trunc(self) -> str:
-        f, r = self.params.get("truncLen_F"), self.params.get("truncLen_R")
+        f, r = self._trunc_pair()
         return f"{f} / {r}" if f and r else "—"
 
     @property
     def ceiling(self):
-        f, r = self.params.get("truncLen_F"), self.params.get("truncLen_R")
-        return f + r - 12 if f and r else None
+        f, r = self._trunc_pair()
+        try:
+            return int(f) + int(r) - 12 if f and r else None
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def app_version(self) -> tuple:
+        v = str((self.prov or {}).get("app_version") or "")
+        try:
+            return tuple(int(x) for x in v.split(".")[:3])
+        except ValueError:
+            return ()
+
+    @property
+    def cutadapt_two_rounds(self) -> bool:
+        """cutadapt -n 2 (both primers of a read-through pair removed) from v2.32.1 on."""
+        return bool(self.app_version) and self.app_version >= (2, 32, 1)
+
+    @property
+    def lulu_state(self) -> str:
+        """'ran', 'missing' (asked for, package not installed: skipped) or 'off' — COX1 runs."""
+        sm = self.summary
+        asked = sm.get("lulu_requested", sm.get("lulu", self.params.get("run_lulu", True)))
+        if not asked:
+            return "off"
+        if "lulu_requested" in sm and not sm.get("lulu"):
+            return "missing"
+        try:
+            if "LULU package not installed" in (self.path / "pipeline.log").read_text(errors="replace"):
+                return "missing"
+        except OSError:
+            pass
+        return "ran"
 
     @property
     def n_asvs(self) -> int:
@@ -766,9 +809,12 @@ class Run:
                          ("Mapped to OTUs", "final")] if self.paired else
                         [("Input", "input"), ("QC filtered", "qc_filtered"),
                          ("Primers trimmed", "primer_trimmed"), ("Mapped to OTUs", "final")]),
+            # the length filter runs before chimera removal in cox1_pipeline.R, although
+            # read_tracking.csv lists its column after nonchim
             "cox1": [("Input", "input"), ("Filtered", "filtered"), ("Merged", "merged"),
-                     ("Non-chimeric", "nonchim"), ("Length filtered", "length_filtered"),
-                     ("No stop codon", "codon_filtered"), ("LULU curated", "lulu_curated")],
+                     ("Length filtered", "length_filtered"), ("Non-chimeric", "nonchim"),
+                     ("No stop codon", "codon_filtered")]
+                    + ([("LULU curated", "lulu_curated")] if self.lulu_state == "ran" else []),
             "pacbio": [("Primer-oriented", "input"), ("Filtered", "filtered"),
                        ("Denoised", "denoised"), ("Non-chimeric", "nonchim")],
         }.get(self.kind, [("Input", "input"), ("Filtered", "filtered"),
@@ -2554,6 +2600,8 @@ def _methods_other(run, an):
         out.append("<h3>Primer trimming</h3>")
         out.append(f"<p>Primers were removed with cutadapt (error rate {e}, minimum overlap {o}); reads "
                    f"without a primer were discarded.</p>" + prim_ul)
+        out.append(f"<p>Primers were removed in two rounds (<span class=\"mono\">-n 2</span>), so a read that "
+                   f"runs through the amplicon loses both primers.</p>" if run.cutadapt_two_rounds else "")
         out.append("<h3>Denoising and ASV inference</h3>")
         out.append(f"<p>Reads were truncated at {p.get('truncLen_cox1_f', '—')} / "
                    f"{p.get('truncLen_cox1_r', '—')} bases and filtered with DADA2 (maxEE = "
@@ -2570,7 +2618,10 @@ def _methods_other(run, an):
                    + ("Remaining ASVs were curated with LULU, which merges erroneous daughter sequences "
                       "into their parent by co-occurrence"
                       + (f" ({fmt(sm['lulu_removed'])} merged)" if sm.get("lulu_removed") is not None else "")
-                      + "." if sm.get("lulu", p.get("run_lulu", True)) else "LULU curation was not used.")
+                      + "." if run.lulu_state == "ran" else
+                      "LULU curation was asked for but the LULU package is not installed on this machine, so "
+                      "it was skipped: ASVs that LULU would merge into a parent are still counted separately."
+                      if run.lulu_state == "missing" else "LULU curation was not used.")
                    + "</p>")
         out.append("<h3>Taxonomic assignment</h3>")
         out.append((_tophit_text(run, "COI") if sm.get("tax_method") == "vsearch" else
@@ -2711,9 +2762,14 @@ def _methods(run, an):
                        f"and reads shorter than 50 bp after trimming were discarded.</p>")
             out.append("<ul>" + (f"<li>Forward primer: <b class=\"mono\">{esc(pf)}</b></li>" if pf else "")
                        + (f"<li>Reverse primer: <b class=\"mono\">{esc(pr)}</b></li>" if pr else "") + "</ul>")
-            cmd = (f"cutadapt -g {pf} -a {_rc(pr)} -G {pr} -A {_rc(pf)} -e {e} -O {o} -m 50{disc} "
+            n2 = " -n 2" if run.cutadapt_two_rounds else ""
+            cmd = (f"cutadapt -g {pf} -a {_rc(pr)} -G {pr} -A {_rc(pf)} -e {e} -O {o}{n2} -m 50{disc} "
                    f"-o R1_cut.fastq.gz -p R2_cut.fastq.gz R1.fastq.gz R2.fastq.gz" if paired else
-                   f"cutadapt -g {pf} -a {_rc(pr)} -e {e} -O {o} -m 50{disc} -o cut.fastq.gz in.fastq.gz")
+                   f"cutadapt -g {pf} -a {_rc(pr)} -e {e} -O {o}{n2} -m 50{disc} -o cut.fastq.gz in.fastq.gz")
+            if n2:
+                out.append("<p>cutadapt ran two rounds (<span class=\"mono\">-n 2</span>): a read that runs "
+                           "through an amplicon shorter than itself holds both primers and the adapter behind "
+                           "them, and both rounds are needed to remove them.</p>")
             out.append(f'<p class="cmd">{esc(cmd)}</p>')
         else:
             out.append("<p>No primer sequences were given, so primer trimming was skipped.</p>")
@@ -3001,6 +3057,10 @@ def _blast_section(run, S, T) -> list:
                 rank, name = "", (f"Closest to a fish, below {cls_th}% identity (unconfirmed)" if far else
                                   "Fish, name cut to phylum (conflicting hits or NCBI disagreement)")
             e = fish.setdefault(name, {"rank": rank, "reads": 0.0, "pid": [], "in": set()})
+        elif t == "no" and not name:
+            bh = str(r.get("best_hit") or r.get("ncbi_best") or "").strip()
+            name, rank = (f"Not named (closest: {bh[:70]})" if bh else "Not named (no close hit)"), ""
+            e = other.setdefault(name, {"rank": rank, "reads": 0.0, "pid": [], "in": set()})
         elif t == "no" and name:
             if rank == "Phylum":
                 name = (f"{name} (best hit below {cls_th}% identity)" if far else
@@ -3055,6 +3115,11 @@ def _blast_section(run, S, T) -> list:
                      f"Sequences whose best hit is a {tword} below {cls_th}% identity get no name: they may be a "
                      f"{tword} missing from the reference, or another organism whose closest reference "
                      f"happens to be a {tword}."))
+    hs_t = sum(e["reads"] for k, e in fish.items() if k.startswith("Homo"))
+    if hs_t:
+        out.append(f"<p>Human DNA (<i>Homo sapiens</i>) made up {fmt(hs_t)} reads ({100*hs_t/all_tot:.1f}%). "
+                   f"With the BLAST limit set to {tword}s it counts as {tword} DNA in the figures above; it "
+                   f"usually comes from handling and is not part of the {tword} community.</p>")
     if other:
         hs = sum(e["reads"] for k, e in other.items() if k.startswith("Homo"))
         out.append(T(["Taxon", "Named to", "Reads", "All", "Best-hit identity %", "Samples"], _rows(other, 15),
@@ -3600,6 +3665,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         marker = "COI"
     elif run.mito_gene == "CytB":
         marker = "CytB"
+    elif getattr(run, "is_pr2", False) and "18S" in str(marker).upper():
+        marker = "18S"                 # the job's marker key is "18S-nema" whatever the reference
     region = run.summary.get("region") or ("V1–V9" if run.emu else
                                           (run.params.get("pb_region") or "V1–V9") if run.kind == "pacbio"
                                           else "V3–V4"
@@ -3893,11 +3960,22 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     qc = (run.qc or {}).get("offtarget") or {}
     if qc and qc.get("reads"):
         out.append("<h3>Off-target reads</h3>")
+        _org = float(qc.get("organelle_reads", 0) or 0)
+        _dom = max(0.0, float(qc.get("reads", 0) or 0) - _org)
+        _tot = (float(qc.get("reads", 0) or 0) / (float(qc.get("pct", 0) or 0) / 100)) if qc.get("pct") else 0
+        _dpct = f"{100 * _dom / _tot:.2f}%" if _tot else "&mdash;"
+        _bact = run.bacterial
         out.append(T(["Category", "Reads", "Share"], [
-            ["Host organelle (mitochondria / chloroplast)", fmt(qc.get("organelle_reads", 0)), f'{qc.get("organelle_pct", 0)}%'],
-            ["Unassigned at domain level", fmt(qc.get("unassigned_reads", 0)), f'{qc.get("unassigned_pct", 0)}%'],
-            ["Total off-target", fmt(qc.get("reads", 0)), f'{qc.get("pct", 0)}%']],
-            "Off-target reads. &ldquo;Universal&rdquo; 16S primers co-amplify host mitochondrial DNA."))
+            ["Host organelle (mitochondria / chloroplast)", fmt(_org), f'{qc.get("organelle_pct", 0)}%'],
+            ["Outside the target domain (" + ("eukaryotes" if _bact else "bacteria and archaea") + ")",
+             fmt(_dom), _dpct],
+            ["Total off-target", fmt(qc.get("reads", 0)), f'{qc.get("pct", 0)}%'],
+            ["Not assigned at domain level (not counted above)", fmt(qc.get("unassigned_reads", 0)),
+             f'{qc.get("unassigned_pct", 0)}%']],
+            "Off-target reads. &ldquo;Universal&rdquo; 16S primers co-amplify host mitochondrial DNA."
+            if _bact else
+            "Off-target reads: DNA outside the domain this marker targets that the primers also amplified, "
+            "and organelle sequences."))
 
     if run.blast:
         out += _blast_section(run, S, T)
@@ -3957,7 +4035,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         if not keep:
             continue
         cap = (f"Relative abundance of the {len(keep)} most abundant "
-               f"{PLURAL.get(rank, rank.lower())} per sample"
+               f"{PLURAL.get(rank, rank.lower()) if len(keep) != 1 else rank.lower()} per sample"
                + ". Percentages are of each sample&rsquo;s community reads"
                + (" with host organelle reads set aside" if run.host + run.euk > 0 else "") + ".")
         if not many:

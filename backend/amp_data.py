@@ -76,6 +76,9 @@ class RunData:
         # input / qc_filtered / primer_trimmed / final tracking): kind says how to READ the run,
         # engine says which pipeline made it — what the report must describe.
         self.engine = "vsearch" if self.summary.get("pipeline") == "qiime2_vsearch" else self.kind
+        mk = str(self.params.get("marker") or self.summary.get("marker") or "").upper()
+        if self.kind == "dada2" and (self.summary.get("pipeline") == "cox1" or mk in ("COX1", "COI")):
+            self.engine = "cox1"           # COX1 pipeline: DADA2 + length / stop-codon filters (+ LULU)
         self.track_cols = EMU_TRACK_COLS if self.kind == "emu" else TRACK_COLS
         if self.kind == "emu":
             self._read_emu()
@@ -244,6 +247,11 @@ class RunData:
                 pr2 = "Supergroup" in th or "Subdivision" in th       # PR2 (18S eukaryotes)
                 for r in rd:
                     tax[r[0]] = {h: _pr2(h, _v(v)) if pr2 else _v(v) for h, v in zip(th[1:], r[1:])}
+                    t_ = tax[r[0]]
+                    # VSEARCH naming before v2.33.3 wrote the genus again as the species (MIDORI2 label cut
+                    # at its space): a one-word species equal to its genus is no species
+                    if t_.get("Species") and t_.get("Species") == t_.get("Genus"):
+                        t_["Species"] = ""
         bl = {}
         bp = self.dir / "blast" / "taxonomy_blast.csv"
         if bp.exists():
@@ -305,7 +313,9 @@ class RunData:
             trimmed = int(cj.get("output") or 0) or num("input")
             nonchim = sum(a["counts"].get(s, 0) for a in self.asvs)
             self.tracking[s] = {"raw_data": raw, "trimmed": trimmed, "filtered": num("filtered"),
-                                "denoisedF": num("denoisedF") or num("denoised"), "denoisedR": num("denoisedR"),
+                                "denoisedF": num("denoisedF") or num("denoised_F") or num("denoised"),
+                                "denoisedR": num("denoisedR") or num("denoised_R"),
+                                "length_filtered": num("length_filtered"), "codon_filtered": num("codon_filtered"),
                                 "merged": num("merged"), "Nonchim": nonchim,
                                 "perc": (round(100 * nonchim / raw, 2) if raw else 0.0) if raw is not None else None,
                                 "primer_hits": int(cj.get("read1_with_adapter") or 0),

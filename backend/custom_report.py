@@ -99,6 +99,9 @@ def _refs(run, ref_text: str) -> list[str]:
         tag = next((v for k, v in REF_ONLY.items() if k in r), None)
         if tag == "dada2" and run.kind != "dada2":
             continue
+        if tag == "emu_chimera" and getattr(run, "engine", "") == "cox1" and "VSEARCH" in ref_text:
+            out.append(r)             # COX1 named by VSEARCH best hit
+            continue
         if tag in ("emu", "emu_chimera") and run.kind != "emu":
             continue
         if tag == "emu_chimera" and not any(emu_settings(run, x)["chimera_ran"] for x in run.samples):
@@ -464,6 +467,24 @@ def _tax_text(run: AD.RunData) -> tuple[str, str]:
                 f"profile of the nanopore reads; species below a relative abundance of {st['min_ab']:g} were removed "
                 f"(--min-abundance). {counts} Taxa with no name at a rank are shown as '&lt;higher rank&gt; "
                 "unidentified'.", f"{db} (ONT 16S, Emu)")
+    if getattr(run, "engine", "") == "cox1":
+        sm = run.summary
+        db = Path(str(p.get("dbPath") or sm.get("db_path") or "")).name
+        m = re.search(r"GB(\d+)", db)
+        lab = f"MIDORI2 GenBank {m.group(1)} (COI)" if m else "MIDORI2 (COI)"
+        tail = (" MIDORI2 ranks run from phylum to species (Leray et al. 2022); NCBI taxon identifiers were removed "
+                "from the names, and a rank with no name is shown as '&lt;higher rank&gt; unidentified'.")
+        if str(sm.get("tax_method") or "") == "vsearch":
+            c = sm.get("tax_cutoffs") or {}
+            th = ", ".join(f"{k.lower()} {c.get(k)}%" for k in ("Species", "Genus", "Family", "Order", "Class", "Phylum")
+                           if c.get(k) is not None) or "species 97%, genus 95%, family 90%, order 85%, class 80%, phylum 75%"
+            return (f"Each ASV was named by its best hits in {lab} ({(e(db) + '; ') if db else ''}VSEARCH --usearch_global, both strands; "
+                    "hits within 0.5% identity of the best one must agree on a name), and a rank was kept only where the "
+                    f"identity reached its threshold: {th}. This reference holds too many lineages for the DADA2 "
+                    "classifier to keep in this machine's memory, so best-hit naming was used." + tail,
+                    f"{lab} (VSEARCH)")
+        return (f"Classify sequences with the DADA2 naive Bayesian classifier (assignTaxonomy, minBoot="
+                f"{p.get('minBoot', 50)}) against {lab}" + (f" ({e(db)})" if db else "") + "." + tail, lab)
     gene = "CytB" if str(p.get("mito_gene", "")).upper() == "CYTB" else "12S rRNA"
     if bi and (run.dir / "blast" / "taxonomy_blast.csv").exists():
         rf = bi.get("reference", {})
@@ -560,7 +581,10 @@ def _dada2_steps(run, i, s, folder, img, qc, plots, job_label, rel=None, reads_r
     else:
         res = "No primer sequences were given; primer removal was skipped."
     o.append(f'<p><span class="ul">Result:</span> {res}</p>')
-    trF, trR = int(p.get("truncLen_F") or 0), int(p.get("truncLen_R") or 0)
+    cox = getattr(run, "engine", "") == "cox1"
+    trF, trR = ((int(p.get("truncLen_cox1_f") or 0), int(p.get("truncLen_cox1_r") or 0)) if cox else
+                (int(p.get("truncLen_F") or 0), int(p.get("truncLen_R") or 0)))
+    ovl = int(run.summary.get("merge_overlap") or p.get("merge_overlap") or 20) if cox else 12
     trunc = (f"trimming the forward reads at {trF} and the reverse reads at {trR} based on the forward / reverse "
              "read quality profiles" if trF > 0 else
              "no truncation (truncLen = 0): reads were kept at their full length after primer removal")
@@ -583,11 +607,30 @@ def _dada2_steps(run, i, s, folder, img, qc, plots, job_label, rel=None, reads_r
           "from the data, alternating between estimating error rates and inferring the sample composition until they "
           f"converge. The error model was learned from the reads of this run's samples together; {pool_t}.</p>",
           '<p class="indent">3) Merge paired reads -- each denoised forward read is aligned with the reverse complement of '
-          "its denoised reverse read; pairs are merged when they overlap by at least 12 bases with no mismatch in the "
+          f"its denoised reverse read; pairs are merged when they overlap by at least {ovl} bases with no mismatch in the "
           "overlap.</p>",
           f'<p class="indent">4) Chimera Removal -- removeBimeraDenovo (method "{e(str(p.get("chimeraMethod", "consensus")))}") '
-          "removes sequence variants that are bimeras of two more abundant parents.</p>",
-          '<p><span class="ul">Result:</span> <b>Data quality control</b></p>',
+          "removes sequence variants that are bimeras of two more abundant parents.</p>"]
+    if cox:
+        sm = run.summary
+        lulu_ok = bool(sm.get("lulu", p.get("run_lulu", True)))
+        try:
+            if "LULU package not installed" in (run.dir / "pipeline.log").read_text(errors="replace"):
+                lulu_ok = False
+        except OSError:
+            pass
+        o += ['<p class="indent">5) Length filter -- ASVs outside '
+              f"{e(str(sm.get('length_range') or 'the expected COI length'))} were removed (before chimera removal).</p>",
+              '<p class="indent">6) Stop-codon filter -- every ASV was translated with genetic code '
+              f"{e(str(sm.get('codon_table') or p.get('codon_table') or 5))}; ASVs with a stop codon in every reading frame "
+              "were removed as likely nuclear pseudogenes (NUMTs)"
+              + (f"; {sm['numt_removed']} were removed" if sm.get("numt_removed") is not None else "") + ".</p>",
+              '<p class="indent">7) LULU -- ' + ("erroneous daughter ASVs were merged into their parent by co-occurrence"
+                                                  + (f" ({sm['lulu_removed']} merged)" if sm.get("lulu_removed") is not None else "")
+                                                  + "." if lulu_ok else
+                                                  "not run (the LULU package is not installed on this machine); every ASV "
+                                                  "is kept as DADA2 resolved it.") + "</p>"]
+    o += ['<p><span class="ul">Result:</span> <b>Data quality control</b></p>',
           _fig(img / "Box_plot.png", 14), _cap(rel("Box_plot.png")),
           _table(["SampleID", "Sample_name", "raw_data", "trimmed", "filtered", "denoisedF", "denoisedR", "merged",
                   "Nonchim", "perc"],

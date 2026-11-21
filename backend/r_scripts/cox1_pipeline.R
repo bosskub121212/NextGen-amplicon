@@ -808,7 +808,8 @@ summary_list$tax_levels <- colnames(tax)
 summary_list$minBoot    <- opt$minBoot
 summary_list$tax_method <- if (exists("tax_method")) tax_method else "dada2"
 if (identical(summary_list$tax_method, "vsearch")) summary_list$tax_cutoffs <- as.list(TAX_CUTOFFS_COI)
-summary_list$lulu       <- isTRUE(opt$lulu)
+summary_list$lulu       <- isTRUE(opt$lulu) && requireNamespace("lulu", quietly = TRUE)
+summary_list$lulu_requested <- isTRUE(opt$lulu)
 write(toJSON(summary_list, auto_unbox=TRUE, pretty=TRUE),
       file.path(opt$output_dir, "summary.json"))
 
