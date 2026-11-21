@@ -601,12 +601,15 @@ if (!is_single && has_qc_helpers && length(fnFs) > 0 && length(fnRs) > 0) {
       assign("QC_MAX_TRUNC_R", rR$recommended, envir = globalenv())
       keepF <- qc_keep_at(hF, opt$truncLen_F)
       keepR <- qc_keep_at(hR, opt$truncLen_R)
-      cat(sprintf("  Read lengths after trimming: R1 max %d bp, R2 max %d bp\n",
-                  rF$max_len, rR$max_len))
-      cat(sprintf("  truncLen_F=%d keeps %.1f%% of full-length R1 (best: %d -> %.1f%%)\n",
+      # The median too: with an amplicon shorter than the reads (12S Riaz ~100 bp) the max is a
+      # few stray long reads, and "full-length" below means reads near that max — 95% of a handful.
+      med_len <- function(h) h$len[which(cumsum(h$count) >= sum(h$count) / 2)[1]]
+      cat(sprintf("  Read lengths after trimming: R1 median %d bp (max %d), R2 median %d bp (max %d)\n",
+                  med_len(hF), rF$max_len, med_len(hR), rR$max_len))
+      cat(sprintf("  truncLen_F=%d keeps %.1f%% of near-max-length R1 (best: %d -> %.1f%%)\n",
                   opt$truncLen_F, keepF, rF$recommended,
                   qc_keep_at(hF, rF$recommended)))
-      cat(sprintf("  truncLen_R=%d keeps %.1f%% of full-length R2 (best: %d -> %.1f%%)\n",
+      cat(sprintf("  truncLen_R=%d keeps %.1f%% of near-max-length R2 (best: %d -> %.1f%%)\n",
                   opt$truncLen_R, keepR, rR$recommended,
                   qc_keep_at(hR, rR$recommended)))
 
@@ -1526,12 +1529,16 @@ if (!is.null(tax)) {
       v <- tax[, j]
       !is.na(v) & v %in% organelle_labels
     }), init = rep(FALSE, nrow(tax)))
-    is_unassigned <- is.na(kingdom_vec)
+    # A reference without a Kingdom/Domain rank (MIDORI2 starts at phylum) was reported as
+    # "100% no kingdom assigned"; its top rank is what says whether an ASV was named at all.
+    top_rank <- if (length(king_col) > 0) colnames(tax)[king_col[1]] else colnames(tax)[1]
+    top_vec  <- if (length(king_col) > 0) kingdom_vec else tax[, 1]
+    is_unassigned <- is.na(top_vec)
     is_offtarget  <- is_offtarget_kingdom | is_organelle
 
     kingdom_tbl <- tapply(asv_reads_qc,
-                          ifelse(is.na(kingdom_vec), "Unassigned", kingdom_vec), sum)
-    cat("── Taxonomy QC: reads by Kingdom ──────────────────────────────\n")
+                          ifelse(is.na(top_vec), "Unassigned", top_vec), sum)
+    cat(sprintf("── Taxonomy QC: reads by %s ──────────────────────────────\n", top_rank))
     for (k in names(sort(kingdom_tbl, decreasing=TRUE))) {
       cat(sprintf("  %-14s %8d reads  (%5.1f%%)\n", k, kingdom_tbl[[k]],
                   kingdom_tbl[[k]] / max(total_qc, 1) * 100))
@@ -1547,8 +1554,8 @@ if (!is.null(tax)) {
                 off_reads, off_pct))
     cat(sprintf("  Organelle (Mitochondria/Chloroplast):        %d reads (%.1f%%)\n",
                 org_reads, org_pct))
-    cat(sprintf("  No kingdom assigned:                         %d reads (%.1f%%)\n",
-                unass_reads, unass_pct))
+    cat(sprintf("  No %-9s assigned:                       %d reads (%.1f%%)\n",
+                tolower(top_rank), unass_reads, unass_pct))
 
     if (off_pct >= opt$offtarget_warn_pct) {
       cat("\n  [WARNING] A large share of reads are NOT from the target group.\n")
