@@ -121,6 +121,9 @@ def main():
                   and "build_multimarker_html" in m_)
             fe = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
             check("Build report says so for different markers", "Multi-marker" in fe)
+            check("failed amplicon job: Run again, with the taxonomy database to pick (empty file refused)",
+                  '(M.st === "error" || M.st === "cancelled")' in fe and "EMPTY \u2014 failed download" in fe
+                  and "params.dbPath = pick.path" in fe)
     except Exception:
         traceback.print_exc()
         FAILS.append("exception")

@@ -1669,6 +1669,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + (isWgs ? '<button class="btn pri" id="wgReJob" data-resume="1" title="Carry on from where it stopped: samples and steps already finished are kept">Resume run</button>' : "")
             + (M.marker === "ONT-16S" && (M.st === "error" || M.st === "cancelled")
                 ? '<button class="btn pri" id="emuResume" title="Carry on from where it stopped: samples Emu already finished are kept, only the rest run">Resume run</button>' : "")
+            + (!isWgs && (M.st === "error" || M.st === "cancelled")
+                ? '<button class="btn" id="ampRe" title="Run the pipeline again on the same input files; the taxonomy database can be changed (e.g. after a failed download)">Run again</button>' : "")
             + '<button class="btn" id="resBtn">View any results</button>'
             + '<a class="btn" href="/classic?job=' + encodeURIComponent(jid) + '">Open in the classic UI</a>';
       body.innerHTML =
@@ -8264,6 +8266,37 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       .then(function(D){
         params = D.params || {};
         if(!params.marker) throw new Error("this job has no recorded settings to re-run with");
+        /* The taxonomy database can be changed here: a run that stopped on a broken reference
+           (an empty MIDORI2 file left by a failed download) is re-run with a good one, files kept. */
+        if(!params.dbPath) return null;
+        return api("/databases/browse").catch(function(){ return {files: []}; });
+      })
+      .then(function(B){
+        if(B && params.dbPath){
+          var cur = String(params.dbPath), dir = cur.replace(/[\\/][^\\/]*$/, "");
+          var fs = (B.files || []).filter(function(f){
+            return /\.(fa|fasta)(\.gz)?$/i.test(f.name) && String(f.path).replace(/[\\/][^\\/]*$/, "") === dir; });
+          var curF = fs.filter(function(f){ return f.path === cur; })[0];
+          var bad = !curF || !(curF.size_mb > 0.001);
+          if(fs.length > 1 || bad){
+            var good = fs.filter(function(f){ return f.size_mb > 0.001; });
+            var def = bad ? (good.sort(function(a, b){ return b.size_mb - a.size_mb; })[0] || null) : curF;
+            var list = fs.map(function(f, i){
+              return (i + 1) + ". " + (f.label || f.name) + " (" + (f.size_mb > 0.001 ? f.size_mb + " MB" : "EMPTY — failed download") + ")"
+                + (f.path === cur ? "  ← used last time" : ""); }).join("\n");
+            var a = window.prompt("Taxonomy database for this run" + (bad ? " — the one used last time is missing or empty" : "")
+              + ":\n\n" + list + "\n\nNumber (Enter = " + (def ? fs.indexOf(def) + 1 : "keep") + "):",
+              def ? String(fs.indexOf(def) + 1) : "");
+            if(a === null) throw {cancel:true};
+            var k = parseInt(a, 10);
+            var pick = (isFinite(k) && k >= 1 && k <= fs.length) ? fs[k - 1] : def;
+            if(pick){
+              if(!(pick.size_mb > 0.001)) throw new Error(pick.name + " is empty — pick another database");
+              params.dbPath = pick.path;
+              params.taxDatabase = pick.label || pick.name;
+            }
+          }
+        }
         var cur = params.nThreads || 4;
         var t = window.prompt("Run this job again with the same input files and settings?\n\n"
           + "The current results of this job are replaced (download the PDF / zip first if you "
