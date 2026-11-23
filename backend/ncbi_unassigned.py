@@ -32,7 +32,7 @@ RANK_FLOORS = (("genus", 95.0), ("family", 90.0), ("phylum", 80.0))
 MIN_COV = 80.0
 TIE = 0.995                     # hits within 0.5 % of the best bit score are ties
 COLS = ["otu", "reads", "length", "group", "named_as", "rank", "ncbi_hit", "pident", "qcov",
-        "accession", "taxid", "phylum", "family", "genus", "ties", "title"]
+        "accession", "taxid", "phylum", "class", "order", "family", "genus", "ties", "title"]
 GROUP_ORDER = ["Bacteria", "Archaea", "Fungi", "Plants", "Animals", "Other eukaryotes", "Viruses",
                "Unclassified record", "No NCBI match"]
 
@@ -61,7 +61,7 @@ def unassigned_otus(run_dir: Path) -> list[tuple[str, str, int]]:
 
 
 def lineages(taxids, http=BT._http, sleep=time.sleep) -> dict:
-    """{taxid: {"superkingdom", "kingdom", "phylum", "family", "genus", "name"}} from NCBI taxonomy."""
+    """{taxid: {"superkingdom", "kingdom", "phylum", "class", "order", "family", "genus", "name"}} from NCBI taxonomy."""
     import xml.etree.ElementTree as ET            # NCBI's own XML, fetched over HTTPS
     ids = sorted({str(t) for t in taxids if str(t).strip() and str(t) != "0"})
     out = {}
@@ -76,7 +76,7 @@ def lineages(taxids, http=BT._http, sleep=time.sleep) -> dict:
                 rk = a.findtext("Rank", "")
                 if rk == "domain":
                     rk = "superkingdom"
-                if rk in ("superkingdom", "kingdom", "phylum", "family", "genus"):
+                if rk in ("superkingdom", "kingdom", "phylum", "class", "order", "family", "genus"):
                     lin[rk] = a.findtext("ScientificName", "")
             if lin["rank_self"] in ("genus", "family", "phylum"):
                 lin[lin["rank_self"]] = lin["name"]
@@ -115,7 +115,7 @@ def name_hit(hits: list[dict], lins: dict) -> dict:
            "accession": best.get("accession", ""), "taxid": best.get("taxid", ""), "title": best.get("title", ""),
            "ties": len(ties), "group": grp, "named_as": grp, "rank": "group"}
     l0 = ls[0] if ls else {}
-    for rk in ("phylum", "family", "genus"):
+    for rk in ("phylum", "class", "order", "family", "genus"):
         row[rk] = l0.get(rk, "")
     pid, cov = float(best.get("pident") or 0), float(best.get("qcov") or 0)
     if cov >= MIN_COV:

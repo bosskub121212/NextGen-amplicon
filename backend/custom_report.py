@@ -84,7 +84,7 @@ def _refs(run, ref_text: str) -> list[str]:
         if vs:                         # VSEARCH OTU run: chopper (NanoPack2), VSEARCH, UNOISE, UNITE
             if tag in ("dada2", "vsearch", "emu_chimera") or (tag == "emu" and "NanoPack2" in r):
                 if (tag == "dada2") or ("UNITE" in r and "UNITE" not in ref_text) or \
-                        ("Vu D" in r and "Vu et al." not in ref_text):
+                        ("Vu D" in r and not vsearch_settings(run)["its"]):
                     continue
                 out.append(r)
             elif tag is None and not any(k in r for k in ("MIDORI2", "MitoFish", "BLAST+")):

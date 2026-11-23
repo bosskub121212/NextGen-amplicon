@@ -389,7 +389,8 @@ def build_html(run: AD.RunData, s: str, root: Path, qc: dict, plots: dict, a: di
     T = root / "2.Taxonomy"
     o += ["<h3>Bar charts of taxonomic profiles</h3>",
           f"<p>Relative abundance of the taxa detected in this sample at each rank (phyloseq "
-          f"{e(plots.get('phyloseq', ''))}, ggplot2 {e(plots.get('ggplot2', ''))}). "
+          f"{e(str(plots.get('phyloseq', '')).replace('phyloseq', '').strip())}, ggplot2 "
+          f"{e(str(plots.get('ggplot2', '')).replace('ggplot2', '').strip())}). "
           + ("OTUs" if vs else "Taxa" if emu else "ASVs") + " without a name at a rank are shown as '&lt;higher rank&gt; unidentified'. "
           "At a rank with more than 30 taxa the chart colours the 30 most abundant and sums the rest into one grey "
           "'Others' segment (its title gives the count); the tables in 2.Taxonomy/outfiles and the Excel file list "

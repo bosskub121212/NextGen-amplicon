@@ -47,7 +47,9 @@ def label(asv: dict, rank: str) -> str:
     i = RANKS.index(rank)
     for r in RANKS[:i][::-1]:
         if _v(asv["tax"].get(r, "")):
-            return f"{asv['tax'][r]} unidentified"
+            v = asv["tax"][r]
+            # an NCBI group name already says it is unplaced: 'Bacteria (unclassified)', not '... unidentified'
+            return v if v.endswith(" (unclassified)") else f"{v} unidentified"
     return "Unassigned"
 
 
@@ -339,6 +341,9 @@ class RunData:
             depth = {"genus": 3, "family": 2, "phylum": 1}.get(rank, 0)
             t["Phylum"] = (r.get("phylum") or "").strip() if depth >= 1 else ""
             t["Family"] = (r.get("family") or "").strip() if depth >= 2 else ""
+            if depth >= 2:                 # the tied records agree on the family: its class and order with it
+                t["Class"] = (r.get("class") or "").strip()
+                t["Order"] = (r.get("order") or "").strip()
             t["Genus"] = (r.get("genus") or "").strip() if depth >= 3 else ""
             if not t["Phylum"]:
                 t["Phylum"] = f"{g} (unclassified)"
