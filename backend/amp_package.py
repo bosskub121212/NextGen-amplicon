@@ -76,6 +76,9 @@ def marker_label(run: AD.RunData) -> tuple[str, str]:
     mk = str(p.get("marker") or sm.get("marker") or "").upper()
     if getattr(run, "engine", "") == "vsearch":
         if mk.startswith("ITS"):
+            if getattr(run, "ncbi_named", 0):
+                return (f"Fungal {mk} + NCBI-named", f"{mk} region (fungi), Oxford Nanopore reads, VSEARCH OTUs + UNITE; "
+                        "OTUs UNITE could not name (bacteria and other organisms) named by NCBI nt")
             return f"Fungal {mk}", f"{mk} region (fungi), Oxford Nanopore reads, VSEARCH OTUs + UNITE"
         return (mk or "Amplicon"), f"{mk or 'amplicon'}, VSEARCH OTUs"
     if run.kind == "emu":
@@ -111,9 +114,14 @@ def _move(src: Path, dst: Path):
 
 
 def build_sample(run_dir: Path, upload_dir: Path | None, sample: str, out_dir: Path, formats=("pdf", "docx"),
-                 name: str | None = None, tools: dict | None = None, include_reads: bool = True) -> dict:
+                 name: str | None = None, tools: dict | None = None, include_reads: bool = True,
+                 ncbi_names: bool = False) -> dict:
+    """ncbi_names: put the NCBI names of the OTUs the reference left unassigned into the profiles
+    (a fungal ITS run that also shows the bacteria its primers amplified)."""
     tools = dict(tools or {})
     full = AD.load_run(Path(run_dir))
+    if ncbi_names:
+        full.use_ncbi_names()
     run = full.only(sample)                                # refuses an unknown sample
     s = sample
     name = name or CR.safe(s)
@@ -469,7 +477,9 @@ def _ncbi_unassigned_html(run, s, e) -> list:
     info = getattr(run, "ncbi_un_info", None)
     sa = run.sample_asvs(s)
     tot = sum(a["counts"].get(s, 0) for a in sa) or 1
-    unas = [a for a in sa if not (a.get("tax") or {}).get("Phylum") and a["counts"].get(s, 0) > 0]
+    unas = [a for a in sa if (a.get("ncbi_named") or not (a.get("tax") or {}).get("Phylum"))
+            and a["counts"].get(s, 0) > 0]
+    named_in = any(a.get("ncbi_named") for a in unas)
     if not unas or info is None:
         return []
     n_un = sum(a["counts"].get(s, 0) for a in unas)
@@ -482,7 +492,11 @@ def _ncbi_unassigned_html(run, s, e) -> list:
     chk = [a for a in unas if a.get("ncbi_un")]
     fl = info.get("rank_floors") or {"genus": 95, "family": 90, "phylum": 80}
     o.append(f"<p>{len(unas)} OTUs of this sample ({100 * n_un / tot:.1f}% of its counted reads) had no hit in {e(ref)}; "
-             "in the charts and tables above they are 'Unassigned'. Each was compared with NCBI nt (BLASTn megablast, "
+             + ("in the charts, tables, Krona and Excel file above they carry the NCBI name below (to the rank the hit "
+                "supports; an OTU known only to its group is '&lt;group&gt; (unclassified)'), so the bacteria and other "
+                "organisms the primers also amplified are part of the profiles. " if named_in else
+                "in the charts and tables above they are 'Unassigned'. ")
+             + "Each was compared with NCBI nt (BLASTn megablast, "
              f"{e(info.get('date', ''))}) and the table gives its closest NCBI record. A name is given to genus at "
              f"&ge;{fl.get('genus', 95):g}% identity, to family at &ge;{fl.get('family', 90):g}% and to phylum at "
              f"&ge;{fl.get('phylum', 80):g}%, over at least {info.get('min_cov', 80):g}% of the OTU and only when the "

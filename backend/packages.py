@@ -100,7 +100,7 @@ def unique_names(samples: list[str], all_samples: list[str]) -> dict:
 
 def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str], split: bool, dest: Path,
           job_label: str = "results", include_reads: bool = False, tools: dict | None = None,
-          progress=None, formats=("pdf", "docx")) -> dict:
+          progress=None, formats=("pdf", "docx"), ncbi_names: bool = False) -> dict:
     run_dir, dest = Path(run_dir), Path(dest)
     progress = progress or (lambda i, n, label: None)
     known = list_samples(run_dir, kind)
@@ -128,6 +128,8 @@ def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str],
         else:
             import amp_package as AP
             kw = {"tools": tools} if tools is not None else {}
+            if ncbi_names:
+                kw["ncbi_names"] = True
 
             def one(s):
                 return AP.build_sample(run_dir, upload_dir, s, work, formats, name=names[s],
@@ -142,19 +144,21 @@ def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str],
             for lg in work.glob("*.plots.log"):                 # R log: kept beside the zips, not inside
                 lg.replace(dest / lg.name)
             if split:
-                z = zip_dir(Path(m["dir"]), dest / f"{Path(m['dir']).name}.zip")
+                z = zip_dir(Path(m["dir"]), dest / f"{Path(m['dir']).name}{'_with_NCBI_names' if ncbi_names else ''}.zip")
                 files.append({"name": z.name, "path": str(z), "size": z.stat().st_size, "samples": [s]})
                 shutil.rmtree(m["dir"], ignore_errors=True)       # the zip is the deliverable
         if not split:
             progress(n, n + 1, "Writing one zip")
-            z = zip_dir(work, dest / f"{label}_results.zip", arc_root=f"{label}_results")
+            z = zip_dir(work, dest / f"{label}_results{'_with_NCBI_names' if ncbi_names else ''}.zip",
+                        arc_root=f"{label}_results")
             files.append({"name": z.name, "path": str(z), "size": z.stat().st_size, "samples": sel})
     else:
         raise ValueError(f"unknown result kind {kind!r}")
     shutil.rmtree(work, ignore_errors=True)
     for f in dest.glob("*.part"):
         f.unlink(missing_ok=True)
-    man = {"kind": kind, "samples": sel, "split": split, "include_reads": include_reads, "files": files,
+    man = {"kind": kind, "samples": sel, "split": split, "include_reads": include_reads, "ncbi_names": ncbi_names,
+           "files": files,
            "warnings": warnings}
     (dest / "manifest.json").write_text(json.dumps(man, indent=1))
     progress(1, 1, "Done")

@@ -222,6 +222,27 @@ def ncbi_checks():
                   and "what is present, not how much" in html and "16S rRNA sequencing" in html)
             check("package: 2.Taxonomy/NCBI/unassigned_otus_ncbi.tsv",
                   "Stenotrophomonas" in (root / "2.Taxonomy" / "NCBI" / "unassigned_otus_ncbi.tsv").read_text())
+            # the bacteria version: NCBI names put into the profiles (Download results option)
+            man = AP.build_sample(d, None, "PGU-ITS", Path(td) / "pkn", formats=("html",), tools={}, ncbi_names=True)
+            rootn = Path(man["dir"])
+            htmln = (rootn / "Report_PGU-ITS.html").read_text()
+            allt = (rootn / "2.Taxonomy" / "outfiles" / "expr.abundance.abgen.txt").read_text()
+            check("NCBI names in the profiles: Stenotrophomonas in the genus table, the report says so",
+                  "Stenotrophomonas" in allt and "carry the NCBI name below" in htmln
+                  and "Sequences the reference could not name (NCBI check)" in htmln
+                  and "NCBI-named" in htmln, allt[:200])
+            check("without the option the genus table has no NCBI name",
+                  "Stenotrophomonas" not in (root / "2.Taxonomy" / "outfiles" / "expr.abundance.abgen.txt").read_text())
+            import packages as PK
+            mp = PK.build(d, None, "amplicon", ["PGU-ITS"], True, Path(td) / "pkz", formats=("html",), tools={},
+                          ncbi_names=True)
+            check("package zip named _with_NCBI_names", mp["files"][0]["name"].endswith("_with_NCBI_names.zip")
+                  and mp["ncbi_names"] is True, mp["files"])
+            m_ = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+            fe = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
+            check("Download results: the NCBI-names option offered when the run has the NCBI check",
+                  "ncbi_names: bool = False" in m_ and '"ncbi": (out / "ncbi_unassigned.tsv").exists()' in m_
+                  and 'id="dlNcbi"' in fe and "ncbi_names: !!(D.ncbi && opt.ncbi)" in fe)
             import report_builder as RB
             rh = RB.build_profile_html(RB.Run(d, set()))
             check("run report: NCBI section, Bacteria share per sample",

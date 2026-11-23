@@ -321,6 +321,32 @@ class RunData:
                                 "primer_hits": int(cj.get("read1_with_adapter") or 0),
                                 "cutadapt_version": self._json(f"cutadapt/{s}.cutadapt.json").get("cutadapt_version", "")}
 
+    def use_ncbi_names(self) -> int:
+        """Name the OTUs the reference left unassigned by their NCBI check (ncbi_unassigned.py), so
+        that bacteria, plants or animals the fungal primers also amplified appear in the profiles,
+        tables, Krona and Excel. A name goes only as deep as the NCBI hit supports (genus / family /
+        phylum); an OTU known only to its group (e.g. 'Bacteria') becomes '<group> (unclassified)'.
+        The OTU is marked ncbi_named. Returns the number of OTUs named."""
+        n = 0
+        for a in self.asvs:
+            r = a.get("ncbi_un")
+            if not r or _v(a["tax"].get("Phylum", "")):
+                continue
+            g, rank = (r.get("group") or "").strip(), (r.get("rank") or "").strip()
+            if not g or g in ("No NCBI match", "Unclassified record"):
+                continue
+            t = {k: "" for k in RANKS}
+            depth = {"genus": 3, "family": 2, "phylum": 1}.get(rank, 0)
+            t["Phylum"] = (r.get("phylum") or "").strip() if depth >= 1 else ""
+            t["Family"] = (r.get("family") or "").strip() if depth >= 2 else ""
+            t["Genus"] = (r.get("genus") or "").strip() if depth >= 3 else ""
+            if not t["Phylum"]:
+                t["Phylum"] = f"{g} (unclassified)"
+            a["tax"], a["ncbi_named"] = t, True
+            n += 1
+        self.ncbi_named = n
+        return n
+
     def sample_asvs(self, s: str) -> list[dict]:
         return [a for a in self.asvs if a["counts"].get(s, 0) > 0]
 

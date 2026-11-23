@@ -2719,6 +2719,7 @@ class PackageRequest(BaseModel):
     samples: Optional[List[str]] = None      # None = every sample
     split: bool = True                       # one zip per sample
     include_reads: bool = False              # amplicon: also the quality-filtered reads
+    ncbi_names: bool = False                 # VSEARCH ITS: NCBI names of unassigned OTUs (bacteria ...) in the profiles
 
 
 def _pkg_check(job_id: str):
@@ -2765,7 +2766,9 @@ def packages_status(job_id: str):
         if p.exists():
             files.append({"name": f["name"], "size": p.stat().st_size, "samples": f.get("samples", [])})
     return {"kind": kind, "samples": samples, "task": _task_view(t) if t else None,
+            "ncbi": (out / "ncbi_unassigned.tsv").exists(),
             "latest": {"split": man.get("split"), "samples": man.get("samples"), "files": files,
+                       "ncbi_names": man.get("ncbi_names", False),
                        "warnings": man.get("warnings", []), "built_at": (d / "manifest.json").stat().st_mtime}
             if man else None}
 
@@ -2808,7 +2811,8 @@ def packages_start(job_id: str, req: Optional[PackageRequest] = None):
                 raise RuntimeError("cancelled")
         try:
             man = P.build(out, UPLOAD_DIR / job_id, kind, want, req.split, dest, job_label=label,
-                          include_reads=req.include_reads, progress=prog)
+                          include_reads=req.include_reads, progress=prog,
+                          ncbi_names=bool(req.ncbi_names and (out / "ncbi_unassigned.tsv").exists()))
         except BaseException:
             shutil.rmtree(dest, ignore_errors=True)            # no half-written build left on disk
             raise
