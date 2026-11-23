@@ -655,7 +655,7 @@ class Run:
             if d.get("role") == "taxonomy" and d.get("file"):
                 f = d["file"].split("/")[0] if self.emu else d["file"]
                 lab = d.get("label") or ""
-                return f"{lab} ({f})" if lab and lab != f else f
+                return f"{lab} ({f})" if lab and lab != f and f not in lab else (lab or f)
         p = self.params.get("dbPath") or ""
         if p:
             pp = Path(p)
@@ -2741,7 +2741,9 @@ def _methods(run, an):
                       if run.emu_counts == "estimated_reads" else
                       "Read counts in this report are derived from Emu's relative abundance "
                       "&times; each sample's classified reads.") + "</p>")
-        out.append('<p class="cmd">emu abundance --type map-ont --db ' + esc(run.db_name)
+        _dbp = str(run.params.get("ont_db_path") or run.params.get("dbPath") or run.summary.get("db_path") or "")
+        _dbp = (Path(_dbp).parent.name if Path(_dbp).suffix else Path(_dbp).name) or run.db_name
+        out.append('<p class="cmd">emu abundance --type map-ont --db ' + esc(_dbp)
                    + f' --min-abundance {esc(run.summary.get("emu_min_abundance") or 0.0001)}'
                    + (' --keep-counts' if run.emu_counts == "estimated_reads" else "") + '</p>')
     else:
