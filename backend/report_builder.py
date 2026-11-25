@@ -3662,10 +3662,13 @@ def _maaslin_section(run, T):
 
 
 def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
-                       subtitle=None, top_asv=30, archaea=True) -> str:
+                       subtitle=None, top_asv=30, archaea=True, files=None) -> str:
     """Full result report for one run, laid out as Method / Result / References with a
     figure for every analysis: read tracking, composition at every rank, a clustered
-    genus heatmap, archaea, alpha diversity and rarefaction, and beta diversity."""
+    genus heatmap, archaea, alpha diversity and rarefaction, and beta diversity.
+
+    files: for a Download results package — {file of the run folder: [its files in the package]}, so
+    the 'Folder:' lines under the figures name what the customer has (5.Taxa/csv/..., not r_tables/...)."""
     if run.kind == "shotgun":                  # its own layout: no amplicon steps or markers
         import shotgun_report
         return shotgun_report.build(run, title=title, app=app, company=company, subtitle=subtitle)
@@ -3719,7 +3722,10 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
 
     rt = run.path / "r_tables"
     def folder(*names):
-        have = [n for n in names if (run.path / n).exists()]
+        if files is not None:
+            have = list(dict.fromkeys(x for n in names for x in (files.get(n) or [])))
+        else:
+            have = [n for n in names if (run.path / n).exists()]
         return " &middot; ".join(esc(n) for n in have) if have else None
 
     # totals
@@ -4414,11 +4420,16 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                     if run.mito_gene else
                     "Relative abundance from rRNA amplicons reflects gene copies, not cells: taxa with "
                     "many rRNA operons are over-represented."))
-    notes.append(f"Full tables are in the result folder: "
-                 f"{'taxonomy.csv' if run.kind in ('emu', 'vsearch') else 'taxonomy_table.csv'} "
-                 f"and asv_table.csv (per-{run.feat1} counts), r_tables/ (per-rank "
-                 f"tables, diversity) and read_tracking.csv"
-                 + ("; provenance.json records the software and reference versions." if run.prov else "."))
+    if files is not None:
+        notes.append("Full tables are in this result's folders: 1.QC (read tracking), 4. (the count table with "
+                     "every taxon's lineage), 5.Taxa/csv (every rank, a column per sample), 6.Diversity (alpha "
+                     "and beta) and 7.Tables (one Excel file); README.txt lists them.")
+    else:
+        notes.append(f"Full tables are in the result folder: "
+                     f"{'taxonomy.csv' if run.kind in ('emu', 'vsearch') else 'taxonomy_table.csv'} "
+                     f"and asv_table.csv (per-{run.feat1} counts), r_tables/ (per-rank "
+                     f"tables, diversity) and read_tracking.csv"
+                     + ("; provenance.json records the software and reference versions." if run.prov else "."))
     if pic:
         notes.append("Predicted functions (PICRUSt2) are in PICRUSt2/: KO_metagenome_out and "
                      "EC_metagenome_out (gene families per sample), pathways_out (MetaCyc pathways); the "

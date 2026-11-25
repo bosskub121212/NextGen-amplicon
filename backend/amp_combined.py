@@ -12,11 +12,12 @@ in every table and figure, instead of a package per sample.
   4.ASV/ | 4.OTU/ | 4.Taxa_table/  the feature table: counts raw and with lineage, taxonomy, sequences,
                  features and reads per sample (+ figure), length distribution
   5.Taxa/        csv/ every rank: relative abundance and counts per sample (all taxa, Top 30 wide and
-                 long, totals); png/ bar charts per rank (Top 30) and the genus heatmap; Krona/ one chart
-                 with a ring set per sample; pipeline_figures/; NCBI/ or BLAST/ when the run has them
+                 long, totals); png/ the report's figures: bars per rank (Top 30), genus heatmap; Krona/ one chart
+                 with a ring set per sample; additional_figures/ (R figures the report does not
+                 have); NCBI/ or BLAST/ when the run has them
   6.Diversity/   Alpha/ (indices per sample with the group, figure, rarefaction curves + data);
-                 Beta/ (Bray-Curtis matrix, PCoA scores + figure, PERMANOVA when there are groups,
-                 the pipeline's beta figures)
+                 Beta/ (Bray-Curtis matrix, PCoA scores + figure, PERMANOVA when there are groups;
+                 additional_figures/ with the R beta figures)
   7.Tables/      <name>.xlsx: read tracking, profiles at every rank, alpha (every sample)
   8.Reads/       quality-filtered reads (when chosen)
   README.txt
@@ -92,6 +93,32 @@ def _csv(path: Path, head, rows):
         w = csv.writer(fh)
         w.writerow(head)
         w.writerows(rows)
+
+
+def _report_files(root: Path, D: dict, feat: str, rparts, rsfx) -> dict:
+    """{file of the run folder the report cites: [the files of this result that hold it]} — only files
+    that are there."""
+    rel = lambda p: str(Path(p).relative_to(root)).replace(os.sep, "/")
+    have = lambda *ps: [rel(p) for p in ps if Path(p).exists()]
+    k = len(rparts)
+    m = {"read_tracking.csv": have(D["qc"] / "read_tracking_summary.csv"),
+         "asv_table.csv": have(D["feat"] / f"{feat}_count_table_named.csv"),
+         "asv_lengths.csv": [],
+         "r_tables/rarefaction.csv": have(D["alpha"] / "Rarefaction_curve_data.csv",
+                                          D["alpha"] / "Rarefaction_curves.png"),
+         "r_tables/taxonomy_heatmap_genus.csv": have(D["taxa"] / "png" / f"Genus_heatmap_top30{rsfx(k)}.png",
+                                                     D["taxa"] / "csv" / "Genus_relative_abundance_per_sample_wide.csv"),
+         "r_tables/alpha_diversity.csv": have(D["alpha"] / "alpha_diversity.csv", D["alpha"] / "alpha_diversity.png"),
+         "alpha_diversity.csv": [],
+         "r_tables/pca_scores.csv": have(D["beta"] / "PCoA_Bray_scores.csv", D["beta"] / "PCoA_Bray.png"),
+         "beta_stats.txt": have(*sorted(D["beta"].glob("PERMANOVA_*.csv"))) if D["beta"].is_dir() else [],
+         "r_tables/beta_heatmap.csv": have(D["beta"] / "bray_curtis_distance_matrix.csv",
+                                           D["beta"] / "Bray_Curtis_heatmap.png")}
+    for rank in RANK_ORDER:
+        m[f"r_tables/taxonomy_{rank.lower()}.csv"] = have(
+            D["taxa"] / "csv" / f"{rank}_relative_abundance_per_sample_wide.csv",
+            D["taxa"] / "png" / f"{rank}_Top30_relative_abundance_per_sample{rsfx(k)}.png")
+    return m
 
 
 def _readme_body(root: Path, name: str) -> str:
@@ -305,20 +332,28 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
 
     # 5. taxa
     _taxa_tables(run, D["taxa"] / "csv", group)
+    # the report's own figures, drawn by the same calls as in report_builder.build_profile_html, so a PNG
+    # here is the figure of the report (the BI team found the bars here differed from the report's)
+    gby = an.groups if len({an.groups.get(x) for x in S} - {None}) >= 2 else {}
+    rparts = (RB._group_chunks(S, gby) if gby else RB._chunks(S)) if many else [S]
+    rsfx = lambda k: f"_part{k}" if len(rparts) > 1 else ""
     for rank in RANK_ORDER:
         if rank not in rrun.rank_cols:
             continue
-        for k, part in enumerate(parts, 1):
-            fig(D["taxa"] / "png" / f"{rank}_Top30_relative_abundance_per_sample{sfx(k)}",
-                lambda rank=rank, part=part: RB.svg_stacked(an, rank, 30, samples=part, wide=many,
-                                                            groups=group or None))
-    for k, part in enumerate(parts, 1):
-        fig(D["taxa"] / "png" / f"Genus_heatmap_top30{sfx(k)}",
-            lambda part=part: RB.svg_heatmap(an, "Genus", 30, samples=part, wide=many))
+        for k, part in enumerate(rparts, 1):
+            fig(D["taxa"] / "png" / f"{rank}_Top30_relative_abundance_per_sample{rsfx(k)}",
+                (lambda rank=rank, part=part: RB.svg_stacked(an, rank, 30, samples=part, wide=True,
+                                                             groups=gby or None)) if many else
+                (lambda rank=rank: RB.svg_stacked(an, rank, 30)))
+    for k, part in enumerate(rparts, 1):
+        fig(D["taxa"] / "png" / f"Genus_heatmap_top30{rsfx(k)}",
+            (lambda part=part: RB.svg_heatmap(an, "Genus", 30, samples=part, wide=True)) if many else
+            (lambda: RB.svg_heatmap(an, "Genus", 30)))
+    # R figures that draw what the report already shows (bars per rank, group bars, heatmaps) are left
+    # out: same data, other colours and order — they read as a second, different result
     if whole:
-        for p in list(run_dir.glob("taxonomy_*.pdf")) + list(run_dir.glob("r_plots/04*.pdf")) \
-                + list(run_dir.glob("r_plots/22*.pdf")) + [run_dir / "prevalence_abundance.pdf"]:
-            _put(p, D["taxa"] / "pipeline_figures" / p.name)
+        for p in list(run_dir.glob("r_plots/22*.pdf")) + [run_dir / "prevalence_abundance.pdf"]:
+            _put(p, D["taxa"] / "additional_figures" / p.name)
     ids = {str(a.get("id", "")).split(";")[0] for a in run.asvs}
     seqs = {a.get("sequence") for a in run.asvs if a.get("sequence")}
     if (run_dir / "ncbi_unassigned.tsv").exists():           # the OTUs of these samples only
@@ -383,9 +418,9 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
              [[s, d_, f"{v:.3f}"] for s, pts in rf.items() for d_, v in pts])
     except Exception as ex:
         notes.append(f"rarefaction data not written ({ex})")
-    for p in (list(run_dir.glob("r_plots/02_*.pdf")) + list(run_dir.glob("r_plots/03*.pdf"))
-              + [run_dir / "alpha_diversity.pdf", run_dir / "rarefaction_curves.pdf"] if whole else []):
-        _put(p, D["alpha"] / "pipeline_figures" / p.name)
+    # R's alpha and rarefaction figures repeat the report's; its Shannon rarefaction and rank-abundance do not
+    for p in (list(run_dir.glob("r_plots/03b_*.pdf")) + list(run_dir.glob("r_plots/03c_*.pdf")) if whole else []):
+        _put(p, D["alpha"] / "additional_figures" / p.name)
     try:
         if len(S) < 2:
             raise RuntimeError("one sample: no beta diversity (it compares samples)")
@@ -403,6 +438,8 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
             notes.append("PCoA needs 3 samples or more: not drawn")
         if len(S) >= 3:
             fig(D["beta"] / "UPGMA_bray", lambda: RB.svg_upgma(an))
+        if len(S) <= 40:                                # the report's Bray-Curtis heatmap (up to 40 samples)
+            fig(D["beta"] / "Bray_Curtis_heatmap", lambda: RB.svg_bc_heat(an))
         pm = an.permanova_groups()
         if pm:
             _csv(D["beta"] / f"PERMANOVA_{an.group_col or 'group'}.csv",
@@ -412,13 +449,12 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
     except Exception as ex:
         notes.append(f"beta diversity tables not made ({ex})")
     if whole:
-        for f in ("beta_stats.txt", "beta_pcoa.pdf", "beta_heatmap.pdf", "beta_nmds_jaccard.pdf", "pca_scores.csv",
-                  "nmds_bray.csv"):
-            _put(run_dir / f, D["beta"] / "pipeline_figures" / f)
-        _put(run_dir / "UPGMA", D["beta"] / "pipeline_figures" / "UPGMA")
-        for pat in ("05*", "12*", "17*", "20*"):
+        for f in ("beta_stats.txt", "beta_nmds_jaccard.pdf", "pca_scores.csv", "nmds_bray.csv"):
+            _put(run_dir / f, D["beta"] / "additional_figures" / f)
+        _put(run_dir / "UPGMA", D["beta"] / "additional_figures" / "UPGMA")
+        for pat in ("05b*", "05c*", "12*", "17*", "20*"):
             for p in run_dir.glob(f"r_plots/{pat}.pdf"):
-                _put(p, D["beta"] / "pipeline_figures" / p.name)
+                _put(p, D["beta"] / "additional_figures" / p.name)
 
     # 7. Excel
     progress(3, N, "Excel")
@@ -437,7 +473,8 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
 
     # report
     progress(4, N, "Writing the report")
-    doc = RB.build_profile_html(rrun, title=None, app="NextGen-Amplicon", company="")
+    doc = RB.build_profile_html(rrun, title=None, app="NextGen-Amplicon", company="",
+                                files=_report_files(root, D, feat, rparts, rsfx))
     stem = root / f"Report_{name}"
     root.mkdir(parents=True, exist_ok=True)
     if "html" in formats:

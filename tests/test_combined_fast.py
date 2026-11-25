@@ -66,6 +66,17 @@ def main():
             check("alpha table carries the group", al[0][:2] == ["Sample", "Group"] and al[1][1] == "A", al[:2])
             rep = z.read(r + "Report_U2BI-184_fastq_results.html").decode()
             check("one report holding every sample", all(x in rep for x in S) and "Analysis by group" in rep)
+            import re as _re, html as _h
+            fol = [_h.unescape(x) for x in _re.findall(r'<div class="folder">Folder: (.*?)</div>', rep)]
+            paths = [p_.strip() for f_ in fol for p_ in f_.split("·")]
+            check("report 'Folder:' lines name this result's files (no r_tables/), and they exist",
+                  fol and "r_tables/" not in rep.split("References")[0] and all(r + p_ in names for p_ in paths),
+                  [p_ for p_ in paths if r + p_ not in names] or fol[:3])
+            svg = z.read(r + "5.Taxa/png/Order_Top30_relative_abundance_per_sample.svg").decode()
+            body = svg[svg.index("<svg"):].split(">", 1)[1]          # the drawing, without the size attributes
+            check("5.Taxa bar chart is the report's figure (same drawing)", body[:4000] in rep, body[:200])
+            check("no R copies of the report's figures (other colours)",
+                  not any("pipeline_figures/" in x or "/04_taxonomy" in x or "/04b_taxonomy" in x for x in names))
             d2 = TA.make_amp_run(td / "d2")
             m2 = PK.build(d2, None, "amplicon", None, False, td / "pk2", job_label="Fish", formats=("html",), tools={},
                           combined=True)
