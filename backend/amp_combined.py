@@ -125,8 +125,11 @@ def _taxa_tables(run: AD.RunData, d: Path, group: dict):
 
 def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Path, name: str,
                    include_reads: bool = True, ncbi_names: bool = False, tools: dict | None = None,
-                   formats=("pdf", "docx"), job_label: str = "", progress=None) -> dict:
+                   formats=("pdf", "docx"), job_label: str = "", progress=None, read_qc: bool = False) -> dict:
+    """read_qc: also NanoPlot (nanopore) or FastQC + fastp (Illumina) of each sample's raw reads, in
+    1.QC/<sample>/ — the one-sample results do; the combined one leaves it out (slow on many samples)."""
     import report_builder as RB
+    import qc_tools as Q
     tools = dict(tools or {})
     progress = progress or (lambda i, n, lab: None)
     run_dir = Path(run_dir)
@@ -173,15 +176,40 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
          [[s] + ([group.get(s, "")] if group else []) + ["" if run.tracking.get(s, {}).get(c) is None
                                                          else run.tracking[s][c] for c in cols]
           + [run.tracking.get(s, {}).get("perc", "")] for s in sel])
-    _put(run_dir / "read_tracking.csv", D["qc"] / "read_tracking.csv")
+    # Files the pipeline wrote for the whole run hold every sample's data: they go in only when this
+    # result holds every sample (a one-sample result may be for one customer among several).
+    whole = not subset
+    if whole:
+        _put(run_dir / "read_tracking.csv", D["qc"] / "read_tracking.csv")
     fig(D["qc"] / "Boxplot_read_counts_pipeline_steps", lambda: RB.svg_steps(rrun, an))
     fig(D["qc"] / "Reads_surviving_each_step", lambda: RB.svg_readflow(rrun))
-    for f in ("qc_readcount_boxplot.pdf", "read_tracking_plot.pdf"):
-        _put(run_dir / f, D["qc"] / f)
-    for p in list(run_dir.glob("*QualityProfile*.pdf")) + list(run_dir.glob("Dada2/*QualityProfile*.pdf")) \
-            + list(run_dir.glob("r_plots/01_*.pdf")):
-        _put(p, D["qc"] / p.name)
-    _put(run_dir / "qc" / "read_qc.json", D["qc"] / "read_qc.json")
+    if whole:
+        for f in ("qc_readcount_boxplot.pdf", "read_tracking_plot.pdf"):
+            _put(run_dir / f, D["qc"] / f)
+        for p in list(run_dir.glob("*QualityProfile*.pdf")) + list(run_dir.glob("Dada2/*QualityProfile*.pdf")) \
+                + list(run_dir.glob("r_plots/01_*.pdf")):
+            _put(p, D["qc"] / p.name)
+        _put(run_dir / "qc" / "read_qc.json", D["qc"] / "read_qc.json")
+    if read_qc:
+        for s in sel:
+            sd = D["qc"] / (CR.safe(s) if len(sel) > 1 else "")
+            try:
+                if run.kind == "emu" or engine == "vsearch":
+                    fs = CR._ont_raw(run, upload_dir, s)
+                    if fs:
+                        Q.nanoplot(fs, sd / "NanoPlot", CR._tool(tools, "NanoPlot"))
+                    else:
+                        notes.append(f"{s}: raw reads not found in the upload folder: no NanoPlot")
+                else:
+                    raw = CR._find_reads(upload_dir, s, run.peer_names)
+                    r1, r2 = raw if raw else (None, None)
+                    if r1:
+                        Q.fastqc([x for x in (r1, r2) if x], sd / "FastQC", CR._tool(tools, "fastqc"))
+                        Q.fastp_check(r1, r2, sd / "fastp", CR._tool(tools, "fastp"))
+                    else:
+                        notes.append(f"{s}: raw reads not found in the upload folder: no FastQC / fastp")
+            except Exception as ex:
+                notes.append(f"{s}: read QC not made ({ex})")
 
     # 2. cutadapt
     for s in sel:
@@ -205,9 +233,18 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
         for s in sel:
             for p in (run_dir / "emu_output" / s).glob("*"):
                 if p.is_file() and p.suffix in (".tsv", ".csv", ".txt") and not p.name.endswith(".log"):
-                    _put(p, D["s3"] / s / p.name)
-    if engine == "vsearch":
-        _put(run_dir / "otus.fasta", D["s3"] / "otus.fasta")
+                    _put(p, D["s3"] / (s if len(sel) > 1 else "") / p.name)
+    if engine == "vsearch" and (run_dir / "otus.fasta").exists():
+        ids = {str(a.get("id", "")).split(";")[0] for a in run.asvs}
+        keep, cur = [], False
+        for line in (run_dir / "otus.fasta").read_text(errors="replace").splitlines():
+            if line.startswith(">"):
+                cur = line[1:].split(";")[0].split()[0] in ids
+            if cur:
+                keep.append(line)
+        if keep:
+            D["s3"].mkdir(parents=True, exist_ok=True)
+            (D["s3"] / "otus.fasta").write_text("\n".join(keep) + "\n")
 
     # 4. feature table
     progress(1, N, "Feature and taxa tables")
@@ -220,15 +257,16 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
          + ["Reads", f"{'Taxa' if engine == 'emu' else feat + 's'}"],
          [[s] + ([group.get(s, "")] if group else []) + [tot[s], sum(1 for a in run.asvs if a["counts"].get(s, 0) > 0)]
           for s in sel])
-    for f in ("asv_table.csv", "taxonomy_table.csv", "taxonomy.csv", "asvs.fasta", "otus.fasta", "asv_lengths.csv",
-              "asv_length_distribution.pdf", "observed_asvs.pdf", "phylo_tree.nwk"):
-        _put(run_dir / f, D["feat"] / f)
+    if whole:
+        for f in ("asv_table.csv", "taxonomy_table.csv", "taxonomy.csv", "asvs.fasta", "asv_lengths.csv",
+                  "asv_length_distribution.pdf", "observed_asvs.pdf", "phylo_tree.nwk"):
+            _put(run_dir / f, D["feat"] / f)
     if run.kind != "emu" and not (D["feat"] / "asvs.fasta").exists():
         with open(D["feat"] / f"{feat}_sequences.fasta", "w") as fh:
             for a in run.asvs:
                 if a.get("sequence"):
                     fh.write(f">{a['sv']} {AD.label(a, 'Species')}\n{a['sequence']}\n")
-    for p in run_dir.glob("r_plots/18_*.pdf"):
+    for p in (run_dir.glob("r_plots/18_*.pdf") if whole else []):
         _put(p, D["feat"] / p.name)
 
     # 5. taxa
@@ -243,13 +281,33 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
     for k, part in enumerate(parts, 1):
         fig(D["taxa"] / "png" / f"Genus_heatmap_top30{sfx(k)}",
             lambda part=part: RB.svg_heatmap(an, "Genus", 30, samples=part, wide=many))
-    for p in list(run_dir.glob("taxonomy_*.pdf")) + list(run_dir.glob("r_plots/04*.pdf")) \
-            + list(run_dir.glob("r_plots/22*.pdf")) + [run_dir / "prevalence_abundance.pdf"]:
-        _put(p, D["taxa"] / "pipeline_figures" / p.name)
-    if (run_dir / "ncbi_unassigned.tsv").exists():
-        _put(run_dir / "ncbi_unassigned.tsv", D["taxa"] / "NCBI" / "unassigned_otus_ncbi.tsv")
-    for f in ("taxonomy_blast.csv", "blast_info.json"):
-        _put(run_dir / "blast" / f, D["taxa"] / "BLAST" / f)
+    if whole:
+        for p in list(run_dir.glob("taxonomy_*.pdf")) + list(run_dir.glob("r_plots/04*.pdf")) \
+                + list(run_dir.glob("r_plots/22*.pdf")) + [run_dir / "prevalence_abundance.pdf"]:
+            _put(p, D["taxa"] / "pipeline_figures" / p.name)
+    ids = {str(a.get("id", "")).split(";")[0] for a in run.asvs}
+    seqs = {a.get("sequence") for a in run.asvs if a.get("sequence")}
+    if (run_dir / "ncbi_unassigned.tsv").exists():           # the OTUs of these samples only
+        with open(run_dir / "ncbi_unassigned.tsv", newline="") as fh:
+            rd = list(csv.DictReader(fh, delimiter="\t"))
+        rows = [r for r in rd if str(r.get("otu", "")).split(";")[0] in ids]
+        if rows:
+            (D["taxa"] / "NCBI").mkdir(parents=True, exist_ok=True)
+            with open(D["taxa"] / "NCBI" / "unassigned_otus_ncbi.tsv", "w", newline="") as fh:
+                w = csv.DictWriter(fh, list(rd[0].keys()), delimiter="\t")
+                w.writeheader()
+                w.writerows(rows)
+    if (run_dir / "blast" / "taxonomy_blast.csv").exists():  # the ASVs of these samples only
+        with open(run_dir / "blast" / "taxonomy_blast.csv", newline="") as fh:
+            rd = list(csv.DictReader(fh))
+        rows = [r for r in rd if r.get("sequence") in seqs]
+        if rows:
+            (D["taxa"] / "BLAST").mkdir(parents=True, exist_ok=True)
+            with open(D["taxa"] / "BLAST" / "taxonomy_blast.csv", "w", newline="") as fh:
+                w = csv.DictWriter(fh, list(rd[0].keys()))
+                w.writeheader()
+                w.writerows(rows)
+        _put(run_dir / "blast" / "blast_info.json", D["taxa"] / "BLAST" / "blast_info.json")
     kt = CR._tool(tools, "ktImportText")
     if kt:
         kd = D["taxa"] / "Krona"
@@ -291,10 +349,12 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
              [[s, d_, f"{v:.3f}"] for s, pts in rf.items() for d_, v in pts])
     except Exception as ex:
         notes.append(f"rarefaction data not written ({ex})")
-    for p in list(run_dir.glob("r_plots/02_*.pdf")) + list(run_dir.glob("r_plots/03*.pdf")) + \
-            [run_dir / "alpha_diversity.pdf", run_dir / "rarefaction_curves.pdf"]:
+    for p in (list(run_dir.glob("r_plots/02_*.pdf")) + list(run_dir.glob("r_plots/03*.pdf"))
+              + [run_dir / "alpha_diversity.pdf", run_dir / "rarefaction_curves.pdf"] if whole else []):
         _put(p, D["alpha"] / "pipeline_figures" / p.name)
     try:
+        if len(S) < 2:
+            raise RuntimeError("one sample: no beta diversity (it compares samples)")
         Dm = an.bray()
         _csv(D["beta"] / "bray_curtis_distance_matrix.csv", [""] + S,
              [[s] + [f"{x:.4f}" for x in row] for s, row in zip(S, Dm)])
@@ -317,13 +377,14 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
                    pm.get("perms")]])
     except Exception as ex:
         notes.append(f"beta diversity tables not made ({ex})")
-    for f in ("bray_curtis_distance_matrix.csv", "beta_stats.txt", "beta_pcoa.pdf", "beta_heatmap.pdf",
-              "beta_nmds_jaccard.pdf", "pca_scores.csv", "nmds_bray.csv"):
-        _put(run_dir / f, D["beta"] / "pipeline_figures" / f)
-    _put(run_dir / "UPGMA", D["beta"] / "pipeline_figures" / "UPGMA")
-    for pat in ("05*", "12*", "17*", "20*"):
-        for p in run_dir.glob(f"r_plots/{pat}.pdf"):
-            _put(p, D["beta"] / "pipeline_figures" / p.name)
+    if whole:
+        for f in ("beta_stats.txt", "beta_pcoa.pdf", "beta_heatmap.pdf", "beta_nmds_jaccard.pdf", "pca_scores.csv",
+                  "nmds_bray.csv"):
+            _put(run_dir / f, D["beta"] / "pipeline_figures" / f)
+        _put(run_dir / "UPGMA", D["beta"] / "pipeline_figures" / "UPGMA")
+        for pat in ("05*", "12*", "17*", "20*"):
+            for p in run_dir.glob(f"r_plots/{pat}.pdf"):
+                _put(p, D["beta"] / "pipeline_figures" / p.name)
 
     # 7. Excel
     progress(3, N, "Excel")
@@ -359,6 +420,8 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
             DX.html_to_docx(doc, stem.with_suffix(".docx"))
         except Exception as ex:
             notes.append(f"Word file not made ({ex})")
+    for f in root.rglob("*.log"):           # tool logs (NanoPlot's) carry server paths: not for the customer
+        f.unlink()
     body = __doc__.split("\n\n", 1)[1]
     (root / "README.txt").write_text(
         f"{name}: {len(sel)} samples in one result ({', '.join(sel)}).\n"

@@ -139,14 +139,15 @@ def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str],
             def one(s):
                 return R.build_sample(run_dir, s, work, formats, name=names[s])
         else:
-            import amp_package as AP
+            # one sample per result, in the same layout as the combined result (amp_combined.py: the BI
+            # team's 1.QC ... 8.Reads), with the read QC (NanoPlot / FastQC) of that sample
+            import amp_combined as AC
             kw = {"tools": tools} if tools is not None else {}
-            if ncbi_names:
-                kw["ncbi_names"] = True
 
             def one(s):
-                return AP.build_sample(run_dir, upload_dir, s, work, formats, name=names[s],
-                                       include_reads=include_reads, **kw)
+                return AC.build_combined(run_dir, upload_dir, [s], work, names[s], include_reads=include_reads,
+                                         ncbi_names=ncbi_names, formats=formats, job_label=names[s],
+                                         read_qc=True, **kw)
         for i, s in enumerate(sel):
             progress(i, n, f"Packaging {s} ({i + 1}/{n})")
             m = one(s)
