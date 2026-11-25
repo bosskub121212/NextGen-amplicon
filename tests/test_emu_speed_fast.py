@@ -87,7 +87,8 @@ def main():
             fe = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
             check("form option ont_align_speed (default exact) reaches the pipeline",
                   'ont_align_speed: str = "exact"' in mm_ and '"--align_speed", "fast"' in mm_
-                  and '["ont_align_speed",   "Emu alignment (minimap2)", "select", "exact"' in fe)
+                  and '["ont_align_speed",   "Emu alignment (minimap2)", "select", "exact"' in fe
+                  and 'params.ont_align_speed = /^\\s*f/i.test(sp) ? "fast" : "exact";' in fe)
     except Exception:
         traceback.print_exc()
         FAILS.append("exception")

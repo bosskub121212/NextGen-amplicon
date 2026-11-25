@@ -8314,6 +8314,15 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         if(t === null) throw {cancel:true};
         var n = parseInt(t, 10);
         if(isFinite(n) && n > 0) params.nThreads = n;
+        /* ONT 16S through Emu: exact (Emu's own minimap2) or fast (minimap2 -f 5000, ~10x faster) */
+        if(/ONT/i.test(String(params.marker || "")) && params.sequencerType !== "qiime2_vsearch"){
+          var sp = window.prompt("Emu alignment (minimap2): type  fast  or  exact\n\n"
+            + "exact = Emu's own minimap2, as before (slow)\n"
+            + "fast  = about 10x faster (minimap2 -f 5000); genera within ~0.3 points, close species may shift",
+            params.ont_align_speed === "fast" ? "fast" : "exact");
+          if(sp === null) throw {cancel:true};
+          params.ont_align_speed = /^\s*f/i.test(sp) ? "fast" : "exact";
+        }
         if(btn){ btn.disabled = true; btn.textContent = "Starting…"; }
         return fetch("/jobs/" + encodeURIComponent(jid) + "/reset", {method:"POST"});
       })
