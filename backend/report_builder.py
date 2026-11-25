@@ -1837,7 +1837,7 @@ def svg_stacked(an, rank, n=30, samples=None, table=None, italic=None, wide=Fals
         pw = leg_x - x0 - 18
         bot = 14 + min(longest, 22) * 4.8
     else:
-        W, x0, y0, ph = 520, 40, 22, 430
+        W, x0, y0, ph = 520, 40, (40 if groups else 22), 430
         leg_x = 322
         pw = leg_x - x0 - 16
         bot = 20 + min(longest, 22) * 4.0

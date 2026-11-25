@@ -8381,7 +8381,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var box = document.getElementById(boxId);
     if(!box) return;
     var enc = encodeURIComponent(jid), D = null, err = "", poll = null, sel = null, filt = "";
-    var opt = {split: true, reads: true, ncbi: false};
+    var opt = {split: false, combined: true, reads: true, ncbi: false};
     function mb(n){ return n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " kB"; }
     function paint(){
       if(!box.isConnected){ if(poll) clearInterval(poll); return; }
@@ -8405,12 +8405,13 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + shown.map(function(s){ return '<label style="display:block;break-inside:avoid"><input type="checkbox" data-dls="' + esc(s) + '"'
             + (sel[s] ? " checked" : "") + '> ' + esc(s) + '</label>'; }).join("") + '</div>'
         + '<div style="margin:10px 0;display:flex;gap:16px;flex-wrap:wrap">'
-        + '<label><input type="radio" name="dlMode" value="split"' + (opt.split ? " checked" : "") + '> One zip per sample</label>'
-        + '<label><input type="radio" name="dlMode" value="one"' + (opt.split ? "" : " checked") + '> One zip with the chosen samples</label>'
+        + '<label title="The chosen samples together, like the BI team\'s result: one report, every table with a column per sample (ASV, taxa at every rank, alpha, beta, PCoA, PERMANOVA), figures as PNG, one Excel and one Krona"><input type="radio" name="dlMode" value="combined"' + (opt.combined ? " checked" : "") + '> <b>One combined result</b> (all chosen samples together)</label>'
+        + '<label><input type="radio" name="dlMode" value="split"' + (!opt.combined && opt.split ? " checked" : "") + '> One zip per sample</label>'
+        + '<label><input type="radio" name="dlMode" value="one"' + (!opt.combined && !opt.split ? " checked" : "") + '> One zip with a folder per sample</label>'
         + (D.kind === "amplicon" ? '<label><input type="checkbox" id="dlReads"' + (opt.reads ? " checked" : "") + '> include the quality-filtered reads (1.QcReads/filtered_reads)</label>' : "")
         + (D.ncbi ? '<label title="OTUs UNITE could not name get the name of their NCBI check (bacteria, plants, animals the fungal primers also amplified), in the charts, tables, Krona, Excel and report. The zips are named ..._with_NCBI_names."><input type="checkbox" id="dlNcbi"' + (opt.ncbi ? " checked" : "") + '> put the NCBI names (bacteria etc.) into the profiles</label>' : "")
         + '</div>'
-        + '<button class="btn pri" id="dlGo"' + (busy || !n ? " disabled" : "") + '>' + (busy ? "Building…" : "Build " + (opt.split ? n + " zip(s)" : "1 zip")) + '</button> '
+        + '<button class="btn pri" id="dlGo"' + (busy || !n ? " disabled" : "") + '>' + (busy ? "Building…" : "Build " + (opt.combined ? "combined result" : opt.split ? n + " zip(s)" : "1 zip")) + '</button> '
         + (t ? '<span class="what">' + esc(t.status === "error" ? (t.error || "failed") : (t.step_label || t.status))
              + (busy && t.progress ? " · " + t.progress + " %" : "") + '</span>' : "")
         + (err ? '<div class="err">' + esc(err) + '</div>' : "")
@@ -8429,7 +8430,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         el.addEventListener("change", function(){ sel[el.dataset.dls] = el.checked; paint(); });
       });
       Array.prototype.forEach.call(box.querySelectorAll('input[name="dlMode"]'), function(el){
-        el.addEventListener("change", function(){ opt.split = el.value === "split"; paint(); });
+        el.addEventListener("change", function(){ opt.combined = el.value === "combined"; opt.split = el.value === "split"; paint(); });
       });
       var rd = document.getElementById("dlReads");
       if(rd) rd.addEventListener("change", function(){ opt.reads = rd.checked; });
@@ -8439,7 +8440,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         var pick = D.samples.filter(function(s){ return sel[s] && (!filt || s.toLowerCase().indexOf(filt.toLowerCase()) >= 0); });
         err = "";
         fetch("/packages/" + enc, {method:"POST", headers:{"Content-Type":"application/json"},
-              body: JSON.stringify({samples: pick, split: opt.split, include_reads: opt.reads, ncbi_names: !!(D.ncbi && opt.ncbi)})})
+              body: JSON.stringify({samples: pick, split: opt.split && !opt.combined, combined: !!opt.combined, include_reads: opt.reads, ncbi_names: !!(D.ncbi && opt.ncbi)})})
           .then(function(r){ return r.json().then(function(d){ if(!r.ok) throw new Error(d.error || ("HTTP " + r.status)); return d; }); })
           .then(function(){ load(); })
           .catch(function(e){ err = e.message || String(e); paint(); });

@@ -386,6 +386,10 @@ def main():
     import test_report_checks_fast           # 12S / 18S / COI single-run reports, checked one by one
     test_report_checks_fast.main()
     FAILS.extend(test_report_checks_fast.FAILS)
+
+    import test_combined_fast                # Download results: one combined result (BI layout)
+    test_combined_fast.main()
+    FAILS.extend(test_combined_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

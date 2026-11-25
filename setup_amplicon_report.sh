@@ -100,6 +100,8 @@ REOF
 
 step "openpyxl (Excel)"
 "$PY" -c "import openpyxl" 2>/dev/null || "$PY" -m pip install --quiet openpyxl || bad "pip install openpyxl failed"
+# PNG figures of the combined result (Download results -> One combined result); without it they come as PDF
+"$PY" -c "import cairosvg" 2>/dev/null || "$PY" -m pip install --quiet cairosvg || bad "pip install cairosvg failed"
 
 step "Status"
 status

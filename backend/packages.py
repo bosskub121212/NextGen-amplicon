@@ -100,7 +100,9 @@ def unique_names(samples: list[str], all_samples: list[str]) -> dict:
 
 def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str], split: bool, dest: Path,
           job_label: str = "results", include_reads: bool = False, tools: dict | None = None,
-          progress=None, formats=("pdf", "docx"), ncbi_names: bool = False) -> dict:
+          progress=None, formats=("pdf", "docx"), ncbi_names: bool = False, combined: bool = False) -> dict:
+    """combined: the chosen samples of an amplicon run in ONE result (one report with the samples side
+    by side, tables with a column per sample, one Excel / Krona) — amp_combined.py."""
     run_dir, dest = Path(run_dir), Path(dest)
     progress = progress or (lambda i, n, label: None)
     known = list_samples(run_dir, kind)
@@ -117,7 +119,18 @@ def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str],
     files, warnings = [], []
     label = safe(job_label)
 
-    if kind in ("wgs", "amplicon"):
+    if kind == "amplicon" and combined:
+        import amp_combined as AC
+        sfx = "_with_NCBI_names" if ncbi_names else ""
+        kw = {"tools": tools} if tools is not None else {}
+        m = AC.build_combined(run_dir, upload_dir, sel, work, f"{label}_results{sfx}", include_reads=include_reads,
+                              ncbi_names=ncbi_names, formats=formats, job_label=job_label,
+                              progress=lambda i, n, lab: progress(i, n + 1, lab), **kw)
+        warnings += m.get("notes", [])
+        progress(1, 1, "Writing the zip")
+        z = zip_dir(Path(m["dir"]), dest / f"{Path(m['dir']).name}.zip")
+        files.append({"name": z.name, "path": str(z), "size": z.stat().st_size, "samples": sel})
+    elif kind in ("wgs", "amplicon"):
         n = len(sel)
         names = unique_names(sel, known)
         if kind == "wgs":
@@ -157,7 +170,8 @@ def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str],
     shutil.rmtree(work, ignore_errors=True)
     for f in dest.glob("*.part"):
         f.unlink(missing_ok=True)
-    man = {"kind": kind, "samples": sel, "split": split, "include_reads": include_reads, "ncbi_names": ncbi_names,
+    man = {"kind": kind, "samples": sel, "split": split and not combined, "combined": combined,
+           "include_reads": include_reads, "ncbi_names": ncbi_names,
            "files": files,
            "warnings": warnings}
     (dest / "manifest.json").write_text(json.dumps(man, indent=1))

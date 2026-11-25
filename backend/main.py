@@ -2720,6 +2720,7 @@ class PackageRequest(BaseModel):
     split: bool = True                       # one zip per sample
     include_reads: bool = False              # amplicon: also the quality-filtered reads
     ncbi_names: bool = False                 # VSEARCH ITS: NCBI names of unassigned OTUs (bacteria ...) in the profiles
+    combined: bool = False                   # amplicon: the chosen samples in ONE result (one report, a column per sample)
 
 
 def _pkg_check(job_id: str):
@@ -2768,7 +2769,7 @@ def packages_status(job_id: str):
     return {"kind": kind, "samples": samples, "task": _task_view(t) if t else None,
             "ncbi": (out / "ncbi_unassigned.tsv").exists(),
             "latest": {"split": man.get("split"), "samples": man.get("samples"), "files": files,
-                       "ncbi_names": man.get("ncbi_names", False),
+                       "ncbi_names": man.get("ncbi_names", False), "combined": man.get("combined", False),
                        "warnings": man.get("warnings", []), "built_at": (d / "manifest.json").stat().st_mtime}
             if man else None}
 
@@ -2795,7 +2796,8 @@ def packages_start(job_id: str, req: Optional[PackageRequest] = None):
         label = job_id
 
     def _work(t):
-        for m in ("amp_data", "qc_tools", "amplicon_excel", "custom_report", "amp_package", "wgs_package", "readtax", "tygs",
+        for m in ("amp_data", "qc_tools", "amplicon_excel", "custom_report", "amp_package", "amp_combined",
+                  "report_builder", "docx_export", "wgs_package", "readtax", "tygs",
                   "wgs_customer_report", "packages"):
             try:
                 importlib.reload(importlib.import_module(m))
@@ -2812,7 +2814,8 @@ def packages_start(job_id: str, req: Optional[PackageRequest] = None):
         try:
             man = P.build(out, UPLOAD_DIR / job_id, kind, want, req.split, dest, job_label=label,
                           include_reads=req.include_reads, progress=prog,
-                          ncbi_names=bool(req.ncbi_names and (out / "ncbi_unassigned.tsv").exists()))
+                          ncbi_names=bool(req.ncbi_names and (out / "ncbi_unassigned.tsv").exists()),
+                          combined=bool(req.combined and kind == "amplicon"))
         except BaseException:
             shutil.rmtree(dest, ignore_errors=True)            # no half-written build left on disk
             raise
@@ -2822,7 +2825,8 @@ def packages_start(job_id: str, req: Optional[PackageRequest] = None):
         t["files"] = [f["name"] for f in man["files"]]
         t["warnings"] = man.get("warnings", [])
     t = _submit_task(job_id, "package", "result packages", _work,
-                     request={"samples": want, "split": req.split, "reads": req.include_reads})
+                     request={"samples": want, "split": req.split, "reads": req.include_reads,
+                              "combined": req.combined})
     if isinstance(t, JSONResponse):
         return t
     return {"task": _task_view(t)}
