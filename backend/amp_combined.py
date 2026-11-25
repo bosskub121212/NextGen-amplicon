@@ -243,7 +243,8 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
     for k, part in enumerate(parts, 1):
         fig(D["taxa"] / "png" / f"Genus_heatmap_top30{sfx(k)}",
             lambda part=part: RB.svg_heatmap(an, "Genus", 30, samples=part, wide=many))
-    for p in list(run_dir.glob("taxonomy_*.pdf")) + list(run_dir.glob("r_plots/04*.pdf")):
+    for p in list(run_dir.glob("taxonomy_*.pdf")) + list(run_dir.glob("r_plots/04*.pdf")) \
+            + list(run_dir.glob("r_plots/22*.pdf")) + [run_dir / "prevalence_abundance.pdf"]:
         _put(p, D["taxa"] / "pipeline_figures" / p.name)
     if (run_dir / "ncbi_unassigned.tsv").exists():
         _put(run_dir / "ncbi_unassigned.tsv", D["taxa"] / "NCBI" / "unassigned_otus_ncbi.tsv")
@@ -317,10 +318,10 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
     except Exception as ex:
         notes.append(f"beta diversity tables not made ({ex})")
     for f in ("bray_curtis_distance_matrix.csv", "beta_stats.txt", "beta_pcoa.pdf", "beta_heatmap.pdf",
-              "beta_nmds_jaccard.pdf", "pca_scores.csv", "nmds_bray.csv", "prevalence_abundance.pdf"):
+              "beta_nmds_jaccard.pdf", "pca_scores.csv", "nmds_bray.csv"):
         _put(run_dir / f, D["beta"] / "pipeline_figures" / f)
     _put(run_dir / "UPGMA", D["beta"] / "pipeline_figures" / "UPGMA")
-    for pat in ("05*", "12*", "17*", "20*", "22*"):
+    for pat in ("05*", "12*", "17*", "20*"):
         for p in run_dir.glob(f"r_plots/{pat}.pdf"):
             _put(p, D["beta"] / "pipeline_figures" / p.name)
 
@@ -363,6 +364,7 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
         f"{name}: {len(sel)} samples in one result ({', '.join(sel)}).\n"
         + (f"Groups ({an.group_col}): " + ", ".join(f"{g} ({len(v)})" for g, v in an.group_list()) + "\n" if group else "")
         + "\n" + body
+        + ("\nNot made in this result:\n" + "".join(f"  - {n}\n" for n in notes) if notes else "")
         + ("\nNCBI names: the OTUs the reference left unassigned carry the name of their NCBI check in the "
            "tables, Excel and Krona; the report lists them in its NCBI section.\n" if ncbi_names else ""),
         encoding="utf-8")
