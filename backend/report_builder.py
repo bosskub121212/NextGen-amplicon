@@ -628,8 +628,11 @@ class Run:
                     lineage.append(v)
                     deepest = f"{rank[0]}: {v}"
             host = seq in self.host_seqs
+            pid = getattr(self, "pkg_ids", None) or {}
             out.append({
-                "id": f"T{i}" if self.emu or self.kind == "shotgun" else f"OTU{i}" if self.kind == "vsearch" else f"ASV{i}",
+                "id": (pid.get(seq) or pid.get(str(seq).split(";")[0])
+                       or (f"T{i}" if self.emu or self.kind == "shotgun" else f"OTU{i}" if self.kind == "vsearch"
+                           else f"ASV{i}")),
                 "len": len(seq) if _is_dna(seq) else None, "reads": reads,
                 "pct": 100 * reads / self.total if self.total else 0,
                 "phylum": (r.get("Phylum") or "\u2014"),
@@ -2847,10 +2850,23 @@ def _blast_methods(run) -> list:
         out.append("<p>Every ASV was also searched against NCBI nt (remote BLASTn, same taxonomic limit). "
                    "Where NCBI and the local reference disagree, the name is cut to the rank they share and "
                    "the ASV is flagged for checking.</p>")
+    _td, _tb = _cite(run, "taxonomy_table_dada2.csv"), _cite(run, "blast/taxonomy_blast.csv")
     out.append("<p>The DADA2 naive Bayesian classification against "
-               f"<b>{esc(run.db_name)}</b> is kept beside it (taxonomy_table_dada2.csv); the BLAST names "
-               "are used in every table and figure of this report (blast/taxonomy_blast.csv).</p>")
+               f"<b>{esc(run.db_name)}</b> is kept beside it" + (f" ({esc(_td)})" if _td else "")
+               + "; the BLAST names are used in every table and figure of this report"
+               + (f" ({esc(_tb)})" if _tb else "") + ".</p>")
     return out
+
+
+def _cite(run, name: str):
+    """A file of the run folder as the reader has it: its name in a Download results package when the report
+    is built for one (run.pkg_files, from build_profile_html(files=...)) — None when the package has none —
+    else the name in the run folder."""
+    m = getattr(run, "pkg_files", None)
+    if m is None:
+        return name if (Path(run.path) / name).exists() else None
+    v = m.get(name)
+    return v[0] if v else None
 
 
 def _blast_name(r: dict):
@@ -2872,7 +2888,8 @@ def _group_section(run, an, alpha, S, F, T) -> list:
     col = getattr(an, "group_col", "") or "group"
     ung = [x for x in S if x not in an.groups]
     out = ['<h2 class="pbreak">Analysis by group</h2>',
-           f"<p>The samples were grouped by the column <b>{esc(col)}</b> of the job&rsquo;s metadata.csv "
+           f"<p>The samples were grouped by the column <b>{esc(col)}</b> of the job&rsquo;s "
+           f"{esc(_cite(run, 'metadata.csv') or 'metadata')} "
            f"({len(gl)} groups"
            + (f"; {len(ung)} sample{'s' if len(ung) != 1 else ''} without a value "
               f"{'are' if len(ung) != 1 else 'is'} left out of the comparisons" if ung else "")
@@ -3152,7 +3169,8 @@ def _blast_section(run, S, T) -> list:
                    + (f"{len(flagged)} {run.feat} are flagged for checking ("
                       + ", ".join(f"{esc(n)}" + (f" &times;{c}" if c > 1 else "")
                                   for n, c in Counter(n for n, _r in flagged).most_common(6))
-                      + "); see the check column of blast/taxonomy_blast.csv."
+                      + ")" + (f"; see the check column of {esc(_cite(run, 'blast/taxonomy_blast.csv'))}."
+                               if _cite(run, "blast/taxonomy_blast.csv") else ".")
                       if flagged else "No ASV is flagged for checking.") + "</p>")
     return out
 
@@ -3173,8 +3191,10 @@ def _diversity_methods(run, an) -> list:
                + (" Because there is one sample per condition, comparisons are descriptive; no "
                   "statistical test between groups is possible without replicates."
                   if len(an.samples) > 1 and an.groups and len(set(an.groups.values())) >= len(an.samples)
-                  else " Where samples are grouped (metadata.csv, also set after the run under Customise "
-                       "charts), groups are compared by PERMANOVA on Bray&ndash;Curtis (999 permutations, "
+                  else (" Where samples are grouped (metadata.csv, also set after the run under Customise charts), "
+                        if getattr(run, "pkg_files", None) is None else
+                        f" Where samples are grouped ({esc(_cite(run, 'metadata.csv') or 'the job metadata')}), ")
+                       + "groups are compared by PERMANOVA on Bray&ndash;Curtis (999 permutations, "
                        "Anderson 2001) and their alpha diversity by the Kruskal&ndash;Wallis test."
                   if an.groups and len(set(an.groups.values())) < len(an.samples) else "")
                + "</p>")
@@ -3349,7 +3369,7 @@ def _picrust_methods(pc):
     return out
 
 
-def _picrust_result(pc, F, T, top=25):
+def _picrust_result(pc, F, T, top=25, run=None):
     S = pc["samples"]
     out = ['<h3 class="pbreak">Predicted functional profile (PICRUSt2)</h3>']
     nz = pc["nsti"]
@@ -3398,7 +3418,9 @@ def _picrust_result(pc, F, T, top=25):
                  "per sample. Numbers are the percentage of the sample&rsquo;s total predicted pathway "
                  "abundance; colour is scaled within each pathway from the sample with the lowest value "
                  "(light) to the highest (dark), so it shows which sample is enriched, not how large the "
-                 "difference is.", "PICRUSt2/pathways_out"))
+                 "difference is.", (f"{_cite(run, 'PICRUSt2')}/pathways_out"
+                                    if run is not None and _cite(run, "PICRUSt2") else
+                                    None if run is not None else "PICRUSt2/pathways_out")))
     return out
 
 
@@ -3662,13 +3684,17 @@ def _maaslin_section(run, T):
 
 
 def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
-                       subtitle=None, top_asv=30, archaea=True, files=None) -> str:
+                       subtitle=None, top_asv=30, archaea=True, files=None, ids=None) -> str:
     """Full result report for one run, laid out as Method / Result / References with a
     figure for every analysis: read tracking, composition at every rank, a clustered
     genus heatmap, archaea, alpha diversity and rarefaction, and beta diversity.
 
     files: for a Download results package — {file of the run folder: [its files in the package]}, so
-    the 'Folder:' lines under the figures name what the customer has (5.Taxa/csv/..., not r_tables/...)."""
+    the 'Folder:' lines under the figures name what the customer has (5.Taxa/csv/..., not r_tables/...).
+    ids: {sequence / feature id of the run: its ID in that package's count table (SV001 ...)}, so the
+    report's table of the most abundant features uses the IDs the customer can look up."""
+    run.pkg_files = files                      # the package's file names, for the text that cites a file (_cite)
+    run.pkg_ids = ids
     if run.kind == "shotgun":                  # its own layout: no amplicon steps or markers
         import shotgun_report
         return shotgun_report.build(run, title=title, app=app, company=company, subtitle=subtitle)
@@ -4169,9 +4195,13 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                  rows,
                  f"The {top_asv} most abundant of {run.n_asvs} {unit}: reads and share over the whole run"
                  + (", and the share of each sample" if per else "")
-                 + (". Identifiers are positional in abundance order; sequences are in asvs.fasta."
-                    if run.kind not in ("emu", "vsearch") else
-                    ". Centroid sequences are in otus.fasta." if run.kind == "vsearch" else ".")))
+                 + ((f". Identifiers are those of {esc(_cite(run, 'asv_table.csv'))}"
+                     if getattr(run, "pkg_ids", None) and _cite(run, "asv_table.csv") else
+                     ". Identifiers are positional in abundance order")
+                    + ((f"; sequences are in {esc(_cite(run, 'asvs.fasta'))}." if _cite(run, "asvs.fasta") else ".")
+                       if run.kind not in ("emu", "vsearch") else
+                       (f"; centroid sequences are in {esc(_cite(run, 'otus.fasta'))}." if _cite(run, "otus.fasta") else ".")
+                       if run.kind == "vsearch" else "."))))
 
     out.append("<h3>Species-level assignment</h3>")
     spc = an.rank_counts("Species")
@@ -4374,7 +4404,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     out += _maaslin_section(run, T)
 
     if pic:
-        out += _picrust_result(pic, F, T)
+        out += _picrust_result(pic, F, T, run=run)
 
     # ── notes / references ───────────────────────────────────────────────────
     out.append('<h2 class="pbreak">Notes on reading this report</h2>')
@@ -4421,17 +4451,24 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                     "Relative abundance from rRNA amplicons reflects gene copies, not cells: taxa with "
                     "many rRNA operons are over-represented."))
     if files is not None:
-        notes.append("Full tables are in this result's folders: 1.QC (read tracking), 4. (the count table with "
-                     "every taxon's lineage), 5.Taxa/csv (every rank, a column per sample), 6.Diversity (alpha "
-                     "and beta) and 7.Tables (one Excel file); README.txt lists them.")
+        notes.append("Full tables are in this result's folders: 1.QC (read tracking), "
+                     + (f"{esc(_cite(run, 'asv_table.csv'))} (the count table with every taxon's lineage), "
+                        if _cite(run, "asv_table.csv") else "")
+                     + "5.Taxa/csv (every rank, a column per sample), 6.Diversity (alpha and beta) and 7.Tables "
+                     "(one Excel file); README.txt lists them.")
     else:
-        notes.append(f"Full tables are in the result folder: "
-                     f"{'taxonomy.csv' if run.kind in ('emu', 'vsearch') else 'taxonomy_table.csv'} "
-                     f"and asv_table.csv (per-{run.feat1} counts), r_tables/ (per-rank "
-                     f"tables, diversity) and read_tracking.csv"
-                     + ("; provenance.json records the software and reference versions." if run.prov else "."))
-    if pic:
-        notes.append("Predicted functions (PICRUSt2) are in PICRUSt2/: KO_metagenome_out and "
+        _tx = "taxonomy.csv" if run.kind in ("emu", "vsearch") else "taxonomy_table.csv"
+        _have = [f"{x} ({what})" for x, what in ((_tx, "the names"), ("asv_table.csv", f"per-{run.feat1} counts"),
+                                                  ("r_tables", "per-rank tables, diversity"),
+                                                  ("read_tracking.csv", "reads per step"))
+                 if (Path(run.path) / x).exists()]
+        if _have:
+            notes.append("Full tables are in the result folder: " + ", ".join(_have)
+                         + ("; provenance.json records the software and reference versions."
+                            if run.prov and (Path(run.path) / "provenance.json").exists() else "."))
+    _pc = _cite(run, "PICRUSt2") if pic else None
+    if pic and _pc:
+        notes.append(f"Predicted functions (PICRUSt2) are in {esc(_pc)}/: KO_metagenome_out and "
                      "EC_metagenome_out (gene families per sample), pathways_out (MetaCyc pathways); the "
                      "*_descrip.tsv.gz files carry descriptions.")
     out.append("<ul>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>")

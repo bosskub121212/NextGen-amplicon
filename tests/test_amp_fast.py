@@ -429,6 +429,8 @@ def make_amp_run(d: Path, samples=("S2-12S", "F4 CytB.1")):
         fh.write('"","input","filtered","denoisedF","denoisedR","merged","nonchim"\n')
         for i, s_ in enumerate(S):
             fh.write(f'"{s_}",{1000 - i},{950 - i},{940 - i},{945 - i},{900 - i},{sum(c[i] for c in counts)}\n')
+    # dada2_pipeline.R keeps DADA2's own naming beside the BLAST one
+    (d / "taxonomy_table_dada2.csv").write_text((d / "taxonomy_table.csv").read_text())
     (d / "cutadapt").mkdir(exist_ok=True)
     for s_ in S:
         (d / "cutadapt" / f"{s_}.cutadapt.json").write_text(json.dumps({

@@ -459,7 +459,7 @@ def _func(run, sm, S, T, F) -> tuple[list[str], list[str], list]:
                "Nanopore reads were cut into 300 bp pieces (pieces under 100 bp dropped) because HUMAnN is "
                "built for short reads. ")
             + "Genes of interest were counted from the KO table, or from UniRef90 names for genes without a "
-              "KO of their own (data/function_panels.tsv), and attributed to genera from HUMAnN's per-species "
+              "KO of their own (the gene panels the app ships with), and attributed to genera from HUMAnN's per-species "
               "output."]
     out = [head]
     err = info.get("error") or (sk if sk and not info.get("samples") else "")

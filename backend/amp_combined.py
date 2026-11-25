@@ -19,6 +19,7 @@ in every table and figure, instead of a package per sample.
                  Beta/ (Bray-Curtis matrix, PCoA scores + figure, PERMANOVA when there are groups;
                  additional_figures/ with the R beta figures)
   7.Tables/      <name>.xlsx: read tracking, profiles at every rank, alpha (every sample)
+  metadata.csv   the samples' groups (when the job has them)
   8.Reads/       quality-filtered reads (when chosen)
   README.txt
 """
@@ -95,6 +96,41 @@ def _csv(path: Path, head, rows):
         w.writerows(rows)
 
 
+def _picrust(run_dir: Path, dest: Path, sel: list, whole: bool):
+    """PICRUSt2's predicted functions (KO, EC, MetaCyc pathways) for these samples — the report shows them.
+    A result of every sample takes the files as they are; a part of the run gets each table cut to its
+    samples (a column per sample, or a row per sample for the NSTI tables)."""
+    import gzip
+    src = run_dir / "PICRUSt2"
+    if not src.is_dir():
+        return
+    keep = set(sel)
+    for sub in ("KO_metagenome_out", "EC_metagenome_out", "pathways_out"):
+        for f in sorted((src / sub).glob("*.tsv.gz")) if (src / sub).is_dir() else []:
+            d = dest / sub / f.name
+            if whole:
+                _put(f, d)
+                continue
+            try:
+                with gzip.open(f, "rt", newline="") as fh:
+                    rows = list(csv.reader(fh, delimiter="\t"))
+                if not rows:
+                    continue
+                head = rows[0]
+                cols = [i for i, h in enumerate(head) if i == 0 or h in keep or h in ("description", "taxon")]
+                if len(cols) > 1 and any(head[i] in keep for i in cols):
+                    out = [[r[i] if i < len(r) else "" for i in cols] for r in rows]
+                elif head and head[0].lower() == "sample":
+                    out = [head] + [r for r in rows[1:] if r and r[0] in keep]
+                else:
+                    continue                        # no sample in it: not this part's to carry
+                d.parent.mkdir(parents=True, exist_ok=True)
+                with gzip.open(d, "wt", newline="") as fh:
+                    csv.writer(fh, delimiter="\t").writerows(out)
+            except (OSError, csv.Error, EOFError):
+                continue
+
+
 def _report_files(root: Path, D: dict, feat: str, rparts, rsfx) -> dict:
     """{file of the run folder the report cites: [the files of this result that hold it]} — only files
     that are there."""
@@ -113,7 +149,13 @@ def _report_files(root: Path, D: dict, feat: str, rparts, rsfx) -> dict:
          "r_tables/pca_scores.csv": have(D["beta"] / "PCoA_Bray_scores.csv", D["beta"] / "PCoA_Bray.png"),
          "beta_stats.txt": have(*sorted(D["beta"].glob("PERMANOVA_*.csv"))) if D["beta"].is_dir() else [],
          "r_tables/beta_heatmap.csv": have(D["beta"] / "bray_curtis_distance_matrix.csv",
-                                           D["beta"] / "Bray_Curtis_heatmap.png")}
+                                           D["beta"] / "Bray_Curtis_heatmap.png"),
+         "asvs.fasta": have(D["feat"] / f"{feat}_sequences.fasta"),
+         "otus.fasta": have(D["s3"] / "otus.fasta"),
+         "blast/taxonomy_blast.csv": have(D["taxa"] / "BLAST" / "taxonomy_blast.csv"),
+         "taxonomy_table_dada2.csv": have(D["feat"] / "taxonomy_table_dada2.csv"),
+         "metadata.csv": have(root / "metadata.csv"),
+         "PICRUSt2": [rel(D["tab"] / "PICRUSt2")] if (D["tab"] / "PICRUSt2").is_dir() else []}
     for rank in RANK_ORDER:
         m[f"r_tables/taxonomy_{rank.lower()}.csv"] = have(
             D["taxa"] / "csv" / f"{rank}_relative_abundance_per_sample_wide.csv",
@@ -133,6 +175,8 @@ def _readme_body(root: Path, name: str) -> str:
             if keep:
                 head = have[0] + "/"
                 ln = "  " + head + " " * max(1, 15 - len(head)) + m.group(3)
+        elif ln.startswith("  metadata.csv"):
+            keep = (root / "metadata.csv").exists()
         elif not ln.startswith("    "):
             keep = True
         if keep:
@@ -307,9 +351,11 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
     progress(1, N, "Feature and taxa tables")
     tot = {s: sum(a["counts"].get(s, 0) for a in run.asvs) for s in sel}
     emu = run.kind == "emu"     # Emu: its tax_id beside the ID, so the unassigned rows are named, not blank
-    _csv(D["feat"] / f"{feat}_count_table_named.csv", ["ID"] + (["Emu_tax_id"] if emu else []) + AD.RANKS + sel
+    # Emu's tax_id / VSEARCH's OTU name beside the ID: the pipeline's own name of each row
+    idcol = "Emu_tax_id" if engine == "emu" else "OTU_id" if engine == "vsearch" else None
+    _csv(D["feat"] / f"{feat}_count_table_named.csv", ["ID"] + ([idcol] if idcol else []) + AD.RANKS + sel
          + ["Total"] + (["Sequence"] if not emu else []),
-         [[a["sv"]] + ([a.get("id", "")] if emu else [])
+         [[a["sv"]] + ([a.get("id", "")] if idcol else [])
           + [("Unassigned" if a.get("not_taxon") and r == "Phylum" else a["tax"].get(r, "")) for r in AD.RANKS]
           + [a["counts"].get(s, 0) for s in sel] + [a["total"]]
           + ([a.get("sequence", "")] if not emu else []) for a in run.asvs])
@@ -321,14 +367,34 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
         for f in ("asv_table.csv", "taxonomy_table.csv", "taxonomy.csv", "asvs.fasta", "asv_lengths.csv",
                   "asv_length_distribution.pdf", "observed_asvs.pdf", "phylo_tree.nwk"):
             _put(run_dir / f, D["feat"] / f)
-    # old COX1 / PacBio tables carry ASV ids, no sequences: no empty FASTA then
-    if run.kind != "emu" and not (D["feat"] / "asvs.fasta").exists() and any(a.get("sequence") for a in run.asvs):
+    # the sequences under the IDs of the count table (SV001 ...): the pipeline's asvs.fasta, when the result
+    # carries it, numbers them its own way. Old COX1 / PacBio tables carry ASV ids, no sequences: no FASTA then
+    if run.kind != "emu" and any(a.get("sequence") for a in run.asvs):
         with open(D["feat"] / f"{feat}_sequences.fasta", "w") as fh:
             for a in run.asvs:
                 if a.get("sequence"):
                     fh.write(f">{a['sv']} {AD.label(a, 'Species')}\n{a['sequence']}\n")
     for p in (run_dir.glob("r_plots/18_*.pdf") if whole else []):
         _put(p, D["feat"] / p.name)
+    if (run_dir / "taxonomy_table_dada2.csv").exists():    # BLAST runs: the DADA2 naming kept beside, these ASVs
+        with open(run_dir / "taxonomy_table_dada2.csv", newline="", encoding="utf-8-sig") as fh:
+            rd = list(csv.reader(fh))
+        sq = {a.get("sequence") for a in run.asvs if a.get("sequence")}
+        rows = [r for r in rd[1:] if r and r[0] in sq]
+        if rd and rows:
+            D["feat"].mkdir(parents=True, exist_ok=True)
+            with open(D["feat"] / "taxonomy_table_dada2.csv", "w", newline="") as fh:
+                csv.writer(fh).writerows([rd[0]] + rows)
+    if (run_dir / "metadata.csv").exists():                 # the groups of these samples (the report cites it)
+        try:
+            with open(run_dir / "metadata.csv", newline="", encoding="utf-8-sig") as fh:
+                rd = list(csv.reader(fh))
+            rows = [r for r in rd[1:] if r and r[0] in set(sel)]
+            if rd and rows:
+                with open(root / "metadata.csv", "w", newline="") as fh:
+                    csv.writer(fh).writerows([rd[0]] + rows)
+        except (OSError, csv.Error):
+            pass
 
     # 5. taxa
     _taxa_tables(run, D["taxa"] / "csv", group)
@@ -465,6 +531,8 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
     except ImportError:
         notes.append("openpyxl missing: no Excel file")
 
+    _picrust(run_dir, D["tab"] / "PICRUSt2", sel, whole)
+
     # 8. reads
     if include_reads:
         for s in sel:
@@ -474,7 +542,10 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
     # report
     progress(4, N, "Writing the report")
     doc = RB.build_profile_html(rrun, title=None, app="NextGen-Amplicon", company="",
-                                files=_report_files(root, D, feat, rparts, rsfx))
+                                files=_report_files(root, D, feat, rparts, rsfx),
+                                ids={k: a["sv"] for a in run.asvs
+                                     for k in {a.get("sequence"), a.get("id"), str(a.get("id") or "").split(";")[0]}
+                                     if k})
     stem = root / f"Report_{name}"
     root.mkdir(parents=True, exist_ok=True)
     if "html" in formats:

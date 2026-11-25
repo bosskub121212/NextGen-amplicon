@@ -395,9 +395,13 @@ def main():
     test_its_pacbio_pkg_fast.main()
     FAILS.extend(test_its_pacbio_pkg_fast.FAILS)
 
-    import test_emu_speed_fast               # Emu alignment: exact / fast (minimap2 -f 5000)
+    import test_emu_speed_fast               # Emu: align on all threads, EM in the background
     test_emu_speed_fast.main()
     FAILS.extend(test_emu_speed_fast.FAILS)
+
+    import test_report_paths_fast            # every file a report names is in what the reader gets
+    test_report_paths_fast.main()
+    FAILS.extend(test_report_paths_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

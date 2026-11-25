@@ -273,7 +273,6 @@ class RunParams(BaseModel):
     nThreads:      int   = 4
     ont_chimera:   bool  = False   # ONT-16S: reference-based chimera removal (off by default)
     ont_parallel:  int   = 0       # ONT-16S: Emu samples at once (0 = from CPU count and free memory)
-    ont_align_speed: str = "exact" # ONT-16S: minimap2 for Emu — "exact" (Emu's own) or "fast" (-f 5000, ~10x faster)
     # MaAsLin 3 (multivariable differential abundance) — runs when metadata has a
     # variable with replicated levels. Empty fixed = every usable metadata column.
     run_fastqc:        bool = False   # also run FastQC + MultiQC when installed (read_qc.py always runs)
@@ -1435,8 +1434,6 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
         if params.ont_chimera:
             cmd += ["--chimera"]
         cmd += ["--parallel", str(max(0, int(params.ont_parallel or 0)))]
-        if str(params.ont_align_speed or "").lower() == "fast":
-            cmd += ["--align_speed", "fast"]
         if _resume:
             cmd += ["--resume"]
         if params.metadata:

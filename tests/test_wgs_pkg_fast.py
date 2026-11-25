@@ -186,7 +186,7 @@ WGS_HEADINGS = ["Whole genome sequencing report", "Sample: FS03", "1.QC", "Befor
                 "3. Estimates of genome completeness and contamination", "Results 3.Completeness",
                 "4. Genome-based taxonomy", "Table 4.1 Genome-based identification of strain", "Phylogenetic tree",
                 "Results 4.Taxonomy/Phylogeny", "Read-based Taxonomy Classification",
-                "Results 4.Taxonomy/Read-based Taxonomy", "Contig-based Community Profiling",
+                "Read-based taxonomy was not run for this sample.", "Contig-based Community Profiling",
                 "Results 4.Taxonomy/Contig-based Taxonomy", "MLST", "Results 4.Taxonomy/MLST", "5. ANI analysis",
                 "Results 5.ANI", "6. Genome annotation", "Results 6.Annotation", "7.Antimicrobial Resistance Genes",
                 "Results 7.AMR", "8. Reads Mapped to Reference", "Results 8.readsMappingToRef", "Reference"]
@@ -218,6 +218,8 @@ def t_report_sections(tmp: Path):
     html = (root / "Report_FS03.html").read_text()
     ok, miss = _in_order(html, WGS_HEADINGS)
     check("WGS report: lab headings in order, each section ends with its Results line", ok, f"missing: {miss}")
+    check("WGS report: a step that did not run names no folder (no 'Results 4.Taxonomy/Read-based Taxonomy')",
+          "Results 4.Taxonomy/Read-based Taxonomy" not in html)
     check("WGS report: no cover page", "Client Name" not in html and "Order Number" not in html)
     check("WGS report: page header 'Page |'", "Page |" in html)
     check("WGS report: QC numbers as the lab writes them", "Reads #: 254102" in html

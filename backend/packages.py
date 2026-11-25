@@ -5,9 +5,9 @@
 
 kind "wgs"      each sample → the eight-folder package with Report_<S>.pdf/.docx
                 (wgs_customer_report.build_sample).
-kind "amplicon" each sample → the numbered package 1.QcReads, 2.Taxonomy, 3.Diversity,
-                4.Tables with Report_<S>.pdf/.docx (amp_package.build_sample); with
-                include_reads the quality-filtered reads go in 1.QcReads/filtered_reads.
+kind "amplicon" the BI layout of amp_combined.build_combined (1.QC ... 8.Reads + Report + README), for
+                all chosen samples together (combined) or for each sample; with include_reads
+                the quality-filtered reads go in 8.Reads.
 
 split=True  → one zip per sample (samples of different customers never share a zip).
 split=False → one zip holding the chosen samples' packages side by side.

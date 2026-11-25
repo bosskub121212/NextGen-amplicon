@@ -85,7 +85,17 @@ def _read_tsv(p: Path) -> list[dict]:
         return []
 
 
+_ROOT: list = [None]          # the package being written (build_html): results() names only folders it has
+
+
 def results(folder: str) -> str:
+    """'Results <folder>' under a section — only when that folder of the package holds a file: a step that
+    was not run (read-based taxonomy, trees) leaves no folder, and the report must not send the reader to one."""
+    root = _ROOT[0]
+    if root is not None:
+        d = Path(root) / folder
+        if not (d.is_dir() and any(p.is_file() for p in d.rglob("*"))):
+            return ""
     return f'<p class="res">Results {esc(folder)}</p>'
 
 
@@ -546,6 +556,7 @@ table.t th { background: #f2f2f2; } table.tiny { font-size: 7.6pt; } table.narro
 
 
 def build_html(result_dir: Path, sample: str, root: Path, tygs: dict | None = None) -> str:
+    _ROOT[0] = root
     sd = Path(result_dir) / "samples" / sample
     try:
         res = json.loads((sd / "result.json").read_text())

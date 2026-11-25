@@ -507,7 +507,8 @@ def section_typestrain(r: dict) -> str:
                        rows, left=(0, 1), caption="Best of all 16S copies against NCBI "
                        "RefSeq 16S (type material). ≥ 98.65 % is compatible with the same "
                        "species but does not prove it."))
-    out.append('<p class="dim" style="font-size:7.6pt">Files: <span class="mono">taxonomy/'
+    out.append('<p class="dim" style="font-size:7.6pt">Files (in <span class="mono">samples/'
+               f'{esc(S)}/taxonomy/</span> of the result folder): <span class="mono">'
                'type_strain_ani.csv, type_strain_16S.csv, ani_matrix_skani.tsv, '
                f'{esc(S)}_genome_tree.nwk, {esc(S)}_16S_tree.nwk, {esc(S)}_16S_alignment.fasta'
                '</span>. dDDH (TYGS/GGDC) is not computed here — submit the assembly to TYGS '
@@ -565,8 +566,9 @@ def section_mapping(r: dict) -> str:
     out.append('<p class="dim" style="font-size:7.6pt">SNP counts against a reference '
                'of the same species at 97–99 % ANI measure species-level divergence '
                '(thousands of SNPs are normal) — they are not an outbreak SNP distance, '
-               'which needs isolates compared with each other. Files: <span class="mono">'
-               'mapping/reference_coverage_bins.tsv, reference_absent_regions.csv, '
+               'which needs isolates compared with each other. Files (in <span class="mono">samples/'
+               f'{esc(r.get("sample", ""))}/mapping/</span> of the result folder): <span class="mono">'
+               'reference_coverage_bins.tsv, reference_absent_regions.csv, '
                'isolate_unique_regions.csv, assembly_vs_reference.paf</span>.</p>')
     return "".join(out)
 
