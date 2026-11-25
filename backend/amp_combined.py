@@ -94,11 +94,35 @@ def _csv(path: Path, head, rows):
         w.writerows(rows)
 
 
+def _readme_body(root: Path, name: str) -> str:
+    """The folder list of the docstring, keeping only the folders this result has (a Nanopore run has no
+    2.Cutadapt, one sample no Beta, a run without its reads no 8.Reads) and only the 3. / 4. name it uses."""
+    out, keep = [], True
+    for ln in __doc__.split("\n\n", 1)[1].splitlines():
+        m = re.match(r"^  (\d\.[^/ ]+/(?: \| \d\.[^/ ]+/)*)(\s+)(.*)$", ln)
+        if m:
+            have = [f for f in re.findall(r"(\d\.[^/ ]+)/", m.group(1)) if (root / f).is_dir()]
+            keep = bool(have)
+            if keep:
+                head = have[0] + "/"
+                ln = "  " + head + " " * max(1, 15 - len(head)) + m.group(3)
+        elif not ln.startswith("    "):
+            keep = True
+        if keep:
+            out.append(ln.replace("<name>", name))
+    body = "\n".join(out) + "\n"
+    if not (root / "6.Diversity" / "Beta").is_dir():
+        body = re.sub(r";\n\s+Beta/ \(.*?figures\)", "", body, flags=re.S)
+    return body
+
+
 def _taxa_tables(run: AD.RunData, d: Path, group: dict):
     """Per rank: every taxon's relative abundance (%) and reads per sample, the Top 30 wide and long,
     and each taxon's total share — the BI team's Top_taxa_all_levels/csv."""
     S = list(run.samples)
-    tot = {s: sum(a["counts"].get(s, 0) for a in run.asvs if not a.get("not_taxon")) or 1 for s in S}
+    # share of every read of the sample, Emu's unassigned included (it is a row of the tables), as the report
+    # and its charts count it: a rank sums to 100 (dividing by the assigned reads gave 100.4% with that row)
+    tot = {s: sum(a["counts"].get(s, 0) for a in run.asvs) or 1 for s in S}
     allt = sum(tot.values()) or 1
     for rank in RANK_ORDER:
         per = {s: run.rank_table(rank, s) for s in S}
@@ -249,10 +273,13 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
     # 4. feature table
     progress(1, N, "Feature and taxa tables")
     tot = {s: sum(a["counts"].get(s, 0) for a in run.asvs) for s in sel}
-    _csv(D["feat"] / f"{feat}_count_table_named.csv", ["ID"] + AD.RANKS + sel + ["Total"] + (
-        ["Sequence"] if run.kind != "emu" else []),
-         [[a["sv"]] + [a["tax"].get(r, "") for r in AD.RANKS] + [a["counts"].get(s, 0) for s in sel] + [a["total"]]
-          + ([a.get("sequence", "")] if run.kind != "emu" else []) for a in run.asvs])
+    emu = run.kind == "emu"     # Emu: its tax_id beside the ID, so the unassigned rows are named, not blank
+    _csv(D["feat"] / f"{feat}_count_table_named.csv", ["ID"] + (["Emu_tax_id"] if emu else []) + AD.RANKS + sel
+         + ["Total"] + (["Sequence"] if not emu else []),
+         [[a["sv"]] + ([a.get("id", "")] if emu else [])
+          + [("Unassigned" if a.get("not_taxon") and r == "Phylum" else a["tax"].get(r, "")) for r in AD.RANKS]
+          + [a["counts"].get(s, 0) for s in sel] + [a["total"]]
+          + ([a.get("sequence", "")] if not emu else []) for a in run.asvs])
     _csv(D["feat"] / f"{feat}_counts_per_sample.csv", ["Sample"] + (["Group"] if group else [])
          + ["Reads", f"{'Taxa' if engine == 'emu' else feat + 's'}"],
          [[s] + ([group.get(s, "")] if group else []) + [tot[s], sum(1 for a in run.asvs if a["counts"].get(s, 0) > 0)]
@@ -422,9 +449,9 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
             notes.append(f"Word file not made ({ex})")
     for f in root.rglob("*.log"):           # tool logs (NanoPlot's) carry server paths: not for the customer
         f.unlink()
-    body = __doc__.split("\n\n", 1)[1]
+    body = _readme_body(root, name)
     (root / "README.txt").write_text(
-        f"{name}: {len(sel)} samples in one result ({', '.join(sel)}).\n"
+        f"{name}: {len(sel)} sample{'s' if len(sel) != 1 else ''} in one result ({', '.join(sel)}).\n"
         + (f"Groups ({an.group_col}): " + ", ".join(f"{g} ({len(v)})" for g, v in an.group_list()) + "\n" if group else "")
         + "\n" + body
         + ("\nNot made in this result:\n" + "".join(f"  - {n}\n" for n in notes) if notes else "")

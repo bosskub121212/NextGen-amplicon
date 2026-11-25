@@ -154,7 +154,8 @@ def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str],
             for k, v in m.items():
                 if k.endswith("_error"):
                     warnings.append(f"{s}: {k[:-6]} — {v}")
-            warnings += [f"{s}: {x}" for x in m.get("notes", [])]
+            # one sample has no beta diversity by nature: said in its README, not repeated for every sample here
+            warnings += [f"{s}: {x}" for x in m.get("notes", []) if "one sample: no beta diversity" not in x]
             for lg in work.glob("*.plots.log"):                 # R log: kept beside the zips, not inside
                 lg.replace(dest / lg.name)
             if split:

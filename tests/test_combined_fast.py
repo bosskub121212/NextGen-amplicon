@@ -24,6 +24,8 @@ def main():
             td = Path(td)
             d = TM.make_run(td / "emu", 6)
             S = (d / "asv_table.csv").read_text().splitlines()[0].split(",")[1:]
+            with open(d / "asv_table.csv", "a") as fh:      # Emu's own row of reads it could not place
+                fh.write("unassigned," + ",".join(str(50 + i) for i in range(len(S))) + "\n")
             (d / "metadata.csv").write_text("SampleID,Type\n" + "".join(f"{x},{'AB'[i % 2]}\n" for i, x in enumerate(S)))
             m = PK.build(d, None, "amplicon", S, False, td / "pk", job_label="U2BI-184_fastq", formats=("html",),
                          tools={}, combined=True)
@@ -53,6 +55,13 @@ def main():
                   not miss, miss)
             wide = list(csv.reader(z.read(r + "5.Taxa/csv/Genus_relative_abundance_per_sample_wide.csv").decode().splitlines()))
             check("taxa tables: a column per sample", wide[0] == ["Genus"] + S, wide[0])
+            sums = [sum(float(x[i]) for x in wide[1:]) for i in range(1, len(S) + 1)]
+            check("relative abundance: every sample sums to 100 % (Emu's unassigned row included)",
+                  all(abs(v - 100) < 0.05 for v in sums), sums)
+            ct = list(csv.reader(z.read(r + "4.Taxa_table/Taxa_table_count_table_named.csv").decode().splitlines()))
+            un = [x for x in ct if "unassigned" in x]
+            check("Emu count table: tax_id column, the unassigned row named", ct[0][1] == "Emu_tax_id"
+                  and un and un[0][2] == "Unassigned", (ct[0], un))
             al = list(csv.reader(z.read(r + "6.Diversity/Alpha/alpha_diversity.csv").decode().splitlines()))
             check("alpha table carries the group", al[0][:2] == ["Sample", "Group"] and al[1][1] == "A", al[:2])
             rep = z.read(r + "Report_U2BI-184_fastq_results.html").decode()
@@ -66,6 +75,13 @@ def main():
                   and any(x.startswith("Fish_results/4.ASV/") and x.endswith(".fasta") for x in n2), sorted(n2)[:20])
             m3 = PK.build(d, None, "amplicon", S[:2], True, td / "pk3", job_label="x", formats=("html",), tools={})
             check("per-sample packages still there (one zip per sample)", len(m3["files"]) == 2)
+            z3 = zipfile.ZipFile(m3["files"][0]["path"])
+            rd = next(z3.read(x).decode() for x in z3.namelist() if x.endswith("README.txt"))
+            check("one-sample README: only the folders it has (no 2.Cutadapt, no Beta for Emu), '1 sample'",
+                  "2.Cutadapt/" not in rd and "Beta/" not in rd.split("Not made")[0]
+                  and "3.DADA2/" not in rd and "1 sample in" in rd, rd[:600])
+            check("per-sample build: the expected one-sample beta note is not listed under every sample",
+                  not any("one sample: no beta" in w for w in m3.get("warnings", [])), m3.get("warnings"))
             fe = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
             mm = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
             check("Download results offers the combined result first", 'value="combined"' in fe
