@@ -83,6 +83,11 @@ def marker_label(run: AD.RunData) -> tuple[str, str]:
         return (mk or "Amplicon"), f"{mk or 'amplicon'}, VSEARCH OTUs"
     if run.kind == "emu":
         return "16S rRNA", "Full-length 16S rRNA gene, Oxford Nanopore reads, Emu"
+    if getattr(run, "engine", "") == "pacbio":
+        return "16S rRNA", "Full-length 16S rRNA gene, PacBio HiFi reads, DADA2 (PacBio error model)"
+    if getattr(run, "engine", "") == "its":
+        g = mk if mk.startswith("ITS") else "ITS"
+        return f"Fungal {g}", f"{g} region (fungi), Illumina paired reads, DADA2 + UNITE"
     if getattr(run, "engine", "") == "cox1" or mk in ("COX1", "COI"):
         return "COI", "Mitochondrial COI gene (animals and other eukaryotes), Illumina paired reads, DADA2 + MIDORI2"
     if mk in ("18S-NEMA", "18S"):

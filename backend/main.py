@@ -273,6 +273,7 @@ class RunParams(BaseModel):
     nThreads:      int   = 4
     ont_chimera:   bool  = False   # ONT-16S: reference-based chimera removal (off by default)
     ont_parallel:  int   = 0       # ONT-16S: Emu samples at once (0 = from CPU count and free memory)
+    ont_align_speed: str = "exact" # ONT-16S: minimap2 for Emu — "exact" (Emu's own) or "fast" (-f 5000, ~10x faster)
     # MaAsLin 3 (multivariable differential abundance) — runs when metadata has a
     # variable with replicated levels. Empty fixed = every usable metadata column.
     run_fastqc:        bool = False   # also run FastQC + MultiQC when installed (read_qc.py always runs)
@@ -1434,6 +1435,8 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
         if params.ont_chimera:
             cmd += ["--chimera"]
         cmd += ["--parallel", str(max(0, int(params.ont_parallel or 0)))]
+        if str(params.ont_align_speed or "").lower() == "fast":
+            cmd += ["--align_speed", "fast"]
         if _resume:
             cmd += ["--resume"]
         if params.metadata:
@@ -2406,8 +2409,14 @@ class CustomReportRequest(BaseModel):
     split: bool = True                    # one package per sample (samples of different customers)
 
 
-def _custom_check(job_id: str):
-    """(out_dir, None) or (None, error response)."""
+# Download results only (amp_combined: tables, figures and the run report, which knows these runs); the
+# customer report's own text (custom_report.py) does not describe them.
+_PKG_ONLY_MARKERS = ("ITS", "ITS1", "ITS2", "PACBIO")
+
+
+def _custom_check(job_id: str, packages: bool = False):
+    """(out_dir, None) or (None, error response). packages: Download results, which also covers
+    ITS Illumina (DADA2 + UNITE) and PacBio full-length 16S."""
     if not _JOB_ID_RE.fullmatch(job_id):
         return None, JSONResponse(status_code=400, content={"error": "bad job id"})
     out_dir = _custom_out(job_id)
@@ -2429,6 +2438,8 @@ def _custom_check(job_id: str):
         pipe = ""
     if marker.upper() in ("ITS1", "ITS2", "ITS") and pipe == "qiime2_vsearch":
         return out_dir, None                  # Nanopore ITS through VSEARCH + UNITE
+    if packages and (marker.upper() in _PKG_ONLY_MARKERS or pipe.startswith("pacbio") or pipe == "its"):
+        return out_dir, None                  # ITS Illumina (DADA2) / PacBio: Download results
     if marker.upper() not in _CUSTOM_MARKERS:
         return None, JSONResponse(status_code=400, content={
             "error": f"the customer report covers 12S / CytB, 16S, ONT 16S, 18S and COI runs, not {marker or 'this run'}"})
@@ -2732,7 +2743,7 @@ def _pkg_check(job_id: str):
     out = _job_out(job_id)
     if (out / "wgs_results.json").exists():
         return out, "wgs", None
-    o2, err = _custom_check(job_id)
+    o2, err = _custom_check(job_id, packages=True)
     if err:
         return None, None, err
     return o2, "amplicon", None

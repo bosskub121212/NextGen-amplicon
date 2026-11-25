@@ -1953,6 +1953,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     row("Chimera removal",     p.ont_chimera === true ? "on (VSEARCH, reference-based)"
                                : (p.ont_chimera === false ? "off (Emu default)" : ""));
     row("CPU threads",         p.nThreads);
+    if(p.ont_align_speed !== undefined && /ONT/.test(p.marker || ""))
+      row("Emu alignment",     p.ont_align_speed === "fast" ? "fast (minimap2 -f 5000)" : "exact (Emu's own minimap2)");
     row("Top taxa in plots",   p.topN);
     row("Metadata supplied",   (p.metadata || (p.metadataRows && p.metadataRows.length)) ? "yes" : "no");
     row("Manual sample map",   (p.sampleFileMap && Object.keys(p.sampleFileMap).length) ? "yes" : "no");
@@ -6409,6 +6411,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["nThreads",          "CPU threads",       "int",    "8", "minimap2 / Emu, chopper, VSEARCH (Emu ran on 4 before)"],
         ["ont_parallel",      "Samples in parallel", "int",  "0",
          "Emu runs this many samples at once, sharing the threads; 0 = automatic from CPU and free RAM"],
+        ["ont_align_speed",   "Emu alignment (minimap2)", "select", "exact", [
+          ["exact", "exact — Emu's own minimap2 (slow: ~1 h per 24k reads on 4 threads)"],
+          ["fast",  "fast — about 10x faster; genera within ~0.3 points, close species may shift"]],
+         "fast skips 16S minimizers found in more than 5,000 reference sequences (minimap2 -f 5000); Emu's EM is unchanged"],
         ["ont_chimera",       "Chimera removal (VSEARCH)", "bool", "false",
          "reference-based; off by default — on ONT reads it removes real reads of taxa the reference covers poorly"]
       ]});

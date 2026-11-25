@@ -40,6 +40,23 @@ def _pr2(rank: str, v: str) -> str:
     return v.replace("_", " ") if rank == "Species" else v
 
 
+def _unite(rank: str, v: str) -> str:
+    """UNITE names as the ITS pipeline writes them since it cleans them (older ITS runs kept them raw):
+    rank prefix dropped ('g__Aspergillus'), 'unidentified' and '..._Incertae_sedis' blank, species as
+    the binomial ('Aspergillus niger'), 'Penicillium sp' no species. Other references pass unchanged."""
+    if not v:
+        return v
+    raw, v = v, re.sub(r"^[a-z]__", "", v)
+    if re.fullmatch(r"(?i)unidentified|incertae_sedis|.*_incertae_sedis", v):
+        return ""
+    # only a UNITE species ('s__Aspergillus_niger', 'Penicillium_sp'): MIDORI2's 'Genus_epithet_taxid' is not
+    if rank == "Species" and (raw != v or re.fullmatch(r"[A-Z][a-z]+_(sp\.?|[a-z-]+)", v)):
+        v = v.replace("_", " ")
+        if re.search(r" sp\.?$", v):
+            return ""
+    return v
+
+
 def label(asv: dict, rank: str) -> str:
     """Name at a rank, or '<deepest known higher rank> unidentified', or 'Unassigned'."""
     if _v(asv["tax"].get(rank, "")):
@@ -79,8 +96,13 @@ class RunData:
         # engine says which pipeline made it — what the report must describe.
         self.engine = "vsearch" if self.summary.get("pipeline") == "qiime2_vsearch" else self.kind
         mk = str(self.params.get("marker") or self.summary.get("marker") or "").upper()
-        if self.kind == "dada2" and (self.summary.get("pipeline") == "cox1" or mk in ("COX1", "COI")):
+        pl = str(self.summary.get("pipeline") or "").lower()
+        if self.kind == "dada2" and (pl == "cox1" or mk in ("COX1", "COI")):
             self.engine = "cox1"           # COX1 pipeline: DADA2 + length / stop-codon filters (+ LULU)
+        elif self.kind == "dada2" and (pl.startswith("pacbio") or mk == "PACBIO"):
+            self.engine = "pacbio"         # PacBio HiFi full-length 16S: DADA2 PacBioErrfun, single reads
+        elif self.kind == "dada2" and (pl == "its" or mk in ("ITS", "ITS1", "ITS2")):
+            self.engine = "its"            # ITS Illumina: DADA2 + UNITE
         self.track_cols = EMU_TRACK_COLS if self.kind == "emu" else TRACK_COLS
         if self.kind == "emu":
             self._read_emu()
@@ -234,12 +256,20 @@ class RunData:
             return {}
 
     def _read_asvs(self):
-        with open(self.dir / "asv_table.csv", newline="") as fh:
+        with open(self.dir / "asv_table.csv", newline="", encoding="utf-8-sig") as fh:
             rd = csv.reader(fh)
             head = next(rd)
-            si = head.index("sequence") if "sequence" in head else 0
-            self.samples = [h for i, h in enumerate(head) if i != si]
             rows = [r for r in rd if r]
+        by_id = False
+        if head and head[0].strip().lower() in ("sample_id", "sampleid", "sample"):
+            # COX1 and PacBio before v2.17: one row per SAMPLE, a column per ASV id (no sequences).
+            # Turned the right way round: one row per ASV, its id where the sequence would be.
+            samples = [r[0] for r in rows]
+            rows = [[fid] + [rows[j][i] if i < len(rows[j]) else "0" for j in range(len(samples))]
+                    for i, fid in enumerate(head) if i > 0]
+            head, by_id = ["sequence"] + samples, True
+        si = head.index("sequence") if "sequence" in head else 0
+        self.samples = [h for i, h in enumerate(head) if i != si]
         tax = {}
         tp = self.dir / "taxonomy_table.csv"
         if tp.exists():
@@ -248,7 +278,7 @@ class RunData:
                 th = next(rd)
                 pr2 = "Supergroup" in th or "Subdivision" in th       # PR2 (18S eukaryotes)
                 for r in rd:
-                    tax[r[0]] = {h: _pr2(h, _v(v)) if pr2 else _v(v) for h, v in zip(th[1:], r[1:])}
+                    tax[r[0]] = {h: _pr2(h, _v(v)) if pr2 else _unite(h, _v(v)) for h, v in zip(th[1:], r[1:])}
                     t_ = tax[r[0]]
                     # VSEARCH naming before v2.33.3 wrote the genus again as the species (MIDORI2 label cut
                     # at its space): a one-word species equal to its genus is no species
@@ -265,7 +295,8 @@ class RunData:
             counts = {s: int(float(v or 0)) for s, v in zip(self.samples, [x for i, x in enumerate(r) if i != si])}
             b = bl.get(seq, {})
             t = {k: _v(tax.get(seq, {}).get(k, "")) for k in RANKS}
-            asvs.append({"sequence": seq, "counts": counts, "total": sum(counts.values()), "tax": t,
+            asvs.append({"sequence": "" if by_id else seq, **({"id": seq} if by_id else {}),
+                         "counts": counts, "total": sum(counts.values()), "tax": t,
                          **{k: b.get(k, "") for k in ("best_hit", "pident", "qcov", "source", "accession",
                                                      "rank_reached", "target", "ncbi_best", "ncbi_pident",
                                                      "ncbi_accession", "agreement", "check")}})

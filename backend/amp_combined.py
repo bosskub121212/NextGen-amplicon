@@ -224,6 +224,12 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
                         Q.nanoplot(fs, sd / "NanoPlot", CR._tool(tools, "NanoPlot"))
                     else:
                         notes.append(f"{s}: raw reads not found in the upload folder: no NanoPlot")
+                elif engine == "pacbio":           # long single reads: NanoPlot, not FastQC
+                    r1 = CR._find_reads(upload_dir, s, run.peer_names)[0]
+                    if r1:
+                        Q.nanoplot([r1], sd / "NanoPlot", CR._tool(tools, "NanoPlot"))
+                    else:
+                        notes.append(f"{s}: raw reads not found in the upload folder: no NanoPlot")
                 else:
                     raw = CR._find_reads(upload_dir, s, run.peer_names)
                     r1, r2 = raw if raw else (None, None)
@@ -288,7 +294,8 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
         for f in ("asv_table.csv", "taxonomy_table.csv", "taxonomy.csv", "asvs.fasta", "asv_lengths.csv",
                   "asv_length_distribution.pdf", "observed_asvs.pdf", "phylo_tree.nwk"):
             _put(run_dir / f, D["feat"] / f)
-    if run.kind != "emu" and not (D["feat"] / "asvs.fasta").exists():
+    # old COX1 / PacBio tables carry ASV ids, no sequences: no empty FASTA then
+    if run.kind != "emu" and not (D["feat"] / "asvs.fasta").exists() and any(a.get("sequence") for a in run.asvs):
         with open(D["feat"] / f"{feat}_sequences.fasta", "w") as fh:
             for a in run.asvs:
                 if a.get("sequence"):

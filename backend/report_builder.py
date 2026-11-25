@@ -2743,9 +2743,21 @@ def _methods(run, an):
                       "&times; each sample's classified reads.") + "</p>")
         _dbp = str(run.params.get("ont_db_path") or run.params.get("dbPath") or run.summary.get("db_path") or "")
         _dbp = (Path(_dbp).parent.name if Path(_dbp).suffix else Path(_dbp).name) or run.db_name
+        _mf = run.summary.get("emu_minimap2_f") if run.summary.get("emu_align_speed") == "fast" else None
+        if _mf:
+            out.append(f"<p>The alignment used Emu's minimap2 settings with one change: minimizers found in "
+                       f"more than {esc(_mf)} reference sequences were ignored "
+                       f"(<span class=\"mono\">-f {esc(_mf)}</span>). Full-length 16S reads share most of "
+                       f"their minimizers with tens of thousands of references, and those shared minimizers "
+                       f"take most of the alignment time without telling the taxa apart; the alignment ran "
+                       f"about ten times faster. Emu's expectation&ndash;maximisation then ran on that "
+                       f"alignment unchanged.</p>")
+            out.append('<p class="cmd">minimap2 -ax map-ont -N 50 -p 0.9 -f ' + esc(_mf)
+                       + ' species_taxid.fasta reads.fastq.gz -o reads.sam</p>')
         out.append('<p class="cmd">emu abundance --type map-ont --db ' + esc(_dbp)
                    + f' --min-abundance {esc(run.summary.get("emu_min_abundance") or 0.0001)}'
-                   + (' --keep-counts' if run.emu_counts == "estimated_reads" else "") + '</p>')
+                   + (' --keep-counts' if run.emu_counts == "estimated_reads" else "")
+                   + (' reads.sam' if _mf else "") + '</p>')
     else:
         paired = any("denoisedR" in t for t in run.tracking[:1])
         e = p.get("cutadaptErrorRate", 0.1)

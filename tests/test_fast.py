@@ -390,6 +390,14 @@ def main():
     import test_combined_fast                # Download results: one combined result (BI layout)
     test_combined_fast.main()
     FAILS.extend(test_combined_fast.FAILS)
+
+    import test_its_pacbio_pkg_fast          # Download results: ITS Illumina and PacBio
+    test_its_pacbio_pkg_fast.main()
+    FAILS.extend(test_its_pacbio_pkg_fast.FAILS)
+
+    import test_emu_speed_fast               # Emu alignment: exact / fast (minimap2 -f 5000)
+    test_emu_speed_fast.main()
+    FAILS.extend(test_emu_speed_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

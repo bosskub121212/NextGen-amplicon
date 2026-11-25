@@ -52,6 +52,16 @@ def _part(path: Path) -> Path:
     return path.with_name(".part-" + path.name)
 
 # ── Argument parsing ────────────────────────────────────────────────────────────
+# Emu's minimap2 call (-ax map-ont -N 50 -p .9) spends almost all of its time on 16S minimizers that occur
+# in tens of thousands of reference sequences: on emu_db_mar2026 (96,860 sequences) minimap2 uses every
+# minimizer seen up to 25,543 times, ~0.65 CPU-seconds per 1.4-kb read — 24,000 reads took ~65 min on 4
+# threads, while Emu's EM took under a minute. Ignoring minimizers seen in more than 5,000 sequences
+# (minimap2 -f 5000) cut the alignment ~11x on U2BI-184 T1R3 (24,008 reads): same unmapped reads (61),
+# genera within 0.3 percentage points (1.2% of the profile moved in total), species shuffled only among
+# close relatives (4.2%, e.g. Leucobacter sp. HNU 3.6 -> 1.4% and L. chromiireducens 0.1 -> 2.1%).
+FAST_MID_OCC = 5000
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--input",         required=True)
@@ -86,6 +96,9 @@ def parse_args():
     p.add_argument("--cutadapt_overlap",    type=int,   default=10,   help="cutadapt -O (min primer overlap)")
     p.add_argument("--parallel",      type=int, default=0,
                    help="Emu samples run at the same time (0 = decide from CPU count and free memory)")
+    p.add_argument("--align_speed",   choices=("exact", "fast"), default="exact",
+                   help="exact: Emu's own minimap2 call; fast: minimap2 skips minimizers seen in more than "
+                        f"{FAST_MID_OCC} reference sequences (~10x faster on the March 2026 database)")
     p.add_argument("--resume",        action="store_true",
                    help="Reuse finished per-sample outputs of an earlier, interrupted run")
     return p.parse_args()
@@ -494,8 +507,12 @@ def emu_parallelism(samples: dict, threads: int, requested: int = 0) -> tuple[in
 
 
 def run_emu(samples: dict, out_dir: Path, db_path: str,
-            min_abundance: float, threads: int, parallel: int = 0) -> dict[str, Path]:
-    """Run emu abundance on each sample, several at once. Returns sample → TSV output."""
+            min_abundance: float, threads: int, parallel: int = 0,
+            align_speed: str = "exact") -> dict[str, Path]:
+    """Run emu abundance on each sample, several at once. Returns sample → TSV output.
+
+    align_speed "fast": minimap2 is run here with Emu's own options plus -f FAST_MID_OCC and Emu is
+    given the SAM (Emu reads a .sam input as its alignments); "exact": Emu runs minimap2 itself."""
     # Build the emu command prefix.
     # Prefer 'conda run -n emu' to avoid venv/PATH conflicts when backend runs
     # in a Python virtualenv — emu uses #!/usr/bin/env python3 which would
@@ -577,10 +594,29 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
         progress(42 + int(18 * done / max(1, len(samples))),
                  f"Step 5/8 — Emu: {done}/{len(samples)} samples done")
 
+    fast = align_speed == "fast"
+    db_dir = Path(db_path).parent if Path(db_path).is_file() else Path(db_path)
+    minimap2 = shutil.which("minimap2", path=emu_env.get("PATH")) if fast else None
+    if fast and not minimap2:
+        log("  [WARN] fast alignment asked for but minimap2 is not on the Emu PATH — Emu aligns itself (exact)")
+        fast = False
+    if fast:
+        log(f"  Emu alignment: fast — minimap2 -f {FAST_MID_OCC} (minimizers in more than {FAST_MID_OCC} "
+            f"reference sequences skipped), then Emu's EM on that alignment")
+
     def one(name: str, fq: Path):
         sample_out = emu_out_dir / name
         sample_out.mkdir(parents=True, exist_ok=True)
         _drop_sam(sample_out)           # left by a run that was cut off
+        stem = Path(fq).stem            # Emu's own output name for <stem>.fastq.gz: '<stem>.fastq_rel-abundance.tsv'
+        inp, pre = str(fq), []
+        if fast:
+            sam = sample_out / f"{stem}_emu_alignments.sam"
+            # Emu's command (generate_alignments) with -f added; the same SAM Emu would have written
+            pre = [minimap2, "-ax", "map-ont", "-t", str(per_threads), "-N", "50", "-p", ".9",
+                   "-K", "500000000", "-f", str(FAST_MID_OCC), str(db_dir / "species_taxid.fasta"),
+                   str(fq), "-o", str(sam)]
+            inp = str(sam)
         cmd = emu_prefix + [
             "abundance",
             "--type", "map-ont",
@@ -595,15 +631,21 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             "--keep-counts",
             "--keep-files",
             "--output-dir", str(sample_out),
-            str(fq),
-        ]
+        ] + (["--output-basename", stem] if fast else []) + [inp]
         t0 = time.time()
         # each sample logs to its own file; interleaved output from parallel runs
         # would be unreadable in pipeline.log
         with open(sample_out / "emu.log", "w") as lf:
-            lf.write("CMD: " + " ".join(str(c) for c in cmd) + "\n")
-            lf.flush()
-            rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=emu_env).returncode
+            rc = 0
+            if pre:
+                lf.write("CMD: " + " ".join(str(c) for c in pre) + "\n")
+                lf.flush()
+                rc = subprocess.run(pre, stdout=lf, stderr=subprocess.STDOUT, env=emu_env).returncode
+                lf.write(f"minimap2: {(time.time() - t0) / 60:.1f} min\n")
+            if rc == 0:
+                lf.write("CMD: " + " ".join(str(c) for c in cmd) + "\n")
+                lf.flush()
+                rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=emu_env).returncode
         return name, sample_out, rc, time.time() - t0
 
     with ThreadPoolExecutor(max_workers=max(1, min(par, len(todo) or 1))) as ex:
@@ -775,6 +817,9 @@ def write_summary(out_dir: Path, sample_names: list, n_taxa: int,
         "emu_min_abundance": args.min_abundance,
         "emu_counts":     COUNT_KIND["kind"],
         "emu_chimera_filter": bool(getattr(args, "chimera", False) and not args.skip_chimera),
+        # minimap2 for Emu: "exact" (Emu's own call) or "fast" (-f FAST_MID_OCC); emu_minimap2_f only when fast
+        "emu_align_speed": getattr(args, "align_speed", "exact"),
+        **({"emu_minimap2_f": FAST_MID_OCC} if getattr(args, "align_speed", "exact") == "fast" else {}),
         # what the customer report states as the run's settings
         "qc_min_qual":    args.qc_min_qual,
         "qc_min_len":     args.qc_min_len,
@@ -894,7 +939,8 @@ def main():
     # ── 5. Run Emu ─────────────────────────────────────────────────────────────
     progress(42, f"Step 5/8 — Running Emu on {len(samples_clean)} samples")
     emu_results = run_emu(
-        samples_clean, out_dir, args.db_path, args.min_abundance, args.threads, args.parallel)
+        samples_clean, out_dir, args.db_path, args.min_abundance, args.threads, args.parallel,
+        align_speed=args.align_speed)
 
     if not emu_results:
         log("[ERROR] Emu produced no output. Check db_path and input FASTQ files.")

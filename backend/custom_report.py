@@ -462,10 +462,13 @@ def _tax_text(run: AD.RunData) -> tuple[str, str]:
         counts = ("Counts are Emu's estimated read counts (--keep-counts)." if run.counts_are_reads else
                   "This Emu build gave relative abundances only; counts are parts per million (ppm), not reads.")
         db = emu_db_name(run)
+        mf = run.summary.get("emu_minimap2_f") if run.summary.get("emu_align_speed") == "fast" else None
+        fast = (f" The minimap2 alignment ignored minimizers found in more than {mf} reference sequences (-f {mf}), "
+                "which shortens it about ten-fold; Emu's algorithm was unchanged." if mf else "")
         return (f"Species were assigned by Emu (Curry et al. 2022): reads were aligned with minimap2 to {e(db)} and "
                 "species abundances estimated with Emu's expectation-maximization algorithm, which uses the error "
                 f"profile of the nanopore reads; species below a relative abundance of {st['min_ab']:g} were removed "
-                f"(--min-abundance). {counts} Taxa with no name at a rank are shown as '&lt;higher rank&gt; "
+                f"(--min-abundance).{fast} {counts} Taxa with no name at a rank are shown as '&lt;higher rank&gt; "
                 "unidentified'.", f"{db} (ONT 16S, Emu)")
     if getattr(run, "engine", "") == "cox1":
         sm = run.summary
@@ -908,6 +911,8 @@ def _filtered(run: AD.RunData, s: str) -> tuple:
                 if q.exists():
                     return (q,)
         return ()
+    if getattr(run, "engine", "") == "pacbio":         # pacbio_pipeline.R: one read file, Filtered/<s>_filt
+        return tuple(q for q in (run.dir / "Filtered" / f"{s}_filt.fastq.gz",) if q.exists())
     return tuple(q for q in (run.dir / "filtered" / f"{s}_F_filt.fastq.gz", run.dir / "filtered" / f"{s}_R_filt.fastq.gz")
                  if q.exists())
 
