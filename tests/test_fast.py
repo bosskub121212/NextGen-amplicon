@@ -395,7 +395,7 @@ def main():
     test_its_pacbio_pkg_fast.main()
     FAILS.extend(test_its_pacbio_pkg_fast.FAILS)
 
-    import test_emu_speed_fast               # Emu: align on all threads, EM in the background
+    import test_emu_speed_fast               # Emu: minimap2 as Emu runs it, with progress
     test_emu_speed_fast.main()
     FAILS.extend(test_emu_speed_fast.FAILS)
 

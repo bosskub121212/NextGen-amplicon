@@ -1774,8 +1774,14 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
                         pct_str, label = body.split("|", 1) if "|" in body else (body, "")
                         new_label = label.strip()
 
-                        # Detect step transition — new label = new step
-                        if new_label and new_label != cur_step_label:
+                        # Detect step transition — new label = new step. A running count appended to the
+                        # same step (emu_pipeline: '... — 7,000/24,008 reads (29%), ~12 min left') updates
+                        # that step's label; it is not a step of its own.
+                        _base = lambda x: re.sub(r"\s+—\s+[\d,]+/[\d,]+ reads\b.*$", "", x or "")
+                        if new_label and cur_step_label and new_label != cur_step_label \
+                                and _base(new_label) == _base(cur_step_label):
+                            cur_step_label = new_label
+                        elif new_label and new_label != cur_step_label:
                             if cur_step_label is not None:
                                 step_history.append({
                                     "label":      cur_step_label,

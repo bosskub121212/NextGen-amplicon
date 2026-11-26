@@ -34,7 +34,7 @@ open(os.path.join(out, base + "_rel-abundance.tsv"), "w").write("tax_id\\tabunda
 
 
 def main():
-    print("Emu: align on all threads, EM in the background (same results)")
+    print("Emu: minimap2 run as Emu runs it, with progress (same results)")
     old_env = dict(os.environ)
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -62,13 +62,15 @@ def main():
             out = td / "run_piped"
             out.mkdir()
             r = E.run_emu(fqs, out, str(db), 0.0001, 8, 0)
+            thr = str(E.emu_parallelism(fqs, 8, 0)[1])
             calls = [json.loads(x) for x in (td / "calls.jsonl").read_text().splitlines()]
             mm = [c for c in calls if c[0] == "minimap2"]
             em = [c for c in calls if c[0] == "emu"]
-            check("minimap2 per sample on ALL threads with Emu's exact command (no -f), then Emu on the SAM",
-                  len(mm) == 3 and all(c[c.index("-t") + 1] == "8" and "-f" not in c
+            check("minimap2 per sample with Emu's command (no -f), samples side by side sharing the threads, "
+                  "then Emu on the SAM",
+                  len(mm) == 3 and all(c[c.index("-t") + 1] == thr and "-f" not in c
                                         and c[1:3] == ["-ax", "map-ont"] and c[c.index("-N") + 1] == "50"
-                                        and c[c.index("-p") + 1] == ".9" and c[c.index("-K") + 1] == "500000000"
+                                        and c[c.index("-p") + 1] == ".9" and c[c.index("-K") + 1] == "5000000"
                                         and c[-4] == str(db / "species_taxid.fasta") for c in mm)
                   and len(em) == 3 and all(c[-1].endswith(".sam") and "--output-basename" in c for c in em),
                   calls)
@@ -97,6 +99,9 @@ def main():
             mm_ = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
             fe = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
             ep = (ROOT / "backend" / "emu_pipeline.py").read_text(encoding="utf-8")
+            check("alignment progress: minimap2 batches of 5M bases, '... reads (N%)' counted in the same step",
+                  'ALIGN_BATCH = "5000000"' in ep and "] mapped (\\d+) sequences" in ep
+                  and "_base(new_label) == _base(cur_step_label)" in mm_)
             check("the fast alignment option is gone (form, Run again, backend, pipeline)",
                   "ont_align_speed" not in mm_ and "align_speed" not in ep and "FAST_MID_OCC" not in ep
                   and '["ont_align_speed"' not in fe and "delete params.ont_align_speed;" in fe)

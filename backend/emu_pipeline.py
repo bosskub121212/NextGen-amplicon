@@ -16,7 +16,8 @@ Usage (called by main.py):
 """
 
 import argparse, csv, gzip, json, os, re, shutil, subprocess, sys, time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -53,12 +54,14 @@ def _part(path: Path) -> Path:
 
 # ── Argument parsing ────────────────────────────────────────────────────────────
 # Emu's minimap2 call (-ax map-ont -N 50 -p .9) is almost all of an Emu run: on emu_db_mar2026 (96,860
-# sequences) ~0.65 CPU-seconds per 1.4-kb read, ~65 min for 24,000 reads on 4 threads, while Emu's EM that
-# follows runs on ONE core. run_emu therefore aligns one sample at a time on every thread — minimap2 run here
-# exactly as Emu runs it (same options, same reference: the SAM is byte-for-byte Emu's, whatever the thread
-# count) — and gives each SAM to Emu in the background while the next sample aligns. Results are Emu's own.
+# sequences) ~0.65 CPU-seconds per 1.4-kb read. run_emu runs that minimap2 itself — Emu's command, the SAM
+# byte-for-byte Emu's — so it can count the reads aligned and show progress, then gives the SAM to Emu.
+# Samples run side by side sharing the threads, as Emu ran them: v2.38.3 aligned one sample at a time on all
+# threads, and on nextapp one minimap2 with 10 threads took 94 min for a sample that two minimap2 with 4 each
+# had done in about the same time — one process does not use the cores as well as several.
 # (A faster alignment, minimap2 -f 5000, was tried in v2.38 and dropped: ~6x faster, but species among close
 # relatives and rare taxa moved.)
+ALIGN_BATCH = "5000000"         # minimap2 -K for run_emu's alignment (see there)
 
 
 def parse_args():
@@ -611,7 +614,7 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
             "--output-dir", str(sample_out),
         ] + (["--output-basename", stem] if stem else []) + [inp]
 
-    def finish(name: str, sample_out: Path, rc: int, secs: float, how: str = ""):
+    def finish(name: str, sample_out: Path, rc: int, secs: float, how: str = "", quiet: bool = False):
         nonlocal done
         done += 1
         tsv = _tables(sample_out)
@@ -628,52 +631,86 @@ def run_emu(samples: dict, out_dir: Path, db_path: str,
                     log(f"    | {t[:300]}")
             except Exception:
                 pass
-        progress(42 + int(18 * done / max(1, len(samples))),
-                 f"Step 5/8 — Emu: {done}/{len(samples)} samples done")
+        if not quiet:
+            progress(42 + int(18 * done / max(1, len(samples))),
+                     f"Step 5/8 — Emu: {done}/{len(samples)} samples done")
 
     if piped and todo:
-        log(f"  Emu: {len(todo)} sample(s) — minimap2 on all {threads} threads one sample at a time (Emu's own "
-            f"minimap2 command); Emu's EM of each sample runs while the next one aligns ({par} at most at once, "
-            f"{_mem_available_gb():.0f} GB free memory)")
+        log(f"  Emu: {len(todo)} sample(s), {par} at a time, {per_threads} thread(s) each — minimap2 as Emu runs it, "
+            f"reads aligned counted for the progress; Emu's EM on each alignment "
+            f"({_mem_available_gb():.0f} GB free memory)")
+        n_of = {name: count_reads(Path(fq)) for name, fq in todo.items()}
+        state, lock = {}, threading.Lock()
 
-        def em(name: str, sample_out: Path, sam: Path, stem: str, t_al: float, t0: float):
+        def one_p(name: str, fq: Path):
+            sample_out = emu_out_dir / name
+            sample_out.mkdir(parents=True, exist_ok=True)
+            _drop_sam(sample_out)               # left by a run that was cut off
+            stem = Path(fq).stem                # Emu's own name for <stem>.fastq.gz: '<stem>.fastq_rel-abundance.tsv'
+            sam = sample_out / f"{stem}_emu_alignments.sam"
+            # Emu's generate_alignments(), word for word, but -K: Emu's 500M bases is one batch, and minimap2
+            # says nothing until the sample is done; 5M (~3,500 full-length reads) writes 'mapped N sequences'
+            # per batch. Each read is mapped on its own: the SAM is byte-for-byte the same.
+            al = [minimap2, "-ax", "map-ont", "-t", str(per_threads), "-N", "50", "-p", ".9",
+                  "-K", ALIGN_BATCH, str(ref), str(fq), "-o", str(sam)]
+            t0 = time.time()
+            with lock:
+                state[name] = {"log": sample_out / "emu.log", "end": None, "shown": -1, "t0": t0}
+            with open(sample_out / "emu.log", "w") as lf:
+                lf.write("CMD: " + " ".join(str(c) for c in al) + "\n")
+                lf.flush()
+                rc = subprocess.run(al, stdout=lf, stderr=subprocess.STDOUT, env=emu_env).returncode
+                lf.write(f"minimap2: {(time.time() - t0) / 60:.1f} min\n")
+            t_al = time.time() - t0
+            with lock:
+                state[name]["end"] = time.time()
+            if rc != 0:
+                return name, sample_out, rc, t_al, " (minimap2 failed)"
             cmd = emu_cmd(sample_out, str(sam), stem, 1)
+            t1 = time.time()
             with open(sample_out / "emu.log", "a") as lf:
                 lf.write("CMD: " + " ".join(str(c) for c in cmd) + "\n")
                 lf.flush()
                 rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=emu_env).returncode
-            t_em = time.time() - t0
-            return name, sample_out, rc, t_al + t_em, f" (alignment {t_al/60:.1f} + EM {t_em/60:.1f})"
+            t_em = time.time() - t1
+            return name, sample_out, rc, t_al + t_em, f" (alignment {t_al/60:.1f} + EM {t_em/60:.1f} min)"
 
-        pending = []
+        def mapped(name: str) -> int:
+            st = state.get(name)
+            if not st:
+                return 0
+            if st["end"]:
+                return n_of[name]
+            try:
+                txt = st["log"].read_text(errors="replace")
+            except OSError:
+                return 0
+            return min(n_of[name], sum(int(x) for x in re.findall(r"\] mapped (\d+) sequences", txt)))
+
+        label = f"Step 5/8 — Emu: aligning {len(todo)} sample(s)"
+        progress(42 + int(18 * done / max(1, len(samples))), label)
+        total, t_start = sum(n_of.values()) or 1, time.time()
         with ThreadPoolExecutor(max_workers=max(1, min(par, len(todo)))) as ex:
-            for name, fq in todo.items():
-                sample_out = emu_out_dir / name
-                sample_out.mkdir(parents=True, exist_ok=True)
-                _drop_sam(sample_out)               # left by a run that was cut off
-                stem = Path(fq).stem                # Emu's own name for <stem>.fastq.gz: '<stem>.fastq_rel-abundance.tsv'
-                sam = sample_out / f"{stem}_emu_alignments.sam"
-                # Emu's generate_alignments(), word for word, with every thread
-                al = [minimap2, "-ax", "map-ont", "-t", str(threads), "-N", "50", "-p", ".9",
-                      "-K", "500000000", str(ref), str(fq), "-o", str(sam)]
-                t0 = time.time()
-                progress(42 + int(18 * done / max(1, len(samples))),
-                         f"Step 5/8 — Emu: aligning {name} ({done + len(pending) + 1}/{len(samples)})")
-                with open(sample_out / "emu.log", "w") as lf:
-                    lf.write("CMD: " + " ".join(str(c) for c in al) + "\n")
-                    lf.flush()
-                    rc = subprocess.run(al, stdout=lf, stderr=subprocess.STDOUT, env=emu_env).returncode
-                    lf.write(f"minimap2: {(time.time() - t0) / 60:.1f} min\n")
-                t_al = time.time() - t0
-                if rc != 0:
-                    finish(name, sample_out, rc, t_al, " (minimap2 failed)")
-                    continue
-                pending.append(ex.submit(em, name, sample_out, sam, stem, t_al, time.time()))
-                for f in [f for f in pending if f.done()]:
-                    pending.remove(f)
-                    finish(*f.result())
-            for f in as_completed(pending):
-                finish(*f.result())
+            pending = {ex.submit(one_p, name, fq) for name, fq in todo.items()}
+            while pending:
+                fin, pending = wait(pending, timeout=20, return_when=FIRST_COMPLETED)
+                for f in fin:
+                    finish(*f.result(), quiet=True)
+                with lock:
+                    m = {nm: mapped(nm) for nm in todo}
+                    for nm, st in state.items():          # the run log: a line every 10% of each sample
+                        pct_s = int(100 * m[nm] / n_of[nm]) if n_of[nm] else 0
+                        if pct_s // 10 > st["shown"] and not st["end"] and m[nm]:
+                            st["shown"] = pct_s // 10
+                            log(f"  {nm}: aligned {m[nm]:,} of {n_of[nm]:,} reads ({pct_s}%) in "
+                                f"{(time.time() - st['t0']) / 60:.1f} min")
+                M = sum(m.values())
+                if M and pending:
+                    el = (time.time() - t_start) / 60
+                    progress(42 + int(18 * M / total),
+                             f"{label} — {M:,}/{total:,} reads ({int(100 * M / total)}%), "
+                             f"~{el * (total - M) / M:.0f} min left")
+        progress(60, f"Step 5/8 — Emu: {done}/{len(samples)} samples done")
         return results
 
     if not piped:
