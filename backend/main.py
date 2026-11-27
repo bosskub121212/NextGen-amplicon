@@ -2762,6 +2762,29 @@ def _pkg_latest(out: Path):
         return None, None
 
 
+@app.get("/jobs/{job_id}/preview")
+def job_preview(job_id: str):
+    """Result previews for the job page: per folder of Download results (1.QC ... 8.Reads), the
+    report's figures and the tables behind them (result_preview.py; cached in the run folder)."""
+    if not _JOB_ID_RE.fullmatch(job_id):
+        return JSONResponse(status_code=400, content={"error": "bad job id"})
+    if (jobs.get(job_id) or {}).get("status") in ("queued", "running"):
+        return JSONResponse(status_code=409, content={"error": "the job is still running"})
+    out = _job_out(job_id)
+    try:
+        pipe = str(json.loads((out / "summary.json").read_text()).get("pipeline") or "")
+    except Exception:
+        pipe = ""
+    if (out / "wgs_results.json").exists() or not (out / "asv_table.csv").exists() or pipe == "shotgun":
+        return {"sections": [], "reason": "previews cover amplicon runs"}
+    try:
+        import importlib
+        rp = importlib.reload(importlib.import_module("result_preview"))
+        return rp.build(out)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"preview failed: {type(e).__name__}: {e}"})
+
+
 @app.get("/packages/{job_id}")
 def packages_status(job_id: str):
     out, kind, err = _pkg_check(job_id)

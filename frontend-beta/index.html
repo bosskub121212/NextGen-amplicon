@@ -184,7 +184,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .dbnote b{color:var(--fg)}
 
 /* upload */
-.up{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px}
+.up{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;padding:14px}
+.drop.runtype{border-style:solid;border-color:var(--accent-line);background:var(--surface)}
+.drop.runtype .f{display:flex;flex-direction:column;gap:5px;margin-top:8px}
+.drop.runtype select{height:40px;font-size:14px}
 .drop{border:1.5px dashed var(--line-strong);border-radius:var(--r);background:var(--surface-3);
   padding:16px;display:flex;flex-direction:column;gap:8px;min-width:0}
 .drop .t{font-size:12.5px;font-weight:600}
@@ -280,6 +283,26 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .stepgrp > h4 .why{margin-left:auto;font-size:12px;font-weight:400;color:var(--fg-2);
   text-align:right;max-width:46ch}
 .stepgrp .grid2{padding:16px;gap:16px 18px}
+/* Pipeline settings as a step bar: one step open at a time, the step colours of the cards */
+.stepbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px}
+.sbtn{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-height:64px;padding:9px 11px;
+  border:1px solid var(--line);border-top:4px solid var(--step,var(--accent));border-radius:var(--r);
+  background:var(--surface-3);text-align:left;cursor:pointer;font:inherit;color:var(--fg)}
+.sbtn:hover{background:var(--surface)}
+.sbtn.on{background:var(--surface);border-color:var(--step,var(--accent));box-shadow:0 3px 10px rgba(14,21,23,.12)}
+.sbtn .hd{display:flex;align-items:center;gap:7px}
+.sbtn .n{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:6px;
+  background:var(--step,var(--accent));color:#fff;font-size:11px;font-weight:700;flex:none}
+.sbtn .tt{font-size:12.5px;font-weight:600;line-height:1.25}
+.sbtn .cg{font-size:10.5px;font-weight:600;color:var(--warn);background:var(--warn-soft);border-radius:8px;padding:0 7px}
+.sbtn .cg[hidden]{display:none}
+.stepnav{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-top:12px}
+.stepnav .s{font-size:12px;color:var(--fg-3)}
+.stepnav .sp{flex:1}
+.advbody.stepped .stepgrp{margin-bottom:0}
+.advbody.stepped .stepgrp .grid2 label{font-size:13px}
+.advbody.stepped .stepgrp input[type=text],.advbody.stepped .stepgrp select{font-size:14px;min-height:40px}
+.stepgrp .chg{border-color:var(--warn) !important;box-shadow:0 0 0 1px var(--warn)}
 .advbody{padding:12px 12px 14px;background:var(--surface-3);
   border-top:1px solid var(--line);border-radius:0 0 var(--r) var(--r)}
 @media (max-width:860px){ .stepgrp > h4 .why{display:none} }
@@ -518,6 +541,78 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 .chk table{width:100%;border-collapse:collapse;font-size:12px;margin:0 0 10px}
 .chk table td{padding:4px 0;color:var(--fg-2)}
 .chk table td:last-child{font-family:var(--mono);text-align:right;color:var(--fg)}
+
+/* Job page: the pipeline sits in the status card beside the numbers — the step running now, with
+   motion so a running job reads as running; the steps done fold away under one button. */
+.runhead{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);border:1px solid var(--line);
+  border-radius:var(--r);background:var(--surface);overflow:hidden;margin-bottom:14px}
+.runhead .kpis{grid-template-columns:repeat(2,1fr);border:none;border-radius:0;margin:0;border-right:1px solid var(--line)}
+.pp{padding:12px 16px;display:flex;flex-direction:column;gap:9px;min-width:0}
+.pp-h{display:flex;justify-content:space-between;gap:8px;font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--fg-3)}
+.pp-h .mono{font-weight:400;letter-spacing:0}
+.pp-cur{display:flex;gap:12px;align-items:center;min-width:0}
+.pp-cur .t{font-size:15.5px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.pp-cur .k{font-size:11.5px;color:var(--fg-3)}
+.pp-spin{flex:none;width:22px;height:22px;border-radius:50%;border:3px solid var(--accent-soft);
+  border-top-color:var(--accent);box-sizing:border-box;animation:ppSpin .9s linear infinite}
+.pp-ok,.pp-bad{flex:none;width:24px;height:24px;border-radius:50%;display:grid;place-items:center}
+.pp-ok{background:var(--ok)}
+.pp-bad{background:var(--err)}
+.pp-bar{position:relative;height:8px;border-radius:4px;background:var(--surface-2);overflow:hidden}
+.pp-bar i{display:block;height:100%;border-radius:4px;background-color:var(--accent);transition:width .6s;
+  background-image:linear-gradient(45deg,rgba(255,255,255,.28) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.28) 50%,rgba(255,255,255,.28) 75%,transparent 75%,transparent);
+  background-size:24px 24px;animation:ppStripes 1s linear infinite}
+.pp-bar.ind i{position:absolute;top:0;left:0;width:32%;background-image:none;animation:ppSlide 1.5s ease-in-out infinite}
+.pp-d{font-family:var(--mono);font-size:12px;color:var(--fg-2);overflow-wrap:anywhere}
+.pp-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.pp-tg{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border:1px solid var(--line);
+  border-radius:6px;background:var(--surface-3);color:var(--ok);font:12.5px var(--sans);cursor:pointer}
+.pp-tg .chev{transition:transform .2s}
+.pp-tg[aria-expanded="true"] .chev{transform:rotate(180deg)}
+.pp-nx{font-size:12px;color:var(--fg-3)}
+.pp-list{border-top:1px solid var(--line)}
+.pp-list .step{padding:6px 2px}
+@keyframes ppSpin{to{transform:rotate(360deg)}}
+@keyframes ppStripes{from{background-position:0 0}to{background-position:24px 0}}
+@keyframes ppSlide{0%{transform:translateX(-110%)}100%{transform:translateX(320%)}}
+@media (prefers-reduced-motion:reduce){.pp-spin,.pp-bar i,.pp-bar.ind i{animation:none}.pp-bar.ind i{left:34%}}
+/* Settings beside the log, half the width each */
+.two2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
+.two2.one{grid-template-columns:minmax(0,1fr)}
+.two2 > .panel{margin-top:0 !important;min-width:0}
+.two2 .ptbl{max-height:398px;overflow:auto}
+.two2 .log{height:398px}
+/* Result previews: what each folder of Download results will hold */
+.pv{margin-top:14px}
+.pvsec{border-top:1px solid var(--line)}
+.pvsec:first-of-type{border-top:none}
+.pvhdr{display:flex;align-items:center;gap:9px;width:100%;min-height:42px;padding:0 14px;border:none;
+  background:var(--surface-3);color:var(--fg);font:600 13.5px var(--sans);text-align:left;cursor:pointer}
+.pvhdr .chev{flex:none;transition:transform .16s}
+.pvhdr[aria-expanded="true"] .chev{transform:rotate(90deg)}
+.pvhdr .hint{margin-left:auto;font-weight:400;font-size:12px;color:var(--fg-3)}
+.pvbody{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;align-items:start}
+.pvbody[hidden]{display:none}
+.pvfig{margin:0;border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;background:var(--surface);min-width:0}
+.pvfig.wide{grid-column:1/-1}
+.pvfig figcaption{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;font-weight:600;margin-bottom:8px}
+.pvfig figcaption button{border:none;background:none;color:var(--accent);font:12px var(--sans);cursor:pointer;padding:0}
+.pvsvg{background:#fff;border-radius:4px;padding:4px}  /* the report's figures are drawn for white paper: dark text stays readable in dark mode */
+.pvsvg svg{display:block;width:100%;height:auto;max-height:420px}
+.pvfig.wide .pvsvg svg{max-height:none}
+.pvtbl{min-width:0;overflow:auto;max-height:420px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+.pvtbl .cap{font-size:12.5px;font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--surface-3)}
+.pvtbl table{border-collapse:collapse;width:100%;font-size:12px}
+.pvtbl th,.pvtbl td{padding:5px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.pvtbl th{color:var(--fg-2);font-weight:600}
+.pvtbl td.n{text-align:right;font-variant-numeric:tabular-nums}
+.pvtbl .more{padding:6px 10px;font-size:11.5px;color:var(--fg-3)}
+.pvnote{margin:0;font-size:12.5px;color:var(--fg-2);grid-column:1/-1}
+.pvfiles{list-style:none;margin:0;padding:0;font-family:var(--mono);font-size:12px}
+.pvfiles li{display:flex;justify-content:space-between;gap:12px;padding:4px 10px;border-bottom:1px solid var(--line)}
+@media (max-width:1100px){.runhead{grid-template-columns:minmax(0,1fr)}
+  .runhead .kpis{border-right:none;border-bottom:1px solid var(--line)}.two2{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:560px){.pvbody{grid-template-columns:minmax(0,1fr)}}
 
 .skel{padding:26px 14px;color:var(--fg-3);font-size:12.5px}
 
@@ -1408,6 +1503,8 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     var built     = null;   /* the status the current shell was built for */
     var atBottom  = true;   /* follow the log only while the user is at the end of it */
+    var doneOpen  = false;  /* the "steps done" list in the status card, opened by the user */
+    var lastM     = null, lastPipe = "";
 
     function tick(){
       if(STATE.view.name !== "job" || STATE.view.id !== id){ stopTimer(); return; }
@@ -1535,6 +1632,140 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       return !!(M.D && typeof M.D.step_label === "string" && M.D.step_label.indexOf("Waiting — HUMAnN") === 0);
     }
 
+    /* The pipeline in the status card: only the step running now (spinner, a bar — filled to the
+       share the pipeline reports when it counts something, e.g. Emu's "14,000/47,116 reads (30%)",
+       else moving — and its detail), the steps done folded under one button, and how many follow.
+       Built from step_history, like the list it replaces; nothing invented. */
+    var READS_RE = /\s+[—–-]\s+([\d,]+)\/([\d,]+) reads \((\d+)%\)(.*)$/;
+    function pipeHtml(M){
+      var run = null, err = null, done = [], pend = 0;
+      M.rows.forEach(function(r){
+        if(r.status === "running") run = r;
+        else if(r.status === "error"){ err = r; done.push(r); }
+        else if(r.status === "pending") pend++;
+        else done.push(r);
+      });
+      var nDone = done.filter(function(r){ return r.status !== "error"; }).length;
+      var T = M.total;
+      var h = '<div class="pp-h"><span>PIPELINE</span><span class="mono">'
+        + (T ? Math.min(nDone, T) + " of " + T + " steps done" : nDone + " step" + (nDone === 1 ? "" : "s") + " done")
+        + '</span></div>';
+      var cur;
+      if(M.live && !M.startedAt){
+        cur = '<div class="pp-cur"><span class="pp-spin" aria-hidden="true"></span><div><div class="t">'
+          + esc(isGateWait(M) ? M.D.step_label : "Queued — waiting for a free worker slot") + '</div></div></div>';
+      } else if(M.live){
+        var text = run ? run.text : "", m = READS_RE.exec(text), title = m ? text.slice(0, m.index) : text;
+        cur = '<div class="pp-cur"><span class="pp-spin" aria-hidden="true"></span><div style="min-width:0">'
+            + '<div class="k">' + (run && run.n ? "Step " + run.n + (T ? " of " + T : "") + " · running now" : "running now") + '</div>'
+            + '<div class="t">' + esc(title || (M.D && M.D.step_label) || "Starting…") + '</div></div></div>'
+          + (m ? '<div class="pp-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + esc(m[3]) + '">'
+                 + '<i style="width:' + Math.max(2, Math.min(100, parseInt(m[3], 10))) + '%"></i></div>'
+               + '<div class="pp-d">' + esc(m[1] + " / " + m[2] + " reads (" + m[3] + "%)" + m[4].replace(/^,\s*/, " · ")) + '</div>'
+               : '<div class="pp-bar ind" aria-hidden="true"><i></i></div>');
+      } else if(M.st === "completed"){
+        cur = '<div class="pp-cur"><span class="pp-ok" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg></span>'
+          + '<div><div class="t">' + (T ? "All " + T + " steps complete" : "Run complete") + '</div>'
+          + '<div class="k">' + esc(M.kpis[2] ? M.kpis[2][0] : "") + ' · previews of the results are below</div></div></div>';
+      } else {
+        cur = '<div class="pp-cur"><span class="pp-bad" aria-hidden="true"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round"><path d="M7 7l10 10M17 7L7 17"/></svg></span>'
+          + '<div><div class="t">' + esc(statusLabel(M.st)) + '</div>'
+          + '<div class="k">' + esc(err ? "stopped at step " + (err.n || "?") + (err.text ? " — " + err.text : "")
+              : (run ? "at step " + (run.n || "?") + (run.text ? " — " + run.text : "") : "see the log")) + '</div></div></div>';
+      }
+      var tg = done.length
+        ? '<button type="button" class="pp-tg" data-pp-toggle="1" aria-expanded="' + (doneOpen ? "true" : "false") + '">'
+          + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>'
+          + nDone + ' step' + (nDone === 1 ? "" : "s") + ' done'
+          + '<svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--fg-3)" stroke-width="2.2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>'
+        : "";
+      var nx = (M.live && pend) ? '<span class="pp-nx">then ' + pend + ' more step' + (pend === 1 ? "" : "s") + '</span>' : "";
+      var list = (doneOpen && done.length)
+        ? '<div class="pp-list">' + done.map(function(r){
+            var name = (r.n ? "Step " + r.n + (T ? "/" + T : "") + (r.text ? " — " : "") : "") + r.text;
+            return '<div class="step">' + (r.status === "error" ? TICK_ERR : TICK_OK)
+              + '<span class="t">' + esc(name || "—") + '</span>'
+              + '<span class="d">' + (r.secs !== null ? dur(r.secs) : "") + '</span></div>'; }).join("") + '</div>'
+        : "";
+      return h + cur + ((tg || nx) ? '<div class="pp-row">' + tg + nx + '</div>' : "") + list;
+    }
+
+    function paintPipe(M){
+      lastM = M;
+      var pb = document.getElementById("pipeBox");
+      if(!pb) return;
+      var html = pipeHtml(M);
+      if(html !== lastPipe){ pb.innerHTML = html; lastPipe = html; }
+    }
+
+    /* Result previews: per folder of Download results, the report's figures and the tables behind
+       them (GET /jobs/{id}/preview). Loaded once per page, after the run completed. */
+    function loadPreview(jid){
+      var box = document.getElementById("prevBox");
+      if(!box) return;
+      box.innerHTML = '<div class="panel pv"><div class="sechdr"><h3>Result previews</h3>'
+        + '<span class="hint">reading the results…</span></div><div class="skel">Drawing the figures…</div></div>';
+      api("/jobs/" + encodeURIComponent(jid) + "/preview").then(function(P){
+        if(!document.getElementById("prevBox")) return;
+        var secs = (P && Array.isArray(P.sections)) ? P.sections : [];
+        if(!secs.length){ box.innerHTML = ""; return; }
+        box.innerHTML = '<div class="panel pv"><div class="sechdr"><h3>Result previews</h3>'
+          + '<span class="hint">what each folder of Download results holds · the report&rsquo;s own figures</span></div>'
+          + secs.map(function(sc, i){
+              return '<div class="pvsec"><button type="button" class="pvhdr" aria-expanded="true" aria-controls="pvb' + i + '">'
+                + '<svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>'
+                + esc(sc.title || sc.key) + '<span class="hint">' + esc(sc.summary || "") + '</span></button>'
+                + '<div class="pvbody" id="pvb' + i + '">' + (sc.items || []).map(pvItem).join("") + '</div></div>';
+            }).join("") + '</div>';
+        box.querySelector(".pv").addEventListener("click", function(ev){
+          var hb = ev.target.closest(".pvhdr");
+          if(hb){
+            var open = hb.getAttribute("aria-expanded") !== "true";
+            hb.setAttribute("aria-expanded", open ? "true" : "false");
+            var b = document.getElementById(hb.getAttribute("aria-controls"));
+            if(b) b.hidden = !open;
+            return;
+          }
+          var wb = ev.target.closest("[data-pv-wide]");
+          if(wb){
+            var f = wb.closest(".pvfig");
+            var w = !f.classList.contains("wide");
+            f.classList.toggle("wide", w);
+            wb.textContent = w ? "narrow" : "widen";
+          }
+        });
+      }).catch(function(e){
+        if(!document.getElementById("prevBox")) return;
+        box.innerHTML = '<div class="panel pv"><div class="sechdr"><h3>Result previews</h3></div>'
+          + '<div class="skel">Not available: ' + esc(e.message || String(e)) + ' — the results themselves are unaffected.</div></div>';
+      });
+    }
+
+    function pvItem(it){
+      if(!it) return "";
+      if(it.kind === "svg")
+        return '<figure class="pvfig"><figcaption>' + esc(it.title || "")
+          + '<button type="button" data-pv-wide="1">widen</button></figcaption>'
+          + '<div class="pvsvg">' + String(it.svg || "") + '</div></figure>';
+      if(it.kind === "table"){
+        var num = /^[-+]?[\d,]*\.?\d+%?$|^—$/;
+        return '<div class="pvtbl"><div class="cap">' + esc(it.title || "") + '</div><table><thead><tr>'
+          + (it.head || []).map(function(h){ return '<th>' + esc(h) + '</th>'; }).join("") + '</tr></thead><tbody>'
+          + (it.rows || []).map(function(r){
+              return '<tr>' + r.map(function(c){
+                return '<td' + (num.test(String(c)) ? ' class="n"' : "") + '>' + esc(c) + '</td>'; }).join("") + '</tr>';
+            }).join("")
+          + '</tbody></table>' + (it.more ? '<div class="more">and ' + it.more + ' more row' + (it.more === 1 ? "" : "s")
+              + ' in the full result</div>' : "") + '</div>';
+      }
+      if(it.kind === "files")
+        return '<div class="pvtbl"><div class="cap">' + esc(it.title || "") + '</div><ul class="pvfiles">'
+          + (it.files || []).map(function(f){
+              return '<li><span>' + esc(f.name) + '</span><span>' + esc(f.size || "") + '</span></li>'; }).join("")
+          + '</ul></div>';
+      return '<p class="pvnote">' + esc(it.text || "") + '</p>';
+    }
+
     function stepsHtml(M){
       if(!M.rows.length)
         return '<div class="skel">' + (M.live && !M.startedAt
@@ -1627,8 +1858,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       }
       var bar = document.querySelector("#dBar i");
       if(bar) bar.style.width = M.pct + "%";
-      var sp = document.getElementById("stepsBox");
-      if(sp) sp.innerHTML = stepsHtml(M);
+      paintPipe(M);
       var sh = document.getElementById("stepsHint");
       if(sh) sh.textContent = M.total ? Math.min(M.maxSeen, M.total) + " of " + M.total
                                       : M.rows.length + " recorded";
@@ -1678,11 +1908,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + '<a class="btn" href="/classic?job=' + encodeURIComponent(jid) + '">Open in the classic UI</a>';
       body.innerHTML =
           (M.live ? "" : '<div id="delBox"></div><div id="repBox"></div><div id="dlBox"></div>')
-        + '<div class="kpis">' + M.kpis.map(function(x){
+        + '<div class="runhead"><div class="kpis">' + M.kpis.map(function(x){
               return '<div class="kpi"><b>' + esc(x[0]) + '</b><span>' + esc(x[1]) + '</span></div>'; }).join("")
-        + '</div>'
-        + (M.live ? '<div class="bar" id="dBar" style="max-width:none;margin:-4px 0 14px">'
-                    + '<i style="width:' + M.pct + '%"></i></div>' : "")
+        + '</div><div class="pp" id="pipeBox"></div></div>'
         + (M.st === "waiting_checkpoint" ? '<div id="chkBox"></div>' : "")
         + (M.offtarget
             ? '<div class="note hold"><b>Off-target warning from the pipeline.</b> ' + esc(M.offtarget) + '</div>'
@@ -1694,20 +1922,27 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
               + 'Usually this means the chart tables or the functional prediction were not built; '
               + 'everything else is unaffected.</div>'
             : "")
-        + renderParams(M.params, M.D)
-        + '<div class="two" style="margin-top:14px">'
-          + '<div class="panel"><div class="sechdr"><h3>Pipeline</h3>'
-            + '<span class="hint" id="stepsHint">'
-            + (M.total ? Math.min(M.maxSeen, M.total) + " of " + M.total : M.rows.length + " recorded")
-            + '</span></div>'
-            + '<div class="steps" id="stepsBox">' + stepsHtml(M) + '</div></div>'
-          + '<div class="panel"><div class="sechdr"><h3>Log</h3><span class="hint" id="logHint">'
-            + logHint(M) + '</span></div>'
-            + '<div class="log" id="logBox">' + logHtml(M) + '</div>'
-            + (M.error ? '<div class="errbox"><b>Run stopped.</b>\n' + esc(M.error) + '</div>' : "")
-          + '</div>'
-        + '</div>'
-        + '';
+        + (function(){
+            var pr = renderParams(M.params, M.D);
+            return '<div class="two2' + (pr ? "" : " one") + '">' + pr
+              + '<div class="panel"><div class="sechdr"><h3>Log</h3><span class="hint" id="logHint">'
+                + logHint(M) + '</span></div>'
+                + '<div class="log" id="logBox">' + logHtml(M) + '</div>'
+                + (M.error ? '<div class="errbox"><b>Run stopped.</b>\n' + esc(M.error) + '</div>' : "")
+              + '</div>'
+            + '</div>';
+          })()
+        + (M.st === "completed" && !isWgs ? '<div id="prevBox"></div>' : "");
+
+      lastPipe = "";
+      paintPipe(M);
+      var pbx = document.getElementById("pipeBox");
+      if(pbx) pbx.addEventListener("click", function(ev){
+        if(!ev.target.closest("[data-pp-toggle]")) return;
+        doneOpen = !doneOpen;
+        if(lastM) paintPipe(lastM);
+      });
+      if(M.st === "completed" && !isWgs) loadPreview(jid);
 
       var box = document.getElementById("logBox");
       if(box){
@@ -2007,9 +2242,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     return '<div class="panel" style="margin-top:14px">'
       + '<div class="sechdr"><h3>Settings this run used</h3>'
       + '<span class="hint">recorded before the run started</span></div>'
-      + '<table class="parms">' + rows.map(function(r){
+      + '<div class="ptbl"><table class="parms">' + rows.map(function(r){
           return '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>'; }).join("")
-      + '</table></div>';
+      + '</table></div></div>';
   }
 
   /* ═══ results ══════════════════════════════════════════════════════════
@@ -6785,6 +7020,110 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + esc(state ? good : bad) + '</span>';
   }
 
+  /* Pipeline settings as a step bar (amplicon, shotgun and WGS forms). Every step card stays in the
+     page — only hidden — so what the run posts is read from the same fields as before. A field counts
+     as changed once the user has edited it away from the value it had when they first touched it
+     (values filled in later by the page, such as a database found, are not changes). */
+  function revealField(el){
+    var card = el && el.closest ? el.closest(".stepgrp") : null;
+    if(card && card.hidden && card._show) card._show();
+  }
+  function mountStepper(bodyId){
+    var body = document.getElementById(bodyId);
+    if(!body || body.classList.contains("stepped")) return;
+    var cards = Array.prototype.filter.call(body.children, function(c){ return c.classList.contains("stepgrp"); });
+    if(cards.length < 2) return;
+    body.classList.add("stepped");
+    var cur = 0;
+    var ctls = function(card){
+      return Array.prototype.filter.call(card.querySelectorAll("input, select, textarea"), function(el){
+        return el.type !== "hidden" && el.type !== "file" && el.type !== "button" && !el.readOnly; });
+    };
+    var val = function(el){ return el.type === "checkbox" ? String(el.checked) : el.value; };
+    var titleOf = function(card){
+      var h = card.querySelector("h4"), t = "";
+      if(h) Array.prototype.forEach.call(h.childNodes, function(n){ if(n.nodeType === 3) t += n.textContent; });
+      return t.trim() || "Step";
+    };
+    var bar = document.createElement("div");
+    bar.className = "stepbar";
+    bar.setAttribute("aria-label", "Pipeline steps");
+    bar.innerHTML = cards.map(function(c, i){
+      var col = getComputedStyle(c).getPropertyValue("--step").trim();
+      return '<button type="button" class="sbtn" data-si="' + i + '"' + (col ? ' style="--step:' + esc(col) + '"' : "") + '>'
+        + '<span class="hd"><span class="n">' + esc(c.getAttribute("data-step") || String(i + 1)) + '</span>'
+        + '<span class="tt">' + esc(titleOf(c)) + '</span></span>'
+        + '<span class="cg" hidden></span></button>';
+    }).join("");
+    body.insertBefore(bar, body.firstChild);
+    var nav = document.createElement("div");
+    nav.className = "stepnav";
+    nav.innerHTML = '<button type="button" class="btn" data-nav="-1">‹ Back</button>'
+      + '<span class="s" id="stepPos"></span><span class="sp"></span>'
+      + '<button type="button" class="btn" data-nav="reset" hidden>Reset this step</button>'
+      + '<button type="button" class="btn" data-nav="1"></button>';
+    body.appendChild(nav);
+    function refresh(){
+      cards.forEach(function(c, i){
+        var n = 0;
+        ctls(c).forEach(function(el){
+          var ch = el.dataset.def !== undefined && val(el) !== el.dataset.def;
+          el.classList.toggle("chg", ch);
+          if(ch) n++;
+        });
+        var cg = bar.children[i].querySelector(".cg");
+        cg.hidden = !n;
+        cg.textContent = n + " changed";
+        c._changed = n;
+      });
+      var rb = nav.querySelector('[data-nav="reset"]');
+      rb.hidden = !cards[cur]._changed;
+    }
+    function show(i){
+      cur = Math.max(0, Math.min(cards.length - 1, i));
+      cards.forEach(function(c, j){ c.hidden = j !== cur; });
+      Array.prototype.forEach.call(bar.children, function(b, j){
+        b.classList.toggle("on", j === cur);
+        b.setAttribute("aria-current", j === cur ? "step" : "false");
+      });
+      nav.querySelector('[data-nav="-1"]').disabled = cur === 0;
+      var nx = nav.querySelector('[data-nav="1"]');
+      nx.disabled = cur === cards.length - 1;
+      nx.textContent = cur < cards.length - 1 ? "Next: " + titleOf(cards[cur + 1]) + " ›" : "Last step";
+      document.getElementById("stepPos").textContent = "Group " + (cur + 1) + " of " + cards.length;
+      refresh();
+    }
+    cards.forEach(function(c, i){ c._show = function(){ show(i); }; });
+    bar.addEventListener("click", function(ev){
+      var b = ev.target.closest("[data-si]");
+      if(b) show(parseInt(b.getAttribute("data-si"), 10));
+    });
+    nav.addEventListener("click", function(ev){
+      var b = ev.target.closest("[data-nav]");
+      if(!b) return;
+      var a = b.getAttribute("data-nav");
+      if(a === "reset"){
+        ctls(cards[cur]).forEach(function(el){
+          if(el.dataset.def === undefined || val(el) === el.dataset.def) return;
+          if(el.type === "checkbox") el.checked = el.dataset.def === "true"; else el.value = el.dataset.def;
+          el.dispatchEvent(new Event("input", {bubbles:true}));
+          el.dispatchEvent(new Event("change", {bubbles:true}));
+        });
+        refresh();
+        return;
+      }
+      show(cur + parseInt(a, 10));
+      bar.scrollIntoView({block:"nearest"});
+    });
+    body.addEventListener("focusin", function(ev){
+      var el = ev.target;
+      if(el && el.closest && el.closest(".stepgrp") && el.dataset && el.dataset.def === undefined
+         && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) el.dataset.def = val(el);
+    });
+    ["input", "change"].forEach(function(t){ body.addEventListener(t, refresh); });
+    show(0);
+  }
+
   function renderForm(it){
     var dbOpts = databaseOptions(it.key);
     var dbCount = dbOpts.length;
@@ -6863,6 +7202,24 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
             + '</div>'
             + '<div class="s" id="mdState">Optional. Grouping and diversity plots need it.</div>'
           + '</div>'
+          /* Run type sits with the files: what the reads are decides how they are paired and named,
+             so it is picked while they are chosen, not after scrolling past them */
+          + '<div class="drop runtype">'
+            + '<div class="t">Run type</div>'
+            + '<div class="f"><label for="seq">Sequencer</label>'
+              + '<select id="seq">'
+                + '<option value="illumina">Illumina (paired-end)</option>'
+                + '<option value="ont">ONT R10.4+ (single-end)</option>'
+                + (isSG ? "" : '<option value="qiime2_vsearch">VSEARCH OTUs (paired- or single-end)</option>')
+              + '</select>'
+              + '<span class="note">' + (isSG
+                  ? "Illumina: R1/R2 pairs per sample. Nanopore: one file per sample, or MinKNOW folders merged per barcode above."
+                  : "Single-end changes how the files are paired and how samples are named. VSEARCH merges Illumina pairs itself when every file has a mate.")
+              + '</span></div>'
+            + '<div class="f" id="otuBox" hidden><label for="f_otuSimilarity">OTU identity</label>'
+              + '<input type="text" id="f_otuSimilarity" data-k="otuSimilarity" data-kind="num" value="0.97">'
+              + '<span class="note">VSEARCH clustering identity — 0.97 is the usual 97% OTU</span></div>'
+          + '</div>'
         + '</div>'
         + '<div class="pre" id="pre"></div>'
       + '</div>'
@@ -6870,25 +7227,6 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       + '<div id="sampleBox"></div>'
       + '<div id="qcBox"></div>'
 
-      + '<div class="panel adv">'
-        + '<div class="sechdr"><h3>Run type</h3>'
-        + '<span class="hint">every other setting lives in the pipeline steps below</span></div>'
-        + '<div class="grid2">'
-          + '<div class="f"><label for="seq">Sequencer</label>'
-            + '<select id="seq">'
-              + '<option value="illumina">Illumina (paired-end)</option>'
-              + '<option value="ont">ONT R10.4+ (single-end)</option>'
-              + (isSG ? "" : '<option value="qiime2_vsearch">VSEARCH OTUs (paired- or single-end)</option>')
-            + '</select>'
-            + '<span class="note">' + (isSG
-                ? "Illumina: R1/R2 pairs per sample. Nanopore: one file per sample, or MinKNOW folders merged per barcode above."
-                : "Single-end changes how the files are paired and how samples are named. VSEARCH merges Illumina pairs itself when every file has a mate.")
-            + '</span></div>'
-          + '<div class="f" id="otuBox" hidden><label for="f_otuSimilarity">OTU identity</label>'
-            + '<input type="text" id="f_otuSimilarity" data-k="otuSimilarity" data-kind="num" value="0.97">'
-            + '<span class="note">VSEARCH clustering identity — 0.97 is the usual 97% OTU</span></div>'
-        + '</div>'
-      + '</div>'
 
       + '<div class="panel adv">'
         + '<button class="advhdr" id="advBtn" aria-expanded="true" aria-controls="advBody">'
@@ -6911,6 +7249,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     wireForm(dbOpts, dbCount);
     preflight(dbOpts, dbCount);
+    mountStepper("advBody");
   }
 
   function setVal(id, v){
@@ -7109,7 +7448,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         var custom = k2sel.value === "__custom__";
         document.getElementById("k2CustomRow").hidden = !custom;
         if(!custom) k2in.value = k2sel.value;
-        else if(!k2in.value) k2in.focus();
+        else if(!k2in.value){ revealField(k2in); k2in.focus(); }
         preflight(dbOpts, dbCount);
       };
       k2sel.addEventListener("change", k2sync);
@@ -7728,6 +8067,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         else if(el.dataset.kind === "num") p[k] = parseFloat(v);
         else p[k] = v;
       });
+    /* OTU identity sits in the Run type card, outside #advBody: read it here (it was never sent
+       before, so VSEARCH ran at 0.97 whatever was typed). Sent only when the card shows it. */
+    var ots = document.getElementById("f_otuSimilarity"), otb = document.getElementById("otuBox");
+    if(ots && otb && !otb.hidden && isFinite(parseFloat(ots.value))) p.otuSimilarity = parseFloat(ots.value);
     /* Step 4's tree toggle has no RunParams field of its own; it is display
        only, and saying so beats inventing a key the backend ignores. */
     var sel = document.getElementById("f_dbPath");
@@ -8048,6 +8391,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
     wgDatabases();
     wgPreflight();
+    mountStepper("wgsBody");
   }
 
   function wgChoose(fileList, fromFolder){
