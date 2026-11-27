@@ -136,6 +136,10 @@ def main():
             check("run report: no 'Reagent-associated genera' table, note or Salter reference",
                   "Reagent-associated genera" not in html and "reagent-contaminant list" not in html
                   and "Salter" not in html and "Most abundant" in html)
+            cmp_ = RB.build_html([RB.Run(d3, RB.KITOME, "run A"), RB.Run(d3, RB.KITOME, "run B")])
+            check("comparison report (several runs): no reagent fraction, flags or notes (v2.44.0)",
+                  "eagent" not in cmp_.split("References")[0] and "Genus-level profile" in cmp_,
+                  [m.start() for m in __import__("re").finditer("eagent", cmp_)][:3])
     except Exception:
         traceback.print_exc()
         FAILS.append("exception")

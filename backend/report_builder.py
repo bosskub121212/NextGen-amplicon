@@ -33,9 +33,10 @@ Four things the raw tables get wrong for a reader, which this corrects:
      quarter of the reads. It sits inside the taxonomy table as an ordinary family,
      so a naive abundance table silently counts it as a bacterium.
 
-  4. A well-known set of genera are routinely recovered from extraction kits and PCR
-     reagents. They are flagged, never removed, and every figure says plainly that
-     without a sequenced blank control the split is an estimate.
+  4. (Removed in v2.44.0 at the BI team's request: genera on a published list of extraction-kit /
+     PCR-reagent contaminants were flagged as 'reagent-associated'. A list is no measurement: a
+     genus on it is often a real member of the sample. Contamination is judged from sequenced
+     blanks only — the Controls section.)
 
 Requires: weasyprint (pip install weasyprint). Without it the HTML is still written
 and the path reported, so the report can be printed from a browser instead.
@@ -887,11 +888,10 @@ def svg_ranks(runs) -> str:
 
 
 def svg_composition(runs) -> str:
-    """Host / no-genus / reagent / sample-derived, as a share of each run's reads."""
+    """Host / no-genus / bacteria named to genus, as a share of each run's reads."""
     segs = [("host", "Host / non-bacterial", "#B4C5CC"),
             ("nogen", "Bacteria, no genus", FAINT),
-            ("kit", "Reagent-associated", KIT_C),
-            ("samp", "Sample-derived", ACC)]
+            ("samp", "Bacteria, genus named", ACC)]
     W, x0, bw, barh, pitch = 520, 6, 452, 28, 56
     H = len(runs) * pitch + 22
     p = [f'<svg viewBox="0 0 {W} {H}" width="100%" style="max-width:{W}px">']
@@ -899,7 +899,7 @@ def svg_composition(runs) -> str:
         y = 18 + i * pitch
         tot = run.total or 1
         vals = {"host": run.host + run.euk, "nogen": run.no_genus,
-                "kit": run.kit, "samp": max(run.sample_derived, 0)}
+                "samp": max(run.bacteria - run.no_genus, 0)}
         p.append(f'<text x="{x0}" y="{y-5}" font-size="8.5" fill="{INK}" '
                  f'font-family="DejaVu Sans Mono">{esc(run.label)}</text>')
         x = x0
@@ -998,14 +998,14 @@ def svg_genera(runs, n=10) -> str:
             if len(nm) > int(colw / 4.6):
                 nm = nm[: int(colw / 4.6) - 1] + "…"
             p.append(f'<text x="{ox:.1f}" y="{y+6}" font-size="8" fill="{INK}">'
-                     f'{esc(nm)}{" *" if g["kit"] else ""}</text>')
+                     f'{esc(nm)}</text>')
             p.append(f'<text x="{ox+colw:.1f}" y="{y+6}" font-size="7.5" fill="{MUT}" '
                      f'text-anchor="end" font-family="DejaVu Sans Mono">{g["pct"]}%</text>')
             bw = colw * g["pct"] / mx
             p.append(f'<rect x="{ox:.1f}" y="{y+9}" width="{bw:.1f}" height="5.5" '
-                     f'fill="{KIT_C if g["kit"] else col}"/>')
+                     f'fill="{col}"/>')
     p.append(f'<text x="0" y="{H-4}" font-size="7" fill="{FAINT}">'
-             f'* reagent-associated genus &#183; bars share one axis across all columns</text>')
+             f'bars share one axis across all columns</text>')
     p.append("</svg>")
     return "".join(p)
 
@@ -1185,18 +1185,12 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
                "Host organelle reads sit inside the taxonomy table as an ordinary family; "
                "counting them as bacteria would overstate every abundance below."
                "</figcaption></figure>")
-    out.append('<div class="note"><p style="margin:0"><b>The reagent-associated fraction is an '
-               "estimate, not a measurement.</b> It is assigned from the published list of genera "
-               "commonly recovered from DNA extraction kits and PCR reagents. Unless a blank "
-               "extraction control was sequenced alongside this sample, the split cannot be "
-               "verified.</p></div>")
 
     # ── 4. genera ─────────────────────────────────────────────────────────────
     out.append('<h2 class="pbreak">4. Genus-level profile</h2>')
     out.append("<p>Most abundant genera as a share of each run's bacterial reads, host "
                "material excluded.</p>")
-    out.append("<figure>" + svg_genera(runs) + "<figcaption>Bars share one axis. Gold marks "
-               "reagent-associated genera.</figcaption></figure>")
+    out.append("<figure>" + svg_genera(runs) + "<figcaption>Bars share one axis.</figcaption></figure>")
     seen, order = set(), []
     for g in runs[-1].top_genera(16):
         order.append(g["name"]); seen.add(g["name"])
@@ -1208,8 +1202,6 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
             row.append(f"{fmt(v)} &middot; {100*v/r.bacteria:.1f}%" if v and r.bacteria
                        else '<span class="dim">not named</span>')
         notes = []
-        if nm in runs[-1].kitome:
-            notes.append("reagent")
         if runs[-1].unresolved.get(nm):
             notes.append(f'{fmt(runs[-1].unresolved[nm])} unresolved below genus')
         row.append(f'<span class="dim">{"; ".join(notes)}</span>')
@@ -1302,8 +1294,7 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
             srows.append([f"Reads placed to {rank.lower()}"] +
                          [f"{v}%" if v is not None else "—" for v in vals])
     srows += [["Host / non-bacterial reads"] + [fmt(r.host + r.euk) for r in runs],
-              ["Reagent-associated (estimate)"] + [fmt(r.kit) for r in runs],
-              ["Sample-derived bacteria"] + [fmt(max(r.sample_derived, 0)) for r in runs]]
+              ["Bacteria named to genus"] + [fmt(max(r.bacteria - r.no_genus, 0)) for r in runs]]
     out.append(_tbl([""] + [esc(n) for n in names], srows))
 
     bullets = []
@@ -1314,13 +1305,8 @@ def build_html(runs, title=None, app="NextGen-Amplicon", company="", subtitle=No
     if r.total:
         bullets.append(f"{100*(r.host+r.euk)/r.total:.0f}% of analysed reads are host or other "
                        "non-bacterial material co-amplified by the primers.")
-    if r.bacteria:
-        bullets.append(f"About {100*r.kit/r.bacteria:.0f}% of the bacterial fraction matches the "
-                       "reagent contaminant profile. Relative abundances are more honestly "
-                       "computed over the sample-derived fraction than over the total.")
-    bullets.append("A blank extraction control sequenced alongside the sample would turn the "
-                   "reagent estimate into a measurement; a host-blocking primer would recover "
-                   "most of the reads currently spent on host DNA.")
+    if r.total and (r.host + r.euk) / r.total >= 0.05:
+        bullets.append("A host-blocking primer would recover most of the reads currently spent on host DNA.")
     out.append("<ul>" + "".join(f"<li>{b}</li>" for b in bullets) + "</ul>")
 
     css = _css(app, company, f"{sample_label} · {marker}")
