@@ -3182,9 +3182,13 @@ def _diversity_methods(run, an) -> list:
     out.append(f"<p>Alpha diversity (Observed {unit}, Chao1, ACE, Shannon and Simpson) was computed "
                f"from the per-sample counts. Rarefaction curves give the expected number of {unit} in a "
                f"random subsample of each depth (Hurlbert&rsquo;s formula, as in vegan&rsquo;s "
-               f"<span class=\"mono\">rarefy()</span>). Beta diversity was measured as Bray&ndash;Curtis "
-               f"dissimilarity on relative abundances and visualised by principal coordinates analysis "
-               f"(PCoA), average-linkage (UPGMA) clustering and a dissimilarity heatmap. Taxonomic "
+               f"<span class=\"mono\">rarefy()</span>). "
+               + ("Beta diversity was measured as Bray&ndash;Curtis "
+                  "dissimilarity on relative abundances and visualised by principal coordinates analysis "
+                  "(PCoA), average-linkage (UPGMA) clustering and a dissimilarity heatmap. "
+                  if len(an.samples) > 1 else
+                  "Beta diversity compares samples and was not computed for this single sample. ")
+               + f"Taxonomic "
                f"composition is shown as the top 30 taxa at each rank per sample; the remaining taxa are "
                f"pooled as &ldquo;Other&rdquo; and reads without an assignment at that rank as "
                f"&ldquo;Unclassified&rdquo;."
@@ -3505,6 +3509,21 @@ def svg_longread(qc) -> str:
     return "".join(p)
 
 
+def _rawqc_caption(qc: dict) -> str:
+    """What Table 'Raw read quality' looked at: the first n reads of each file, or (MinKNOW chunks,
+    read_qc.py since v2.43.3) n reads per sample spread over all of its files."""
+    n = fmt(qc.get("reads_per_file_examined", 0))
+    ch = [(k, v["files"][0]["files_in_sample"]) for k, v in (qc.get("samples") or {}).items()
+          if v.get("files") and v["files"][0].get("files_in_sample")]
+    if not ch:
+        return f"Raw reads before any trimming: the first {n} reads of each file"
+    many = len(ch) > 4
+    which = (f"{len(ch)} samples of {min(c for _k, c in ch)}–{max(c for _k, c in ch)} files each" if many else
+             "; ".join(f"{esc(k)}: {c} files" for k, c in ch))
+    return (f"Raw reads before any trimming: {n} reads per sample, an even share from each of its MinKNOW "
+            f"chunk files ({which})")
+
+
 def _readqc_section(run, F, T):
     qc = run._json("qc/read_qc.json")
     if not qc or not qc.get("samples"):
@@ -3528,8 +3547,8 @@ def _readqc_section(run, F, T):
     out.append(T(["Sample", "Reads examined", "Median length" + (" R1 / R2" if paired else ""),
                   "Mean Q" + (" R1 / R2" if paired else ""), "Bases ≥ Q30"]
                  + (["N50"] if qc.get("platform") == "long" else []), rows,
-                 f"Raw reads before any trimming: the first {fmt(qc.get('reads_per_file_examined', 0))} reads of "
-                 f"each file (read_qc.py" + (f"; {esc(_cite(run, 'qc/read_qc.json'))}" if _cite(run, "qc/read_qc.json")
+                 _rawqc_caption(qc)
+                 + f" (read_qc.py" + (f"; {esc(_cite(run, 'qc/read_qc.json'))}" if _cite(run, "qc/read_qc.json")
                                              else "") + ")."))
     s = qc.get("suggestion") or {}
     used = (run.params.get("truncLen_F"), run.params.get("truncLen_R")) if run.kind == "dada2" else None
