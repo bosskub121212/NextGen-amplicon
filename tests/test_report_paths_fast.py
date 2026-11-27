@@ -56,6 +56,16 @@ def main():
             S0 = (runs["ONT 16S (Emu)"] / "asv_table.csv").read_text().splitlines()[0].split(",")[1:]
             (runs["ONT 16S (Emu)"] / "metadata.csv").write_text(
                 "SampleID,Type\n" + "".join(f"{x},{'AB'[i % 2]}\n" for i, x in enumerate(S0)))
+            import json as _json                   # the raw-read QC section names qc/read_qc.json (v2.43.2)
+            (runs["ONT 16S (Emu)"] / "qc").mkdir(exist_ok=True)
+            (runs["ONT 16S (Emu)"] / "qc" / "read_qc.json").write_text(_json.dumps({
+                "reads_per_file_examined": 20000, "platform": "long", "low_depth": [], "tools": {},
+                "samples": {x: {"files": [{"file": f"{x}.fastq.gz", "reads_examined": 2000, "mean_len": 1400.0,
+                                           "min_len": 120, "max_len": 3000, "median_len": 1500, "mean_q": 17.5,
+                                           "pct_q30": 79.0, "long_reads": True, "n50": 1550,
+                                           "len_hist_100bp": [0, 10, 20] + [5] * 12 + [900, 1000] + [3] * 23,
+                                           "meanq_hist": [0] * 8 + [10, 50, 200, 400, 600, 400, 200, 100, 30, 10]
+                                           + [0] * 23}]} for x in S0}}))
             for k, d in runs.items():
                 r = RB.Run(d, set())
                 refs = {Path(str(r.params.get("dbPath") or r.summary.get("db_path") or "x")).name}

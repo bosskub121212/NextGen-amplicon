@@ -137,6 +137,7 @@ def _report_files(root: Path, D: dict, feat: str, rparts, rsfx) -> dict:
     have = lambda *ps: [rel(p) for p in ps if Path(p).exists()]
     k = len(rparts)
     m = {"read_tracking.csv": have(D["filt"] / "read_tracking_summary.csv"),
+         "qc/read_qc.json": have(D["filt"] / "read_qc.json"),
          "asv_table.csv": have(D["feat"] / f"{feat}_count_table_named.csv"),
          "asv_lengths.csv": [],
          "r_tables/rarefaction.csv": have(D["alpha"] / "Rarefaction_curve_data.csv",
@@ -172,8 +173,8 @@ def _taxa_tables(run: AD.RunData, d: Path, group: dict):
     allt = sum(tot.values()) or 1
     for rank in RANK_ORDER:
         per = {s: run.rank_table(rank, s) for s in S}
-        names = sorted({k for t in per.values() for k in t},
-                       key=lambda k: -sum(per[s].get(k, 0) / tot[s] for s in S))
+        names = sorted({k for t in per.values() for k in t},     # ties by name: the same order every build
+                       key=lambda k: (-round(sum(per[s].get(k, 0) / tot[s] for s in S), 12), k))
         pct = lambda k, s: 100 * per[s].get(k, 0) / tot[s]
         _csv(d / f"{rank}_relative_abundance_per_sample_wide.csv", [rank] + S,
              [[k] + [f"{pct(k, s):.4f}" for s in S] for k in names])
@@ -336,11 +337,23 @@ def svg_sunburst(run: AD.RunData, s: str) -> str:
                        f'({100 * ch["v"] / tree["v"]:.2f}%)</title></path>')
             rm = (r0 + r1) / 2
             m = a + span / 2
-            txt = name if len(name) <= 26 else name[:25] + "…"
-            tw = 6.6 * len(txt)                        # horizontal text runs along the arc at top / bottom, across the ring at the sides
-            if span * rm >= max(15, tw * abs(math.cos(m))) and tw * abs(math.sin(m)) <= ring * 1.7:
-                labels.append(f'<text x="{cx + rm * math.sin(m):.1f}" y="{cy - rm * math.cos(m) + 4:.1f}" '
-                              f'font-size="11.5" text-anchor="middle" fill="#111">{esc(txt)}</text>')
+            arc_len = span * rm
+            # as Krona does: the name along the ring where the sector is wide, across it (outward) where it
+            # is narrow; never wider than its own sector, so no two labels overlap; cut with "…" to fit
+            along = arc_len >= ring
+            chord = 2 * math.sqrt(max((r1 - 4) ** 2 - rm ** 2, 0))  # a straight line along a curved ring
+            room, high = (min(arc_len - 10, chord), ring) if along else (ring - 10, arc_len)
+            fit = min(int(room / 6.4), 30)
+            if high >= 13 and fit >= 5:
+                txt = name if len(name) <= fit else name[:fit - 1] + "…"
+                deg = math.degrees(m)
+                rot = (deg if math.cos(m) >= 0 else deg + 180) if along else \
+                      (deg - 90 if math.sin(m) >= 0 else deg + 90)
+                x, y = cx + rm * math.sin(m), cy - rm * math.cos(m)
+                if depth == 0 and span >= 2 * math.pi - 1e-6:          # one phylum: the name in the middle
+                    rot, y = 0, cy - rm
+                labels.append(f'<text x="{x:.1f}" y="{y:.1f}" dy="4" transform="rotate({rot:.1f} {x:.1f} {y:.1f})" '
+                              f'font-size="11" text-anchor="middle" fill="#111">{esc(txt)}</text>')
             if ch["c"] and depth + 1 < len(RANK_ORDER):
                 draw(ch, depth + 1, a, a + span, colour_at + i * 3 + 1)
             a += span

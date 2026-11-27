@@ -3527,7 +3527,8 @@ def _readqc_section(run, F, T):
                   "Mean Q" + (" R1 / R2" if paired else ""), "Bases ≥ Q30"]
                  + (["N50"] if qc.get("platform") == "long" else []), rows,
                  f"Raw reads before any trimming: the first {fmt(qc.get('reads_per_file_examined', 0))} reads of "
-                 f"each file (read_qc.py; qc/read_qc.json)."))
+                 f"each file (read_qc.py" + (f"; {esc(_cite(run, 'qc/read_qc.json'))}" if _cite(run, "qc/read_qc.json")
+                                             else "") + ")."))
     s = qc.get("suggestion") or {}
     used = (run.params.get("truncLen_F"), run.params.get("truncLen_R")) if run.kind == "dada2" else None
     if paired:
@@ -3541,7 +3542,7 @@ def _readqc_section(run, F, T):
                      "Quality along the read, all samples pooled: the line is the median, the band the 25th to 75th "
                      "percentile. Dashed lines mark where reads were cut (red) and where the data suggest cutting "
                      "(green); both are drawn in raw-read positions, i.e. including the primer.",
-                     "qc/read_qc.json"))
+                     _cite(run, "qc/read_qc.json")))
         if s and run.kind == "dada2":
             txt = (f"<p><b>truncLen.</b> The data suggest {s.get('truncLen_F')} / {s.get('truncLen_R')} bp "
                    f"after primer removal. {esc(s.get('reason', ''))}")
@@ -3552,10 +3553,10 @@ def _readqc_section(run, F, T):
             out.append(txt + "</p>")
     elif qc.get("platform") == "long":
         out.append(F(svg_longread(qc), "Read length and mean read quality of the raw reads, all samples pooled.",
-                     "qc/read_qc.json"))
+                     _cite(run, "qc/read_qc.json")))
     if qc.get("low_depth"):
         out.append(f'<p class="dim">Fewer than 1,000 reads in: {", ".join(esc(x) for x in qc["low_depth"])}.</p>')
-    if (qc.get("tools") or {}).get("multiqc"):
+    if (qc.get("tools") or {}).get("multiqc") and getattr(run, "pkg_files", None) is None:   # run folder only
         out.append('<p class="dim">FastQC and MultiQC reports: qc/fastqc/ (multiqc_report.html).</p>')
     return out
 
