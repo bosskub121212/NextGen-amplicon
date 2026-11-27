@@ -681,6 +681,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
   var LOG_ERR  = /^\s*(Error|ERROR|FATAL|Execution halted)\b|Error in |ERROR:|Traceback \(most recent|WRONG KIND OF|No such file|cannot open|Killed$/;
   var LOG_WARN = /^\s*(Warning|WARN)\b|WARNING:|Warning message/;
 
+  /* the machine the backend runs on (GET /version): cpus = the CPUs it sees — every form's CPU threads
+     starts there instead of a fixed 8 */
+  var MACHINE = {cpus: 0};
   var STATE = {
     jobs: [],
     maxWorkers: null,
@@ -6599,6 +6602,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
 
   function field(f, dbOpts, marker){
     var key = f[0], label = f[1], kind = f[2], def = f[3], extra = f[4];
+    if(key === "nThreads" && MACHINE.cpus > 0) def = String(MACHINE.cpus);
     var id = "f_" + key;
     var ctl, wide = false, hint = extra;
 
@@ -8306,7 +8310,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         var cur = params.nThreads || 4;
         var t = window.prompt("Run this job again with the same input files and settings?\n\n"
           + "The current results of this job are replaced (download the PDF / zip first if you "
-          + "want to keep them).\n\nCPU threads:", String(Math.max(cur, 8)));
+          + "want to keep them).\n\nCPU threads:", String(MACHINE.cpus > 0 ? MACHINE.cpus : Math.max(cur, 8)));
         if(t === null) throw {cancel:true};
         var n = parseInt(t, 10);
         if(isFinite(n) && n > 0) params.nThreads = n;
@@ -8960,6 +8964,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      would be the first thing to mislead someone reading a bug report. */
   api("/version").then(function(v){
     if(v && v.version) verLine.textContent = "Company Limited · v" + v.version;
+    if(v && v.cpus > 0) MACHINE.cpus = v.cpus;
   }).catch(function(){
     verLine.textContent = "Company Limited";
   });

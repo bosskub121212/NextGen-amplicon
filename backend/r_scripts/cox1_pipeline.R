@@ -478,15 +478,32 @@ if (opt$lulu && requireNamespace("lulu", quietly=TRUE)) {
       match_list <- read.table(match_path, header=FALSE, col.names=c("child","father","pident"),
                                stringsAsFactors=FALSE)
 
-      otu_table_lulu <- t(seqtab_translated)
+      # lulu() wants a data.frame (it adds columns with $ to a slice of it: a matrix fails), ASVs as rows
+      otu_table_lulu <- as.data.frame(t(seqtab_translated))
       rownames(otu_table_lulu) <- asv_ids
 
       tryCatch({
-        curated <- lulu::lulu(otu_table_lulu, match_list)
-        kept_ids <- curated$curated_table |> rownames()
-        kept_idx <- match(kept_ids, asv_ids)
-        seqtab_final <- seqtab_translated[, kept_idx, drop=FALSE]
-        cat(sprintf("LULU: %d -> %d ASVs after curation (removed %d)\n",
+        # lulu() writes its log (lulu.log_<time>) into the working directory: keep it in LULU/
+        run_lulu <- function() {
+          old_wd <- setwd(lulu_dir)
+          on.exit(setwd(old_wd))
+          lulu::lulu(otu_table_lulu, match_list)
+        }
+        curated <- run_lulu()
+        # The curated table: each parent ASV with the reads of the errors LULU merged into it (keeping
+        # only the parents' own columns, as before, dropped those reads). Back to samples x sequences.
+        ct <- as.matrix(curated$curated_table)
+        kept_idx <- match(rownames(ct), asv_ids)
+        ord <- order(kept_idx)
+        ct <- ct[ord, , drop = FALSE]
+        kept_idx <- kept_idx[ord]
+        fin <- t(ct)[rownames(seqtab_translated), , drop = FALSE]
+        storage.mode(fin) <- "integer"
+        colnames(fin) <- asv_seqs[kept_idx]
+        stopifnot(sum(fin) == sum(seqtab_translated))
+        seqtab_final <- fin
+        write.csv(curated$otu_map, file.path(lulu_dir, "lulu_otu_map.csv"))
+        cat(sprintf("LULU: %d -> %d ASVs after curation (%d merged into their parent ASV, reads kept)\n",
                     ncol(seqtab_translated), ncol(seqtab_final),
                     ncol(seqtab_translated) - ncol(seqtab_final)))
       }, error=function(e) {

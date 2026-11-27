@@ -4251,6 +4251,8 @@ def app_version():
         return {
             "version":      data.get("version", ""),
             "release_date": data.get("release_date", ""),
+            # CPUs this backend sees (WSL: the processors Windows gives it): the forms' default CPU threads
+            "cpus":         os.cpu_count() or 0,
         }
     except Exception as e:
         return JSONResponse(status_code=503, content={"error": f"version.json unreadable: {e}"})

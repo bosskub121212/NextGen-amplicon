@@ -29,13 +29,17 @@ Rscript - << 'REOF' 2>&1 | tee -a "$LOG"
 options(repos = c(CRAN = "https://cloud.r-project.org"))
 cat("=== R Package Installation ===\n")
 
-pkg_install <- function(pkg, source="cran", ...) {
+# repo: the GitHub "owner/name" for source="github". It used to be passed as pkg="tobiasgf/lulu": that
+# took the place of the package name (requireNamespace("tobiasgf/lulu") is never TRUE) and the name "lulu"
+# went on to install_github() as its second argument, the git ref — a branch "lulu" that does not exist.
+# LULU and FUNGuildR never installed (nextapp had neither).
+pkg_install <- function(pkg, source="cran", repo=NULL, ...) {
   if (!requireNamespace(pkg, quietly=TRUE)) {
     cat(sprintf("Installing %s ...\n", pkg))
     tryCatch({
       if (source == "cran")    install.packages(pkg, ...)
       if (source == "bioc")    BiocManager::install(pkg, ask=FALSE, update=FALSE)
-      if (source == "github")  remotes::install_github(pkg, ...)
+      if (source == "github")  remotes::install_github(repo, upgrade="never", ...)
       cat(sprintf("  OK: %s\n", pkg))
     }, error=function(e) cat(sprintf("  FAILED: %s — %s\n", pkg, e$message)))
   } else {
@@ -64,10 +68,10 @@ pkg_install("seqinr")       # COX1 codon translation helper
 pkg_install("stringr")
 
 # LULU — post-clustering curation (COX1 NUMTs + general)
-pkg_install("lulu", source="github", pkg="tobiasgf/lulu")
+pkg_install("lulu", source="github", repo="tobiasgf/lulu")
 
 # FUNGuildR — fungal ecological guilds (ITS pipeline)
-pkg_install("FUNGuildR", source="github", pkg="brendanf/FUNGuildR")
+pkg_install("FUNGuildR", source="github", repo="brendanf/FUNGuildR")
 
 # Tax4Fun2 — functional prediction for 16S
 if (!requireNamespace("Tax4Fun2", quietly=TRUE)) {

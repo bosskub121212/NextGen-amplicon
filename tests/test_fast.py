@@ -402,6 +402,10 @@ def main():
     import test_report_paths_fast            # every file a report names is in what the reader gets
     test_report_paths_fast.main()
     FAILS.extend(test_report_paths_fast.FAILS)
+
+    import test_lulu_cpu_fast                # LULU for COI; default CPU threads from the machine
+    test_lulu_cpu_fast.main()
+    FAILS.extend(test_lulu_cpu_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")
