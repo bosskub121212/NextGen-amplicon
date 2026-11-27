@@ -199,7 +199,38 @@ def t_main_wiring(tmp):
         check(f"console: {k}", k in ui)
 
 
-TESTS += [t_one_at_a_time, t_pause, t_move, t_seq_restore, t_configure, t_pause_now, t_main_wiring]
+def t_light(tmp):
+    """Download results (a light task) does not wait for the pause between jobs, and starts none."""
+    import job_gate as JG
+    clk = Clock()
+    G, ev, lab = JG.JobGate(poll=0.03, slots=1, pause=180, clock=clk), [], {}
+    ha = threading.Event()
+    _job(G, "a", ev, lab, hold=ha)
+    _until(lambda: ("in", "a") in ev)
+    ha.set()
+    _until(lambda: ("out", "a") in ev)                      # a pipeline ended: a 3-min pause runs now
+
+    def light(jid):
+        def body():
+            ok = G.enter(jid, False, lambda: False, lambda l: lab.setdefault(jid, []).append(l), light=True)
+            ev.append(("in" if ok else "cancelled", jid))
+            ev.append(("out", jid))
+            G.leave(jid)
+        threading.Thread(target=body, daemon=True).start()
+    light("pkg")
+    check("light task: starts during the pause after a job", _until(lambda: ("out", "pkg") in ev), str(lab.get("pkg")))
+    clk.t += 181                                            # the pipeline's pause is over
+    light("pkg2")
+    _until(lambda: ("out", "pkg2") in ev)
+    _job(G, "b", ev, lab)
+    check("light task: its end starts no pause (the next job starts at once)", _until(lambda: ("in", "b") in ev),
+          str(lab.get("b")))
+    m = (ROOT / "backend" / "main.py").read_text()
+    check("main.py: Download results builds are light tasks", "light=True)                 # a result build" in m
+          and "GATE.enter(tid, False, _cancelled, _waiting, seq=seq, light=light)" in m)
+
+
+TESTS += [t_one_at_a_time, t_pause, t_move, t_seq_restore, t_configure, t_pause_now, t_main_wiring, t_light]
 
 
 def main() -> int:

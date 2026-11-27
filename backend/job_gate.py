@@ -9,6 +9,8 @@
   order. A job enters with a seq (its saved place); a job requeued after a backend
   restart therefore goes back where it was. A waiting job notices a cancel within
   `poll` seconds and gives up its turn.
+- A light task (Download results: tables, figures, a zip) keeps its place in line but does not
+  wait for the pause, and its end starts none: the pause is for a pipeline's memory.
 """
 from __future__ import annotations
 
@@ -41,6 +43,7 @@ class JobGate:
         self._pause = float(pause or 0)
         self._clock = clock
         self._pause_until = 0.0
+        self._light: set = set()                         # light tasks waiting or running
 
     # ── settings ──────────────────────────────────────────────────────────────
     def configure(self, slots: int | None = None, pause: float | None = None) -> None:
@@ -66,7 +69,7 @@ class JobGate:
                 return i
         return -1
 
-    def _blocker(self, job_id: str, exclusive: bool) -> str | None:
+    def _blocker(self, job_id: str, exclusive: bool, light: bool = False) -> str | None:
         """None when the job may start now, else the label to show."""
         i = self._pos(job_id)
         pos = i + 1
@@ -83,14 +86,17 @@ class JobGate:
             if len(ahead) >= free:
                 return queued_label(pos)
         left = self._pause_until - self._clock()
-        if left > 0:
+        if left > 0 and not light:
             return pause_label(pos, left)
         return None
 
     def enter(self, job_id: str, exclusive: bool, is_cancelled: Callable[[], bool],
-              on_wait: Callable[[str], None], seq: float | None = None) -> bool:
-        """Block until the job may run. False when it was cancelled while waiting."""
+              on_wait: Callable[[str], None], seq: float | None = None, light: bool = False) -> bool:
+        """Block until the job may run. False when it was cancelled while waiting. light: see the
+        module notes (no pause before it, none after it)."""
         with self._cv:
+            if light:
+                self._light.add(job_id)
             seq = time.time() if seq is None else float(seq)
             k = len(self._queue)
             while k > 0 and self._queue[k - 1][2] > seq:
@@ -99,8 +105,9 @@ class JobGate:
             try:
                 while True:
                     if is_cancelled():
+                        self._light.discard(job_id)
                         return False
-                    why = self._blocker(job_id, exclusive)
+                    why = self._blocker(job_id, exclusive, light)
                     if why is None:
                         self._active[job_id] = exclusive
                         return True
@@ -115,7 +122,9 @@ class JobGate:
 
     def leave(self, job_id: str) -> None:
         with self._cv:
-            if self._active.pop(job_id, None) is not None and self._pause > 0:
+            light = job_id in self._light
+            self._light.discard(job_id)
+            if self._active.pop(job_id, None) is not None and self._pause > 0 and not light:
                 self._pause_until = self._clock() + self._pause
             self._cv.notify_all()
 

@@ -2552,7 +2552,7 @@ def _job_out(jid: str) -> Path:
     return Path((jobs.get(jid) or {}).get("output_dir") or str(RESULTS_DIR / jid))
 
 
-def _task_runner(t: dict, work, seq: float):
+def _task_runner(t: dict, work, seq: float, light: bool = False):
     tid = t["task_id"]
 
     def _cancelled():
@@ -2562,7 +2562,7 @@ def _task_runner(t: dict, work, seq: float):
         t["step_label"] = label
 
     try:
-        if not GATE.enter(tid, False, _cancelled, _waiting, seq=seq):
+        if not GATE.enter(tid, False, _cancelled, _waiting, seq=seq, light=light):
             return
         t.update(status="running", started_at=time.time(), step_label="Starting...")
         try:
@@ -2580,7 +2580,7 @@ def _task_runner(t: dict, work, seq: float):
         t["in_gate"] = False             # the same task id may be queued again from now on
 
 
-def _submit_task(job_id: str, kind: str, label: str, work, request=None):
+def _submit_task(job_id: str, kind: str, label: str, work, request=None, light: bool = False):
     """Queue an add-on task; the same request while it waits/runs returns the running one,
     a different one → 409."""
     tid = f"{job_id}~{kind}"
@@ -2599,7 +2599,7 @@ def _submit_task(job_id: str, kind: str, label: str, work, request=None):
                       "marker": (jobs.get(job_id) or {}).get("marker", ""), "status": "queued",
                       "step_label": "Queued", "progress": 0, "run_at": time.time(), "in_gate": True}
         t = TASKS[tid]
-    executor.submit(_task_runner, t, work, time.time())
+    executor.submit(_task_runner, t, work, time.time(), light)
     return t
 
 
@@ -2863,7 +2863,8 @@ def packages_start(job_id: str, req: Optional[PackageRequest] = None):
         t["warnings"] = man.get("warnings", [])
     t = _submit_task(job_id, "package", "result packages", _work,
                      request={"samples": want, "split": req.split, "reads": req.include_reads,
-                              "combined": req.combined})
+                              "combined": req.combined},
+                     light=True)                 # a result build: no 3-min pause before or after it
     if isinstance(t, JSONResponse):
         return t
     return {"task": _task_view(t)}
