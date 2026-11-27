@@ -2764,7 +2764,7 @@ def _pkg_latest(out: Path):
 
 @app.get("/jobs/{job_id}/preview")
 def job_preview(job_id: str):
-    """Result previews for the job page: per folder of Download results (1.QC ... 8.Reads), the
+    """Result previews for the job page: per folder of Download results (1.QC ... 6.Diversity), the
     report's figures and the tables behind them (result_preview.py; cached in the run folder)."""
     if not _JOB_ID_RE.fullmatch(job_id):
         return JSONResponse(status_code=400, content={"error": "bad job id"})

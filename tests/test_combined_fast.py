@@ -34,26 +34,34 @@ def main():
             z = zipfile.ZipFile(m["files"][0]["path"])
             names = set(z.namelist())
             r = "U2BI-184_fastq_results/"
-            want = ["1.QC/read_tracking_summary.csv", "1.QC/Boxplot_read_counts_pipeline_steps.svg",
+            try:                                   # PNG needs cairosvg (setup_amplicon_report.sh); else the SVG stays
+                import cairosvg  # noqa: F401
+                PIC = ".png"
+            except Exception:
+                PIC = ".svg"
+                print("  (cairosvg not installed here: Box_plot / Krona picture expected as SVG)")
+            want = ["2.Filter/read_tracking_summary.csv", "2.Filter/Boxplot_read_counts_pipeline_steps.svg",
+                    "2.Filter/" + S[0] + "/Box_plot" + PIC, "2.Filter/" + S[0] + "/read_tracking.tsv",
                     "4.Taxa_table/Taxa_table_count_table_named.csv", "4.Taxa_table/Taxa_table_counts_per_sample.csv",
-                    "5.Taxa/csv/Genus_relative_abundance_per_sample_wide.csv",
-                    "5.Taxa/csv/Genus_Top30_relative_abundance_per_sample_long.csv",
-                    "5.Taxa/csv/Species_all_taxa_total_relative_abundance.csv",
-                    "5.Taxa/png/Genus_Top30_relative_abundance_per_sample.svg", "5.Taxa/png/Genus_heatmap_top30.svg",
+                    "5.Taxonomy_Identification/csv/Genus_relative_abundance_per_sample_wide.csv",
+                    "5.Taxonomy_Identification/csv/Genus_Top30_relative_abundance_per_sample_long.csv",
+                    "5.Taxonomy_Identification/csv/Species_all_taxa_total_relative_abundance.csv",
+                    "5.Taxonomy_Identification/Taxa_barplot/Genus_Top30_relative_abundance_per_sample.svg",
+                    "5.Taxonomy_Identification/Heatmap/Genus_heatmap_top30.svg",
+                    "5.Taxonomy_Identification/Krona/" + S[0] + "_krona_static" + PIC,
                     "6.Diversity/Alpha/alpha_diversity.csv", "6.Diversity/Alpha/Rarefaction_curve_data.csv",
                     "6.Diversity/Alpha/alpha_diversity_by_group.svg",
                     "6.Diversity/Beta/bray_curtis_distance_matrix.csv", "6.Diversity/Beta/PCoA_Bray_scores.csv",
                     "6.Diversity/Beta/PERMANOVA_Type.csv", "6.Diversity/Beta/PCoA_Bray.svg",
-                    "7.Tables/U2BI-184_fastq_results.xlsx", "Report_U2BI-184_fastq_results.html", "README.txt"]
-            try:                                   # the Excel file needs openpyxl (setup_amplicon_report.sh)
-                import openpyxl  # noqa: F401
-            except ImportError:
-                want.remove("7.Tables/U2BI-184_fastq_results.xlsx")
-                print("  (openpyxl not installed here: no Excel file expected)")
+                    "Report_U2BI-184_fastq_ONT_report.html"]
             miss = [w for w in want if r + w not in names]
-            check("BI-style folders: QC, taxa table, taxa per rank, alpha, beta (PCoA, PERMANOVA), Excel, report",
-                  not miss, miss)
-            wide = list(csv.reader(z.read(r + "5.Taxa/csv/Genus_relative_abundance_per_sample_wide.csv").decode().splitlines()))
+            check("BI team's folders: 2.Filter (tracking, per sample), taxa table, 5.Taxonomy_Identification, alpha, "
+                  "beta (PCoA, PERMANOVA), report", not miss, miss)
+            top = sorted({x[len(r):].split("/")[0] for x in names if x.startswith(r)})
+            check("exactly the BI team's top level: 1.QC ... 6.Diversity + report (no README, Excel, 8.Reads, metadata)",
+                  [x for x in top if x != "1.QC"] == ["2.Filter", "4.Taxa_table", "5.Taxonomy_Identification",
+                                                     "6.Diversity", "Report_U2BI-184_fastq_ONT_report.html"], top)
+            wide = list(csv.reader(z.read(r + "5.Taxonomy_Identification/csv/Genus_relative_abundance_per_sample_wide.csv").decode().splitlines()))
             check("taxa tables: a column per sample", wide[0] == ["Genus"] + S, wide[0])
             sums = [sum(float(x[i]) for x in wide[1:]) for i in range(1, len(S) + 1)]
             check("relative abundance: every sample sums to 100 % (Emu's unassigned row included)",
@@ -64,7 +72,7 @@ def main():
                   and un and un[0][2] == "Unassigned", (ct[0], un))
             al = list(csv.reader(z.read(r + "6.Diversity/Alpha/alpha_diversity.csv").decode().splitlines()))
             check("alpha table carries the group", al[0][:2] == ["Sample", "Group"] and al[1][1] == "A", al[:2])
-            rep = z.read(r + "Report_U2BI-184_fastq_results.html").decode()
+            rep = z.read(r + "Report_U2BI-184_fastq_ONT_report.html").decode()
             check("one report holding every sample", all(x in rep for x in S) and "Analysis by group" in rep)
             import re as _re, html as _h
             fol = [_h.unescape(x) for x in _re.findall(r'<div class="folder">Folder: (.*?)</div>', rep)]
@@ -72,9 +80,9 @@ def main():
             check("report 'Folder:' lines name this result's files (no r_tables/), and they exist",
                   fol and "r_tables/" not in rep.split("References")[0] and all(r + p_ in names for p_ in paths),
                   [p_ for p_ in paths if r + p_ not in names] or fol[:3])
-            svg = z.read(r + "5.Taxa/png/Order_Top30_relative_abundance_per_sample.svg").decode()
+            svg = z.read(r + "5.Taxonomy_Identification/Taxa_barplot/Order_Top30_relative_abundance_per_sample.svg").decode()
             body = svg[svg.index("<svg"):].split(">", 1)[1]          # the drawing, without the size attributes
-            check("5.Taxa bar chart is the report's figure (same drawing)", body[:4000] in rep, body[:200])
+            check("Taxa_barplot chart is the report's figure (same drawing)", body[:4000] in rep, body[:200])
             check("no R copies of the report's figures (other colours)",
                   not any("pipeline_figures/" in x or "/04_taxonomy" in x or "/04b_taxonomy" in x for x in names))
             d2 = TA.make_amp_run(td / "d2")
@@ -83,14 +91,14 @@ def main():
             n2 = set(zipfile.ZipFile(m2["files"][0]["path"]).namelist())
             check("DADA2 run: ASV folder, cutadapt summary, ASV sequences",
                   "Fish_results/4.ASV/ASV_count_table_named.csv" in n2 and "Fish_results/2.Cutadapt/cutadapt_summary.csv" in n2
+                  and any(x.startswith("Fish_results/2.Cutadapt/") and x.endswith(".cutadapt.json") for x in n2)
                   and any(x.startswith("Fish_results/4.ASV/") and x.endswith(".fasta") for x in n2), sorted(n2)[:20])
             m3 = PK.build(d, None, "amplicon", S[:2], True, td / "pk3", job_label="x", formats=("html",), tools={})
             check("per-sample packages still there (one zip per sample)", len(m3["files"]) == 2)
             z3 = zipfile.ZipFile(m3["files"][0]["path"])
-            rd = next(z3.read(x).decode() for x in z3.namelist() if x.endswith("README.txt"))
-            check("one-sample README: only the folders it has (no 2.Cutadapt, no Beta for Emu), '1 sample'",
-                  "2.Cutadapt/" not in rd and "Beta/" not in rd.split("Not made")[0]
-                  and "3.DADA2/" not in rd and "1 sample in" in rd, rd[:600])
+            n3 = z3.namelist()
+            check("one-sample result: no README, no 2.Cutadapt and no Beta for Emu",
+                  not any(x.endswith("README.txt") or "/2.Cutadapt/" in x or "/Beta/" in x for x in n3), sorted(n3)[:20])
             check("per-sample build: the expected one-sample beta note is not listed under every sample",
                   not any("one sample: no beta" in w for w in m3.get("warnings", [])), m3.get("warnings"))
             fe = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")

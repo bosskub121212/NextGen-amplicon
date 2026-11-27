@@ -95,10 +95,10 @@ def main():
             ct = z.read(r + "4.ASV/ASV_count_table_named.csv").decode()
             check("ITS: one combined result with 3.DADA2 / 4.ASV, taxa, alpha, beta, report",
                   all(r + x in n for x in ("4.ASV/ASV_count_table_named.csv",
-                                           "5.Taxa/csv/Genus_relative_abundance_per_sample_wide.csv",
+                                           "5.Taxonomy_Identification/csv/Genus_relative_abundance_per_sample_wide.csv",
                                            "6.Diversity/Alpha/alpha_diversity.csv",
                                            "6.Diversity/Beta/bray_curtis_distance_matrix.csv",
-                                           "Report_ITSjob_results.html")), sorted(n)[:30])
+                                           "Report_ITSjob_Illumina_report.html")), sorted(n)[:30])
             check("ITS: no UNITE prefix in the count table", "__" not in ct and "Aspergillus niger" in ct, ct[:300])
             for old in (True, False):
                 tag = "old" if old else "new"
@@ -112,11 +112,11 @@ def main():
                              formats=("html",), tools={}, combined=True)
                 z = zipfile.ZipFile(m["files"][0]["path"])
                 n = set(z.namelist())
-                w = list(csv.reader(z.read("PB_results/5.Taxa/csv/Genus_relative_abundance_per_sample_wide.csv")
+                w = list(csv.reader(z.read("PB_results/5.Taxonomy_Identification/csv/Genus_relative_abundance_per_sample_wide.csv")
                                     .decode().splitlines()))
                 sums = [round(sum(float(x[i]) for x in w[1:]), 2) for i in range(1, 4)]
                 check(f"PacBio ({tag} table): combined result, taxa sum to 100, report",
-                      "PB_results/4.ASV/ASV_count_table_named.csv" in n and "PB_results/Report_PB_results.html" in n
+                      "PB_results/4.ASV/ASV_count_table_named.csv" in n and "PB_results/Report_PB_PacBio_report.html" in n
                       and sums == [100.0, 100.0, 100.0], (sums, sorted(n)[:20]))
                 fa = [x for x in n if x.endswith(".fasta")]
                 check(f"PacBio ({tag} table): ASV sequences written only when the run has them",

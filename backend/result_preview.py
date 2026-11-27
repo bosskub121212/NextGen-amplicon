@@ -1,4 +1,5 @@
-"""Result previews on the job page: what each of the eight folders of Download results will hold,
+"""Result previews on the job page: what each folder of Download results will hold (the BI team's layout,
+amp_combined.py: 1.QC, 2.Filter / 2.Cutadapt, 3.<step>, 4.<table>, 5.Taxonomy_Identification, 6.Diversity),
 drawn from the finished run so the BI team can look before building anything.
 
 build(run_dir) -> {"sections": [{"key", "title", "summary", "items": [item, ...]}, ...]}
@@ -6,7 +7,7 @@ item: {"kind": "svg", "title", "svg"} | {"kind": "table", "title", "head", "rows
       | {"kind": "files", "title", "files": [{"name", "size"}]} | {"kind": "note", "text"}
 
 The figures are the report's own (report_builder), so a preview is the picture the report and the
-result's 5.Taxa / 6.Diversity PNGs carry. Every section is built on its own: one that fails says
+result's 5.Taxonomy_Identification / 6.Diversity PNGs carry. Every section is built on its own: one that fails says
 so and the others still show. The result is cached in the run folder (.preview_cache.json) until
 a file it was made from changes (metadata.csv included: groups edited after the run).
 """
@@ -28,7 +29,7 @@ def _key(run_dir: Path) -> str:
         ver = json.loads((Path(__file__).resolve().parent.parent / "version.json").read_text()).get("version", "")
     except Exception:
         ver = ""
-    h = hashlib.sha1(("v3|" + ver).encode())
+    h = hashlib.sha1(("v4|" + ver).encode())
     for f in SRC:
         p = run_dir / f
         if p.exists():
@@ -106,7 +107,34 @@ def _build(run_dir: Path) -> dict:
             items, summary = [{"kind": "note", "text": f"Not available for this run ({type(ex).__name__}: {ex})"}], ""
         secs.append({"key": key, "title": title, "summary": summary, "items": [i for i in items if i]})
 
-    # 1. QC
+    long_read = run.kind == "emu" or engine == "pacbio" or (engine == "vsearch" and not getattr(rrun, "paired", False))
+    step2 = "Filter" if long_read else "Cutadapt"
+
+    # 1. QC: the raw reads' quality (read_qc.py, measured when the run started)
+    def raw():
+        q = {}
+        try:
+            q = json.loads((run_dir / "qc" / "read_qc.json").read_text()).get("samples", {})
+        except Exception:
+            pass
+        rows = []
+        for s in S:
+            fs = (q.get(s) or {}).get("files") or []
+            if fs:
+                n = sum(f.get("reads_examined") or 0 for f in fs) or 1
+                avg = lambda k: sum((f.get(k) or 0) * (f.get("reads_examined") or 0) for f in fs) / n
+                rows.append([s, len(fs), _fmt(sum(f.get("reads_examined") or 0 for f in fs)),
+                             f"{avg('mean_len'):.0f}", f"{avg('mean_q'):.1f}", f"{avg('pct_q30'):.1f}%"])
+        tool = "NanoPlot" if long_read else "FastQC and fastp"
+        items = [{"kind": "note", "text": f"Download results adds {tool} of each sample's raw reads "
+                  f"(1.QC/<sample>/), made when the result is built."}]
+        if rows:
+            items.insert(0, _table("Raw reads (a sample of each file)", ["Sample", "Files", "Reads examined",
+                                                                         "Mean length", "Mean Q", "≥ Q30"], rows))
+        return items, (f"mean Q {min(float(r[4]) for r in rows):.1f}–{max(float(r[4]) for r in rows):.1f}"
+                       if rows else "")
+
+    # 2. Filter / Cutadapt: reads at each step, primer removal, the filtered reads
     def qc():
         cols = [c for c in run.track_cols if c != "perc"]
         names = {"raw_data": "Raw", "qc_filtered": "QC", "primer_trimmed": "Primers", "final": "Final",
@@ -120,12 +148,19 @@ def _build(run_dir: Path) -> dict:
         ns = f"{len(S)} sample{'s' if len(S) != 1 else ''}"
         rng = (f"{min(kept):.0f}%" if round(min(kept)) == round(max(kept)) else f"{min(kept):.0f}–{max(kept):.0f}%") if kept else ""
         summ = f"{ns} · reads kept {rng}" if kept else ns
-        return [_table("Reads at each step", ["Sample"] + (["Group"] if group else []) + [names.get(c, c) for c in have]
-                       + ["Kept"], rows),
-                _svg("Read counts at each step", RB.svg_steps(rrun, an)),
-                _svg("Reads surviving each step", RB.svg_readflow(rrun))], summ
+        items = [_table("Reads at each step", ["Sample"] + (["Group"] if group else []) + [names.get(c, c) for c in have]
+                        + ["Kept"], rows),
+                 _svg("Read counts at each step", RB.svg_steps(rrun, an)),
+                 _svg("Reads surviving each step", RB.svg_readflow(rrun))]
+        items += cut()
+        files = []
+        for s in S:
+            for q in CR._filtered(run, s):
+                files.append({"name": f"{s}/filtered_reads/{q.name}", "size": _size(q.stat().st_size)})
+        if files:
+            items.append({"kind": "files", "title": "Quality-filtered reads (with 'include the reads')", "files": files})
+        return items, summ
 
-    # 2. Cutadapt
     def cut():
         rows = []
         for s in S:
@@ -136,11 +171,8 @@ def _build(run_dir: Path) -> dict:
                 rows.append([s, _fmt(inp), (f"{100 * hit / inp:.1f}%" if inp and hit is not None else "—"), _fmt(outp),
                              (f"{100 * outp / inp:.1f}%" if inp else "—")])
         if not rows:
-            return [{"kind": "note", "text": ("Nanopore runs trim the primers inside the pipeline; the reads with both "
-                                               "primers are counted in 1.QC (Primers).") if run.kind == "emu" or engine == "vsearch"
-                     else "No cutadapt counts in this run."}], "no cutadapt counts"
-        return [_table("Primer removal (cutadapt)", ["Sample", "Reads in", "With primer", "Reads out", "Kept"], rows)], \
-            f"{len(rows)} samples trimmed"
+            return [] if long_read else [{"kind": "note", "text": "No cutadapt counts in this run."}]
+        return [_table("Primer removal (cutadapt)", ["Sample", "Reads in", "With primer", "Reads out", "Kept"], rows)]
 
     # 3. denoising / classification
     def s3():
@@ -199,6 +231,12 @@ def _build(run_dir: Path) -> dict:
         tot = sum(gt.values()) or 1
         gen = [[k, _fmt(v), f"{100 * v / tot:.2f}%"] for k, v in list(gt.items())[:15]]
         items.append(_table("Top genera, whole run", ["Genus", "Reads", "Share"], gen))
+        try:
+            import amp_combined as AC
+            items.append(_svg(f"Krona picture: {S[0]}" + (f" (one of {len(S)}: Krona/<sample>_krona_static.png)"
+                                                           if len(S) > 1 else ""), AC.svg_sunburst(run, S[0])))
+        except Exception:
+            pass
         return items, f"{len(gt)} genera"
 
     # 6. diversity
@@ -224,31 +262,20 @@ def _build(run_dir: Path) -> dict:
                           + "PERMANOVA needs 2 groups with 2 samples or more in one of them."})
         return items, f"Shannon {min(al[s]['Shannon'] for s in S):.2f}–{max(al[s]['Shannon'] for s in S):.2f}" if S else ""
 
-    # 7. tables
+    # 7. PICRUSt2
     def s7():
-        ranks = [r for r in AD.RANKS if r in rrun.rank_cols]
-        return [{"kind": "note", "text": "Download results writes 7.Tables/<name>.xlsx: read tracking, the profiles at "
-                 f"every rank ({', '.join(ranks)}) and alpha diversity, a sheet each; 5.Taxa/csv holds the same "
-                 "profiles as CSV."}], f"{len(ranks)} ranks"
+        d = run_dir / "PICRUSt2"
+        files = [{"name": str(p.relative_to(d)), "size": _size(p.stat().st_size)}
+                 for p in sorted(d.rglob("*.tsv.gz"))[:12]] if d.is_dir() else []
+        return [{"kind": "files", "title": "PICRUSt2 predictions (7.Functional_prediction/PICRUSt2)", "files": files}], \
+            f"{len(files)} tables"
 
-    # 8. reads
-    def s8():
-        files = []
-        for s in S:
-            for q in CR._filtered(run, s):
-                files.append({"name": q.name, "size": _size(q.stat().st_size), "b": q.stat().st_size})
-        if not files:
-            return [{"kind": "note", "text": "No quality-filtered reads kept in this run folder."}], "none"
-        total = sum(f.pop("b") for f in files)
-        return [{"kind": "files", "title": "Quality-filtered reads (Download results → 8.Reads)", "files": files}], \
-            f"{len(files)} file{'s' if len(files) != 1 else ''} · {_size(total)}"
-
-    section("1.QC", "1.QC — reads at each step", qc)
-    section("2.Cutadapt", "2.Cutadapt — primer removal", cut)
+    section("1.QC", "1.QC — raw reads", raw)
+    section(f"2.{step2}", f"2.{step2} — reads at each step" + ("" if long_read else ", primer removal"), qc)
     section(f"3.{step3}", f"3.{step3} — " + {"Emu": "Emu classification", "VSEARCH": "OTU clustering"}.get(step3, "denoising"), s3)
     section(f"4.{feat}", f"4.{feat} — the count table", s4)
-    section("5.Taxa", "5.Taxa — composition", s5)
+    section("5.Taxonomy_Identification", "5.Taxonomy_Identification — composition", s5)
     section("6.Diversity", "6.Diversity — alpha and beta", s6)
-    section("7.Tables", "7.Tables — Excel", s7)
-    section("8.Reads", "8.Reads — filtered reads", s8)
+    if (run_dir / "PICRUSt2").is_dir():
+        section("7.Functional_prediction", "7.Functional_prediction — PICRUSt2", s7)
     return {"sections": secs, "samples": len(S), "engine": engine}

@@ -410,6 +410,10 @@ def main():
     import test_ui_preview_fast              # job page result previews (8 folders); new job page / form wiring
     test_ui_preview_fast.main()
     FAILS.extend(test_ui_preview_fast.FAILS)
+
+    import test_png_nanoplot_fast            # PNG of the PDF figures; NanoPlot in the combined result; no reagent table
+    test_png_nanoplot_fast.main()
+    FAILS.extend(test_png_nanoplot_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

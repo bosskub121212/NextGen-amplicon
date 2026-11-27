@@ -905,10 +905,11 @@ def t_pkg_amplicon(d):
     names = sorted(f["name"] for f in m["files"])
     check("packages: amplicon one zip per sample, named by sample", names == ["L21.zip", "PGU-16S-full.zip"], str(names))
     t = _zip_texts(d / "pk" / "L21.zip")
-    check("packages: amplicon zip = the BI layout (1.QC ... 7.Tables) for one sample",
+    check("packages: amplicon zip = the BI team's layout (1.QC ... 6.Diversity) for one sample",
           all(any(n.startswith(f"L21/{f}/") for n in t)
-              for f in ("1.QC", "3.Emu", "4.Taxa_table", "5.Taxa", "6.Diversity"))
-          and "L21/Report_L21.html" in t and "L21/README.txt" in t, str(sorted(t)[:10]))
+              for f in ("2.Filter", "3.Emu", "4.Taxa_table", "5.Taxonomy_Identification", "6.Diversity"))   # 1.QC: NanoPlot (none here)
+          and "L21/Report_L21_ONT_report.html" in t and "L21/2.Filter/L21/filtered_reads/L21.fastq.gz" in t,
+          str(sorted(t)[:10]))
     leak = [n for n, v in t.items() if "PGU" in n or "PGU" in v or "TH-JOB" in v]
     check("packages: L21 zip holds nothing of PGU-16S-full (or the job name)", not leak, str(leak[:5]))
     m2 = PK.build(run, d / "up", "amplicon", ["PGU-16S-full"], False, d / "one", job_label="TH-JOB", tools=tools,
@@ -916,7 +917,7 @@ def t_pkg_amplicon(d):
     t2 = _zip_texts(Path(m2["files"][0]["path"]))
     check("packages: one amplicon zip for a subset holds only it",
           not any("L21" in n or "L21" in v for n, v in t2.items())
-          and any(n.startswith("TH-JOB_results/PGU-16S-full/5.Taxa/") for n in t2), str(sorted(t2)[:8]))
+          and any(n.startswith("TH-JOB_results/PGU-16S-full/5.Taxonomy_Identification/") for n in t2), str(sorted(t2)[:8]))
 
 
 def t_pkg_wiring(d):

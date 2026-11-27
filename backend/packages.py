@@ -5,9 +5,10 @@
 
 kind "wgs"      each sample → the eight-folder package with Report_<S>.pdf/.docx
                 (wgs_customer_report.build_sample).
-kind "amplicon" the BI layout of amp_combined.build_combined (1.QC ... 8.Reads + Report + README), for
-                all chosen samples together (combined) or for each sample; with include_reads
-                the quality-filtered reads go in 8.Reads.
+kind "amplicon" the BI team's layout of amp_combined.build_combined (1.QC, 2.Filter / 2.Cutadapt, 3., 4.,
+                5.Taxonomy_Identification, 6.Diversity + Report), for all chosen samples together
+                (combined) or for each sample; with include_reads the quality-filtered reads go in
+                2.Filter/<sample>/filtered_reads (2.Cutadapt/... on Illumina).
 
 split=True  → one zip per sample (samples of different customers never share a zip).
 split=False → one zip holding the chosen samples' packages side by side.
@@ -140,7 +141,7 @@ def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str],
                 return R.build_sample(run_dir, s, work, formats, name=names[s])
         else:
             # one sample per result, in the same layout as the combined result (amp_combined.py: the BI
-            # team's 1.QC ... 8.Reads), with the read QC (NanoPlot / FastQC) of that sample
+            # team's 1.QC ... 6.Diversity), with the read QC (NanoPlot / FastQC) of that sample
             import amp_combined as AC
             kw = {"tools": tools} if tools is not None else {}
 
@@ -154,7 +155,7 @@ def build(run_dir: Path, upload_dir: Path | None, kind: str, samples: list[str],
             for k, v in m.items():
                 if k.endswith("_error"):
                     warnings.append(f"{s}: {k[:-6]} — {v}")
-            # one sample has no beta diversity by nature: said in its README, not repeated for every sample here
+            # one sample has no beta diversity by nature: not repeated for every sample here
             warnings += [f"{s}: {x}" for x in m.get("notes", []) if "one sample: no beta diversity" not in x]
             for lg in work.glob("*.plots.log"):                 # R log: kept beside the zips, not inside
                 lg.replace(dest / lg.name)

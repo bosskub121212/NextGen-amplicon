@@ -2471,7 +2471,7 @@ REFERENCES = [
      "Studies in Mycology, 92, 135–154."),
 ]
 REF_DADA2 = [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-REF_EMU = [5, 0, 6, 7, 4, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+REF_EMU = [5, 0, 6, 7, 4, 8, 9, 10, 11, 12, 13, 14, 15]
 
 
 def _ref_indices(run) -> list[int]:
@@ -2495,9 +2495,7 @@ def _ref_indices(run) -> list[int]:
     out = tools + dbref + [8, 9, 10, 11, 12, 13, 14, 15]
     if (run.path / "r_tables" / "maaslin3_results.csv").exists():
         out.append(25)
-    if run.bacterial:
-        out.append(16)
-    return list(dict.fromkeys(out))
+    return list(dict.fromkeys(out))      # 16 (Salter 2014) went with the reagent table (v2.42.0)
 
 
 def _fig(svg, caption, folder=None, n=None):
@@ -3690,7 +3688,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     genus heatmap, archaea, alpha diversity and rarefaction, and beta diversity.
 
     files: for a Download results package — {file of the run folder: [its files in the package]}, so
-    the 'Folder:' lines under the figures name what the customer has (5.Taxa/csv/..., not r_tables/...).
+    the 'Folder:' lines under the figures name what the customer has (5.Taxonomy_Identification/csv/..., not r_tables/...).
     ids: {sequence / feature id of the run: its ID in that package's count table (SV001 ...)}, so the
     report's table of the most abundant features uses the IDs the customer can look up."""
     run.pkg_files = files                      # the package's file names, for the text that cites a file (_cite)
@@ -4147,23 +4145,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                                                     "others have none)" if len(rows_a) < len(arch_rows) else "")
                      + "."))
 
-    # reagent-associated genera, top features, species
-    tg = run.top_genera(15) if run.bacterial else []
-    if tg:
-        out.append('<h3 class="pbreak">Reagent-associated genera</h3>')
-        out.append(T(["Genus", "Reads", "% bacteria", "Note"],
-                     [[f'<i>{esc(g["name"])}</i>', fmt(g["reads"]), f'{g["pct"]}%',
-                       '<span class="dim">' + "; ".join((["reagent-associated"] if g["kit"] else [])
-                       + ([f'{fmt(g["unresolved"])} unresolved below genus'] if g["unresolved"] else []))
-                       + "</span>"] for g in tg],
-                     "The 15 most abundant genera over the whole run, with genera commonly recovered "
-                     "from extraction kits and PCR reagents flagged."))
-        out.append('<div class="note"><p style="margin:0"><b>Reagent-associated genera are flagged, not '
-                   "removed.</b> They match the published list of genera recovered from DNA extraction "
-                   "kits and PCR reagents (Salter et al. 2014). Many are also genuine environmental "
-                   "organisms; without a sequenced blank extraction control the two cannot be told "
-                   "apart.</p></div>")
-
+    # top features, species. (The 'Reagent-associated genera' table was dropped in v2.42.0 at the BI
+    # team's request: a list of kit genera is no measurement; a sequenced blank (see Controls) is.)
     out.append(f"<h3>Most abundant {run.unit}</h3>")
     per = len(S) <= 6                      # a share column per sample while it still fits
     def _lin(q):
@@ -4412,18 +4395,6 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     if run.total and run.host + run.euk > 0:
         notes.append(f"{100*(run.host+run.euk)/run.total:.1f}% of analysed reads are host organelle or "
                      "other non-bacterial material and are excluded from the composition figures.")
-    if run.bacteria and run.bacterial:
-        try:
-            import controls as _ct
-            _has_blank = bool(_ct.identify(run)[0])
-        except Exception:
-            _has_blank = False
-        notes.append(f"About {100*run.kit/run.bacteria:.0f}% of the bacterial reads belong to genera on "
-                     "the reagent-contaminant list. "
-                     + ("The negative controls (see Controls) show which of them this run's reagents carried."
-                        if _has_blank else
-                        "A blank extraction control sequenced alongside the samples would turn that "
-                        "estimate into a measurement."))
     if run.unresolved:
         notes.append(f"{fmt(sum(run.unresolved.values()))} reads carry a genus label the reference marks "
                      "as unresolved (&ldquo;--other&rdquo;); they are counted under the parent genus here.")
@@ -4451,11 +4422,13 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                     "Relative abundance from rRNA amplicons reflects gene copies, not cells: taxa with "
                     "many rRNA operons are over-represented."))
     if files is not None:
-        notes.append("Full tables are in this result's folders: 1.QC (read tracking), "
+        _trk = _cite(run, "read_tracking.csv")
+        notes.append("Full tables are in this result's folders: "
+                     + (f"{esc(_trk.split('/')[0])} (read tracking), " if _trk else "")
                      + (f"{esc(_cite(run, 'asv_table.csv'))} (the count table with every taxon's lineage), "
                         if _cite(run, "asv_table.csv") else "")
-                     + "5.Taxa/csv (every rank, a column per sample), 6.Diversity (alpha and beta) and 7.Tables "
-                     "(one Excel file); README.txt lists them.")
+                     + "5.Taxonomy_Identification/csv (every rank, a column per sample) and 6.Diversity "
+                     "(alpha and beta).")
     else:
         _tx = "taxonomy.csv" if run.kind in ("emu", "vsearch") else "taxonomy_table.csv"
         _have = [f"{x} ({what})" for x, what in ((_tx, "the names"), ("asv_table.csv", f"per-{run.feat1} counts"),

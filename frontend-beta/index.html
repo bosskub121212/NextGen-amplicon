@@ -8746,7 +8746,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       var L = D.latest;
       box.innerHTML = '<div class="panel" style="margin-top:14px"><div class="sechdr"><h3>Download results</h3>'
         + '<span class="hint">' + (D.kind === "wgs" ? "each sample: folders 1.QcReads … 8.readsMappingToRef + Report (PDF + Word)"
-                                                    : "folders 1.QC, 2.Cutadapt, 3.DADA2 / Emu, 4.ASV / Taxa table, 5.Taxa, 6.Diversity, 7.Tables, 8.Reads + Report (PDF + Word)") + '</span></div>'
+                                                    : "folders 1.QC, 2.Filter / 2.Cutadapt, 3.DADA2 / Emu, 4.ASV / Taxa_table, 5.Taxonomy_Identification, 6.Diversity + Report (PDF + Word)") + '</span></div>'
         + '<div style="padding:10px 14px">'
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">'
         + '<input type="text" id="dlF" placeholder="filter samples" style="width:200px" value="' + esc(filt) + '">'
@@ -8759,7 +8759,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         + '<label title="The chosen samples together, like the BI team\'s result: one report, every table with a column per sample (ASV, taxa at every rank, alpha, beta, PCoA, PERMANOVA), figures as PNG, one Excel and one Krona"><input type="radio" name="dlMode" value="combined"' + (opt.combined ? " checked" : "") + '> <b>One combined result</b> (all chosen samples together)</label>'
         + '<label><input type="radio" name="dlMode" value="split"' + (!opt.combined && opt.split ? " checked" : "") + '> One zip per sample</label>'
         + '<label><input type="radio" name="dlMode" value="one"' + (!opt.combined && !opt.split ? " checked" : "") + '> One zip with a folder per sample</label>'
-        + (D.kind === "amplicon" ? '<label><input type="checkbox" id="dlReads"' + (opt.reads ? " checked" : "") + '> include the quality-filtered reads (' + '8.Reads' + ')</label>' : "")
+        + (D.kind === "amplicon" ? '<label><input type="checkbox" id="dlReads"' + (opt.reads ? " checked" : "") + '> include the quality-filtered reads (2.Filter / 2.Cutadapt → &lt;sample&gt;/filtered_reads)</label>' : "")
         + (D.ncbi ? '<label title="OTUs UNITE could not name get the name of their NCBI check (bacteria, plants, animals the fungal primers also amplified), in the charts, tables, Krona, Excel and report. The zips are named ..._with_NCBI_names."><input type="checkbox" id="dlNcbi"' + (opt.ncbi ? " checked" : "") + '> put the NCBI names (bacteria etc.) into the profiles</label>' : "")
         + '</div>'
         + '<button class="btn pri" id="dlGo"' + (busy || !n ? " disabled" : "") + '>' + (busy ? "Building…" : "Build " + (opt.combined ? "combined result" : opt.split ? n + " zip(s)" : "1 zip")) + '</button> '

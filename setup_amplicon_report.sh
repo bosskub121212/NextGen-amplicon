@@ -44,6 +44,8 @@ status(){
   elif rpkg eulerr; then ok "R eulerr (Venn fallback)"
   else warn "R venneuler / eulerr missing — venneuler needs Java: sudo apt-get install -y default-jdk && sudo R CMD javareconf"; fi
   "$PY" -c "import openpyxl" 2>/dev/null && ok "openpyxl (backend)" || warn "openpyxl missing in $PY"
+  { "$PY" -c "import pymupdf" 2>/dev/null || "$PY" -c "import fitz" 2>/dev/null; } && ok "PyMuPDF (PNG of the PDF figures)" \
+    || { command -v pdftoppm >/dev/null && ok "pdftoppm (PNG of the PDF figures)" || warn "PyMuPDF / pdftoppm missing: Download results has no PNG of the R figures"; }
 }
 if [[ $STATUS == 1 ]]; then status; exit 0; fi
 
@@ -102,6 +104,9 @@ step "openpyxl (Excel)"
 "$PY" -c "import openpyxl" 2>/dev/null || "$PY" -m pip install --quiet openpyxl || bad "pip install openpyxl failed"
 # PNG figures of the combined result (Download results -> One combined result); without it they come as PDF
 "$PY" -c "import cairosvg" 2>/dev/null || "$PY" -m pip install --quiet cairosvg || bad "pip install cairosvg failed"
+# PNG beside every PDF figure of Download results (the R pipeline's figures), for the BI team's reports
+"$PY" -c "import pymupdf" 2>/dev/null || "$PY" -c "import fitz" 2>/dev/null \
+  || "$PY" -m pip install --quiet pymupdf || bad "pip install pymupdf failed (poppler-utils' pdftoppm is used instead when present)"
 
 step "Status"
 status

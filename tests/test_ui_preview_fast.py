@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "tests"))
 FAILS = []
-KEYS = [f"{i}." for i in range(1, 9)]
+KEYS = ["1.", "2.", "3.", "4.", "5.Taxonomy_Identification", "6.Diversity"]
 
 
 def check(name, cond, detail=""):
@@ -25,7 +25,10 @@ def one(label, d: Path, want_svg=True):
     import result_preview as RP
     p = RP.build(d, use_cache=False)
     secs = p.get("sections") or []
-    check(f"{label}: 8 folder sections, in order", [s["key"][:2] for s in secs] == KEYS, [s["key"] for s in secs])
+    ks = [s["key"] for s in secs]
+    check(f"{label}: a section per folder of the result, in order (1.QC ... 6.Diversity)",
+          len(ks) == 6 and all(k.startswith(w) for k, w in zip(ks, KEYS)) and ks[0] == "1.QC"
+          and ks[1] in ("2.Filter", "2.Cutadapt"), ks)
     bad = _bad_notes(p)
     check(f"{label}: no section failed", not bad, bad[:3])
     kinds = {i["kind"] for s in secs for i in s["items"]}
@@ -54,8 +57,11 @@ def main():
             one("DADA2 (12S)", make_amp_run(t / "amp"))
             p = one("Emu (ONT 16S)", make_emu_run(t / "emu"))
             s3 = next(s for s in p["sections"] if s["key"].startswith("3."))
-            check("Emu: folders named 3.Emu and 4.Taxa_table", s3["key"] == "3.Emu"
-                  and p["sections"][3]["key"] == "4.Taxa_table", [s["key"] for s in p["sections"]])
+            check("Emu: folders named 2.Filter, 3.Emu and 4.Taxa_table; a Krona picture in 5.",
+                  s3["key"] == "3.Emu" and p["sections"][1]["key"] == "2.Filter"
+                  and p["sections"][3]["key"] == "4.Taxa_table"
+                  and any(i.get("title", "").startswith("Krona picture") for i in p["sections"][4]["items"]),
+                  [s["key"] for s in p["sections"]])
             try:
                 from test_its_ont_fast import make_vsearch_its_run
                 one("VSEARCH (ITS ONT)", make_vsearch_its_run(t / "vs"))
