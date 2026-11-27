@@ -98,6 +98,23 @@ def main():
             check("NanoPlot missing: said in the build's notes, not silently left out",
                   any("NanoPlot is not installed" in w for w in m2.get("warnings", [])), m2.get("warnings"))
 
+            # --- read QC of a MinKNOW barcode: every chunk, not one ------------------------------------
+            import json as _json, read_qc as RQ
+            up = t / "up"
+            up.mkdir()
+            rows = []
+            for k in range(3):
+                with gzip.open(up / f"run_{k}.fastq.gz", "wt") as fh:
+                    for i in range(50):
+                        fh.write(f"@r{k}_{i}\nACGTACGTAC\n+\nIIIIIIIIII\n")
+                rows.append({"sample": "PGU-ITS", "file1": f"run_{k}.fastq.gz", "file2": ""})
+            (up / "sample_manifest.json").write_text(_json.dumps(rows))
+            q = RQ.run(str(up), single=True)
+            f0 = q["samples"]["PGU-ITS"]["files"][0]
+            check("read QC: a MinKNOW barcode's chunks are all read (it took the last chunk only)",
+                  list(q["samples"]) == ["PGU-ITS"] and f0.get("files_in_sample") == 3 and f0["reads_examined"] == 150,
+                  f0)
+
             # --- the run report: no reagent table, no Salter --------------------------------------
             from test_report_many_fast import make_run
             d3 = make_run(t / "bac", 4)

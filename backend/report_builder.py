@@ -3045,7 +3045,9 @@ def _ncbi_un_section(run, S, T) -> list:
                  [[esc(g)] + [f"{100 * per[g][s_] / tot[s_]:.2f}%" for s_ in S]
                   + [esc(", ".join(n for n, _ in named.get(g, Counter()).most_common(6)))] for g in g_in],
                  "Reads of the OTUs the reference could not name, by the group of their closest NCBI record "
-                 "(% of each sample's counted reads); the list per OTU is ncbi_unassigned.tsv."))
+                 "(% of each sample's counted reads)"
+                 + (f"; the list per OTU is {esc(_cite(run, 'ncbi_unassigned.tsv'))}." if _cite(run, "ncbi_unassigned.tsv")
+                    else ".")))
     return out
 
 
@@ -4429,7 +4431,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                      + (f"{esc(_cite(run, 'asv_table.csv'))} (the count table with every taxon's lineage), "
                         if _cite(run, "asv_table.csv") else "")
                      + "5.Taxonomy_Identification/csv (every rank, a column per sample) and 6.Diversity "
-                     "(alpha and beta).")
+                     + ("(alpha and beta)." if _cite(run, "r_tables/beta_heatmap.csv") else "(alpha)."))
     else:
         _tx = "taxonomy.csv" if run.kind in ("emu", "vsearch") else "taxonomy_table.csv"
         _have = [f"{x} ({what})" for x, what in ((_tx, "the names"), ("asv_table.csv", f"per-{run.feat1} counts"),

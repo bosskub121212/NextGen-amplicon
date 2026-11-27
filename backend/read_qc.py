@@ -89,12 +89,27 @@ def hist_pct(h, tot, p):
     return len(h) - 1
 
 
-def profile(path: Path, n: int) -> dict:
-    """Per-file statistics from the first n reads."""
+def _reads(path, n: int):
+    """The first n reads of a file; of a list of files (a MinKNOW barcode's chunks), an even share of
+    n from each, so the whole run is seen and not only its first minutes."""
+    if not isinstance(path, (list, tuple)):
+        yield from fastq_iter(path, n)
+        return
+    per, k = max(200, -(-n // max(1, len(path)))), 0
+    for f in path:
+        for rec in fastq_iter(f, min(per, n - k)):
+            k += 1
+            yield rec
+        if k >= n:
+            return
+
+
+def profile(path, n: int) -> dict:
+    """Statistics of the first n reads of a file, or of n reads spread over a list of files (chunks)."""
     lens, meanq, q30 = [], [], 0
     bases = 0
     pos_hist: list[list[int]] = []          # pos -> histogram over Q 0..60
-    for s, q in fastq_iter(path, n):
+    for s, q in _reads(path, n):
         L = len(s)
         lens.append(L)
         qs = [ord(c) - 33 for c in q]
@@ -109,7 +124,11 @@ def profile(path: Path, n: int) -> dict:
                 pos_hist.append([0] * 61)
             for i, x in enumerate(qs):
                 pos_hist[i][min(60, max(0, x))] += 1
-    out = {"file": path.name, "reads_examined": len(lens)}
+    if isinstance(path, (list, tuple)):
+        out = {"file": f"{Path(path[0]).name} + {len(path) - 1} more file(s)" if len(path) > 1 else Path(path[0]).name,
+               "files_in_sample": len(path), "reads_examined": len(lens)}
+    else:
+        out = {"file": path.name, "reads_examined": len(lens)}
     if not lens:
         return out
     sl = sorted(lens)
@@ -279,10 +298,27 @@ def find_tool(name):
     return None
 
 
+def manifest_chunks(d: Path) -> dict:
+    """{sample: [file, ...]} for single-end samples the manifest gives as several files (MinKNOW folders:
+    one row per chunk of a barcode). find_samples keeps one file per sample (the last row)."""
+    man = Path(d) / "sample_manifest.json"
+    out = {}
+    try:
+        for r in json.loads(man.read_text()) if man.exists() else []:
+            if r.get("sample") and r.get("file1") and not r.get("file2") and (Path(d) / r["file1"]).exists():
+                out.setdefault(r["sample"], []).append(Path(d) / r["file1"])
+    except Exception:
+        return {}
+    return {k: sorted(v) for k, v in out.items() if len(v) > 1}
+
+
 def run(input_dir: str, primer_f: str = "", primer_r: str = "", expected_len: int | None = None,
         n: int = 20000, fastqc_dir: str | None = None, threads: int = 2, single: bool = False) -> dict:
     d = Path(input_dir)
     samples = find_samples(d, single)
+    for name, fs in manifest_chunks(d).items():     # every chunk of a barcode, not only one of them
+        if name in samples:
+            samples[name] = [fs]
     # MinKNOW folders hold hundreds of chunk files: look at no more than 60 of
     # them and at most ~400,000 reads in all, so this stays a few seconds.
     nfiles = sum(len(v) for v in samples.values())
@@ -315,7 +351,7 @@ def run(input_dir: str, primer_f: str = "", primer_r: str = "", expected_len: in
         if fq:
             od = Path(fastqc_dir)
             od.mkdir(parents=True, exist_ok=True)
-            allf = [str(f) for fs in samples.values() for f in fs]
+            allf = [str(x) for fs in samples.values() for f in fs for x in (f if isinstance(f, list) else [f])]
             subprocess.run([fq, "-q", "-t", str(threads), "-o", str(od)] + allf,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             res["tools"]["fastqc"] = str(od)

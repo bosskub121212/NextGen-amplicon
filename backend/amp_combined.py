@@ -138,6 +138,7 @@ def _report_files(root: Path, D: dict, feat: str, rparts, rsfx) -> dict:
     k = len(rparts)
     m = {"read_tracking.csv": have(D["filt"] / "read_tracking_summary.csv"),
          "qc/read_qc.json": have(D["filt"] / "read_qc.json"),
+         "ncbi_unassigned.tsv": have(D["taxa"] / "NCBI" / "unassigned_otus_ncbi.tsv"),
          "asv_table.csv": have(D["feat"] / f"{feat}_count_table_named.csv"),
          "asv_lengths.csv": [],
          "r_tables/rarefaction.csv": have(D["alpha"] / "Rarefaction_curve_data.csv",
@@ -725,7 +726,7 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
         for f in ("beta_stats.txt", "beta_nmds_jaccard.pdf", "pca_scores.csv", "nmds_bray.csv"):
             _put(run_dir / f, D["beta"] / "figures" / f)
         _put(run_dir / "UPGMA", D["beta"] / "figures" / "UPGMA")
-        for pat in ("05b*", "05c*", "12*", "17*", "20*"):
+        for pat in ("05b*", "05c*", "12*", "17*", "20*") if len(S) >= 2 else ():   # one sample: nothing to compare
             for p in run_dir.glob(f"r_plots/{pat}.pdf"):
                 _put(p, D["beta"] / "figures" / p.name)
 
