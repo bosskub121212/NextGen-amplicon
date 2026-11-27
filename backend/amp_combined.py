@@ -390,6 +390,31 @@ def _strip_num(name: str) -> str:
     return re.sub(r"^\d+[a-z]?_", "", name)
 
 
+def _refresh_read_qc(run_dir: Path, upload_dir, notes: list):
+    """Runs made before v2.43.3 measured a MinKNOW barcode's raw reads on ONE of its chunk files (2,242 of
+    653,442 reads for TH-BIOENTIST-00005). When the upload still holds the chunks, measure again over all of
+    them and keep it in the run (qc/read_qc.json; the old file stays as read_qc.one_chunk.json)."""
+    qp = Path(run_dir) / "qc" / "read_qc.json"
+    if not upload_dir or not Path(upload_dir).is_dir() or not qp.exists():
+        return
+    try:
+        import importlib
+        RQ = importlib.reload(importlib.import_module("read_qc"))   # the backend may hold an older copy
+        chunks = RQ.manifest_chunks(Path(upload_dir))
+        old = json.loads(qp.read_text())
+        stale = [s for s, fs in chunks.items()
+                 if s in old.get("samples", {}) and not any(f.get("files_in_sample") for f in old["samples"][s]["files"])]
+        if not stale:
+            return
+        new = RQ.run(str(upload_dir), single=True)
+        if not any(f.get("files_in_sample") for s in stale for f in new.get("samples", {}).get(s, {}).get("files", [])):
+            return
+        shutil.copy2(qp, qp.with_name("read_qc.one_chunk.json"))
+        qp.write_text(json.dumps(new))
+    except Exception as ex:
+        notes.append(f"raw-read quality not measured again over every chunk ({type(ex).__name__}: {ex})")
+
+
 def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Path, name: str,
                    include_reads: bool = True, ncbi_names: bool = False, tools: dict | None = None,
                    formats=("pdf", "docx"), job_label: str = "", progress=None, read_qc: bool = True) -> dict:
@@ -414,6 +439,7 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
     engine = getattr(run, "engine", run.kind)
     feat = {"emu": "Taxa_table", "vsearch": "OTU"}.get(engine, "ASV")
     step3 = {"emu": "Emu", "vsearch": "VSEARCH"}.get(engine, "DADA2")
+    _refresh_read_qc(run_dir, upload_dir, notes)
     rrun = RB.Run(run_dir, RB.KITOME, job_label or name, samples=sel if subset else None)
     long_read = run.kind == "emu" or engine == "pacbio" or (engine == "vsearch" and not getattr(rrun, "paired", False))
     tech = "ONT" if run.kind == "emu" or (engine == "vsearch" and long_read) else "PacBio" if engine == "pacbio" \

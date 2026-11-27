@@ -114,6 +114,20 @@ def main():
             check("read QC: a MinKNOW barcode's chunks are all read (it took the last chunk only)",
                   list(q["samples"]) == ["PGU-ITS"] and f0.get("files_in_sample") == 3 and f0["reads_examined"] == 150,
                   f0)
+            rd = t / "oldrun"
+            (rd / "qc").mkdir(parents=True)
+            (rd / "qc" / "read_qc.json").write_text(_json.dumps({"samples": {"PGU-ITS": {"files": [
+                {"file": "run_2.fastq.gz", "reads_examined": 50}]}}}))
+            nts = []
+            AC._refresh_read_qc(rd, up, nts)
+            f1 = _json.loads((rd / "qc" / "read_qc.json").read_text())["samples"]["PGU-ITS"]["files"][0]
+            check("result build: an older run's one-chunk read QC is measured again over every chunk (old file kept)",
+                  f1.get("files_in_sample") == 3 and (rd / "qc" / "read_qc.one_chunk.json").exists() and not nts,
+                  (f1, nts))
+            AC._refresh_read_qc(rd, up, nts)
+            check("result build: done once (a measured run is left alone)",
+                  _json.loads((rd / "qc" / "read_qc.one_chunk.json").read_text())["samples"]["PGU-ITS"]["files"][0]
+                  ["reads_examined"] == 50)
 
             # --- the run report: no reagent table, no Salter --------------------------------------
             from test_report_many_fast import make_run
