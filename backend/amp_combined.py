@@ -800,7 +800,9 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
         for f in ("beta_stats.txt", "beta_nmds_jaccard.pdf", "pca_scores.csv", "nmds_bray.csv"):
             _put(run_dir / f, D["beta"] / "figures" / f)
         _put(run_dir / "UPGMA", D["beta"] / "figures" / "UPGMA")
-        for pat in ("05b*", "05c*", "12*", "17*", "20*") if len(S) >= 2 else ():   # one sample: nothing to compare
+        # one sample: nothing to compare; two: PCA, UPGMA and distance boxplots say nothing (the report: 'PCoA
+        # and UPGMA need three samples or more'), the Bray-Curtis / Jaccard heatmaps stay
+        for pat in (("05b*", "05c*", "12*", "17*", "20*") if len(S) >= 3 else ("17*",) if len(S) == 2 else ()):
             for p in run_dir.glob(f"r_plots/{pat}.pdf"):
                 _put(p, D["beta"] / "figures" / p.name)
 

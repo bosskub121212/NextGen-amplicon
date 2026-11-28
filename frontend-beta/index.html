@@ -773,7 +773,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      painted DADA2's own "Step 2/8 — Learning error rates" and "ErrorModel_R1.pdf
      saved" bright red on a run that was going perfectly. Match the shapes R and
      this pipeline actually use to announce a failure, and nothing else. */
-  var LOG_ERR  = /^\s*(Error|ERROR|FATAL|Execution halted)\b|Error in |ERROR:|Traceback \(most recent|WRONG KIND OF|No such file|cannot open|Killed$/;
+  var LOG_ERR  = /^\s*(Error(?! rates)|ERROR|FATAL|Execution halted)\b|Error in |ERROR:|Traceback \(most recent|WRONG KIND OF|No such file|cannot open|Killed$/;
   var LOG_WARN = /^\s*(Warning|WARN)\b|WARNING:|Warning message/;
 
   /* the machine the backend runs on (GET /version): cpus = the CPUs it sees — every form's CPU threads
@@ -7397,7 +7397,25 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     });
 
     var itx = document.getElementById("f_its_tax");
-    if(itx) itx.addEventListener("change", function(){ preflight(dbOpts, dbCount); });
+    /* ITS named at NCBI (BLASTn + LCA): the reference file and minBoot are not used, so they are hidden;
+       the LCA settings show only then. ITS Nanopore (VSEARCH) always uses the database. */
+    function itsTaxRows(){
+      if(!itx) return;
+      var sq = (document.getElementById("seq") || {}).value;
+      var ncbi = itx.value === "ncbi_lca" && sq !== "ont" && sq !== "qiime2_vsearch";
+      function show(id, on){
+        var e = document.getElementById(id), w = e && e.closest(".f");
+        if(w) w.style.display = on ? "" : "none";
+      }
+      ["f_dbPath", "f_minBoot", "f__species"].forEach(function(i){ show(i, !ncbi); });
+      ["f_lca_identity", "f_lca_coverage", "f_lca_hits"].forEach(function(i){ show(i, ncbi); });
+    }
+    if(itx){
+      itx.addEventListener("change", function(){ itsTaxRows(); preflight(dbOpts, dbCount); });
+      var sqEl = document.getElementById("seq");
+      if(sqEl) sqEl.addEventListener("change", itsTaxRows);
+      itsTaxRows();
+    }
 
     /* Region preset drives the primers and the starting truncLen together. */
     var rg = document.getElementById("f_region");

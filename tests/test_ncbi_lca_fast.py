@@ -149,6 +149,16 @@ def main():
               and '"--pool", params.pool or "FALSE"' in m and 'its_tax:            str   = "unite"' in m
               and '"its_tax must be unite or ncbi_lca"' in m)
         f = (ROOT / "frontend-beta" / "index.html").read_text()
+        ac = (ROOT / "backend" / "amp_combined.py").read_text()
+        check("Download results: two samples -> only the R beta heatmaps (no PCA / UPGMA / distance boxplots)",
+              '("17*",) if len(S) == 2' in ac)
+        pv = (ROOT / "backend" / "provenance.py").read_text()
+        check("provenance: R package versions read from the R library the pipelines use "
+              "(~/R/<platform>-library/<R x.y>; U2BI-188 listed no DADA2)", "-library/', R.version$major" in pv)
+        fh_ = (ROOT / "frontend-beta" / "index.html").read_text()
+        check("form: NCBI names hide the database / minBoot fields; log: 'Error rates learned' not red",
+              "function itsTaxRows()" in fh_ and '["f_dbPath", "f_minBoot", "f__species"]' in fh_
+              and "(Error(?! rates)|ERROR" in fh_)
         check("form: coral ITS2 preset (SCLER primers, NCBI + LCA, minLen 100, overlap 20, pool TRUE), "
               "no database needed for NCBI names",
               'f:"GARTCTTTGAACGCAAATGGC"' in f and 'its_tax:"ncbi_lca", its_min_len:100' in f
@@ -176,7 +186,24 @@ def main():
                                 "n_passing": 10 if i == 0 else 0, "best_hit": "Porites lobata",
                                 "best_pident": 100 if i == 0 else 85, "best_qcov": 100})
             (d / "ncbi_lca" / "ncbi_lca.json").write_text(json.dumps({"date": "2026-11-27"}))
+            # the LCA's own table: the 4th ASV's passing hits were all 'uncultured eukaryote' -> Eukaryota only
+            tt = (d / "taxonomy_table.csv").read_text().splitlines()
+            tt[4] = f'"{SEQ[3]}","Eukaryota",NA,NA,NA,NA,NA,NA,"{SEQ[3]}"'
+            (d / "taxonomy_table.csv").write_text("\n".join(tt) + "\n")
+            import amp_data as AD
+            rd = AD.load_run(d)
+            a4 = next(a for a in rd.asvs if a.get("sequence") == SEQ[3])
+            check("NCBI LCA: an ASV named only to Eukaryota is 'Eukaryota (unclassified)' at every rank, "
+                  "not Unassigned (U2BI-188: 45 % of the reads)",
+                  AD.label(a4, "Phylum") == "Eukaryota (unclassified)"
+                  and AD.label(a4, "Genus") == "Eukaryota (unclassified)", a4["tax"])
             html = RB.build_profile_html(RB.Run(d, RB.KITOME, "x"))
+            cfg = html.split("Run configuration")[0][-3000:] + html.split("Run configuration")[1][:3000]
+            check("report: the Eukaryota-only ASV is 'Eukaryota (unclassified)' at the phylum and in the "
+                  "ASV table's lineage, not 'unassigned'", "Eukaryota (unclassified)" in html)
+            check("report: Reference database is NCBI GenBank nt (with the day), not the UNITE file of the form",
+                  "NCBI GenBank nt (NCBI BLAST service, 2026-11-27)" in html and "unite_ITS" not in cfg,
+                  re.findall(r"Reference database[^<]*<[^>]*>[^<]*<[^>]*>([^<]*)", html)[:2])
             body = html.split("References")[0]
             refs = html.split("References")[-1]
             check("report: NCBI LCA method (90 % / 100 % / 10 hits, DiBattista 2025), the names section, "

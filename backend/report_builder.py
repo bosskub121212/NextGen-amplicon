@@ -321,6 +321,15 @@ class Run:
         key = list(tax_rows[0].keys())[0]  # first column = the ASV sequence (or feature id)
         tax_rows = self._clean_tax(tax_rows, key)
         self.tax = {r[key]: r for r in tax_rows}
+        # ITS named at NCBI (BLASTn + LCA): passing hits that agree only on the domain ('uncultured eukaryote'
+        # records) name the ASV 'Eukaryota', which is not Unassigned (no hit passing): it is kept apart at the
+        # phylum as 'Eukaryota (unclassified)', as Download results' tables do
+        if self.summary.get("tax_method") == "ncbi_lca":
+            for r in tax_rows:
+                k_ = str(r.get("Kingdom") or "").strip()
+                p_ = str(r.get("Phylum") or "").strip()
+                if k_ and not BLANK_RE.match(k_) and (not p_ or BLANK_RE.match(p_)):
+                    r["Phylum"] = f"{k_} (unclassified)"
         # SILVA 144 inserts a Kingdom rank below Domain, so the column set differs
         # between references. Take whatever ranks are actually present.
         self.rank_cols = [r for r in RANKS if r in tax_rows[0]]
@@ -655,6 +664,9 @@ class Run:
     @property
     def db_name(self) -> str:
         # what the run actually used (provenance.json), else what was asked for
+        if self.summary.get("tax_method") == "ncbi_lca":       # BLAST at NCBI: no reference file was used
+            day = (self._json("ncbi_lca/ncbi_lca.json") or {}).get("date", "")
+            return "NCBI GenBank nt (NCBI BLAST service" + (f", {day})" if day else ")")
         for d in (self.prov.get("databases") or []):
             if d.get("role") == "taxonomy" and d.get("file"):
                 f = d["file"].split("/")[0] if self.emu else d["file"]
@@ -3924,7 +3936,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
     if prov:
         out.append(T(["Software / reference", "Version", "Checksum (MD5)"], prov,
                      "Software versions and reference files this run used, recorded when it "
-                     "finished (provenance.json in the result folder)."
+                     "finished (provenance.json of the run)."
                      + (" &#10003; marks a reference whose checksum matches the file its publisher "
                         "released." if any("&#10003;" in r[2] for r in prov) else "")))
 

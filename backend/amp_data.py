@@ -295,6 +295,12 @@ class RunData:
             counts = {s: int(float(v or 0)) for s, v in zip(self.samples, [x for i, x in enumerate(r) if i != si])}
             b = bl.get(seq, {})
             t = {k: _v(tax.get(seq, {}).get(k, "")) for k in RANKS}
+            # NCBI + LCA (ITS): an ASV whose passing hits agree only on the domain / kingdom ('uncultured
+            # eukaryote' records) is named, not unassigned: 'Eukaryota (unclassified)' as an NCBI group name
+            if not t["Phylum"] and self.summary.get("tax_method") == "ncbi_lca":
+                k_ = _v(tax.get(seq, {}).get("Kingdom", ""))
+                if k_:
+                    t["Phylum"] = f"{k_} (unclassified)"
             asvs.append({"sequence": "" if by_id else seq, **({"id": seq} if by_id else {}),
                          "counts": counts, "total": sum(counts.values()), "tax": t,
                          **{k: b.get(k, "") for k in ("best_hit", "pident", "qcov", "source", "accession",

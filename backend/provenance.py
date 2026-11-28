@@ -109,7 +109,10 @@ def r_versions(pkgs: list[str]) -> dict:
     rs = shutil.which("Rscript")
     if not rs:
         return {}
-    code = ("cat('R\\t', paste(R.version$major, R.version$minor, sep='.'), '\\n', sep='');"
+    code = (".libPaths(unique(c(Filter(dir.exists, c(path.expand('~/R/library'), "
+            "Sys.glob(path.expand(paste0('~/R/*-library/', R.version$major, '.', "
+            "sub('[.].*', '', R.version$minor)))))), .libPaths())));"
+            "cat('R\\t', paste(R.version$major, R.version$minor, sep='.'), '\\n', sep='');"
             f"for (p in c({', '.join(repr(x) for x in pkgs)})) "
             "cat(p, '\\t', tryCatch(as.character(utils::packageVersion(p)), "
             "error=function(e) ''), '\\n', sep='')")
@@ -303,5 +306,10 @@ if __name__ == "__main__":
         except Exception:
             pipe = ""
         pipe = (pipe or "dada2").lower()
-    dbs = [("taxonomy", d) for d in a.db] or [("taxonomy", params.get("dbPath") or "")]
+    try:
+        ncbi = json.loads((rd / "summary.json").read_text()).get("tax_method") == "ncbi_lca"
+    except Exception:
+        ncbi = False
+    # ITS named at NCBI (BLASTn + LCA) used no reference file, whatever the form's database field held
+    dbs = [("taxonomy", d) for d in a.db] or ([] if ncbi else [("taxonomy", params.get("dbPath") or "")])
     print(json.dumps(write(rd, pipe, dbs), indent=2))
