@@ -636,7 +636,9 @@ class Run:
                 if v and not BLANK_RE.match(str(v).strip()):
                     v = UNRESOLVED_RE.sub(" sp.", str(v))
                     lineage.append(v)
-                    deepest = f"{rank[0]}: {v}"
+                    # 'Eukaryota (unclassified)' (NCBI LCA) is no phylum: the name column stays '—'
+                    if not str(v).endswith(" (unclassified)"):
+                        deepest = f"{rank[0]}: {v}"
             host = seq in self.host_seqs
             pid = getattr(self, "pkg_ids", None) or {}
             out.append({
@@ -2568,6 +2570,9 @@ def _provenance_rows(run):
              "cutadapt": "cutadapt", "vsearch": "VSEARCH", "emu": "Emu", "minimap2": "minimap2",
              "chopper": "chopper"}
     for k, v in (pv.get("tools") or {}).items():
+        # ITS Illumina uses VSEARCH only to name ASVs when the UNITE classifier would not fit in memory
+        if k == "vsearch" and run.kind == "its" and (run.summary or {}).get("tax_method") != "vsearch":
+            continue
         rows.append([esc(names.get(k, k)), esc(v), ""])
     for d in pv.get("databases") or []:
         md5 = d.get("md5") or ""

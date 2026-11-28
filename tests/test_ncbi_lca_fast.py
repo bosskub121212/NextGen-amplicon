@@ -201,6 +201,13 @@ def main():
             cfg = html.split("Run configuration")[0][-3000:] + html.split("Run configuration")[1][:3000]
             check("report: the Eukaryota-only ASV is 'Eukaryota (unclassified)' at the phylum and in the "
                   "ASV table's lineage, not 'unassigned'", "Eukaryota (unclassified)" in html)
+            check("report: ASV table names no 'P: Eukaryota (unclassified)' (Eukaryota is no phylum)",
+                  "P: Eukaryota" not in html)
+            (d / "provenance.json").write_text(json.dumps({"app_version": "2.45.3",
+                                                           "tools": {"dada2": "1.40.0", "vsearch": "2.32.0"}}))
+            h2 = RB.build_profile_html(RB.Run(d, RB.KITOME, "x"))
+            check("report: software table lists DADA2, not VSEARCH, for ITS named at NCBI",
+                  "1.40.0" in h2 and "2.32.0" not in h2)
             check("report: Reference database is NCBI GenBank nt (with the day), not the UNITE file of the form",
                   "NCBI GenBank nt (NCBI BLAST service, 2026-11-27)" in html and "unite_ITS" not in cfg,
                   re.findall(r"Reference database[^<]*<[^>]*>[^<]*<[^>]*>([^<]*)", html)[:2])
