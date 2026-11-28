@@ -414,6 +414,10 @@ def main():
     import test_png_nanoplot_fast            # PNG of the PDF figures; NanoPlot in the combined result; no reagent table
     test_png_nanoplot_fast.main()
     FAILS.extend(test_png_nanoplot_fast.FAILS)
+
+    import test_ncbi_lca_fast                # ITS named by BLASTn vs NCBI nt + LCA (coral ITS2 eDNA)
+    test_ncbi_lca_fast.main()
+    FAILS.extend(test_ncbi_lca_fast.FAILS)
     print()
     if FAILS:
         print(f"{len(FAILS)} check(s) failed: {', '.join(FAILS)}")

@@ -31,6 +31,17 @@ def main():
         check("cox1_pipeline.R: the merged ASVs' reads go to their parent (LULU's curated table), log kept in LULU/",
               "curated$curated_table" in r and "stopifnot(sum(fin) == sum(seqtab_translated))" in r
               and "setwd(lulu_dir)" in r and "lulu_otu_map.csv" in r)
+        check("cox1_pipeline.R: BLAST+ looked for in the app's conda envs too; what LULU did is recorded "
+              "(ran / no_blast / empty_matchlist / error / missing / off)",
+              'blast_bin <- function(tool)' in r and 'summary_list$lulu_status <- lulu_status' in r
+              and 'lulu_status <- "no_blast"' in r and 'summary_list$lulu       <- identical(lulu_status, "ran")' in r)
+        import types, report_builder as RB
+        st = lambda sm: RB.Run.lulu_state.fget(types.SimpleNamespace(summary=sm, params={}, path=ROOT / "nope"))
+        check("report: a LULU that did not run is not 'curated with LULU (0 merged)'",
+              st({"lulu_requested": True, "lulu": False, "lulu_status": "no_blast"}) == "no_blast"
+              and st({"lulu_requested": True, "lulu": True, "lulu_status": "ran"}) == "ran"
+              and st({"lulu_requested": True, "lulu": True}) == "ran"
+              and st({"lulu_requested": True, "lulu": False}) == "missing")
         mm = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
         fe = (ROOT / "frontend-beta" / "index.html").read_text(encoding="utf-8")
         check("default CPU threads = the CPUs the backend sees (/version cpus; forms and Run again)",

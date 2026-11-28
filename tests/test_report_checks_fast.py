@@ -126,7 +126,8 @@ def main():
             fm = (ROOT / "backend" / "fish_mito_ref.py").read_text(encoding="utf-8")
             check("fish_mito_ref fills those lineages when the reference is built", "fill_lineages(_lin)" in fm)
             rs = (ROOT / "backend" / "r_scripts" / "cox1_pipeline.R").read_text(encoding="utf-8")
-            check("cox1_pipeline.R: summary says whether LULU ran", 'requireNamespace("lulu", quietly = TRUE)\nsummary_list$lulu_requested' in rs)
+            check("cox1_pipeline.R: summary says whether LULU ran (v2.45.0: what it did)",
+                  'summary_list$lulu       <- identical(lulu_status, "ran")' in rs and "summary_list$lulu_requested" in rs)
     except Exception:
         traceback.print_exc()
         FAILS.append("exception")

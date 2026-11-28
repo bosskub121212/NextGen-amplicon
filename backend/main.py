@@ -171,6 +171,14 @@ class RunParams(BaseModel):
     blast_limit:        str   = "fish"    # fish (txid7898) | vertebrates (txid7742) | all
     blast_ncbi:         bool  = True      # check every ASV against NCBI nt (remote BLAST)
     blast_id:           str   = "98.5,95,90,85,80"   # % identity: species,genus,family,order,class
+    # ITS Illumina naming: UNITE (fungi) or NCBI GenBank nt by BLASTn + LCA (ncbi_lca.py), for ITS of
+    # other organisms (coral ITS2 eDNA, DiBattista et al. 2025)
+    its_tax:            str   = "unite"   # unite | ncbi_lca
+    lca_identity:       float = 90.0      # % identity a hit needs
+    lca_coverage:       float = 100.0     # % of the ASV the hit must cover
+    lca_hits:           int   = 10        # top NCBI hits the LCA looks at
+    its_min_len:        int   = 50        # ITS Illumina: filterAndTrim minLen
+    merge_overlap:      int   = 12        # ITS Illumina: mergePairs minOverlap (maxMismatch 0)
     truncLen_F:    int   = 240
     truncLen_R:    int   = 200
     maxEE_F:       float = 2.0
@@ -870,6 +878,15 @@ async def run_analysis(job_id: str, params: RunParams):
             "error": "blast_id must be five % identities: species,genus,family,order,class (e.g. 98.5,95,90,85,80)"})
     if (params.tax_method or "dada2") not in ("dada2", "blast", "both"):
         return JSONResponse(status_code=400, content={"error": "tax_method must be dada2, blast or both"})
+    if (params.its_tax or "unite") not in ("unite", "ncbi_lca"):
+        return JSONResponse(status_code=400, content={"error": "its_tax must be unite or ncbi_lca"})
+    for _k, _lo, _hi in (("lca_identity", 50, 100), ("lca_coverage", 10, 100), ("lca_hits", 1, 100),
+                         ("its_min_len", 20, 1000), ("merge_overlap", 5, 200)):
+        _v = getattr(params, _k)
+        if _v is None or not (_lo <= float(_v) <= _hi):
+            return JSONResponse(status_code=400, content={"error": f"{_k} must be between {_lo} and {_hi} (got {_v})"})
+    if (params.pool or "FALSE") not in ("FALSE", "TRUE", "pseudo"):
+        return JSONResponse(status_code=400, content={"error": "pool must be FALSE, TRUE or pseudo"})
     # Nanopore 16S reads are one file per sample (or chunk files of one sample) — never a
     # read pair. A file paired as "file2" means the form guessed Illumina mates from names
     # like X_R1 / X_R2 (often replicates R1, R2, R3): Emu would silently drop the second file.
@@ -1220,9 +1237,20 @@ def _run_r_pipeline_body(job_id: str, params: RunParams):
         if params.dbPath and Path(params.dbPath).is_file():
             cmd += ["--dbPath", params.dbPath]
         cmd += ["--minBoot", str(params.minBoot)]
+        # the DADA2 settings of the form reached the ITS pipeline only in part (pool, chimera method
+        # and minLen were always FALSE / consensus / 50)
+        cmd += ["--minLen", str(int(params.its_min_len)), "--pool", params.pool or "FALSE",
+                "--chimera_method", params.chimeraMethod or "consensus",
+                "--merge_overlap", str(int(params.merge_overlap))]
         _pipe_kind = "its"
-        _pipe_dbs = [("taxonomy", params.dbPath if params.dbPath and Path(params.dbPath).is_file()
-                      else _dbp("UNITE_ITS1" if region == "ITS1" else "UNITE_ITS2"))]
+        if (params.its_tax or "unite") == "ncbi_lca":
+            cmd += ["--tax_source", "ncbi_lca", "--lca_identity", str(params.lca_identity),
+                    "--lca_coverage", str(params.lca_coverage), "--lca_hits", str(int(params.lca_hits)),
+                    "--python", sys.executable]
+            _pipe_dbs = []                    # NCBI nt online: no reference file of this machine
+        else:
+            _pipe_dbs = [("taxonomy", params.dbPath if params.dbPath and Path(params.dbPath).is_file()
+                          else _dbp("UNITE_ITS1" if region == "ITS1" else "UNITE_ITS2"))]
 
     elif marker == "COX1":
         # ── COX1 metabarcoding pipeline ────────────────────────────────────

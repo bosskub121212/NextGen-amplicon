@@ -154,6 +154,7 @@ def _report_files(root: Path, D: dict, feat: str, rparts, rsfx) -> dict:
          "asvs.fasta": have(D["feat"] / f"{feat}_sequences.fasta"),
          "otus.fasta": have(D["s3"] / "otus.fasta"),
          "blast/taxonomy_blast.csv": have(D["taxa"] / "BLAST" / "taxonomy_blast.csv"),
+         "ncbi_lca/taxonomy_ncbi_lca.csv": have(D["taxa"] / "BLAST" / "taxonomy_ncbi_lca.csv"),
          "taxonomy_table_dada2.csv": have(D["feat"] / "taxonomy_table_dada2.csv"),
          "metadata.csv": [],
          "PICRUSt2": [rel(D["func"] / "PICRUSt2")] if (D["func"] / "PICRUSt2").is_dir() else []}
@@ -507,41 +508,75 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
                 + list(run_dir.glob("r_plots/01_*.pdf")):
             _put(p, D["qc"] / p.name)
         _put(run_dir / "qc" / "read_qc.json", D["filt"] / "read_qc.json")
-    def _nano(fs, sd, s):
+    def _nano(fs, sd, s, out):
         tool = CR._tool(tools, "NanoPlot")
         if not tool:
-            notes.append(f"{s}: NanoPlot is not installed on the server (setup_amplicon_report.sh): no NanoPlot")
-        elif not Q.nanoplot(fs, sd / "NanoPlot", tool, threads=min(4, os.cpu_count() or 2)):
-            notes.append(f"{s}: NanoPlot did not finish: no NanoPlot")
+            out.append(f"{s}: NanoPlot is not installed on the server (setup_amplicon_report.sh): no NanoPlot")
+        elif not Q.nanoplot(fs, sd / "NanoPlot", tool, threads=2):
+            out.append(f"{s}: NanoPlot did not finish: no NanoPlot")
+
+    def _read_qc_one(s):
+        """NanoPlot, or FastQC + fastp, of one sample's raw reads; the notes it leaves."""
+        out, sd = [], sdir(D["qc"], s)
+        try:
+            if run.kind == "emu" or engine == "vsearch":
+                fs = CR._ont_raw(run, upload_dir, s)
+                if fs:
+                    _nano(fs, sd, s, out)
+                else:
+                    out.append(f"{s}: raw reads not found in the upload folder: no NanoPlot")
+            elif engine == "pacbio":           # long single reads: NanoPlot, not FastQC
+                r1 = CR._find_reads(upload_dir, s, run.peer_names)[0]
+                if r1:
+                    _nano([r1], sd, s, out)
+                else:
+                    out.append(f"{s}: raw reads not found in the upload folder: no NanoPlot")
+            else:
+                raw = CR._find_reads(upload_dir, s, run.peer_names)
+                r1, r2 = raw if raw else (None, None)
+                if r1:
+                    fq = CR._tool(tools, "fastqc")
+                    res = Q.fastqc([x for x in (r1, r2) if x], sd / "FastQC", fq)
+                    if not fq:
+                        out.append("FastQC is not installed on the server (setup_amplicon_report.sh): no FastQC")
+                    elif res and res.get("error"):
+                        out.append(f"FastQC did not run: {res['error']}")
+                    fpt = CR._tool(tools, "fastp")
+                    rp = Q.fastp_check(r1, r2, sd / "fastp", fpt)
+                    if not fpt:
+                        out.append("fastp is not installed on the server (setup_amplicon_report.sh): no fastp")
+                    elif rp and rp.get("error"):
+                        out.append(f"fastp: {rp['error']}")
+                else:
+                    out.append(f"{s}: raw reads not found in the upload folder: no FastQC / fastp")
+        except Exception as ex:
+            out.append(f"{s}: read QC not made ({ex})")
+        return out
 
     if read_qc:
-        for k, s in enumerate(sel):
-            if len(sel) > 1:
-                progress(0, N, f"Read QC of the raw reads: {s} ({k + 1}/{len(sel)})")
-            sd = sdir(D["qc"], s)
-            try:
-                if run.kind == "emu" or engine == "vsearch":
-                    fs = CR._ont_raw(run, upload_dir, s)
-                    if fs:
-                        _nano(fs, sd, s)
-                    else:
-                        notes.append(f"{s}: raw reads not found in the upload folder: no NanoPlot")
-                elif engine == "pacbio":           # long single reads: NanoPlot, not FastQC
-                    r1 = CR._find_reads(upload_dir, s, run.peer_names)[0]
-                    if r1:
-                        _nano([r1], sd, s)
-                    else:
-                        notes.append(f"{s}: raw reads not found in the upload folder: no NanoPlot")
+        # several samples at once, 2 threads each, on the CPUs the machine has (one at a time took
+        # ~1 min per sample: 16 samples of the 3-targets project kept the build waiting a quarter of an hour)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        par = max(1, min(len(sel), (os.cpu_count() or 2) // 2))
+        got, done = {}, 0
+        with ThreadPoolExecutor(max_workers=par) as ex:
+            futs = {ex.submit(_read_qc_one, s): s for s in sel}
+            for f in as_completed(futs):
+                got[futs[f]] = f.result()
+                done += 1
+                if len(sel) > 1:
+                    progress(0, N, f"Read QC of the raw reads: {done}/{len(sel)} samples ({par} at a time)")
+        # notes in sample order, whatever finished first; the same tool note for every sample is said once
+        seen = {}
+        for s in sel:
+            for x in got.get(s, []):
+                k = x if not x.startswith(f"{s}: ") else None
+                if k:
+                    seen.setdefault(k, []).append(s)
                 else:
-                    raw = CR._find_reads(upload_dir, s, run.peer_names)
-                    r1, r2 = raw if raw else (None, None)
-                    if r1:
-                        Q.fastqc([x for x in (r1, r2) if x], sd / "FastQC", CR._tool(tools, "fastqc"))
-                        Q.fastp_check(r1, r2, sd / "fastp", CR._tool(tools, "fastp"))
-                    else:
-                        notes.append(f"{s}: raw reads not found in the upload folder: no FastQC / fastp")
-            except Exception as ex:
-                notes.append(f"{s}: read QC not made ({ex})")
+                    notes.append(x)
+        for k, ss in seen.items():
+            notes.append(f"{k} ({len(ss)} sample{'s' if len(ss) != 1 else ''})")
 
     # 2. cutadapt
     if (run_dir / "cutadapt").is_dir() and any((run_dir / "cutadapt" / f"{s}.cutadapt.json").exists() for s in sel):
@@ -668,6 +703,19 @@ def build_combined(run_dir: Path, upload_dir: Path | None, samples, out_dir: Pat
                 w.writeheader()
                 w.writerows(rows)
         _put(run_dir / "blast" / "blast_info.json", D["taxa"] / "BLAST" / "blast_info.json")
+    if (run_dir / "ncbi_lca" / "taxonomy_ncbi_lca.csv").exists():     # ITS named at NCBI: these ASVs only
+        with open(run_dir / "ncbi_lca" / "taxonomy_ncbi_lca.csv", newline="") as fh:
+            rd = list(csv.DictReader(fh))
+        rows = [r for r in rd if r.get("sequence") in seqs]
+        if rows:
+            (D["taxa"] / "BLAST").mkdir(parents=True, exist_ok=True)
+            sv = {a.get("sequence"): a["sv"] for a in run.asvs if a.get("sequence")}
+            with open(D["taxa"] / "BLAST" / "taxonomy_ncbi_lca.csv", "w", newline="") as fh:
+                w = csv.DictWriter(fh, ["ID"] + [k for k in rd[0].keys() if k != "id"])
+                w.writeheader()
+                for r in rows:
+                    w.writerow({"ID": sv.get(r["sequence"], ""), **{k: v for k, v in r.items() if k != "id"}})
+            _put(run_dir / "ncbi_lca" / "ncbi_lca.json", D["taxa"] / "BLAST" / "ncbi_lca.json")
     kd = D["taxa"] / "Krona"
     kt = CR._tool(tools, "ktImportText")
     if kt:

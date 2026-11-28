@@ -31,11 +31,14 @@ def fastqc(files: list[Path], out: Path, tool: str | None, threads: int = 2) -> 
         return None
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    err = ""
     try:
-        subprocess.run([tool, "-q", "-t", str(threads), "-o", str(out)] + [str(f) for f in files],
-                       capture_output=True, text=True, timeout=3600)
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+        p = subprocess.run([tool, "-q", "-t", str(threads), "-o", str(out)] + [str(f) for f in files],
+                           capture_output=True, text=True, timeout=3600)
+        err = (p.stderr or p.stdout or "").strip().splitlines()[-1:] if p.returncode else []
+        err = err[0][:200] if err else ""
+    except (subprocess.TimeoutExpired, OSError) as ex:
+        err = f"{type(ex).__name__}: {ex}"[:200]
     res = {"version": "", "adapter": {}}
     for z in sorted(out.glob("*_fastqc.zip")):
         try:
@@ -49,6 +52,8 @@ def fastqc(files: list[Path], out: Path, tool: str | None, threads: int = 2) -> 
             res["version"] = m.group(1)
         a = re.search(r">>Adapter Content\t(\w+)", txt)
         res["adapter"][z.name[:-len("_fastqc.zip")]] = a.group(1) if a else "unknown"
+    if not res["adapter"]:                       # nothing written: say why (Java missing, ...)
+        res["error"] = err or "FastQC wrote no report"
     return res
 
 

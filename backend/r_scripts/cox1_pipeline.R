@@ -445,12 +445,29 @@ if (ncol(seqtab_translated) == 0) {
 write_checkpoint("lulu_curation", 76, "LULU post-clustering curation")
 
 seqtab_final <- seqtab_translated
+# What happened to LULU, for summary.json and the report: ran | no_blast | empty_matchlist | error | missing | off
+lulu_status <- if (!isTRUE(opt$lulu)) "off" else "missing"
+
+# BLAST+ where R's system() may not look: the app's conda envs (install_lulu.sh, setup_amplicon_report.sh)
+blast_bin <- function(tool) {
+  if (nzchar(Sys.which(tool))) return(tool)
+  for (b in c("miniconda3", "miniforge3", "mambaforge", "anaconda3"))
+    for (e in c("ngamp-amp", "ngamp-phylo", "ngamp-blast")) {
+      p <- file.path(path.expand("~"), b, "envs", e, "bin", tool)
+      if (file.exists(p)) return(p)
+    }
+  ""
+}
+MAKEBLASTDB <- blast_bin("makeblastdb")
+BLASTN      <- blast_bin("blastn")
 
 if (opt$lulu && requireNamespace("lulu", quietly=TRUE)) {
-  blast_ok <- (system("makeblastdb -version", ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
+  blast_ok <- nzchar(MAKEBLASTDB) && nzchar(BLASTN) &&
+    (system(paste(shQuote(MAKEBLASTDB), "-version"), ignore.stdout=TRUE, ignore.stderr=TRUE) == 0)
   if (!blast_ok) {
-    cat("WARNING: BLAST not found. Skipping LULU curation.\n")
-    cat("Install with: sudo apt-get install ncbi-blast+\n")
+    lulu_status <- "no_blast"
+    cat("WARNING: BLAST+ (makeblastdb / blastn) not found. Skipping LULU curation.\n")
+    cat("Install with: bash ~/r16s-app/install_lulu.sh\n")
   } else {
     cat("Running LULU curation...\n")
     asv_seqs <- colnames(seqtab_translated)
@@ -467,11 +484,11 @@ if (opt$lulu && requireNamespace("lulu", quietly=TRUE)) {
                               asv_ids, asv_seqs))
     writeLines(fa_lines, fasta_path)
 
-    system(sprintf("makeblastdb -in %s -dbtype nucl -out %s > /dev/null 2>&1",
-                   fasta_path, db_path))
-    system(sprintf(
-      "blastn -db %s -query %s -out %s -perc_identity 84 -qcov_hsp_perc 80 -num_alignments 10 -outfmt '6 qseqid sseqid pident' -num_threads %d > /dev/null 2>&1",
-      db_path, fasta_path, match_path, opt$threads
+    system(sprintf("%s -in %s -dbtype nucl -out %s > /dev/null 2>&1",
+                   shQuote(MAKEBLASTDB), fasta_path, db_path))
+    blast_rc <- system(sprintf(
+      "%s -db %s -query %s -out %s -perc_identity 84 -qcov_hsp_perc 80 -num_alignments 10 -outfmt '6 qseqid sseqid pident' -num_threads %d > /dev/null 2>&1",
+      shQuote(BLASTN), db_path, fasta_path, match_path, opt$threads
     ))
 
     if (file.exists(match_path) && file.info(match_path)$size > 0) {
@@ -503,15 +520,21 @@ if (opt$lulu && requireNamespace("lulu", quietly=TRUE)) {
         stopifnot(sum(fin) == sum(seqtab_translated))
         seqtab_final <- fin
         write.csv(curated$otu_map, file.path(lulu_dir, "lulu_otu_map.csv"))
+        lulu_status <- "ran"
         cat(sprintf("LULU: %d -> %d ASVs after curation (%d merged into their parent ASV, reads kept)\n",
                     ncol(seqtab_translated), ncol(seqtab_final),
                     ncol(seqtab_translated) - ncol(seqtab_final)))
       }, error=function(e) {
         cat("LULU error:", e$message, "— skipping\n")
         seqtab_final <<- seqtab_translated
+        lulu_status <<- "error"
       })
+    } else if (!identical(as.integer(blast_rc), 0L)) {
+      cat(sprintf("LULU: blastn failed (exit %s) — skipping curation\n", blast_rc))
+      lulu_status <- "error"
     } else {
-      cat("LULU: BLAST match list empty — skipping curation\n")
+      cat("LULU: no two ASVs match at >= 84%% identity (empty BLAST match list) — nothing to merge\n")
+      lulu_status <- "empty_matchlist"
     }
   }
 } else if (opt$lulu) {
@@ -825,7 +848,8 @@ summary_list$tax_levels <- colnames(tax)
 summary_list$minBoot    <- opt$minBoot
 summary_list$tax_method <- if (exists("tax_method")) tax_method else "dada2"
 if (identical(summary_list$tax_method, "vsearch")) summary_list$tax_cutoffs <- as.list(TAX_CUTOFFS_COI)
-summary_list$lulu       <- isTRUE(opt$lulu) && requireNamespace("lulu", quietly = TRUE)
+summary_list$lulu       <- identical(lulu_status, "ran")
+summary_list$lulu_status <- lulu_status
 summary_list$lulu_requested <- isTRUE(opt$lulu)
 write(toJSON(summary_list, auto_unbox=TRUE, pretty=TRUE),
       file.path(opt$output_dir, "summary.json"))

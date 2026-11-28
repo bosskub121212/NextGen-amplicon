@@ -60,7 +60,17 @@ option_list <- list(
   make_option("--metadata",    type="character", default=""),
   make_option("--marker",      type="character", default="ITS2"),
   make_option("--nbases",      type="double",   default=1e8),
-  make_option("--pool",        type="character", default="FALSE")
+  make_option("--pool",        type="character", default="FALSE"),
+  make_option("--merge_overlap",  type="integer",   default=12,
+              help="mergePairs minOverlap (bp); maxMismatch stays 0"),
+  make_option("--chimera_method", type="character", default="consensus"),
+  # Names from NCBI GenBank nt instead of UNITE, for ITS of non-fungi (coral ITS2 eDNA):
+  # ncbi_lca.py — BLASTn, top hits, identity / coverage, lowest common ancestor
+  make_option("--tax_source",     type="character", default="unite"),   # unite | ncbi_lca
+  make_option("--lca_identity",   type="double",    default=90),
+  make_option("--lca_coverage",   type="double",    default=100),
+  make_option("--lca_hits",       type="integer",   default=10),
+  make_option("--python",         type="character", default="python3")
 )
 opt <- parse_args(OptionParser(option_list=option_list))
 
@@ -104,7 +114,9 @@ if (length(fnFs_raw) == 0) stop("No R1 FASTQ files found in: ", input_dir)
 if (length(fnRs_raw) == 0) stop("No R2 FASTQ files found in: ", input_dir)
 if (length(fnFs_raw) != length(fnRs_raw)) stop("Unequal number of R1 and R2 files")
 
-sample_names <- sub("_R1.*","", basename(fnFs_raw))
+# "X_R1_001.fastq.gz" / "X_R1.fastq.gz" / "X_1.fastq.gz" -> "X" (the _1 / _2 naming kept the whole file
+# name, extension included, as the sample: "KoBaiDang_SR58S_1.fastq.gz" in every table)
+sample_names <- sub("_1\\.(fastq|fq)(\\.gz)?$", "", sub("_R1([_.].*)?$", "", basename(fnFs_raw)))
 cat("Samples found:", length(sample_names), "\n")
 cat(paste(sample_names, collapse=", "), "\n\n")
 
@@ -320,11 +332,13 @@ prog(60, "Step 5/6 — Merging and chimera removal")
 cat("Step 5/6: Merging paired reads...\n")
 
 mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs,
-                      minOverlap=12, verbose=FALSE)  # lower minOverlap for ITS
+                      minOverlap=opt$merge_overlap, maxMismatch=0, verbose=FALSE)
+cat(sprintf("  mergePairs: minOverlap %d bp, maxMismatch 0\n", opt$merge_overlap))
 if (is.data.frame(mergers)) mergers <- setNames(list(mergers), sample_names)
 
 seqtab       <- makeSequenceTable(mergers)
-seqtab_nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=opt$threads)
+chim_method <- if (opt$chimera_method %in% c("consensus", "pooled", "per-sample")) opt$chimera_method else "consensus"
+seqtab_nochim <- removeBimeraDenovo(seqtab, method=chim_method, multithread=opt$threads)
 cat("  ASVs before chimera removal:", ncol(seqtab), "\n")
 cat("  ASVs after chimera removal:",  ncol(seqtab_nochim), "\n\n")
 
@@ -333,7 +347,7 @@ track <- cbind(
   out[sample_names,, drop=FALSE],
   sapply(dadaFs, function(d) sum(d$denoised)),
   sapply(dadaRs, function(d) sum(d$denoised)),
-  sapply(mergers, function(m) sum(m$accept)),
+  sapply(mergers, function(m) sum(m$abundance[m$accept])),   # reads merged (sum(m$accept) counted unique pairs)
   rowSums(seqtab_nochim)
 )
 colnames(track) <- c("input","filtered","denoisedF","denoisedR","merged","nonchim")
@@ -346,8 +360,10 @@ asv_df <- data.frame(sequence=colnames(seqtab_nochim), t(seqtab_nochim),
 write.csv(asv_df, file.path(output_dir, "asv_table.csv"), row.names=FALSE)
 
 # ── Step 6: Taxonomy ──────────────────────────────────────────
-prog(70, "Step 6/6 — Taxonomy (UNITE)")
-cat("Step 6/6: Taxonomic Assignment (UNITE)...\n")
+use_ncbi <- tolower(opt$tax_source) == "ncbi_lca"
+prog(70, if (use_ncbi) "Step 6/6 — Taxonomy (BLASTn vs NCBI nt + LCA)" else "Step 6/6 — Taxonomy (UNITE)")
+cat(if (use_ncbi) "Step 6/6: Taxonomic Assignment (BLASTn vs NCBI nt, LCA)...\n" else
+    "Step 6/6: Taxonomic Assignment (UNITE)...\n")
 
 # Find UNITE database
 # Prefer --db_paths JSON (passed by main.py), fall back to --dbPath or auto-detect
@@ -383,6 +399,41 @@ if (nchar(unite_db)==0 || !file.exists(unite_db)) {
 
 tax <- NULL
 tax_method <- "dada2"
+if (use_ncbi) {
+  # Every ASV BLASTed at NCBI (no local reference: UNITE is fungi only). Any failure stops the run
+  # with the reason — names are the point of the run — and keeps the ASV table for a retry.
+  tax_method <- "ncbi_lca"
+  unite_db <- ""
+  lca_dir <- file.path(output_dir, "ncbi_lca")
+  dir.create(lca_dir, showWarnings = FALSE)
+  seqs_n <- colnames(seqtab_nochim)
+  asv_fa <- file.path(lca_dir, "asv.fasta")
+  writeLines(paste0(">q", seq_along(seqs_n), "\n", seqs_n), asv_fa)
+  sd_py <- local({
+    args <- commandArgs(trailingOnly = FALSE)
+    fa   <- args[grepl("^--file=", args)]
+    if (length(fa) > 0) dirname(dirname(normalizePath(sub("^--file=", "", fa[1]), mustWork = FALSE))) else getwd()
+  })
+  cat(sprintf("  %d ASVs -> NCBI nt (BLASTn, top %d hits, >= %.1f%% identity over >= %.0f%% of the ASV); this takes a while\n",
+              length(seqs_n), opt$lca_hits, opt$lca_identity, opt$lca_coverage))
+  prog(72, sprintf("Step 6/6 — BLASTn of %d ASVs at NCBI (internet)", length(seqs_n)))
+  rc <- system2(opt$python, c(shQuote(file.path(sd_py, "ncbi_lca.py")), "--asv_fasta", shQuote(asv_fa),
+                              "--out", shQuote(lca_dir), "--identity", opt$lca_identity,
+                              "--coverage", opt$lca_coverage, "--hits", opt$lca_hits))
+  lca_csv <- file.path(lca_dir, "taxonomy_ncbi_lca.csv")
+  if (rc != 0 || !file.exists(lca_csv)) {
+    saveRDS(seqtab_nochim, file.path(output_dir, "seqtab_nochim.rds"))
+    stop(sprintf("NCBI BLAST naming failed (ncbi_lca.py exit %s) — see ncbi_lca/ncbi_lca.json. The ASV table is kept; Run again when NCBI can be reached.", rc))
+  }
+  lt <- read.csv(lca_csv, stringsAsFactors = FALSE, check.names = FALSE, colClasses = "character")
+  lt <- lt[match(seqs_n, lt$sequence), , drop = FALSE]
+  ranks_n <- c("Kingdom","Phylum","Class","Order","Family","Genus","Species")
+  tax <- matrix(NA_character_, nrow = length(seqs_n), ncol = length(ranks_n), dimnames = list(seqs_n, ranks_n))
+  for (r in ranks_n) { v <- lt[[r]]; v[is.na(v) | !nzchar(v)] <- NA_character_; tax[, r] <- v }
+  cat(sprintf("  NCBI LCA: %d of %d ASVs named (%d to genus, %d to species); %d below the identity / coverage, %d no hit\n",
+              sum(!is.na(tax[, "Kingdom"])), nrow(tax), sum(!is.na(tax[, "Genus"])), sum(!is.na(tax[, "Species"])),
+              sum(lt$status == "below_threshold", na.rm = TRUE), sum(lt$status == "no_hit", na.rm = TRUE)))
+} else {
 # UNITE fungi with species is ~33,000 lineages: DADA2's classifier needs about
 # 9 GB for it. When that does not fit, classify by best VSEARCH hit instead.
 .th <- local({
@@ -420,6 +471,7 @@ if (nchar(unite_db)>0 && file.exists(unite_db) && tax_method == "vsearch") {
 } else {
   cat("  WARNING: UNITE database not found. Run download_databases.sh first.\n")
 }
+}   # end of UNITE branch
 # A run with no taxonomy used to finish as "Complete"; stop and say why instead.
 if (is.null(tax)) {
   stop(paste0("ITS taxonomy produced no result (UNITE database: ",
@@ -543,7 +595,9 @@ if (!is.null(tax)) {
 prog(90, "FUNGuildR — ecological guild annotation")
 cat("\nFUNGuildR: Assigning ecological guilds...\n")
 
-if (!is.null(tax) && requireNamespace("FUNGuildR", quietly=TRUE)) {
+if (use_ncbi) {
+  cat("  Skipped (names from NCBI, not fungi from UNITE)\n")
+} else if (!is.null(tax) && requireNamespace("FUNGuildR", quietly=TRUE)) {
   tryCatch({
     tax_df2 <- as.data.frame(tax, stringsAsFactors=FALSE)
     # Build semicolon-delimited taxonomy string required by FUNGuildR
@@ -618,7 +672,12 @@ tryCatch(write(toJSON(list(
   n_asvs       = ncol(seqtab_nochim),
   total_reads  = sum(seqtab_nochim),
   has_taxonomy = !is.null(tax),
-  taxonomy_db  = basename(unite_db),
+  taxonomy_db  = if (use_ncbi) "NCBI GenBank nt (BLASTn + LCA)" else basename(unite_db),
+  lca          = if (use_ncbi) list(identity = opt$lca_identity, coverage = opt$lca_coverage, hits = opt$lca_hits) else NULL,
+  minLen       = opt$minLen,
+  pool         = opt$pool,
+  merge_overlap = opt$merge_overlap,
+  chimera_method = chim_method,
   minBoot      = opt$minBoot,
   tax_method   = tax_method,
   tax_cutoffs  = if (tax_method == "vsearch") as.list(TAX_CUTOFFS_ITS) else NULL,

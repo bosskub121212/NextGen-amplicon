@@ -673,13 +673,20 @@ class Run:
         p, sm = self.params, self.summary
         prim = [("Forward primer", p.get("primer_f") or sm.get("primer_f") or "—"),
                 ("Reverse primer", p.get("primer_r") or sm.get("primer_r") or "—")]
+        lc = sm.get("lca") or {}
         mb = (("Classifier", "VSEARCH best hit, rank kept above an identity cut-off")
               if sm.get("tax_method") == "vsearch" else
+              ("Naming", f"BLASTn vs NCBI nt, LCA of the top {lc.get('hits', 10)} hits at >= {lc.get('identity', 90)}% "
+                         f"identity over {lc.get('coverage', 100)}% of the ASV")
+              if sm.get("tax_method") == "ncbi_lca" else
               ("Minimum bootstrap", sm.get("minBoot") or p.get("minBoot")))
         if self.kind == "its":
             return ([("Marker", marker), ("Reference database", self.db_name)] + prim
                     + [("Length truncation", "none (ITS length varies between taxa)"),
-                       ("maxEE F / R", f'{p.get("maxEE_F")} / {p.get("maxEE_R")}'), mb])
+                       ("maxEE F / R", f'{p.get("maxEE_F")} / {p.get("maxEE_R")}')]
+                    + ([("Minimum length · pool · pair overlap",
+                         f'{sm.get("minLen")} bp · {sm.get("pool")} · {sm.get("merge_overlap")} bp, no mismatch')]
+                       if sm.get("minLen") else []) + [mb])
         if self.kind == "cox1":
             return ([("Marker", marker), ("Reference database", self.db_name)] + prim
                     + [("truncLen F / R", f'{p.get("truncLen_cox1_f", "—")} / {p.get("truncLen_cox1_r", "—")}'),
@@ -688,7 +695,11 @@ class Run:
                         or f'{p.get("cox1_min_len", "—")}-{p.get("cox1_max_len", "—")} bp'),
                        ("Genetic code (stop-codon filter)", sm.get("codon_table") or p.get("codon_table")),
                        ("LULU curation", {"ran": "yes", "off": "no",
-                                          "missing": "skipped (LULU not installed)"}[self.lulu_state]),
+                                          "missing": "skipped (LULU not installed)",
+                                          "no_blast": "skipped (BLAST+ not found)",
+                                          "error": "skipped (LULU failed on this run)",
+                                          "empty_matchlist": "yes (no ASV pair at >= 84%: nothing merged)"}
+                        .get(self.lulu_state, self.lulu_state)),
                        mb])
         if self.kind == "pacbio":
             return ([("Marker", "16S full length (PacBio HiFi)"), ("Reference database", self.db_name)]
@@ -763,6 +774,9 @@ class Run:
         asked = sm.get("lulu_requested", sm.get("lulu", self.params.get("run_lulu", True)))
         if not asked:
             return "off"
+        st = sm.get("lulu_status")             # v2.45.0: what happened, not only what was asked for
+        if st:
+            return {"ran": "ran", "missing": "missing", "off": "off"}.get(st, st)
         if "lulu_requested" in sm and not sm.get("lulu"):
             return "missing"
         try:
@@ -818,7 +832,7 @@ class Run:
             "cox1": [("Input", "input"), ("Filtered", "filtered"), ("Merged", "merged"),
                      ("Length filtered", "length_filtered"), ("Non-chimeric", "nonchim"),
                      ("No stop codon", "codon_filtered")]
-                    + ([("LULU curated", "lulu_curated")] if self.lulu_state == "ran" else []),
+                    + ([("LULU curated", "lulu_curated")] if self.lulu_state in ("ran", "empty_matchlist") else []),
             "pacbio": [("Primer-oriented", "input"), ("Filtered", "filtered"),
                        ("Denoised", "denoised"), ("Non-chimeric", "nonchim")],
         }.get(self.kind, [("Input", "input"), ("Filtered", "filtered"),
@@ -2455,7 +2469,17 @@ REFERENCES = [
     ("Vu, D., et al. (2019).", "Large-scale generation and analysis of filamentous fungal DNA barcodes boosts "
      "coverage for kingdom fungi and reveals thresholds for fungal species and higher taxon delimitation.",
      "Studies in Mycology, 92, 135–154."),
+    # 29 — ITS named by BLASTn against NCBI nt and the LCA of the top hits (ncbi_lca.py)
+    # cited as the request form gives it (journal, volume, pages, DOI); no title is made up here
+    ("DiBattista et al. (2025).", "", "Coral Reefs, 44, 163–178. https://doi.org/10.1007/s00338-024-02594-6"),
+    ("Altschul, S. F., Gish, W., Miller, W., Myers, E. W., & Lipman, D. J. (1990).", "Basic local alignment "
+     "search tool.", "Journal of Molecular Biology, 215(3), 403–410."),
 ]
+
+
+def ncbi_lca(run) -> bool:
+    """ITS named by BLASTn against NCBI nt + LCA (its_pipeline.R --tax_source ncbi_lca) instead of UNITE."""
+    return str((getattr(run, "summary", None) or {}).get("tax_method") or "") == "ncbi_lca"
 REF_DADA2 = [0, 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 REF_EMU = [5, 0, 6, 7, 4, 8, 9, 10, 11, 12, 13, 14, 15]
 
@@ -2464,6 +2488,8 @@ def _ref_indices(run) -> list[int]:
     """The reference list for this run: its tools, its database, its statistics."""
     if run.emu:
         return REF_EMU
+    if ncbi_lca(run):                    # no classifier, no reference file: BLAST at NCBI + LCA
+        return [0, 1, 30, 29, 8, 9, 10, 11, 12, 13, 14, 15]
     db = " ".join([run.db_name] + [d.get("label", "") for d in (run.prov.get("databases") or [])]).lower()
     dbref = ([23] if "silva 14" in db or "v144" in db else [3] if "silva" in db else []) \
         + ([17] if "unite" in db or "sh_general" in db or run.kind == "its" else []) \
@@ -2566,19 +2592,45 @@ def _methods_other(run, an):
     e, o = p.get("cutadaptErrorRate", 0.1), p.get("cutadaptOverlap", 3)
     if run.kind == "its":
         out.append("<h3>Primer trimming</h3>")
+        nl = ncbi_lca(run)
         out.append(f"<p>Primers were removed with cutadapt from both reads, including their reverse "
                    f"complements where a short ITS amplicon reads through into the opposite primer "
                    f"(error rate {e}, minimum overlap {o}). This matters more for ITS than for 16S because "
-                   f"ITS length varies widely between fungi.</p>" + prim_ul)
+                   f"ITS length varies widely between {'taxa' if nl else 'fungi'}.</p>" + prim_ul)
         out.append("<h3>Denoising and ASV inference</h3>")
+        pool = str(sm.get("pool") or "FALSE")
         out.append(f"<p>Reads were quality-filtered with DADA2 <span class=\"mono\">filterAndTrim()</span> "
-                   f"without length truncation (maxEE = {p.get('maxEE_F')} / {p.get('maxEE_R')}, minimum "
-                   f"length 50 bp), error models were learned per read direction, ASVs were inferred with "
-                   f"<span class=\"mono\">dada()</span>, read pairs were merged and chimeras removed with "
-                   f"<span class=\"mono\">removeBimeraDenovo()</span> (consensus), following the DADA2 ITS "
-                   f"workflow.</p>")
+                   f"without length truncation (maxEE = {p.get('maxEE_F')} / {p.get('maxEE_R')}, no ambiguous "
+                   f"bases, minimum length {esc(sm.get('minLen') or 50)} bp), error models were learned per read "
+                   f"direction, ASVs were inferred with <span class=\"mono\">dada()</span>"
+                   + {"TRUE": " with all samples pooled (pool = TRUE)", "pseudo": " with pseudo-pooling"}.get(pool, "")
+                   + f", read pairs were merged (minimum overlap {esc(sm.get('merge_overlap') or 12)} bp, no "
+                   f"mismatch) and chimeras removed with <span class=\"mono\">removeBimeraDenovo()</span> "
+                   f"({esc(sm.get('chimera_method') or 'consensus')}), following the DADA2 ITS workflow.</p>")
         out.append("<h3>Taxonomic assignment</h3>")
-        out.append((_tophit_text(run, "ITS") if sm.get("tax_method") == "vsearch" else
+        lc = sm.get("lca") or {}
+        if nl:
+            out.append(f"<p>Every ASV was compared with NCBI GenBank nt by BLASTn (blastn, NCBI BLAST service) "
+                       f"and named by the lowest common ancestor (LCA) of its top {esc(lc.get('hits', 10))} hits "
+                       f"that reach at least {esc(lc.get('identity', 90))}% identity over "
+                       f"{esc(lc.get('coverage', 100))}% of the ASV, after DiBattista et al. (2025): the ASV is "
+                       f"named down to the deepest rank all such hits share (NCBI taxonomy), and to species only "
+                       f"when they all name the same one. "
+                       + ("Among the hits that pass, records NCBI files under nothing below the domain "
+                          "(&ldquo;uncultured eukaryote&rdquo; and other environmental sequences) were passed over "
+                          "when records that do place the sequence pass too (up to "
+                          f"{esc((run._json('ncbi_lca/ncbi_lca.json') or {}).get('fetched_per_asv', 50))} records "
+                          "fetched per ASV for this); an ASV whose passing hits are all such records is named "
+                          "Eukaryota. "
+                          if (run._json("ncbi_lca/ncbi_lca.json") or {}).get("skip_uninformative") else "")
+                       + f"An ASV with no hit passing is Unassigned. No curated "
+                       f"reference was used"
+                       + (" (SILVA, UNITE and Greengenes hold no coral ITS2; primers SCLER5.8SForw / "
+                          "SCLER28SRev)" if str(pf).upper().startswith("GARTCTTTGAACGCAAATGGC") else "")
+                       + ". The search needs NCBI's service: the names are those of GenBank on the day of the "
+                       f"run ({esc((run._json('ncbi_lca/ncbi_lca.json') or {}).get('date', ''))}).</p>")
+        else:
+            out.append((_tophit_text(run, "ITS") if sm.get("tax_method") == "vsearch" else
                     f"<p>ASVs were classified with the DADA2 naive Bayesian classifier against "
                     f"<b>{esc(run.db_name)}</b> (minimum bootstrap {esc(mb)}, both orientations tried). ")
                    + "UNITE placeholders (&ldquo;unidentified&rdquo;, <i>incertae sedis</i>) are reported as "
@@ -2608,7 +2660,14 @@ def _methods_other(run, an):
                       + "." if run.lulu_state == "ran" else
                       "LULU curation was asked for but the LULU package is not installed on this machine, so "
                       "it was skipped: ASVs that LULU would merge into a parent are still counted separately."
-                      if run.lulu_state == "missing" else "LULU curation was not used.")
+                      if run.lulu_state == "missing" else
+                      "LULU curation was asked for but BLAST+ (which LULU needs to compare the ASVs) was not "
+                      "found, so it was skipped: ASVs that LULU would merge into a parent are still counted "
+                      "separately." if run.lulu_state == "no_blast" else
+                      "LULU curation was asked for but failed on this run, so it was skipped: ASVs that LULU "
+                      "would merge into a parent are still counted separately." if run.lulu_state == "error" else
+                      "LULU curation ran but no two ASVs matched at 84% identity or more, so nothing was merged."
+                      if run.lulu_state == "empty_matchlist" else "LULU curation was not used.")
                    + "</p>")
         out.append("<h3>Taxonomic assignment</h3>")
         out.append((_tophit_text(run, "COI") if sm.get("tax_method") == "vsearch" else
@@ -3037,6 +3096,57 @@ def _ncbi_un_section(run, S, T) -> list:
     return out
 
 
+def _ncbi_lca_section(run, S, T) -> list:
+    """ITS named at NCBI (ncbi_lca.py): how far the names reach, in reads, and the most abundant ASVs
+    with the hit behind each name — what a reader needs to judge a BLAST + LCA name."""
+    import csv as _csv
+    p = Path(run.path) / "ncbi_lca" / "taxonomy_ncbi_lca.csv"
+    if not ncbi_lca(run) or not p.exists():
+        return []
+    with open(p, newline="", encoding="utf-8") as fh:
+        rows = {r["sequence"]: r for r in _csv.DictReader(fh)}
+    reads = {q: sum(run.mat.get(q, {}).get(s_, 0.0) for s_ in S) for q in rows}
+    used = {q: n for q, n in reads.items() if n > 0}
+    tot = sum(used.values()) or 1
+    st, rk = Counter(), Counter()
+    for q, n in used.items():
+        st[rows[q].get("status", "")] += n
+        rk[rows[q].get("rank_reached", "none")] += n
+    lc = (run.summary or {}).get("lca") or {}
+    pc = lambda n: f"{100 * n / tot:.1f}%"
+    deep = lambda *ks: sum(rk[k] for k in ks)
+    out = ["<h3>Names from NCBI GenBank (BLASTn + LCA)</h3>",
+           f"<p>{len([q for q in used if rows[q].get('status') == 'named'])} of {len(used)} ASVs were named "
+           f"({pc(st['named'])} of the reads): to species {pc(deep('Species'))}, to genus or deeper "
+           f"{pc(deep('Species', 'Genus'))}, to family or deeper {pc(deep('Species', 'Genus', 'Family'))}. "
+           f"Unassigned: {pc(st['below_threshold'])} of the reads had NCBI hits, none at "
+           f"&ge; {esc(lc.get('identity', 90))}% identity over {esc(lc.get('coverage', 100))}% of the ASV"
+           + (f"; {pc(st['no_hit'])} had no NCBI hit" if st["no_hit"] else "")
+           + (f"; {pc(st['not_checked'])} could not be checked (NCBI batch failed)" if st["not_checked"] else "")
+           + ".</p>"]
+    trs = []
+    for a in run.top_asvs(15):
+        r = rows.get(a["seq"])
+        if not r:
+            continue
+        rank = r.get("rank_reached") or "none"
+        name = (r.get(rank) if rank in ("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+                else "") or "Unassigned"
+        nm = f"<i>{esc(name)}</i>" if rank in ("Genus", "Species") else esc(name)
+        rl = "domain" if rank == "Kingdom" and name in ("Eukaryota", "Bacteria", "Archaea") else rank.lower()
+        trs.append([f'<span class="mono">{esc(a["id"])}</span>', f'{a["pct"]:.2f}%',
+                    nm + (f' <span class="dim">({esc(rl)})</span>' if rank not in ("none", "") else ""),
+                    f"<i>{esc(r.get('best_hit') or '—')}</i>",
+                    (f"{float(r['best_pident']):.1f}% / {float(r['best_qcov']):.0f}%"
+                     if r.get("best_pident") not in (None, "") else "—"),
+                    f"{r.get('n_passing') or 0} of {r.get('n_hits') or 0}"])
+    cite = _cite(run, "ncbi_lca/taxonomy_ncbi_lca.csv")
+    out.append(T(["ASV", "Reads", "Named as", "Best NCBI hit", "Identity / coverage", "Hits used / fetched"], trs,
+                 "The most abundant ASVs: the name the LCA of the passing hits supports, and the best hit "
+                 "behind it" + (f"; every ASV with all its hits is in {esc(cite)}" if cite else "") + "."))
+    return out
+
+
 def _blast_section(run, S, T) -> list:
     """Target (fish) and non-target reads per sample, the fish named, and what was not fish —
     the first question of a fish eDNA run, answered before the community figures."""
@@ -3169,7 +3279,10 @@ def _diversity_methods(run, an) -> list:
                f"from the per-sample counts. Rarefaction curves give the expected number of {unit} in a "
                f"random subsample of each depth (Hurlbert&rsquo;s formula, as in vegan&rsquo;s "
                f"<span class=\"mono\">rarefy()</span>). "
-               + ("Beta diversity was measured as Bray&ndash;Curtis "
+               + ("Beta diversity was measured as Bray&ndash;Curtis dissimilarity on relative abundances "
+                  "(heatmap; PCoA and UPGMA need three samples or more). "
+                  if len(an.samples) == 2 else
+                  "Beta diversity was measured as Bray&ndash;Curtis "
                   "dissimilarity on relative abundances and visualised by principal coordinates analysis "
                   "(PCoA), average-linkage (UPGMA) clustering and a dissimilarity heatmap. "
                   if len(an.samples) > 1 else
@@ -3732,7 +3845,8 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
         "emu": "Oxford Nanopore full-length 16S, classified with Emu",
         "vsearch": ("Illumina paired-end" if run.paired else "single-end reads")
                    + ", VSEARCH operational taxonomic units",
-        "its": "Illumina paired-end, DADA2 amplicon sequence variants, UNITE reference",
+        "its": "Illumina paired-end, DADA2 amplicon sequence variants, "
+               + ("named by BLASTn against NCBI nt (LCA)" if ncbi_lca(run) else "UNITE reference"),
         "cox1": "Illumina paired-end, DADA2 amplicon sequence variants, MIDORI2 reference",
         "pacbio": "PacBio HiFi full-length 16S, DADA2 amplicon sequence variants",
     }.get(run.kind, "Illumina paired-end, DADA2 amplicon sequence variants")
@@ -4031,6 +4145,7 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
 
     if run.blast:
         out += _blast_section(run, S, T)
+    out += _ncbi_lca_section(run, S, T)
     if getattr(run, "ncbi_un_info", None) is not None:
         out += _ncbi_un_section(run, S, T)
 
@@ -4222,6 +4337,9 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                         "are near-identical (for example within <i>Stenotrophomonas</i> or the "
                         "<i>Bacillus cereus</i> group) cannot be separated by any 16S method; genus is "
                         "the robust level to report." if run.emu else
+                        "A species is named only when every NCBI hit that passes the identity and coverage "
+                        "names it; GenBank names are only as good as the records deposited under them, and a "
+                        "species missing from GenBank is named at a higher rank or not at all." if ncbi_lca(run) else
                         "Species come from the UNITE species hypothesis the ASV was classified into; ITS "
                         "separates most fungal species, but names in UNITE are only as good as the "
                         "sequences deposited under them." if run.kind == "its" else
@@ -4414,8 +4532,11 @@ def build_profile_html(run, title=None, app="NextGen-Amplicon", company="",
                      "starts at phylum). The ranks are shown corrected here; the run's own "
                      "taxonomy_table.csv still carries the old column names.")
     notes.append({
-        "its": "Relative abundance from ITS amplicons reflects rDNA copies, not cells: copy number varies "
-               "more than tenfold between fungi, and ITS length differences favour shorter amplicons.",
+        "its": ("Relative abundance from ITS amplicons in environmental DNA reflects rDNA copies and the DNA "
+                "each organism shed, not colonies or cover: copy number differs between taxa, and ITS length "
+                "differences favour shorter amplicons." if ncbi_lca(run) else
+                "Relative abundance from ITS amplicons reflects rDNA copies, not cells: copy number varies "
+                "more than tenfold between fungi, and ITS length differences favour shorter amplicons."),
         "cox1": "Relative abundance from COI amplicons reflects mitochondrial copies and primer fit, not "
                 "biomass or individuals; COI primers are degenerate and amplify some groups better than "
                 "others.",

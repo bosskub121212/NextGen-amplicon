@@ -341,12 +341,19 @@ def _http(url: str, data: bytes | None = None) -> bytes:
 
 
 def run_ncbi(fasta: Path, entrez: str, timeout: int = 3600, http=_http, sleep=time.sleep,
-             batch: int = 100, status: dict | None = None, min_cov: float = 80) -> dict | None:
+             batch: int = 100, status: dict | None = None, min_cov: float = 80,
+             hitlist: int = 20, megablast: bool = True, parallel: int = 1,
+             search_timeout: int | None = None, retries: int = 0) -> dict | None:
     """NCBI nt check through the BLAST URL API (HTTPS, works behind web proxies; NCBI's
-    rules: one status poll per minute per search). {qseqid: [hits best first]}; a query
-    of a batch that failed is left out (= not checked). None when no batch finished.
+    rules: one status poll per minute per search, a new search at most every 10 s). {qseqid:
+    [hits best first]}; a query of a batch that failed is left out (= not checked). None when
+    no batch finished. parallel > 1: that many searches at once (each still polled once a
+    minute) — blastn of 200 ITS2 ASVs took ~10 min a batch of 50 one after another.
+    search_timeout: a search still WAITING after that many seconds is given up (NCBI sometimes
+    leaves one waiting for an hour while the others finish in minutes) and, with retries, sent again.
     NGAMP_NCBI_EMAIL, when set, is sent as EMAIL as NCBI asks of scripted use."""
     import re
+    import threading
     import urllib.parse
     url = os.environ.get("NGAMP_NCBI_URL", NCBI_URL)
     email = os.environ.get("NGAMP_NCBI_EMAIL", "")
@@ -356,60 +363,95 @@ def run_ncbi(fasta: Path, entrez: str, timeout: int = 3600, http=_http, sleep=ti
     out = {}
     t_end = time.time() + timeout
     nb = (len(recs) + batch - 1) // batch
-    for bi, i in enumerate(range(0, len(recs), batch), 1):
-        st["batches"] += 1
-        try:
+    lock = threading.Lock()
+    last_put = [0.0]
+
+    def one(bi, i):
+        if time.time() > t_end:
+            raise TimeoutError("NCBI time limit reached")
+        q = "".join(f">{n}\n{s}\n" for n, s in recs[i:i + batch])
+        form = {"CMD": "Put", "PROGRAM": "blastn", "DATABASE": "nt", "QUERY": q,
+                "HITLIST_SIZE": str(hitlist), "EXPECT": "1e-10", "TOOL": "NextGen-Amplicon"}
+        if megablast:
+            form["MEGABLAST"] = "on"
+        if email:
+            form["EMAIL"] = email
+        if entrez:
+            form["ENTREZ_QUERY"] = entrez
+        if parallel > 1:                       # searches started at least 10 s apart
+            with lock:
+                wait = last_put[0] + 10 - time.time()
+                if wait > 0:
+                    sleep(wait)
+                last_put[0] = time.time()
+        r = http(url, urllib.parse.urlencode(form).encode()).decode(errors="replace")
+        rid = re.search(r"RID = (\S+)", r).group(1)
+        rtoe = int((re.search(r"RTOE = (\d+)", r) or [0, "30"])[1])
+        started = time.time()
+        sleep(max(10, min(rtoe, 60)))
+        while True:
+            stt = http(f"{url}?CMD=Get&FORMAT_OBJECT=SearchInfo&RID={rid}").decode(errors="replace")
+            m = re.search(r"Status=(\w+)", stt)
+            if m and m.group(1) == "READY":
+                break
+            if m and m.group(1) in ("FAILED", "UNKNOWN"):
+                raise RuntimeError(f"NCBI search {m.group(1)}")
             if time.time() > t_end:
                 raise TimeoutError("NCBI time limit reached")
-            q = "".join(f">{n}\n{s}\n" for n, s in recs[i:i + batch])
-            form = {"CMD": "Put", "PROGRAM": "blastn", "MEGABLAST": "on", "DATABASE": "nt", "QUERY": q,
-                    "HITLIST_SIZE": "20", "EXPECT": "1e-10", "TOOL": "NextGen-Amplicon"}
-            if email:
-                form["EMAIL"] = email
-            if entrez:
-                form["ENTREZ_QUERY"] = entrez
-            r = http(url, urllib.parse.urlencode(form).encode()).decode(errors="replace")
-            rid = re.search(r"RID = (\S+)", r).group(1)
-            rtoe = int((re.search(r"RTOE = (\d+)", r) or [0, "30"])[1])
-            sleep(max(10, min(rtoe, 60)))
-            while True:
-                stt = http(f"{url}?CMD=Get&FORMAT_OBJECT=SearchInfo&RID={rid}").decode(errors="replace")
-                m = re.search(r"Status=(\w+)", stt)
-                if m and m.group(1) == "READY":
-                    break
-                if m and m.group(1) in ("FAILED", "UNKNOWN"):
-                    raise RuntimeError(f"NCBI search {m.group(1)}")
-                if time.time() > t_end:
-                    raise TimeoutError("NCBI time limit reached")
-                sleep(60)
-            js = json.loads(http(f"{url}?CMD=Get&FORMAT_TYPE=JSON2_S&RID={rid}"))
-            got = {}
-            for rep in js.get("BlastOutput2", []):
-                s = rep["report"]["results"]["search"]
-                title = (s.get("query_title") or "").split()
-                if not title:
+            if search_timeout and time.time() - started > search_timeout:
+                raise TimeoutError(f"NCBI search {rid} still waiting after {search_timeout // 60} min")
+            sleep(60)
+        js = json.loads(http(f"{url}?CMD=Get&FORMAT_TYPE=JSON2_S&RID={rid}"))
+        got = {}
+        for rep in js.get("BlastOutput2", []):
+            s = rep["report"]["results"]["search"]
+            title = (s.get("query_title") or "").split()
+            if not title:
+                continue
+            qn, ql = title[0], float(s.get("query_len") or 1)
+            rows = []
+            for h in s.get("hits", []):
+                d, hs = h["description"][0], h["hsps"][0]
+                cov = 100 * (hs["query_to"] - hs["query_from"] + 1) / ql
+                if cov < min_cov:
                     continue
-                qn, ql = title[0], float(s.get("query_len") or 1)
-                rows = []
-                for h in s.get("hits", []):
-                    d, hs = h["description"][0], h["hsps"][0]
-                    cov = 100 * (hs["query_to"] - hs["query_from"] + 1) / ql
-                    if cov < min_cov:
-                        continue
-                    name = d.get("sciname", "")
-                    rows.append({"species": name, "genus": name.split(" ")[0] if name else "",
-                                 "pident": round(100 * hs["identity"] / hs["align_len"], 2),
-                                 "accession": d.get("accession", ""), "bits": hs.get("bit_score", 0),
-                                 "qcov": round(min(cov, 100.0), 1), "taxid": d.get("taxid", ""),
-                                 "title": d.get("title", "")})
-                rows.sort(key=lambda r: (-r["bits"], -r["pident"]))
-                got[qn] = rows
-            out.update(got)
-            print(f"[blast] NCBI batch {bi}/{nb} done ({len(got)} ASVs)", file=sys.stderr, flush=True)
-        except Exception as ex:
-            st["failed_batches"] += 1
-            st["errors"].append(f"batch {bi}: {ex}")
-            print(f"[blast] NCBI batch {bi}/{nb} failed: {ex}", file=sys.stderr, flush=True)
+                name = d.get("sciname", "")
+                rows.append({"species": name, "genus": name.split(" ")[0] if name else "",
+                             "pident": round(100 * hs["identity"] / hs["align_len"], 2),
+                             "accession": d.get("accession", ""), "bits": hs.get("bit_score", 0),
+                             "qcov": round(min(cov, 100.0), 1), "taxid": d.get("taxid", ""),
+                             "title": d.get("title", "")})
+            rows.sort(key=lambda r: (-r["bits"], -r["pident"]))
+            got[qn] = rows
+        return got
+
+    def run_one(bi, i):
+        with lock:
+            st["batches"] += 1
+        for attempt in range(retries + 1):
+            try:
+                got = one(bi, i)
+                with lock:
+                    out.update(got)
+                print(f"[blast] NCBI batch {bi}/{nb} done ({len(got)} ASVs)", file=sys.stderr, flush=True)
+                return
+            except Exception as ex:
+                if attempt < retries and time.time() < t_end:
+                    print(f"[blast] NCBI batch {bi}/{nb}: {ex} — sending it again", file=sys.stderr, flush=True)
+                    continue
+                with lock:
+                    st["failed_batches"] += 1
+                    st["errors"].append(f"batch {bi}: {ex}")
+                print(f"[blast] NCBI batch {bi}/{nb} failed: {ex}", file=sys.stderr, flush=True)
+
+    jobs = list(enumerate(range(0, len(recs), batch), 1))
+    if parallel <= 1:
+        for bi, i in jobs:
+            run_one(bi, i)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=parallel) as ex:
+            list(ex.map(lambda j: run_one(*j), jobs))
     return out if st["failed_batches"] < st["batches"] or not recs else None
 
 

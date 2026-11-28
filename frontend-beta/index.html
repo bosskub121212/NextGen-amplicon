@@ -2201,8 +2201,19 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
        a genome run they would only list values that were never used */
     row("Forward primer",      p.primer_f);
     row("Reverse primer",      p.primer_r);
-    row("Taxonomy database",   p.taxDatabase);
-    row("Database file used",  p.dbPath);
+    var ncbiLca = /^ITS/i.test(p.marker || "") && p.its_tax === "ncbi_lca"
+                  && p.sequencerType !== "ont" && p.sequencerType !== "qiime2_vsearch";
+    if(ncbiLca){
+      row("Names from", "NCBI GenBank nt — BLASTn + LCA (internet)");
+      row("LCA: identity · coverage · top hits",
+          p.lca_identity + "% · " + p.lca_coverage + "% · " + p.lca_hits);
+    } else {
+      row("Taxonomy database",   p.taxDatabase);
+      row("Database file used",  p.dbPath);
+    }
+    if(/^ITS/i.test(p.marker || "") && p.its_min_len !== undefined && p.sequencerType !== "ont"
+       && p.sequencerType !== "qiime2_vsearch")
+      row("Min length · pair overlap", p.its_min_len + " bp · " + p.merge_overlap + " bp, no mismatch");
     if(p.dbPath_requested && p.dbPath && p.dbPath_requested !== p.dbPath)
       row("⚠ Database requested", p.dbPath_requested + "  (the run used the file above)");
     if(p.dbPath_auto) row("Database chosen automatically", "yes");
@@ -2215,7 +2226,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     row("trimLeft F / R",      (p.trimLeft_F || p.trimLeft_R) ? (p.trimLeft_F + " / " + p.trimLeft_R) : "");
     row("Pooling",             p.pool);
     row("Chimera method",      p.chimeraMethod);
-    row("Minimum bootstrap",   p.minBoot);
+    if(!ncbiLca) row("Minimum bootstrap",   p.minBoot);
     row("Bases to learn from", p.nbases ? nfmt(p.nbases) : "");
     row("Top taxa in plots",   p.topN);
     row("Discard untrimmed",   p.discardUntrimmed === true ? "yes" : (p.discardUntrimmed === false ? "no" : ""));
@@ -6544,6 +6555,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
      f:"TCCGTAGGTGAACCTGCGG",       r:"GCTGCGTTCTTCATCGATGC"},
     {label:"ITS2  (ITS3 / ITS4)",        marker:"ITS2", region:"ITS2",
      f:"GTGAATCATCGAATCTTTGAA",     r:"TCCTCCGCTTATTGATATGC"},
+    {label:"ITS2 coral  (SCLER5.8SForw / SCLER28SRev, Brian et al. 2019)", marker:"ITS2", region:"ITS2",
+     f:"GARTCTTTGAACGCAAATGGC",     r:"GCTTATTAATATGCTTAAATTCAGCG", its_tax:"ncbi_lca", its_min_len:100,
+     merge_overlap:20, pool:"TRUE"},
     {label:"18S V4  (TAReuk454FWD1 / TAReukREV3)", marker:"18S-nema", region:"V4",
      f:"CCAGCASCYGCGGTAATTCC",      r:"ACTTTCGTTCTTGATYRA"},
     {label:"COX1 mlCOIintF / jgHCO2198", marker:"COX1", region:"COI",
@@ -6672,6 +6686,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["its_region", "ITS region", "select", key, [["ITS1","ITS1"],["ITS2","ITS2"]]],
         ["maxEE_F",    "maxEE, forward", "num", "2", "Illumina (DADA2) only"],
         ["maxEE_R",    "maxEE, reverse", "num", "2", "Illumina (DADA2) only"],
+        ["its_min_len", "Minimum length (Illumina)", "int", "50",
+         "bp after primer removal, shorter reads dropped (filterAndTrim minLen); no N allowed"],
+        ["merge_overlap", "Pair overlap to merge (Illumina)", "int", "12",
+         "bp the two reads must overlap, with no mismatch (mergePairs)"],
         ["ontMinLen",  "Minimum read length (Nanopore / VSEARCH)", "int", "100",
          "after primer trimming — Nanopore ITS runs through VSEARCH OTUs with UNITE"],
         ["ontMaxLen",  "Maximum read length (Nanopore / VSEARCH)", "int", "900", "bp"],
@@ -6722,7 +6740,14 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
         ["blast_ncbi",  "Check against NCBI nt", "bool", "true",
          "remote BLASTn of every ASV, same limit; disagreements are cut to the common rank and flagged. Needs internet"],
         ["blast_id",    "% identity: species, genus, family, order, class", "mono", "98.5,95,90,85,80",
-         "a species is never named below its threshold"]] : [])});
+         "a species is never named below its threshold"]] : []).concat(isITS ? [
+        ["its_tax", "Names from (Illumina)", "select", "unite", [
+          ["unite",    "UNITE — fungi (DADA2 classifier, the database above)"],
+          ["ncbi_lca", "NCBI GenBank nt — BLASTn + LCA, any organism (e.g. coral ITS2); internet"]],
+         "NCBI: every ASV is BLASTed at NCBI and named down to the deepest rank all of its passing top hits share (DiBattista et al. 2025); no database file is needed"],
+        ["lca_identity", "LCA: identity of a hit", "num", "90", "% — hits below it are not used"],
+        ["lca_coverage", "LCA: coverage of the ASV", "num", "100", "% of the ASV the hit must align"],
+        ["lca_hits",     "LCA: top hits looked at", "int", "10", "NCBI hits per ASV (best first)"]] : [])});
 
     steps.push({n:6, title:"Diversity analysis",
       why:"PERMANOVA needs ≥2 groups with ≥2 samples each; below that it is skipped and says so.",
@@ -7371,6 +7396,9 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
       preflight(dbOpts, dbCount);
     });
 
+    var itx = document.getElementById("f_its_tax");
+    if(itx) itx.addEventListener("change", function(){ preflight(dbOpts, dbCount); });
+
     /* Region preset drives the primers and the starting truncLen together. */
     var rg = document.getElementById("f_region");
     if(rg){
@@ -7389,6 +7417,16 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
           setVal("f_ont_region", pr.region);
         if(pr.region && document.getElementById("f_pb_region"))
           setVal("f_pb_region", pr.region);
+        /* ITS presets: the coral ITS2 one sets the DiBattista et al. 2025 method (NCBI nt + LCA,
+           minLen 100, overlap 20, pool TRUE); the fungal ones set UNITE back */
+        if(document.getElementById("f_its_tax")){
+          setVal("f_its_tax", pr.its_tax || "unite");
+          setVal("f_its_min_len", String(pr.its_min_len || 50));
+          setVal("f_merge_overlap", String(pr.merge_overlap || 12));
+          if(document.getElementById("f_pool")) setVal("f_pool", pr.pool || "pseudo");
+          var te = document.getElementById("f_its_tax");
+          if(te) te.dispatchEvent(new Event("change"));
+        }
       });
       /* Apply the marker's first preset once, so the form opens consistent
          rather than showing a region that does not match the primers below. */
@@ -7999,7 +8037,10 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
     var dbTxt = document.getElementById("f_dbPathCustom");
     var isSG  = FORM.marker === "Shotgun";
     var k2el  = document.getElementById("f_sg_kraken_db");
-    var dbOk  = isSG ? !!(k2el && k2el.value.trim())
+    var itsN  = document.getElementById("f_its_tax");
+    var ncbiNames = !!(itsN && itsN.value === "ncbi_lca" && (document.getElementById("seq") || {}).value !== "ont"
+                       && (document.getElementById("seq") || {}).value !== "qiime2_vsearch");
+    var dbOk  = ncbiNames ? true : isSG ? !!(k2el && k2el.value.trim())
               : !!(dbSel && (dbSel.value === "__custom__"
                      ? (dbTxt && dbTxt.value.trim())
                      : dbSel.value));
@@ -8018,6 +8059,7 @@ input[readonly]{background:var(--surface-3);color:var(--fg-2)}
            "Metadata does not match the samples",
            "No metadata (optional)")
       + (isSG ? pf(dbOk, "Kraken 2 index set", "No Kraken 2 index — run setup_shotgun.sh or give its folder")
+      : ncbiNames ? pf(true, "Names from NCBI nt (internet) — no database file needed", "", "")
       : pf(dbOk, "Database selected",
            dbOpts.length ? "No database selected"
                          : "No reference file found in the databases folder"));
