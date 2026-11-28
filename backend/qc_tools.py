@@ -33,7 +33,7 @@ def fastqc(files: list[Path], out: Path, tool: str | None, threads: int = 2) -> 
     out.mkdir(parents=True, exist_ok=True)
     err = ""
     try:
-        p = subprocess.run([tool, "-q", "-t", str(threads), "-o", str(out)] + [str(f) for f in files],
+        p = subprocess.run([tool, "-q", "-t", str(threads), "--outdir", str(out)] + [str(f) for f in files],
                            capture_output=True, text=True, timeout=3600)
         err = (p.stderr or p.stdout or "").strip().splitlines()[-1:] if p.returncode else []
         err = err[0][:200] if err else ""

@@ -352,7 +352,7 @@ def run(input_dir: str, primer_f: str = "", primer_r: str = "", expected_len: in
             od = Path(fastqc_dir)
             od.mkdir(parents=True, exist_ok=True)
             allf = [str(x) for fs in samples.values() for f in fs for x in (f if isinstance(f, list) else [f])]
-            subprocess.run([fq, "-q", "-t", str(threads), "-o", str(od)] + allf,
+            subprocess.run([fq, "-q", "-t", str(threads), "--outdir", str(od)] + allf,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             res["tools"]["fastqc"] = str(od)
             if mq:

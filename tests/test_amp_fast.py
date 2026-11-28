@@ -356,7 +356,8 @@ def _fake_qc_tools(tmp: Path, adapter="pass", trimmed=0):
     fq = tmp / "bin" / "fastqc"
     _exe(fq, "#!/usr/bin/env python3\nimport sys, zipfile, os\n"
              "a = sys.argv[1:]\nif '--version' in a:\n    print('FastQC v0.12.1'); sys.exit(0)\n"
-             "o = a[a.index('-o') + 1]\n"
+             "if '-o' in a:\n    print('fastqc: error: unrecognized arguments: -o', file=sys.stderr); sys.exit(2)\n"  # FastQC 0.13 (argparse)
+             "o = a[a.index('--outdir') + 1]\n"
              "for f in [x for x in a if x.endswith('.fastq') or x.endswith('.gz')]:\n"
              "    b = os.path.basename(f).split('.')[0]\n"
              "    with zipfile.ZipFile(os.path.join(o, b + '_fastqc.zip'), 'w') as z:\n"
@@ -391,6 +392,10 @@ def t_qc_tools(tmp: Path):
     check("fastp sentence: reads trimmed with share", "150" in Q.sentence_fastp(p2) and "7.5%" in Q.sentence_fastp(p2),
           Q.sentence_fastp(p2))
     check("FastQC missing -> None, not a crash", Q.fastqc([r1], tmp / "x", None) is None)
+    rq = (ROOT / "backend" / "read_qc.py").read_text()
+    check("FastQC 0.13 takes --outdir, not -o (qc_tools + read_qc)",
+          '"--outdir", str(out)' in (ROOT / "backend" / "qc_tools.py").read_text() and '"--outdir", str(od)' in rq
+          and '"-o", str(od)] + allf' not in rq)
     sh = (ROOT / "setup_amplicon_report.sh")
     s = sh.read_text() if sh.exists() else ""
     for k in ("microbiomeutilities", "venneuler", "eulerr", "openpyxl", "ngamp-amp", "krona", "--status"):
